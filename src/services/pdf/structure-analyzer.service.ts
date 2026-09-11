@@ -75,6 +75,16 @@ export interface TableInfo {
    * than auto-apply text that may describe a different page's content.
    */
   pageReassigned?: boolean;
+  /**
+   * Total count of /Table structure elements resolved to this table's real
+   * page (pageNumber), matched or not -- set only when structureMatched.
+   * Lets a pageReassigned consumer (e.g. table-summary drafting, which must
+   * render the whole real page rather than a per-table region since
+   * position/cells are stale) tell an unambiguous single-table page (safe to
+   * auto-apply the drafted summary to) from a genuinely multi-table one
+   * (can't confirm which table the render described -- stays guidance-only).
+   */
+  tablesOnRealPage?: number;
 }
 
 export interface ListInfo {
@@ -753,6 +763,18 @@ class StructureAnalyzerService {
       }
     } catch (err) {
       console.warn('Failed to enhance tables from tags:', err instanceof Error ? err.message : 'Unknown error');
+    }
+
+    // perPageTableIndex now holds the FINAL count of /Table structure
+    // elements resolved to each page (every element increments it, matched
+    // or not) -- stamp each matched table with its real page's total so
+    // downstream consumers can tell an unambiguous single-table page from a
+    // genuinely multi-table one, notably for a pageReassigned table whose own
+    // stale position can't be used for that (see TableInfo.tablesOnRealPage).
+    for (const table of tables) {
+      if (table.structureMatched) {
+        table.tablesOnRealPage = perPageTableIndex.get(table.pageNumber) ?? 1;
+      }
     }
   }
 

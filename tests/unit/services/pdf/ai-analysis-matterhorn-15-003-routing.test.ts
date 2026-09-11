@@ -109,7 +109,7 @@ describe('dispatchIssue: MATTERHORN-15-003 routes through the table-summary writ
 
     await svc.dispatchIssue(ISSUE, parsed, CONFIG, new Map(), tableById, pageRenderCache);
 
-    expect(renderSpy).toHaveBeenCalledWith(table, fakeParsedPdf, pageRenderCache);
+    expect(renderSpy).toHaveBeenCalledWith(table, fakeParsedPdf, pageRenderCache, CONFIG.tableFixMode);
     expect(cellTextSpy).not.toHaveBeenCalled();
   });
 });

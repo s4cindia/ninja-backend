@@ -60,6 +60,41 @@ describe('analyzeTableSummaryFromRender', () => {
     expect(res.usage).toEqual({ promptTokens: 40, completionTokens: 12 });
   });
 
+  // Regression for the follow-up fix that unlocks auto-apply for the common
+  // case: a pageReassigned table whose real page has exactly one /Table
+  // element carries no ambiguity about which table the model described, so
+  // there's no reason to force guidance-only the way a genuinely
+  // multi-table page still must.
+  it('auto-applies when the real page has exactly one table and the config allows it', async () => {
+    const table = buildTable({ tablesOnRealPage: 1 });
+    vi.spyOn(svc, 'renderPageToBase64').mockResolvedValue('ZmFrZQ==');
+    gemini('{"summary":"A table.","confidence":0.8,"rationale":"r"}');
+
+    const res = await svc.analyzeTableSummaryFromRender(table, {}, new Map(), 'apply-to-pdf');
+
+    expect(res.applyMode).toBe('apply-to-pdf');
+  });
+
+  it('stays guidance-only when the real page has more than one table, even under an apply-to-pdf config', async () => {
+    const table = buildTable({ tablesOnRealPage: 2 });
+    vi.spyOn(svc, 'renderPageToBase64').mockResolvedValue('ZmFrZQ==');
+    gemini('{"summary":"A table.","confidence":0.8,"rationale":"r"}');
+
+    const res = await svc.analyzeTableSummaryFromRender(table, {}, new Map(), 'apply-to-pdf');
+
+    expect(res.applyMode).toBe('guidance-only');
+  });
+
+  it('stays guidance-only for a single-table page when the config would not otherwise auto-apply', async () => {
+    const table = buildTable({ tablesOnRealPage: 1 });
+    vi.spyOn(svc, 'renderPageToBase64').mockResolvedValue('ZmFrZQ==');
+    gemini('{"summary":"A table.","confidence":0.8,"rationale":"r"}');
+
+    const res = await svc.analyzeTableSummaryFromRender(table, {}, new Map(), 'guidance-only');
+
+    expect(res.applyMode).toBe('guidance-only');
+  });
+
   it('reuses a cached render for the same page instead of rendering twice', async () => {
     const table = buildTable({ pageNumber: 12 });
     const renderSpy = vi.spyOn(svc, 'renderPageToBase64').mockResolvedValue('ZmFrZQ==');

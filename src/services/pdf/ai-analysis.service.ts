@@ -651,15 +651,16 @@ class AiAnalysisService {
       // service.ts's TableInfo.pageReassigned doc comment) -- drafting a
       // summary from that stale content risks a plausible-sounding but
       // wrong description. Render the REAL page instead of trusting stale
-      // cell text (analyzeTableSummaryFromRender) -- always guidance-only
-      // even so: findTargetTable (#532) can locate the right struct
-      // element, but a rendered page can hold more than one table, and
-      // nothing here can confirm the AI described *that specific* one, so
-      // auto-writing its output is not safe the way it is for an ordinary,
-      // correctly-page-matched table.
+      // cell text (analyzeTableSummaryFromRender). Auto-applying its output
+      // is only safe when the real page has exactly ONE /Table element
+      // (table.tablesOnRealPage === 1, stamped by structure-analyzer.
+      // service.ts's enhanceTablesFromTags): findTargetTable (#532) can
+      // locate the right struct element either way, but on a genuinely
+      // multi-table page nothing here confirms the model described *that
+      // specific* one, so those stay guidance-only.
       if (table.pageReassigned) {
         if (!parsed.parsedPdf) return null;
-        return this.analyzeTableSummaryFromRender(table, parsed.parsedPdf, pageRenderCache);
+        return this.analyzeTableSummaryFromRender(table, parsed.parsedPdf, pageRenderCache, config.tableFixMode);
       }
       const wouldAutoApply =
         config.tableFixMode === 'apply-to-pdf' ||
@@ -1078,16 +1079,19 @@ class AiAnalysisService {
    * page already rendered for another issue on the same page is reused via
    * pageRenderCache rather than re-rendered.
    *
-   * Always guidance-only, deliberately never apply-to-pdf even when config
-   * would otherwise allow it: a rendered page can hold more than one table,
-   * and nothing here confirms the model described the SAME one
-   * issue.element actually points at, so auto-writing its output isn't
-   * safe the way it is for an ordinary, correctly-page-matched table.
+   * apply-to-pdf only when table.tablesOnRealPage === 1 (the real page has
+   * exactly one /Table element, stamped by structure-analyzer.service.ts's
+   * enhanceTablesFromTags) AND config would otherwise allow it: a rendered
+   * page can hold more than one table, and nothing here confirms the model
+   * described the SAME one issue.element actually points at, so a genuinely
+   * multi-table page stays guidance-only -- auto-writing its output there
+   * isn't safe the way it is for an ordinary, correctly-page-matched table.
    */
   private async analyzeTableSummaryFromRender(
     table: TableInfo,
     parsedPdf: ParsedPDF,
-    pageRenderCache: Map<number, Promise<string | null>>
+    pageRenderCache: Map<number, Promise<string | null>>,
+    tableFixMode: AiRemediationConfig['tableFixMode']
   ): Promise<AiSuggestionResult | null> {
     if (!pageRenderCache.has(table.pageNumber)) {
       pageRenderCache.set(table.pageNumber, this.renderPageToBase64(parsedPdf, table.pageNumber));
@@ -1121,6 +1125,14 @@ class AiAnalysisService {
         '(drafted from a full-page render, not parsed cell text -- this table\'s original ' +
         'detection landed on a different page; verify it matches the flagged table before applying)';
 
+      // Unambiguous only when this is the sole /Table on its real page --
+      // findTargetTable can locate it either way, but a multi-table page
+      // leaves no way to confirm the model described this specific one.
+      const unambiguous = table.tablesOnRealPage === 1;
+      const wouldAutoApply =
+        tableFixMode === 'apply-to-pdf' || tableFixMode === 'summaries-to-pdf-headers-as-guidance';
+      const applyMode = unambiguous && wouldAutoApply ? 'apply-to-pdf' : 'guidance-only';
+
       return {
         suggestionType: 'table-summary',
         value: data.summary,
@@ -1129,7 +1141,7 @@ class AiAnalysisService {
         rationale: modelRationale ? `${modelRationale} ${renderCaveat}` : renderCaveat,
         usage: response.usage ? { promptTokens: response.usage.promptTokens, completionTokens: response.usage.completionTokens } : undefined,
         model: 'gemini-flash',
-        applyMode: 'guidance-only',
+        applyMode,
       };
     } catch (err) {
       logger.warn(`[AiAnalysis] analyzeTableSummaryFromRender failed: ${err instanceof Error ? err.message : String(err)}`);

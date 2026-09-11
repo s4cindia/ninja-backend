@@ -279,4 +279,51 @@ describe('structureAnalyzerService table page resolution', () => {
     expect(foundB).not.toBeNull();
     expect(foundA).not.toBe(foundB);
   });
+
+  /**
+   * Regression coverage for TableInfo.tablesOnRealPage, added to let a
+   * pageReassigned table's summary-drafting consumer (ai-analysis.service.ts's
+   * analyzeTableSummaryFromRender) tell an unambiguous single-table real page
+   * (safe to auto-apply a rendered summary to) from a genuinely multi-table
+   * one (must stay guidance-only) -- see structure-analyzer.service.ts's
+   * TableInfo.tablesOnRealPage doc comment.
+   */
+  it('stamps tablesOnRealPage with the true per-real-page /Table count, not the layout-detected count', async () => {
+    const doc = await PDFDocument.create();
+    doc.addPage([400, 600]); // page 1 -- exactly one real /Table
+    doc.addPage([400, 600]); // page 2 -- two real /Table elements
+
+    const pageRefs = doc.getPages().map(p => p.ref);
+    const buildTable = (pageRef: (typeof pageRefs)[number]) => {
+      const thDict = doc.context.register(doc.context.obj({ S: PDFName.of('TH'), Pg: pageRef }));
+      const trDict = doc.context.register(doc.context.obj({ S: PDFName.of('TR'), K: [thDict] }));
+      return doc.context.register(doc.context.obj({ S: PDFName.of('Table'), K: [trDict] }));
+    };
+    const tableOnPage1 = buildTable(pageRefs[0]);
+    const tableOnPage2a = buildTable(pageRefs[1]);
+    const tableOnPage2b = buildTable(pageRefs[1]);
+    const documentDict = doc.context.obj({ S: PDFName.of('Document'), K: [tableOnPage1, tableOnPage2a, tableOnPage2b] });
+    const structTreeRootDict = doc.context.obj({ Type: PDFName.of('StructTreeRoot'), K: [documentDict] });
+    doc.catalog.set(PDFName.of('StructTreeRoot'), doc.context.register(structTreeRootDict));
+
+    const makeTableInfo = (id: string, pageNumber: number): TableInfo => ({
+      id, pageNumber,
+      position: { x: 0, y: 0, width: 100, height: 100 },
+      rowCount: 2, columnCount: 2,
+      hasHeaderRow: false, hasHeaderColumn: false, hasSummary: false,
+      cells: [], issues: [], isAccessible: false,
+    });
+    const tableInfos: TableInfo[] = [
+      makeTableInfo('table_p1_0', 1),
+      makeTableInfo('table_p2_0', 2),
+      makeTableInfo('table_p2_1', 2),
+    ];
+
+    await structureAnalyzerAny.enhanceTablesFromTags({ pdfLibDoc: doc }, tableInfos);
+
+    expect(tableInfos.every(t => t.structureMatched)).toBe(true);
+    expect(tableInfos[0].tablesOnRealPage).toBe(1);
+    expect(tableInfos[1].tablesOnRealPage).toBe(2);
+    expect(tableInfos[2].tablesOnRealPage).toBe(2);
+  });
 });
