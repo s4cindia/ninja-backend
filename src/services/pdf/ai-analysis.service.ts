@@ -1106,17 +1106,27 @@ class AiAnalysisService {
         model: 'flash',
         maxOutputTokens: 512,
       });
-      const data = this.parseAiJson<{ summary: string; confidence: number; rationale: string }>(response.text);
+      const data = this.parseAiJson<{ summary: string; confidence?: number; rationale?: string }>(response.text);
       if (!data?.summary) return null;
+
+      // The model can omit confidence/rationale even when it returns a
+      // usable summary -- both AiSuggestionResult fields are required
+      // (non-optional), and naively string-interpolating a missing
+      // rationale would surface the literal text "undefined" to the
+      // reviewer (a real bug CodeRabbit caught on this PR's first
+      // version), so both need an explicit fallback rather than trusting
+      // the model's JSON shape.
+      const modelRationale = data.rationale?.trim();
+      const renderCaveat =
+        '(drafted from a full-page render, not parsed cell text -- this table\'s original ' +
+        'detection landed on a different page; verify it matches the flagged table before applying)';
 
       return {
         suggestionType: 'table-summary',
         value: data.summary,
         guidance: `Add table summary: "${data.summary}"`,
-        confidence: data.confidence,
-        rationale:
-          `${data.rationale} (drafted from a full-page render, not parsed cell text -- ` +
-          `this table's original detection landed on a different page; verify it matches the flagged table before applying)`,
+        confidence: typeof data.confidence === 'number' ? data.confidence : 0.5,
+        rationale: modelRationale ? `${modelRationale} ${renderCaveat}` : renderCaveat,
         usage: response.usage ? { promptTokens: response.usage.promptTokens, completionTokens: response.usage.completionTokens } : undefined,
         model: 'gemini-flash',
         applyMode: 'guidance-only',

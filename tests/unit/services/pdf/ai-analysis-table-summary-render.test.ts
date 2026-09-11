@@ -90,6 +90,24 @@ describe('analyzeTableSummaryFromRender', () => {
     expect(await svc.analyzeTableSummaryFromRender(buildTable(), {}, new Map())).toBeNull();
   });
 
+  // CodeRabbit review finding on this PR's first version: naively
+  // string-interpolating a missing rationale surfaced the literal text
+  // "undefined" to the reviewer, and confidence (a required, non-optional
+  // AiSuggestionResult field) was passed through as `undefined` outright
+  // when the model's JSON omitted it -- both real, since the model can
+  // return a usable summary without necessarily including either field.
+  it('falls back to sane defaults when the model omits confidence and rationale', async () => {
+    vi.spyOn(svc, 'renderPageToBase64').mockResolvedValue('ZmFrZQ==');
+    gemini('{"summary":"A table."}'); // no confidence, no rationale
+
+    const res = await svc.analyzeTableSummaryFromRender(buildTable(), {}, new Map());
+
+    expect(res).toBeTruthy();
+    expect(typeof res.confidence).toBe('number');
+    expect(res.rationale).not.toContain('undefined');
+    expect(res.rationale).toContain('full-page render');
+  });
+
   it('returns null (not a rejected promise) when the vision call throws', async () => {
     vi.spyOn(svc, 'renderPageToBase64').mockResolvedValue('ZmFrZQ==');
     vi.spyOn(geminiService, 'analyzeImage').mockRejectedValue(new Error('429 rate limit'));
