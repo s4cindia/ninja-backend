@@ -645,17 +645,26 @@ class AiAnalysisService {
     if (TABLE_SUMMARY_CODES.has(code)) {
       const table = (issue.element ? tableById.get(issue.element) : undefined) ?? page?.tables[0];
       if (!table) return null;
-      const wouldAutoApply =
-        config.tableFixMode === 'apply-to-pdf' ||
-        config.tableFixMode === 'summaries-to-pdf-headers-as-guidance';
       // A pageReassigned table's cells still describe the page it was
       // ORIGINALLY (wrongly) detected on, not the struct element's real
       // page it's now correctly locatable at (see structure-analyzer.
       // service.ts's TableInfo.pageReassigned doc comment) -- drafting a
-      // summary from that stale content and auto-writing it to the real
-      // element risks a plausible-sounding but wrong description landing
-      // silently. Force human review for these instead of auto-applying.
-      const mode = wouldAutoApply && !table.pageReassigned ? 'apply-to-pdf' : 'guidance-only';
+      // summary from that stale content risks a plausible-sounding but
+      // wrong description. Render the REAL page instead of trusting stale
+      // cell text (analyzeTableSummaryFromRender) -- always guidance-only
+      // even so: findTargetTable (#532) can locate the right struct
+      // element, but a rendered page can hold more than one table, and
+      // nothing here can confirm the AI described *that specific* one, so
+      // auto-writing its output is not safe the way it is for an ordinary,
+      // correctly-page-matched table.
+      if (table.pageReassigned) {
+        if (!parsed.parsedPdf) return null;
+        return this.analyzeTableSummaryFromRender(table, parsed.parsedPdf, pageRenderCache);
+      }
+      const wouldAutoApply =
+        config.tableFixMode === 'apply-to-pdf' ||
+        config.tableFixMode === 'summaries-to-pdf-headers-as-guidance';
+      const mode = wouldAutoApply ? 'apply-to-pdf' : 'guidance-only';
       return this.analyzeTableSummary(issue, table, mode);
     }
 
@@ -1052,6 +1061,68 @@ class AiAnalysisService {
       };
     } catch (err) {
       logger.warn(`[AiAnalysis] analyzeTableSummary failed: ${err instanceof Error ? err.message : String(err)}`);
+      return null;
+    }
+  }
+
+  /**
+   * Table-summary drafting for a pageReassigned table (see dispatchIssue's
+   * TABLE_SUMMARY_CODES branch and structure-analyzer.service.ts's
+   * TableInfo.pageReassigned doc comment) -- its cells/rowCount/columnCount
+   * describe the page it was ORIGINALLY (wrongly) detected on, not
+   * table.pageNumber, the struct element's real page findTargetTable (#532)
+   * can actually locate. Rather than draft from that stale, page-mismatched
+   * text, this renders the REAL page and asks the vision model to describe
+   * the table directly -- reusing the same page-render infra
+   * fallbackToPageRender/renderPageToBase64 already use for images, so a
+   * page already rendered for another issue on the same page is reused via
+   * pageRenderCache rather than re-rendered.
+   *
+   * Always guidance-only, deliberately never apply-to-pdf even when config
+   * would otherwise allow it: a rendered page can hold more than one table,
+   * and nothing here confirms the model described the SAME one
+   * issue.element actually points at, so auto-writing its output isn't
+   * safe the way it is for an ordinary, correctly-page-matched table.
+   */
+  private async analyzeTableSummaryFromRender(
+    table: TableInfo,
+    parsedPdf: ParsedPDF,
+    pageRenderCache: Map<number, Promise<string | null>>
+  ): Promise<AiSuggestionResult | null> {
+    if (!pageRenderCache.has(table.pageNumber)) {
+      pageRenderCache.set(table.pageNumber, this.renderPageToBase64(parsedPdf, table.pageNumber));
+    }
+    const pageBase64 = await pageRenderCache.get(table.pageNumber)!;
+    if (!pageBase64) return null;
+
+    const prompt =
+      'This image is a full page from a PDF document. It contains a data table that is missing ' +
+      'an accessibility summary. Identify the most prominent complex data table on this page and ' +
+      'write a 1-2 sentence summary (max 150 characters) describing what it contains and its purpose.\n\n' +
+      'Respond ONLY with JSON:\n{"summary":"string","confidence":0.0-1.0,"rationale":"brief"}';
+
+    try {
+      const response = await geminiService.analyzeImage(pageBase64, 'image/png', prompt, {
+        model: 'flash',
+        maxOutputTokens: 512,
+      });
+      const data = this.parseAiJson<{ summary: string; confidence: number; rationale: string }>(response.text);
+      if (!data?.summary) return null;
+
+      return {
+        suggestionType: 'table-summary',
+        value: data.summary,
+        guidance: `Add table summary: "${data.summary}"`,
+        confidence: data.confidence,
+        rationale:
+          `${data.rationale} (drafted from a full-page render, not parsed cell text -- ` +
+          `this table's original detection landed on a different page; verify it matches the flagged table before applying)`,
+        usage: response.usage ? { promptTokens: response.usage.promptTokens, completionTokens: response.usage.completionTokens } : undefined,
+        model: 'gemini-flash',
+        applyMode: 'guidance-only',
+      };
+    } catch (err) {
+      logger.warn(`[AiAnalysis] analyzeTableSummaryFromRender failed: ${err instanceof Error ? err.message : String(err)}`);
       return null;
     }
   }
