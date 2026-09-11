@@ -95,18 +95,46 @@ const SAME_SURFACE_COLOR_DISTANCE = 30;
 // the two candidate colors.
 const EXPLAINED_LUM_TOLERANCE = 0.05;
 
-// Minimum fraction of a box's pixels that must be explained by just the
-// dark+light candidate colors (within EXPLAINED_LUM_TOLERANCE of one or the
-// other) before the light candidate is trusted at all. Calibrated against
-// real data pulled from a live document: genuine two-surface inverted-box
-// cases measured 90-100% explained (most well above 90%), while the
-// documented "KNOWN LIMITATION" fixture in color-contrast-verification.
-// test.ts (an unrelated dark artifact overlapping otherwise-ordinary text,
-// which has a real third-color text population the two-candidate model
-// doesn't capture) measured only ~79% -- comfortably below. See sampleDark's
-// own doc comment for why this, not a population-size/balance check, is the
-// right discriminator.
+// sampleDark's light-text branch, guard 2's strict-purity path (Path A):
+// minimum fraction of a box's pixels that must be explained by just the
+// dark+light candidate colors on their own, no row-mixing evidence needed.
+// First calibrated (wrongly, as it turned out) against a single synthetic
+// data point as an assumed upper bound for the documented "KNOWN
+// LIMITATION" case; re-measured against a full live document afterward and
+// found real same-surface cases span a much WIDER range (0.66-1.0) that
+// directly overlaps the KNOWN LIMITATION fixture's own ~0.79 -- so this
+// threshold alone only catches the highest-purity end of real cases (was
+// leaving the majority permanently stuck). Left in as-is for that clean
+// high-purity subset; MIXED_ROW_FRACTION_THRESHOLD below is the real fix
+// for the rest. See sampleDark's own doc comment for the full picture.
 const EXPLAINED_FRACTION_THRESHOLD = 0.9;
+
+// Guard 2's row-mixing path (Path B), floor half: a coarse sanity bar
+// requiring SOME meaningful two-color purity (well under the real same-
+// surface minimum of 0.66) before row-mixing evidence is trusted at all --
+// guards against a mostly-noise box passing on a few coincidentally-
+// overlapping pixels alone.
+const EXPLAINED_FRACTION_FLOOR = 0.6;
+
+// Guard 2's row-mixing path (Path B), the real discriminator half: minimum
+// fraction of "light-explained" rows that must ALSO contain a "dark-
+// explained" pixel in the SAME row. Real same-surface cases (ink
+// interleaved with the box color within every row it touches) measured
+// 0.64-1.0 on a live document; the documented "KNOWN LIMITATION" fixture
+// (an unrelated dark artifact's own rows vs. separate, non-overlapping
+// exposed-background rows elsewhere in the box) measured exactly 0 -- a
+// clean, wide gap this sits comfortably inside of on both sides.
+const MIXED_ROW_FRACTION_THRESHOLD = 0.5;
+
+// Guard 2's row-mixing path, minimum sample size: mixedRowFraction (above)
+// is a fraction over however many rows were classified "light-explained" --
+// with very few of them (sparse noise, a stray anti-aliased pixel or two),
+// a single coincidental overlap drives the fraction straight to 1.0 on
+// essentially no real evidence. Requiring a real multi-row spread first
+// matches genuine callout-box text, which spans several pixel rows even at
+// small font sizes (e.g. an 8pt glyph at this file's RENDER_SCALE is
+// already ~12px tall).
+const MIN_LIGHT_ROWS_FOR_MIXING = 5;
 
 // Minimum WCAG relative luminance (0-1) for sampleDark's light candidate to
 // be trusted as real light ink, rather than an artifact-covers-the-whole-
@@ -481,15 +509,21 @@ export class PdfContrastValidator {
    * under 0.01 in luminance despite being clearly different colors), so
    * this compares actual sampled RGB channels instead.
    *
-   * A second, independent guard (EXPLAINED_FRACTION_THRESHOLD, see its own
-   * comment) must also pass before the light candidate is used -- same-
-   * surface-closeness alone isn't sufficient on its own; see that
-   * constant's comment for the case it additionally rules out. Once both
-   * pass, picks whichever of dark/light candidate sits farther (by
-   * luminance) from the background: real ink, by definition, visually
-   * stands out from its surroundings, so the WRONG choice stays close to
-   * background while the RIGHT one doesn't. No adaptive/narrow variant for
-   * sparse light ink is implemented (see the comment above
+   * A second, independent guard must also pass before the light candidate
+   * is used -- same-surface-closeness alone isn't sufficient on its own.
+   * It accepts either of two paths: a strict overall two-color purity bar
+   * (EXPLAINED_FRACTION_THRESHOLD), or a lower purity floor
+   * (EXPLAINED_FRACTION_FLOOR) combined with row-mixing evidence
+   * (MIXED_ROW_FRACTION_THRESHOLD) -- see EXPLAINED_FRACTION_THRESHOLD's
+   * own comment for why a single fixed purity threshold alone isn't
+   * enough, and MIXED_ROW_FRACTION_THRESHOLD's for what row-mixing checks
+   * and why it's the more reliable of the two. A third guard
+   * (LIGHT_CANDIDATE_MIN_LUM) requires the light candidate to actually be
+   * light. Once all pass, picks whichever of dark/light candidate sits
+   * farther (by luminance) from the background: real ink, by definition,
+   * visually stands out from its surroundings, so the WRONG choice stays
+   * close to background while the RIGHT one doesn't. No adaptive/narrow
+   * variant for sparse light ink is implemented (see the comment above
    * ADAPTIVE_DARK_SAMPLE_PERCENTILE's definition) -- not yet evidenced.
    */
   sampleDark(
@@ -498,13 +532,13 @@ export class PdfContrastValidator {
     cw: number, ch: number,
     background?: RgbColor
   ): RgbColor | null {
-    const pixels: Array<{ lum: number; r: number; g: number; b: number; px: number }> = [];
+    const pixels: Array<{ lum: number; r: number; g: number; b: number; px: number; py: number }> = [];
 
     for (let py = Math.max(0, y); py < Math.min(y + h, ch); py++) {
       for (let px = Math.max(0, x); px < Math.min(x + w, cw); px++) {
         const i = (py * cw + px) * 4;
         const r = data[i], g = data[i + 1], b = data[i + 2];
-        pixels.push({ lum: this.getLuminance(r, g, b), r, g, b, px });
+        pixels.push({ lum: this.getLuminance(r, g, b), r, g, b, px, py });
       }
     }
 
@@ -565,49 +599,86 @@ export class PdfContrastValidator {
       b: lightSubset.reduce((s, v) => s + v.b, 0) / percentileTake,
     };
 
-    // Second, independent guard: requires the box's pixels to be cleanly
-    // explained by JUST these two colors (each within EXPLAINED_LUM_TOLERANCE
-    // of one of the two candidates) for at least EXPLAINED_FRACTION_THRESHOLD
-    // of the box, rather than accepting any two-candidate split. This is
-    // what tells a genuine two-surface inverted box (solid box + solid ink,
-    // confirmed on a real page: >90% of pixels explained, often >97%) apart
-    // from an unrelated dark artifact/fill merely overlapping otherwise-
-    // ordinary text: there, the box's OWN darkest-percentile pixels still
-    // degenerate to the (wrong) sampled background just the same (same-
-    // surface-closeness alone can't tell the two apart), but the real text
-    // ink sits at a THIRD, intermediate luminance the two-color model
-    // doesn't explain -- confirmed on the documented, accepted "KNOWN
-    // LIMITATION" fixture in color-contrast-verification.test.ts, which
-    // explains only ~79% of its box this way (comfortably below real
-    // same-surface cases' measured range, which starts above 90%) --
-    // requiring the light candidate to also be geometrically BALANCED with
-    // the dark one (tried first) does NOT work: a real inverted box's ink
-    // coverage varies with font/box choices just as much as an unrelated
-    // artifact's incidental exposed-background area does, so the two
-    // populations' relative *sizes* turned out to overlap too much to
-    // discriminate by, even though which colors are actually PRESENT
-    // (two vs. three distinct ones) reliably does. Without this guard, that
-    // KNOWN LIMITATION fixture's genuinely-low-contrast text was picked as
-    // "farther from background" and silently stopped being flagged at all
-    // -- turning an accepted "flagged for the wrong technical reason" gap
-    // into a worse, silent false negative.
+    // Second, independent guard: the box's pixels must be cleanly explained
+    // by JUST these two colors (each within EXPLAINED_LUM_TOLERANCE of one
+    // of the two candidates), via EITHER of two paths -- not a single fixed
+    // threshold. This is what tells a genuine two-surface inverted box
+    // (solid box + solid ink) apart from an unrelated dark artifact/fill
+    // merely overlapping otherwise-ordinary text: there, the box's OWN
+    // darkest-percentile pixels still degenerate to the (wrong) sampled
+    // background just the same (same-surface-closeness alone can't tell the
+    // two apart), but the real text ink sits at a THIRD, intermediate
+    // luminance the two-color model doesn't explain.
+    //
+    // Path A (EXPLAINED_FRACTION_THRESHOLD, 0.9): a strict overall purity
+    // bar, kept from this guard's first version.
+    //
+    // Path B (MIXED_ROW_FRACTION_THRESHOLD): real same-surface cases pulled
+    // from a live document measured explainedFraction as low as 0.66 --
+    // well under 0.9 -- while the documented "KNOWN LIMITATION" fixture in
+    // color-contrast-verification.test.ts measures ~0.79, sitting BETWEEN
+    // real cases' 0.66-0.89 range with no gap a single threshold can
+    // exploit (confirmed directly: Path A alone left 149 of 203 real
+    // same-surface candidates on a live document permanently stuck, unable
+    // to ever clear verification). What DOES separate them is spatial, not
+    // just proportional: real ink is interleaved with the box color WITHIN
+    // the same rows (every row a glyph touches also shows box-color pixels
+    // in the letter gaps/margins), while an unrelated artifact's "explained"
+    // pixels split into two spatially SEPARATE row ranges (the artifact's
+    // own rows vs. different, unrelated exposed-background rows elsewhere
+    // in the box) -- confirmed directly against the KNOWN LIMITATION
+    // fixture, which measures exactly 0 rows of overlap, vs. real same-
+    // surface cases measuring 0.64-1.0. Gated on a lower purity floor
+    // (comfortably under the real 0.66 minimum) AND a minimum light-row
+    // count (MIN_LIGHT_ROWS_FOR_MIXING) so a mostly-unexplained, largely-
+    // noise box can't pass on a few coincidentally-overlapping pixels
+    // alone.
+    //
+    // Geometric BALANCE between the two candidate populations' relative
+    // SIZES was tried before landing on row-mixing and does NOT work: ink
+    // coverage varies with font/box choice just as much as an artifact's
+    // incidental exposed-background area does, so the two overlapped too
+    // much on size alone to discriminate by -- row-mixing instead asks
+    // WHERE each color sits, not how much of it there is.
     let explainedCount = 0;
     const darkLum = this.getLuminance(darkCandidate.r, darkCandidate.g, darkCandidate.b);
     const lightLum = this.getLuminance(lightCandidate.r, lightCandidate.g, lightCandidate.b);
+    const lightRows = new Set<number>();
+    const darkRows = new Set<number>();
     for (const p of pixels) {
-      if (Math.abs(p.lum - darkLum) <= EXPLAINED_LUM_TOLERANCE || Math.abs(p.lum - lightLum) <= EXPLAINED_LUM_TOLERANCE) {
-        explainedCount++;
-      }
+      const closeToDark = Math.abs(p.lum - darkLum) <= EXPLAINED_LUM_TOLERANCE;
+      const closeToLight = Math.abs(p.lum - lightLum) <= EXPLAINED_LUM_TOLERANCE;
+      if (closeToDark || closeToLight) explainedCount++;
+      if (closeToDark) darkRows.add(p.py);
+      if (closeToLight) lightRows.add(p.py);
     }
-    if (explainedCount / pixels.length < EXPLAINED_FRACTION_THRESHOLD) return darkCandidate;
+    const explainedFraction = explainedCount / pixels.length;
+    let mixedRows = 0;
+    for (const row of lightRows) if (darkRows.has(row)) mixedRows++;
+    const mixedRowFraction = lightRows.size > 0 ? mixedRows / lightRows.size : 0;
+
+    const passesStrictPurity = explainedFraction >= EXPLAINED_FRACTION_THRESHOLD;
+    // MIN_LIGHT_ROWS_FOR_MIXING guards mixedRowFraction itself: with very
+    // few light-explained rows (sparse noise, a stray anti-aliased pixel or
+    // two), even ONE of them coincidentally also containing a dark-
+    // explained pixel drives the fraction straight to 1.0 on essentially no
+    // real evidence -- CodeRabbit review finding on this PR's first
+    // version. Requiring a real multi-row spread before trusting the
+    // fraction at all matches genuine callout-box text, which spans
+    // several pixel rows even at small font sizes.
+    const passesRowMixing =
+      explainedFraction >= EXPLAINED_FRACTION_FLOOR &&
+      lightRows.size >= MIN_LIGHT_ROWS_FOR_MIXING &&
+      mixedRowFraction >= MIXED_ROW_FRACTION_THRESHOLD;
+    if (!passesStrictPurity && !passesRowMixing) return darkCandidate;
 
     // Third guard: the light candidate itself must actually BE light.
     // Without it, a box whose artifact/background fully covers the text's
     // bbox (no true page background left exposed anywhere in it) can still
-    // pass the two guards above with a clean 2-color split -- just between
-    // the artifact and the REAL (moderately dark, genuinely low-contrast)
-    // text color, not white ink. That real text color, being the "farther"
-    // of the two from the (wrong) background, would otherwise still win --
+    // pass the guards above with a clean 2-color split -- just between the
+    // artifact and the REAL (moderately dark, genuinely low-contrast) text
+    // color, not white ink. That real text color, being the "farther" of
+    // the two from the (wrong) background, would otherwise still win --
     // and unlike the light-on-dark bug this method targets, a moderately
     // dark "light candidate" paired with the wrong (also dark) background
     // can compute a misleadingly PASSING ratio, silently dropping a
