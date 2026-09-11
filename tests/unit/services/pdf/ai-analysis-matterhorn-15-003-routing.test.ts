@@ -90,11 +90,13 @@ describe('dispatchIssue: MATTERHORN-15-003 routes through the table-summary writ
     expect(res.suggestionType).toBe('table-summary');
   });
 
-  it('still downgrades to guidance-only for a pageReassigned table, same gate as TABLE-MISSING-SUMMARY', async () => {
+  it('still routes a pageReassigned table through the render-based drafter, same as TABLE-MISSING-SUMMARY', async () => {
     const table = buildTable({ pageReassigned: true });
     const tableById = new Map([['table_p1_0', table]]);
-    const parsed = { isTagged: true, pages: [] } as unknown as PdfParseResult;
-    const analyzeSpy = vi.spyOn(svc, 'analyzeTableSummary').mockResolvedValue({
+    const fakeParsedPdf = { pdfjsDoc: {} };
+    const parsed = { isTagged: true, pages: [], parsedPdf: fakeParsedPdf } as unknown as PdfParseResult;
+    const cellTextSpy = vi.spyOn(svc, 'analyzeTableSummary');
+    const renderSpy = vi.spyOn(svc, 'analyzeTableSummaryFromRender').mockResolvedValue({
       suggestionType: 'table-summary',
       value: 'A summary',
       guidance: 'Add table summary: "A summary"',
@@ -103,9 +105,11 @@ describe('dispatchIssue: MATTERHORN-15-003 routes through the table-summary writ
       model: 'gemini-flash',
       applyMode: 'guidance-only',
     });
+    const pageRenderCache = new Map();
 
-    await svc.dispatchIssue(ISSUE, parsed, CONFIG, new Map(), tableById, new Map());
+    await svc.dispatchIssue(ISSUE, parsed, CONFIG, new Map(), tableById, pageRenderCache);
 
-    expect(analyzeSpy).toHaveBeenCalledWith(ISSUE, table, 'guidance-only');
+    expect(renderSpy).toHaveBeenCalledWith(table, fakeParsedPdf, pageRenderCache);
+    expect(cellTextSpy).not.toHaveBeenCalled();
   });
 });

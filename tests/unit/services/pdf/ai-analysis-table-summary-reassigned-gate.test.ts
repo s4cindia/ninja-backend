@@ -17,8 +17,17 @@ import type { PdfParseResult } from '../../../../src/services/pdf/pdf-comprehens
  * (wrongly) detected on, not the struct element's real page it's now
  * correctly locatable at -- so auto-applying that drafted text risked a
  * plausible-sounding but page-mismatched summary landing silently on a real
- * table. dispatchIssue's TABLE_SUMMARY_CODES branch now forces
- * guidance-only for any pageReassigned table, regardless of tableFixMode.
+ * table.
+ *
+ * dispatchIssue's TABLE_SUMMARY_CODES branch originally just forced
+ * guidance-only for any pageReassigned table. A follow-up replaced that
+ * with analyzeTableSummaryFromRender: rather than draft from known-stale
+ * cell text, it renders the table's REAL page (table.pageNumber, which
+ * findTargetTable/#532 can locate correctly even though the cells can't be
+ * trusted) and asks a vision model to describe the table directly --
+ * always still guidance-only, since a rendered page can hold more than one
+ * table and nothing confirms the model described the specific one
+ * issue.element points at.
  */
 
 // dispatchIssue is private; exercise via cast, same pattern as
@@ -67,7 +76,7 @@ const ISSUE: AuditIssue = {
   boundingBox: { x: 0, y: 0, width: 100, height: 100, pageWidth: 400, pageHeight: 600 },
 };
 
-describe('dispatchIssue: table-summary downgrades to guidance-only for a page-reassigned table', () => {
+describe('dispatchIssue: table-summary drafting for a page-reassigned table', () => {
   afterEach(() => vi.restoreAllMocks());
 
   it('auto-applies normally for an ordinary (non-reassigned) table under an apply-to-pdf config', async () => {
@@ -87,11 +96,13 @@ describe('dispatchIssue: table-summary downgrades to guidance-only for a page-re
     expect(analyzeSpy).toHaveBeenCalledWith(ISSUE, tableById.get('table_p1_0'), 'apply-to-pdf');
   });
 
-  it('forces guidance-only for a pageReassigned table even under an apply-to-pdf config', async () => {
+  it('routes a pageReassigned table through the render-based drafter, not the cell-text one', async () => {
     const table = buildTable({ pageReassigned: true });
     const tableById = new Map([['table_p1_0', table]]);
-    const parsed = { isTagged: true, pages: [] } as unknown as PdfParseResult;
-    const analyzeSpy = vi.spyOn(svc, 'analyzeTableSummary').mockResolvedValue({
+    const fakeParsedPdf = { pdfjsDoc: {} };
+    const parsed = { isTagged: true, pages: [], parsedPdf: fakeParsedPdf } as unknown as PdfParseResult;
+    const cellTextSpy = vi.spyOn(svc, 'analyzeTableSummary');
+    const renderSpy = vi.spyOn(svc, 'analyzeTableSummaryFromRender').mockResolvedValue({
       suggestionType: 'table-summary',
       value: 'A summary',
       guidance: 'Add table summary: "A summary"',
@@ -100,9 +111,23 @@ describe('dispatchIssue: table-summary downgrades to guidance-only for a page-re
       model: 'gemini-flash',
       applyMode: 'guidance-only',
     });
+    const pageRenderCache = new Map();
 
-    await svc.dispatchIssue(ISSUE, parsed, AUTO_APPLY_CONFIG, new Map(), tableById, new Map());
+    await svc.dispatchIssue(ISSUE, parsed, AUTO_APPLY_CONFIG, new Map(), tableById, pageRenderCache);
 
-    expect(analyzeSpy).toHaveBeenCalledWith(ISSUE, table, 'guidance-only');
+    expect(renderSpy).toHaveBeenCalledWith(table, fakeParsedPdf, pageRenderCache);
+    expect(cellTextSpy).not.toHaveBeenCalled();
+  });
+
+  it('returns null for a pageReassigned table when no parsedPdf is available to render', async () => {
+    const table = buildTable({ pageReassigned: true });
+    const tableById = new Map([['table_p1_0', table]]);
+    const parsed = { isTagged: true, pages: [] } as unknown as PdfParseResult; // no parsedPdf
+    const renderSpy = vi.spyOn(svc, 'analyzeTableSummaryFromRender');
+
+    const result = await svc.dispatchIssue(ISSUE, parsed, AUTO_APPLY_CONFIG, new Map(), tableById, new Map());
+
+    expect(result).toBeNull();
+    expect(renderSpy).not.toHaveBeenCalled();
   });
 });
