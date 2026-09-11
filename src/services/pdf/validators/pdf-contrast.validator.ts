@@ -126,6 +126,16 @@ const EXPLAINED_FRACTION_FLOOR = 0.6;
 // clean, wide gap this sits comfortably inside of on both sides.
 const MIXED_ROW_FRACTION_THRESHOLD = 0.5;
 
+// Guard 2's row-mixing path, minimum sample size: mixedRowFraction (above)
+// is a fraction over however many rows were classified "light-explained" --
+// with very few of them (sparse noise, a stray anti-aliased pixel or two),
+// a single coincidental overlap drives the fraction straight to 1.0 on
+// essentially no real evidence. Requiring a real multi-row spread first
+// matches genuine callout-box text, which spans several pixel rows even at
+// small font sizes (e.g. an 8pt glyph at this file's RENDER_SCALE is
+// already ~12px tall).
+const MIN_LIGHT_ROWS_FOR_MIXING = 5;
+
 // Minimum WCAG relative luminance (0-1) for sampleDark's light candidate to
 // be trusted as real light ink, rather than an artifact-covers-the-whole-
 // bbox case where the "light" side is actually the real (moderately dark)
@@ -619,9 +629,10 @@ export class PdfContrastValidator {
     // in the box) -- confirmed directly against the KNOWN LIMITATION
     // fixture, which measures exactly 0 rows of overlap, vs. real same-
     // surface cases measuring 0.64-1.0. Gated on a lower purity floor
-    // (comfortably under the real 0.66 minimum) so a mostly-unexplained,
-    // largely-noise box can't pass on a few coincidentally-overlapping
-    // pixels alone.
+    // (comfortably under the real 0.66 minimum) AND a minimum light-row
+    // count (MIN_LIGHT_ROWS_FOR_MIXING) so a mostly-unexplained, largely-
+    // noise box can't pass on a few coincidentally-overlapping pixels
+    // alone.
     //
     // Geometric BALANCE between the two candidate populations' relative
     // SIZES was tried before landing on row-mixing and does NOT work: ink
@@ -647,7 +658,18 @@ export class PdfContrastValidator {
     const mixedRowFraction = lightRows.size > 0 ? mixedRows / lightRows.size : 0;
 
     const passesStrictPurity = explainedFraction >= EXPLAINED_FRACTION_THRESHOLD;
-    const passesRowMixing = explainedFraction >= EXPLAINED_FRACTION_FLOOR && mixedRowFraction >= MIXED_ROW_FRACTION_THRESHOLD;
+    // MIN_LIGHT_ROWS_FOR_MIXING guards mixedRowFraction itself: with very
+    // few light-explained rows (sparse noise, a stray anti-aliased pixel or
+    // two), even ONE of them coincidentally also containing a dark-
+    // explained pixel drives the fraction straight to 1.0 on essentially no
+    // real evidence -- CodeRabbit review finding on this PR's first
+    // version. Requiring a real multi-row spread before trusting the
+    // fraction at all matches genuine callout-box text, which spans
+    // several pixel rows even at small font sizes.
+    const passesRowMixing =
+      explainedFraction >= EXPLAINED_FRACTION_FLOOR &&
+      lightRows.size >= MIN_LIGHT_ROWS_FOR_MIXING &&
+      mixedRowFraction >= MIXED_ROW_FRACTION_THRESHOLD;
     if (!passesStrictPurity && !passesRowMixing) return darkCandidate;
 
     // Third guard: the light candidate itself must actually BE light.

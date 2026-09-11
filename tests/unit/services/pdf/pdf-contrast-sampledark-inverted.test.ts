@@ -123,4 +123,49 @@ describe('PdfContrastValidator.sampleDark -- light-on-dark-box branch', () => {
 
     expect(result).toEqual({ r: 255, g: 255, b: 255 });
   });
+
+  // CodeRabbit review finding on this PR's second commit: mixedRowFraction
+  // is a fraction over however many rows were classified light-explained --
+  // with very FEW such rows, a single coincidental overlap drives the
+  // fraction straight to 1.0 on essentially no real evidence. Constructed
+  // here directly: a wide, short canvas where only ONE row is light-
+  // explained (well under a genuine multi-row glyph's spread), and that
+  // single row happens to also contain a few box-colored pixels (a
+  // realistic sub-pixel/anti-aliasing edge, not deliberately adversarial)
+  // -- a trivial "100% of 1" mixedRowFraction with no real interleaved
+  // structure behind it. Scattered noise elsewhere keeps explainedFraction
+  // in the same ~0.8 range the row-mixing path is meant to operate in
+  // (ruling out Path A, the strict 0.9 threshold, as what's actually being
+  // tested here).
+  it('does NOT flip to the light candidate when mixedRowFraction is spuriously perfect from too few rows', () => {
+    const WIDE = 200, SHORT = 10;
+    const data = new Uint8ClampedArray(WIDE * SHORT * 4);
+    for (let i = 0; i < data.length; i += 4) {
+      data[i] = BOX_COLOR[0]; data[i + 1] = BOX_COLOR[1]; data[i + 2] = BOX_COLOR[2]; data[i + 3] = 255;
+    }
+    // Row 0: mostly white (150 of 200px, comfortably above the ~5%-of-2000
+    // percentile take, so the light-percentile average is genuinely white),
+    // with a handful of box-colored pixels left in place -- the row that
+    // manufactures the coincidental overlap.
+    for (let px = 0; px < 150; px++) {
+      const i = (0 * WIDE + px) * 4;
+      data[i] = 255; data[i + 1] = 255; data[i + 2] = 255; data[i + 3] = 255;
+    }
+    // Scattered third-color noise across the remaining (purely box-colored)
+    // rows, diluting explainedFraction into the ~0.8 range without ever
+    // creating a second light-explained row.
+    const NOISE: [number, number, number] = [150, 150, 150];
+    for (let py = 1; py < SHORT; py++) {
+      for (let px = 0; px < WIDE; px++) {
+        if ((px + py) % 3 === 0) {
+          const i = (py * WIDE + px) * 4;
+          data[i] = NOISE[0]; data[i + 1] = NOISE[1]; data[i + 2] = NOISE[2]; data[i + 3] = 255;
+        }
+      }
+    }
+
+    const result = pdfContrastValidator.sampleDark(data, 0, 0, WIDE, SHORT, WIDE, SHORT, { r: BOX_COLOR[0], g: BOX_COLOR[1], b: BOX_COLOR[2] });
+
+    expect(result).toEqual({ r: BOX_COLOR[0], g: BOX_COLOR[1], b: BOX_COLOR[2] });
+  });
 });
