@@ -381,12 +381,22 @@ class StructureAnalyzerService {
     return pageMap;
   }
 
+  /**
+   * currentPage/return type is `number | null` so findTaggedTables's walk can
+   * thread a genuine "not yet known" through non-/Table ancestors (Document,
+   * StructTreeRoot, etc.) without this method silently manufacturing a page
+   * for them -- coercing to a default here would re-poison resolveTablePageNumber's
+   * own null result for any /Table nested under such an ancestor (i.e. nearly
+   * all of them), defeating that fix entirely. traverseStructureTree (headings)
+   * always seeds a real number, so it never observes a null here and its
+   * behavior is unchanged.
+   */
   private resolvePageNumber(
     node: PDFDict,
     pdfDoc: PDFDocument,
-    currentPage: number,
+    currentPage: number | null,
     pageMap: Map<string, number>
-  ): number {
+  ): number | null {
     try {
       const pgRef = node.get(PDFName.of('Pg'));
       if (pgRef) {
@@ -413,13 +423,25 @@ class StructureAnalyzerService {
    * that never put /Pg on the /Table node or any ancestor -- only on leaf
    * row/cell descendants. Falls back to the ancestor-inherited currentPage
    * only once both the node's own /Pg and its subtree are exhausted.
+   *
+   * currentPage (and the return value) is `number | null`: null means no
+   * real /Pg has ever been resolved anywhere in this element's ancestor
+   * chain either -- it must NOT be defaulted to a fabricated page (the
+   * findTaggedTables walk seeds the root as null, not 1, for exactly this
+   * reason). A /Table whose own /Pg, subtree, AND ancestor chain all lack
+   * /Pg (root-caused live: 14 tables on an 805-page document all silently
+   * collapsing onto a fictional "page 1", corrupting pageNumber/pageReassigned
+   * and permanently failing table-header-fix apply with "No Table element
+   * found" for that fake page) must stay unresolved so the caller can skip
+   * pairing it, instead of inheriting a placeholder that was never actually
+   * observed on any ancestor.
    */
   private resolveTablePageNumber(
     node: PDFDict,
     pdfDoc: PDFDocument,
     pageMap: Map<string, number>,
-    currentPage: number
-  ): number {
+    currentPage: number | null
+  ): number | null {
     const direct = this.resolveDirectPageNumber(node, pdfDoc, pageMap);
     if (direct !== null) return direct;
 
@@ -491,7 +513,10 @@ class StructureAnalyzerService {
     pageMap: Map<string, number>
   ): Promise<void> {
     try {
-      const pageNumber = this.resolvePageNumber(node, pdfDoc, currentPage, pageMap);
+      // This walk always seeds/threads a real number (unlike findTaggedTables,
+      // which intentionally threads null) -- the `?? currentPage` here is a
+      // type-level safety net only, never a real fallback in practice.
+      const pageNumber = this.resolvePageNumber(node, pdfDoc, currentPage, pageMap) ?? currentPage;
       const typeRef = node.get(PDFName.of('S'));
       const type = typeRef?.toString();
 
@@ -747,7 +772,11 @@ class StructureAnalyzerService {
         if (structTreeRootRef) {
           const structTreeRoot = parsedPdf.pdfLibDoc.context.lookup(structTreeRootRef);
           if (structTreeRoot instanceof PDFDict) {
-            await this.findTaggedTables(structTreeRoot, parsedPdf.pdfLibDoc, pageMap, unmatchedTableQueues, globalQueue, perPageTableIndex, 1);
+            // Seeded null, not 1: no real /Pg has been observed yet at the
+            // tree root, and a fabricated "page 1" default is exactly the
+            // bug resolveTablePageNumber's currentPage fallback exists to
+            // avoid for /Table elements (see its doc comment).
+            await this.findTaggedTables(structTreeRoot, parsedPdf.pdfLibDoc, pageMap, unmatchedTableQueues, globalQueue, perPageTableIndex, null);
           }
         }
       }
@@ -763,7 +792,7 @@ class StructureAnalyzerService {
     unmatchedTableQueues: Map<number, TableInfo[]>,
     globalQueue: TableInfo[],
     perPageTableIndex: Map<number, number>,
-    currentPage: number
+    currentPage: number | null
   ): Promise<void> {
     try {
       const typeRef = node.get(PDFName.of('S'));
@@ -775,36 +804,43 @@ class StructureAnalyzerService {
       // the /Table node nor any ancestor up to /Document -- only on leaf row/
       // cell descendants (e.g. the first /TH) -- so /Table needs its own
       // subtree search instead of (or in addition to) ancestor inheritance.
-      // Without it, every /Table's page silently collapses to whatever the
-      // inherited default is, corrupting perPageTableIndex/structureElementIndex
-      // into one document-wide counter instead of a true per-page index.
+      // Non-table nodes also stay null-tolerant here (resolvePageNumber never
+      // coerces to a default) so a genuinely /Pg-less ancestor chain (e.g.
+      // /Document, /StructTreeRoot with no /Pg of their own) threads "not yet
+      // known" all the way down to a nested /Table, rather than silently
+      // resolving to a fabricated page one level up and re-poisoning
+      // resolveTablePageNumber's own null result for every /Table beneath it.
       const pageNumber = type === '/Table'
         ? this.resolveTablePageNumber(node, pdfDoc, pageMap, currentPage)
         : this.resolvePageNumber(node, pdfDoc, currentPage, pageMap);
 
       if (type === '/Table') {
-        // Stamp the index before consuming — every /Table element on the
-        // page counts, matched or not, to mirror findStructureElementsByType.
-        const elementIndex = perPageTableIndex.get(pageNumber) ?? 0;
-        perPageTableIndex.set(pageNumber, elementIndex + 1);
+        if (pageNumber === null) {
+          console.warn('Skipping /Table struct element with no resolvable page (no /Pg on itself, its subtree, or any ancestor) -- leaving it unmatched rather than defaulting to a fabricated page.');
+        } else {
+          // Stamp the index before consuming — every /Table element on the
+          // page counts, matched or not, to mirror findStructureElementsByType.
+          const elementIndex = perPageTableIndex.get(pageNumber) ?? 0;
+          perPageTableIndex.set(pageNumber, elementIndex + 1);
 
-        const matchingTable = this.consumeNextTable(pageNumber, unmatchedTableQueues, globalQueue);
+          const matchingTable = this.consumeNextTable(pageNumber, unmatchedTableQueues, globalQueue);
 
-        if (matchingTable) {
-          matchingTable.structureElementIndex = elementIndex;
+          if (matchingTable) {
+            matchingTable.structureElementIndex = elementIndex;
 
-          const summaryRef = node.get(PDFName.of('Summary'));
-          if (summaryRef instanceof PDFString) {
-            matchingTable.hasSummary = true;
-            matchingTable.summary = summaryRef.decodeText();
+            const summaryRef = node.get(PDFName.of('Summary'));
+            if (summaryRef instanceof PDFString) {
+              matchingTable.hasSummary = true;
+              matchingTable.summary = summaryRef.decodeText();
+            }
+
+            const captionRef = node.get(PDFName.of('Caption'));
+            if (captionRef instanceof PDFString) {
+              matchingTable.caption = captionRef.decodeText();
+            }
+
+            await this.checkTableHeaders(node, pdfDoc, matchingTable);
           }
-
-          const captionRef = node.get(PDFName.of('Caption'));
-          if (captionRef instanceof PDFString) {
-            matchingTable.caption = captionRef.decodeText();
-          }
-
-          await this.checkTableHeaders(node, pdfDoc, matchingTable);
         }
       }
 
