@@ -267,7 +267,6 @@ export class PdfContrastValidator {
     // Get text items (position + dimensions in PDF space)
     const textContent = await pdfjsPage.getTextContent();
     const styles = textContent.styles as Record<string, { fontFamily?: string }> | undefined;
-    const [va, vb, vc, vd, ve, vf] = viewport.transform;
 
     const issues: AuditIssue[] = [];
     const usedCells = new Set<string>();
@@ -287,11 +286,8 @@ export class PdfContrastValidator {
     for (const rawItem of textContent.items) {
       if (!('str' in rawItem)) continue;
       const it = rawItem as { transform: number[]; width?: number };
-      const ix = Math.round(va * it.transform[4] + vc * it.transform[5] + ve);
-      const iy = Math.round(vb * it.transform[4] + vd * it.transform[5] + vf);
-      const iw = Math.max(10, Math.round((it.width ?? 40) * RENDER_SCALE));
-      const ih = Math.max(6, Math.round(Math.abs(it.transform[3]) * RENDER_SCALE));
-      allItemBoxes.push({ x: ix, y: iy - ih, w: iw, h: ih });
+      const itFontSize = this.textItemFontSize(it.transform);
+      allItemBoxes.push(this.computeItemCanvasBox(it.transform, it.width ?? 40, itFontSize, viewport.transform));
     }
 
     let textItemIndex = -1;
@@ -309,17 +305,17 @@ export class PdfContrastValidator {
       // item.transform = [a, b, c, d, pdfX, pdfY]
       const pdfX = item.transform[4];
       const pdfY = item.transform[5];
-      const fontSize = Math.abs(item.transform[3]);
+      const fontSize = this.textItemFontSize(item.transform);
 
-      // Convert PDF space to canvas space via viewport transform
-      const canvasX = Math.round(va * pdfX + vc * pdfY + ve);
-      const canvasY = Math.round(vb * pdfX + vd * pdfY + vf);
-
-      const itemW = Math.max(10, Math.round((item.width ?? 40) * RENDER_SCALE));
-      const itemH = Math.max(6, Math.round(fontSize * RENDER_SCALE));
-
-      // Top of text bbox in canvas coords (pdfjs y=0 is top of canvas)
-      const top = canvasY - itemH;
+      // Canvas-space axis-aligned box for this item's glyph run, correct for
+      // any rotation (see computeItemCanvasBox's doc comment) -- NOT simply
+      // itemWidth-along-canvasX by fontSize-along-canvasY, which only holds
+      // for unrotated text.
+      const itemBox = this.computeItemCanvasBox(item.transform, item.width ?? 40, fontSize, viewport.transform);
+      const canvasX = itemBox.x;
+      const itemW = itemBox.w;
+      const itemH = itemBox.h;
+      const top = itemBox.y;
       if (top < 4 || canvasX < 0 || canvasX + itemW > cw || top + itemH > ch) continue;
 
       // Spatial deduplication
@@ -401,6 +397,83 @@ export class PdfContrastValidator {
     }
 
     return issues;
+  }
+
+  /**
+   * Rotation-invariant font size for a pdf.js text item.
+   *
+   * transform[3] (d) alone is only the true font size for unrotated
+   * horizontal text -- root-caused live on a real document: a 90-degree-
+   * rotated landscape table column had transform = [0, 8, -8, 0, tx, ty],
+   * where the actual font size (8) lives in transform[1]/transform[2]
+   * instead, making Math.abs(transform[3]) evaluate to 0. (c, d) is the
+   * user-space image of the text-space vertical (ascent) basis vector,
+   * whose magnitude equals the font size regardless of rotation angle --
+   * Math.hypot(0, 8) and Math.hypot(-8, 0) both correctly give 8.
+   */
+  private textItemFontSize(transform: number[]): number {
+    return Math.hypot(transform[2], transform[3]);
+  }
+
+  /**
+   * Canvas-space axis-aligned bounding box for a text item's glyph run,
+   * correct for any rotation angle -- not just itemWidth-along-canvasX by
+   * fontSize-along-canvasY, which silently assumes unrotated horizontal
+   * text. Root-caused live: for a 90-degree-rotated table column, that
+   * naive box barely overlapped the real (vertically-flowing) glyphs,
+   * sampling mostly diluted anti-aliased edge pixels and fabricating a
+   * spuriously low contrast ratio despite the real text rendering crisp
+   * black-on-white.
+   *
+   * Builds the run's two user-space edge vectors directly from the item's
+   * own transform -- reading direction (a, b) normalized and scaled by
+   * itemWidth (pdf.js already reports itemWidth in the same user-space
+   * distance units as the transform's translation, not glyph-space units
+   * needing a further multiply), and ascent direction (c, d), which (per
+   * textItemFontSize above) already has magnitude fontSize in that
+   * direction -- then projects the resulting four corners (baseline origin,
+   * +reading, +ascent, +both) through the page viewport transform and takes
+   * their min/max, rather than assuming the box's edges stay parallel to
+   * the canvas axes.
+   */
+  private computeItemCanvasBox(
+    transform: number[],
+    itemWidth: number,
+    fontSize: number,
+    viewportTransform: number[]
+  ): { x: number; y: number; w: number; h: number } {
+    const [a, b, c, d, e, f] = transform;
+    const [va, vb, vc, vd, ve, vf] = viewportTransform;
+
+    const readLen = Math.hypot(a, b);
+    const [rx, ry] = readLen > 1e-6 ? [(a / readLen) * itemWidth, (b / readLen) * itemWidth] : [itemWidth, 0];
+    // (c, d) already has magnitude fontSize in the ascent direction (see
+    // textItemFontSize) -- no separate normalize-and-rescale needed.
+    const [ax, ay] = fontSize > 1e-6 ? [c, d] : [0, fontSize];
+
+    const corners: Array<[number, number]> = [
+      [e, f],
+      [e + rx, f + ry],
+      [e + ax, f + ay],
+      [e + rx + ax, f + ry + ay],
+    ];
+
+    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+    for (const [ux, uy] of corners) {
+      const cx = va * ux + vc * uy + ve;
+      const cy = vb * ux + vd * uy + vf;
+      if (cx < minX) minX = cx;
+      if (cx > maxX) maxX = cx;
+      if (cy < minY) minY = cy;
+      if (cy > maxY) maxY = cy;
+    }
+
+    return {
+      x: Math.round(minX),
+      y: Math.round(minY),
+      w: Math.max(10, Math.round(maxX - minX)),
+      h: Math.max(6, Math.round(maxY - minY)),
+    };
   }
 
   /**
