@@ -84,4 +84,43 @@ describe('PdfContrastValidator.sampleDark -- light-on-dark-box branch', () => {
 
     expect(result).toEqual({ r: BOX_COLOR[0], g: BOX_COLOR[1], b: BOX_COLOR[2] });
   });
+
+  // Root-caused from a live document, after the fix above shipped: it only
+  // ever unlocked the CLEANEST ~30 of ~440 real cases. Real same-surface
+  // candidates pulled from a live document measured explainedFraction as
+  // low as 0.66 -- comfortably under EXPLAINED_FRACTION_THRESHOLD (0.9) --
+  // leaving the vast majority (149 of 203 checked) permanently stuck in the
+  // same "escalate then re-measure 1:1 forever" loop the original fix was
+  // meant to end. A third, unrelated-noise color scattered through the box
+  // (simulating real-world anti-aliasing/compression noise, not present in
+  // the first test above) drags explainedFraction down to ~0.85 here --
+  // still well under 0.9 -- while the white ink stays spread across the
+  // same rows as the box color (real interleaved glyph structure), which
+  // is exactly the case EXPLAINED_FRACTION_FLOOR + MIXED_ROW_FRACTION_THRESHOLD
+  // (guard 2's second path) exists to recover.
+  it('picks the white ink via the row-mixing path when overall purity alone falls short of the strict threshold', () => {
+    const data = makeBoxCanvas();
+    paintRect(data, 4, 5, 8, 20, [255, 255, 255]);
+    paintRect(data, 26, 5, 8, 20, [255, 255, 255]);
+    paintRect(data, 48, 5, 8, 20, [255, 255, 255]);
+    // Scattered third-color noise (neither the box color nor white),
+    // avoiding the white blocks themselves, spread across every row so it
+    // dilutes overall purity without ever fully clearing box-color pixels
+    // out of any single row (row-mixing stays intact).
+    const NOISE: [number, number, number] = [150, 150, 150];
+    for (let py = 0; py < CH; py++) {
+      for (let px = 0; px < CW; px++) {
+        const inWhiteBlock = (px >= 4 && px < 12) || (px >= 26 && px < 34) || (px >= 48 && px < 56);
+        if (inWhiteBlock) continue;
+        if ((px + py) % 3 === 0) {
+          const i = (py * CW + px) * 4;
+          data[i] = NOISE[0]; data[i + 1] = NOISE[1]; data[i + 2] = NOISE[2]; data[i + 3] = 255;
+        }
+      }
+    }
+
+    const result = pdfContrastValidator.sampleDark(data, 0, 0, CW, CH, CW, CH, { r: BOX_COLOR[0], g: BOX_COLOR[1], b: BOX_COLOR[2] });
+
+    expect(result).toEqual({ r: 255, g: 255, b: 255 });
+  });
 });
