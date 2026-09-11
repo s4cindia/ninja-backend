@@ -113,15 +113,19 @@ const MANUAL_IF_COMPLEX_IMAGE_TYPES = new Set(['chart', 'diagram']);
 
 const ALT_TEXT_MISSING_CODES = new Set(['MATTERHORN-13-001', 'MATTERHORN-13-002', 'ALT-TEXT-MISSING']);
 const ALT_TEXT_IMPROVE_CODES = new Set(['MATTERHORN-13-004', 'MATTERHORN-13-003', 'ALT-TEXT-QUALITY', 'ALT-TEXT-GENERIC']);
-const TABLE_SUMMARY_CODES = new Set(['TABLE-MISSING-SUMMARY']);
-// MATTERHORN-15-003 means "irregular table structure" (pdf-table.validator.ts) -- inconsistent
-// column counts / improper nesting, not a missing summary. It was previously routed through
-// analyzeTableSummary, which ignores the issue entirely and always drafts a caption, so applying
-// that suggestion never touched the actual structural defect. No analyzer here targets structural
-// repair (analyzeTableHeaders is about missing header cells, analyzeTableLayout is about
-// artifact-marking layout tables), so this code is intentionally left unhandled -- it falls
-// through to the function's default `return null` and stays flagged for manual review rather
-// than being silently mis-"fixed".
+// MATTERHORN-15-003 ("irregular table structure" per its own message text) was previously
+// excluded here on the assumption it flags a real structural defect distinct from a missing
+// summary -- it doesn't. pdf-table.validator.ts emits it via
+// `table.issues.some(i => i.includes('irregular') || i.includes('structure'))`, but
+// structure-analyzer.service.ts's validateTableAccessibility (the only place TableInfo.issues
+// is ever populated) never pushes any string containing "irregular" -- the ONLY string
+// containing "structure" is 'Complex table should have a summary describing its structure.',
+// pushed under the exact same `rowCount > 5 && !hasSummary` condition TABLE-MISSING-SUMMARY
+// itself checks. Verified against live data: 100% of a real 15-issue sample had
+// rowCount > 5 && !hasSummary. There is no structural-irregularity detector anywhere in this
+// codebase -- MATTERHORN-15-003 is a pure duplicate of TABLE-MISSING-SUMMARY, misrouted under
+// a different code by an accident of message phrasing, not a signal that needs its own writer.
+const TABLE_SUMMARY_CODES = new Set(['TABLE-MISSING-SUMMARY', 'MATTERHORN-15-003']);
 const TABLE_HEADERS_CODES = new Set(['MATTERHORN-15-002', 'TABLE-HEADERS-INCOMPLETE', 'TABLE-ACCESSIBILITY', 'TABLE-INACCESSIBLE']);
 const TABLE_SCOPE_CODES = new Set(['MATTERHORN-15-004', 'TABLE-SCOPE-MISSING']);
 // Codes where fixSimpleTableHeaders' first-row TD->TH promotion is actually the right fix.
