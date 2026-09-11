@@ -97,4 +97,5 @@ describe('PdfContrastValidator pixel-sampling accuracy', () => {
     expect(issues.length).toBe(1);
     expect(issues[0].contrastData!.ratio).toBeLessThan(4.5);
   });
+
 });

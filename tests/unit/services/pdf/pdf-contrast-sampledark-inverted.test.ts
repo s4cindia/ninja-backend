@@ -1,0 +1,87 @@
+/**
+ * Regression coverage for PdfContrastValidator.sampleDark's light-on-dark
+ * branch -- light/white text on a solid colored callout box (an inverted
+ * color scheme, e.g. a "TABLE 19-4" section label).
+ *
+ * sampleDark always assumed the ink is the DARKER of the two colors present
+ * in a text box, which is backwards here: the darkest pixels in the box are
+ * the surrounding box color itself (present via inter-glyph gaps), so the
+ * old code sampled the BOX as "text," landing on foreground===background
+ * and a false 1:1 ratio -- confirmed live in production as a doomed retry
+ * loop (escalating to white, already the real color, then re-measuring 1:1
+ * forever, every round).
+ *
+ * A real-font version of this test (drawing actual PDF text via pdf-lib +
+ * StandardFonts) passed locally but failed in CI: pdf-lib's standard-14
+ * fonts aren't embedded, so pdfjs-dist substitutes a LOCAL system font to
+ * render them, and Windows vs. CI's Linux container pick different
+ * substitutes with different glyph coverage/anti-aliasing -- enough to
+ * shift sampleDark's EXPLAINED_FRACTION_THRESHOLD measurement across the
+ * 0.9 boundary. A synthetic pixel buffer (like sampleBackgroundRobust's own
+ * sibling test file, pdf-contrast-background-robust.test.ts) sidesteps this
+ * entirely: the pixel layout is exact and platform-independent, calling
+ * sampleDark directly rather than routing through real font rendering.
+ */
+
+import { describe, it, expect } from 'vitest';
+import { pdfContrastValidator } from '../../../../src/services/pdf/validators/pdf-contrast.validator';
+
+const CW = 60, CH = 30;
+const BOX_COLOR: [number, number, number] = [119, 92, 164];
+
+function makeBoxCanvas(): Uint8ClampedArray {
+  const data = new Uint8ClampedArray(CW * CH * 4);
+  for (let i = 0; i < data.length; i += 4) {
+    data[i] = BOX_COLOR[0]; data[i + 1] = BOX_COLOR[1]; data[i + 2] = BOX_COLOR[2]; data[i + 3] = 255;
+  }
+  return data;
+}
+
+function paintRect(data: Uint8ClampedArray, x: number, y: number, w: number, h: number, rgb: [number, number, number]): void {
+  for (let py = y; py < y + h; py++) {
+    for (let px = x; px < x + w; px++) {
+      if (px < 0 || px >= CW || py < 0 || py >= CH) continue;
+      const i = (py * CW + px) * 4;
+      data[i] = rgb[0]; data[i + 1] = rgb[1]; data[i + 2] = rgb[2]; data[i + 3] = 255;
+    }
+  }
+}
+
+describe('PdfContrastValidator.sampleDark -- light-on-dark-box branch', () => {
+  it('picks the white ink, not the surrounding box color, when the box IS the sampled background', () => {
+    const data = makeBoxCanvas();
+    // Three separate white blocks within the text bbox, well spread across
+    // its width -- mimicking distinct glyph strokes ("B", "O", "X") rather
+    // than one solid patch, and comfortably clearing ~20% ink coverage so
+    // the box's own darkest-percentile pixels stay a clean, unmixed box
+    // color (only two exact colors present anywhere in the bbox -> a
+    // maximal, unambiguous EXPLAINED_FRACTION_THRESHOLD reading).
+    paintRect(data, 4, 5, 8, 20, [255, 255, 255]);
+    paintRect(data, 26, 5, 8, 20, [255, 255, 255]);
+    paintRect(data, 48, 5, 8, 20, [255, 255, 255]);
+
+    const result = pdfContrastValidator.sampleDark(data, 0, 0, CW, CH, CW, CH, { r: BOX_COLOR[0], g: BOX_COLOR[1], b: BOX_COLOR[2] });
+
+    expect(result).toEqual({ r: 255, g: 255, b: 255 });
+  });
+
+  it('falls back to the darkest-pixel default when no background is supplied (pre-existing behavior, unaffected)', () => {
+    const data = makeBoxCanvas();
+    paintRect(data, 4, 5, 8, 20, [255, 255, 255]);
+
+    const result = pdfContrastValidator.sampleDark(data, 0, 0, CW, CH, CW, CH);
+
+    // No background hint -> always the darkest percentile, i.e. the box
+    // color itself (the light-text branch requires a background to compare
+    // against and never runs at all here).
+    expect(result).toEqual({ r: BOX_COLOR[0], g: BOX_COLOR[1], b: BOX_COLOR[2] });
+  });
+
+  it('does not flip to the light candidate when the box is uniform (no real ink present)', () => {
+    const data = makeBoxCanvas(); // no white painted at all -- a genuinely flat, textless region
+
+    const result = pdfContrastValidator.sampleDark(data, 0, 0, CW, CH, CW, CH, { r: BOX_COLOR[0], g: BOX_COLOR[1], b: BOX_COLOR[2] });
+
+    expect(result).toEqual({ r: BOX_COLOR[0], g: BOX_COLOR[1], b: BOX_COLOR[2] });
+  });
+});
