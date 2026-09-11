@@ -67,6 +67,14 @@ const MIN_INK_CONTRAST_LUM = 0.15;
 // (already correctly handled there) is unaffected.
 const ADAPTIVE_DARK_SAMPLE_PERCENTILE = 0.005;
 
+// Max per-channel min/max spread (0-255) for isRegionUniform to call a text
+// bbox "no ink present at all" rather than "genuinely rendered, however
+// faint." A real glyph, even heavily anti-aliased, differs from its
+// surrounding background by far more than this somewhere in its box; a
+// region where nothing was drawn on top of a flat fill has zero variance.
+// Small but nonzero to tolerate negligible rendering/compression noise.
+const ZERO_INK_COLOR_TOLERANCE = 4;
+
 // sampleDark's light-text branch (below) reuses this same percentile,
 // mirrored to sample the LIGHTEST pixels instead of darkest -- the "~6% ink
 // coverage" reasoning DARK_SAMPLE_PERCENTILE was tuned against applies
@@ -356,6 +364,63 @@ export class PdfContrastValidator {
       const isBold = this.detectBold(item.fontName ? styles?.[item.fontName]?.fontFamily : undefined);
       const isLarge = this.isLargeText(fontSize, isBold);
       const threshold = isLarge ? 3.0 : 4.5;
+
+      // The ENTIRE box is a single flat color, pixel for pixel -- not merely
+      // "sampleDark and sampleBackgroundRobust happened to agree," which can
+      // also happen when a real second color IS present but every sampling
+      // guard still converges on the same wrong one (the accepted KNOWN
+      // LIMITATION fixtures in color-contrast-verification.test.ts: a large
+      // static fill fools both the darkest-percentile default AND the
+      // background search into picking its own color, even though genuine
+      // low-contrast text ink is really there too). Comparing textColor to
+      // bgColor directly would misfire on exactly that case. isRegionUniform
+      // instead scans the raw pixels for any real variance at all -- true
+      // for the KNOWN LIMITATION fixtures (their ink is a different, if
+      // wrongly-sampled, color) and false only when nothing but one solid
+      // color exists anywhere in the box.
+      //
+      // Root-caused live: ~49 real issues were specific embedded font
+      // subsets (chapter-opener bylines/credits) that render as zero visible
+      // ink in this validator's own rendering pipeline (@napi-rs/canvas +
+      // pdfjs-dist), even though adjacent text in a DIFFERENT font subset on
+      // the same page rendered fine -- sampleDark itself is working
+      // correctly (there is no second color in the box to find). Reporting
+      // a precise "ratio 1.00:1" here overstates what was actually measured
+      // (nothing) and reads as a confirmed failure rather than the genuine
+      // ambiguity it is: this could be truly invisible authored text (same
+      // color as its background -- a real defect) OR a rendering-pipeline
+      // gap unrelated to how the text actually renders elsewhere (not a
+      // real defect). Flagged honestly instead, with no fabricated ratio
+      // and no contrastData -- omitting it also makes pdf-contrast-writer.
+      // service.ts's fixColorContrast correctly refuse to auto-"fix" a
+      // color that was never actually measured (it already requires
+      // contrastData to be present).
+      const noDetectableInk = this.isRegionUniform(data, canvasX, top, itemW, itemH, cw, ch);
+
+      if (noDetectableInk) {
+        issues.push({
+          id: `contrast-${++this.issueCounter}`,
+          source: 'contrast-validator',
+          severity: 'serious',
+          code: 'COLOR-CONTRAST',
+          message: `Text on page ${page.pageNumber} has no visually distinguishable ink from its background`,
+          wcagCriteria: ['1.4.3'],
+          location: `Page ${page.pageNumber} at (${Math.round(pdfX)}, ${Math.round(pdfY)})`,
+          category: 'contrast',
+          suggestion:
+            'Could not visually distinguish this text\'s ink from its background when rendered — verify manually. ' +
+            'This may indicate genuinely invisible text (same color as its background) or a font-rendering issue ' +
+            'specific to this document. Not a measured contrast ratio.',
+          context: `Text: "${str.substring(0, 50)}", rendered as a single uniform color (${this.rgbToHex(bgColor)})`,
+          pageNumber: page.pageNumber,
+          boundingBox: this.computeTextBoundingBox(
+            pdfX, pdfY, item.width, fontSize, page.width, page.height
+          ),
+          triage: { disposition: 'manual', method: 'heuristic', confidence: 0 },
+        });
+        continue;
+      }
+
       const ratio = this.calculateContrastRatio(textColor, bgColor);
 
       if (ratio < threshold) {
@@ -421,6 +486,36 @@ export class PdfContrastValidator {
   // ─── Pixel sampling helpers (public — reused by color-contrast-verification.ts
   // to re-sample a region after a fix is applied, using the exact same
   // sampling this validator uses to detect issues in the first place) ────────
+
+  /**
+   * True when every pixel in the region is the same color, within a tight
+   * tolerance for negligible rendering/compression noise -- i.e. no second
+   * color exists anywhere in the box, not just "the two derived summary
+   * colors happened to match" (see the noDetectableInk call site's doc
+   * comment for why that distinction matters). A genuinely rendered glyph,
+   * however faint or heavily anti-aliased, differs from its surrounding
+   * background by far more than ZERO_INK_COLOR_TOLERANCE somewhere in its
+   * box; a region where nothing was drawn on top of a flat fill has zero
+   * variance at all.
+   */
+  private isRegionUniform(
+    data: Uint8ClampedArray,
+    x: number, y: number, w: number, h: number,
+    cw: number, ch: number
+  ): boolean {
+    let minR = 255, maxR = 0, minG = 255, maxG = 0, minB = 255, maxB = 0;
+    for (let py = Math.max(0, y); py < Math.min(y + h, ch); py++) {
+      for (let px = Math.max(0, x); px < Math.min(x + w, cw); px++) {
+        const i = (py * cw + px) * 4;
+        const r = data[i], g = data[i + 1], b = data[i + 2];
+        if (r < minR) minR = r; if (r > maxR) maxR = r;
+        if (g < minG) minG = g; if (g > maxG) maxG = g;
+        if (b < minB) minB = b; if (b > maxB) maxB = b;
+      }
+    }
+    const spread = Math.max(maxR - minR, maxG - minG, maxB - minB);
+    return spread <= ZERO_INK_COLOR_TOLERANCE;
+  }
 
   sampleAverage(
     data: Uint8ClampedArray,
