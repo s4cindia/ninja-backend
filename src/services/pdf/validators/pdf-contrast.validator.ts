@@ -202,6 +202,41 @@ const SIGNATURE_COLOR_BUCKET = 24;
 // Starting value, not empirically tuned against a real-document corpus yet.
 const SUSPECT_PAGE_THRESHOLD = 3;
 
+// Luminance (0-1) above which a background candidate is exempted from the
+// recurrence-suspicion check entirely, regardless of how many prior pages
+// share its signature. Root-caused live: a recurring "FIGURE"/"TABLE"
+// caption style, styled consistently across dozens of pages, has its
+// genuinely correct background -- plain white, at the same margin position
+// every time -- excluded as a "suspected recurring decorative element" once
+// enough earlier pages shared that exact (position, color) signature. With
+// every flat white/near-ink candidate excluded this way (and the nearest
+// remaining flat candidate excluded too, for overlapping a neighboring text
+// item), the search fell through to its "least-bad" fallback among the only
+// candidates left -- a genuine anti-aliasing blend ring (ink diluted toward
+// white), fabricating e.g. #8c74b2 as "background" instead of the real
+// #ffffff sitting right there, confirmed live via CloudWatch as a permanent
+// 1.3-1.4:1 measurement no fix-time color escalation could ever resolve.
+// The recurrence check's actual purpose -- catching a genuinely decorative,
+// distinctly-colored recurring element (a running head, a section-divider
+// band) -- was never meant to flag a page's own plain white background,
+// which is EXPECTED to recur constantly (virtually every page in a typical
+// document) and is never itself suspicious.
+//
+// Deliberately NOT symmetric with near-black: unlike white, a solid black
+// (or near-black) region recurring across pages is NOT a plausible "this is
+// just the ordinary page background" explanation for any real document in
+// this codebase's test corpus -- it's much more likely to be a genuinely
+// decorative, intentionally-recurring element (a divider band, a themed
+// section header), exactly the case this exclusion exists to catch (see
+// color-contrast-verification.test.ts's cross-page recurrence fixtures,
+// which deliberately use a recurring near-black band and expect it excluded
+// -- an exemption here would silently defeat that, already-shipped, already-
+// tested behavior). 0.92 is comfortably inside true white and its ordinary
+// anti-aliasing noise, while still catching any genuinely colored or even
+// lightly-tinted decorative band (which this document's recurring purple
+// banners themselves measure nowhere near, at roughly 0.35-0.55 luminance).
+const RECURRENCE_EXEMPT_LUMINANCE = 0.92;
+
 /**
  * PDF Contrast Validator
  *
@@ -994,8 +1029,18 @@ export class PdfContrastValidator {
       .filter((s): s is { color: RgbColor; variance: number; signature: string; box: { x: number; y: number; w: number; h: number } } => s !== null);
     if (samples.length === 0) return null;
 
-    const isSuspectRecurring = (signature: string): boolean =>
-      (pageRecurrenceCounts?.get(signature) ?? 0) >= SUSPECT_PAGE_THRESHOLD;
+    // A candidate whose own color is near-white is exempt from the
+    // recurrence check below regardless of its recurrence count -- see
+    // RECURRENCE_EXEMPT_LUMINANCE's doc comment for the real, live failure
+    // this prevents (a page's own plain white background wrongly excluded
+    // as "suspected decorative," leaving only a genuine anti-aliasing blend
+    // artifact for the fallback to pick). Deliberately not symmetric with
+    // near-black -- see that constant's comment.
+    const isNearWhite = (color: RgbColor): boolean =>
+      this.getLuminance(color.r, color.g, color.b) >= RECURRENCE_EXEMPT_LUMINANCE;
+
+    const isSuspectRecurring = (s: { color: RgbColor; signature: string }): boolean =>
+      !isNearWhite(s.color) && (pageRecurrenceCounts?.get(s.signature) ?? 0) >= SUSPECT_PAGE_THRESHOLD;
 
     const overlapsOtherText = (box: { x: number; y: number; w: number; h: number }): boolean =>
       !!otherTextBoxes?.some(o =>
@@ -1015,7 +1060,7 @@ export class PdfContrastValidator {
     // treatment, for the identical reason: it can look confidently flat
     // (a same-colored neighboring line's own fill) while still being
     // exactly the wrong thing to trust as background.
-    const nonSuspect = samples.filter(s => !isSuspectRecurring(s.signature) && !overlapsOtherText(s.box));
+    const nonSuspect = samples.filter(s => !isSuspectRecurring(s) && !overlapsOtherText(s.box));
     const everyCandidateSuspect = nonSuspect.length === 0;
     const consideredPool = everyCandidateSuspect ? samples : nonSuspect;
 
