@@ -24,10 +24,11 @@ import type { PdfParseResult } from '../../../../src/services/pdf/pdf-comprehens
  * with analyzeTableSummaryFromRender: rather than draft from known-stale
  * cell text, it renders the table's REAL page (table.pageNumber, which
  * findTargetTable/#532 can locate correctly even though the cells can't be
- * trusted) and asks a vision model to describe the table directly --
- * always still guidance-only, since a rendered page can hold more than one
- * table and nothing confirms the model described the specific one
- * issue.element points at.
+ * trusted) and asks a vision model to describe the table directly. A later
+ * fix allows this to auto-apply when table.tablesOnRealPage === 1 -- the
+ * real page has exactly one /Table element, so there's no ambiguity about
+ * which table the model described -- and stays guidance-only only for a
+ * genuinely multi-table real page.
  */
 
 // dispatchIssue is private; exercise via cast, same pattern as
@@ -115,7 +116,7 @@ describe('dispatchIssue: table-summary drafting for a page-reassigned table', ()
 
     await svc.dispatchIssue(ISSUE, parsed, AUTO_APPLY_CONFIG, new Map(), tableById, pageRenderCache);
 
-    expect(renderSpy).toHaveBeenCalledWith(table, fakeParsedPdf, pageRenderCache);
+    expect(renderSpy).toHaveBeenCalledWith(table, fakeParsedPdf, pageRenderCache, AUTO_APPLY_CONFIG.tableFixMode);
     expect(cellTextSpy).not.toHaveBeenCalled();
   });
 
