@@ -51,10 +51,14 @@ async function buildGridPdf(): Promise<Buffer> {
  * a header row (/TR containing a /TH), so the PDF is detected as tagged and
  * enhanceTablesFromTags()'s tag-driven header detection fires -- independent
  * of the bold-text heuristic detectTabularContent() uses at initial-cell-
- * build time.
+ * build time. The /TH carries a real /Pg (matching how Seam C's real tagging
+ * always puts /Pg on some leaf descendant, even when /Table and its
+ * ancestors have none) so the table resolves to a real page and gets
+ * matched, rather than being correctly discarded as unresolvable.
  */
 function attachTaggedTableWithHeaderRow(doc: PDFDocument): void {
-  const thDict = doc.context.obj({ S: PDFName.of('TH') });
+  const pageRef = doc.getPages()[0].ref;
+  const thDict = doc.context.obj({ S: PDFName.of('TH'), Pg: pageRef });
   const trDict = doc.context.obj({ S: PDFName.of('TR'), K: [thDict] });
   const tableDict = doc.context.obj({ S: PDFName.of('Table'), K: [trDict] });
   const documentDict = doc.context.obj({ S: PDFName.of('Document'), K: [tableDict] });

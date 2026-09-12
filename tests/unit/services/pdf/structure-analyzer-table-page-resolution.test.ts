@@ -281,6 +281,55 @@ describe('structureAnalyzerService table page resolution', () => {
   });
 
   /**
+   * Regression for a fourth bug in this same file, root-caused live while
+   * investigating why MATTERHORN-15-002 plateaued at exactly 32 issues with
+   * zero movement across a full auto-remediation round despite the re-homing
+   * fix above (three tests up) already being live: findTaggedTables seeded
+   * its currentPage walk with the literal 1, so a /Table struct element
+   * whose own /Pg, subtree (6-level search), AND entire ancestor chain all
+   * lack /Pg silently "resolved" to a fabricated page 1 instead of staying
+   * unresolved -- corrupting perPageTableIndex and producing ids like
+   * table_p1_5 for tables that were never really on page 1 at all. Confirmed
+   * on the real document via CloudWatch: table-header-fix repeatedly failed
+   * to apply for exactly these fabricated ids with "No Table element found
+   * matching \"table_p1_5\"", identical across rounds -- a permanent,
+   * structural failure, not a transient miss. The fix seeds the walk with
+   * null (genuinely unknown) instead of 1, and skips pairing entirely for a
+   * /Table that never resolves to a real page.
+   */
+  it('leaves a /Table unmatched, not fabricated onto page 1, when no /Pg exists anywhere in its chain', async () => {
+    const doc = await PDFDocument.create();
+    doc.addPage([400, 600]); // page 1 -- has a layout-detected table, but no real /Pg anywhere resolves here
+
+    // No Pg anywhere in this subtree (not even a leaf) -- and no ancestor
+    // (Document, StructTreeRoot) carries one either, mirroring a tagger that
+    // omits /Pg entirely for a given table.
+    const thDict = doc.context.register(doc.context.obj({ S: PDFName.of('TH') }));
+    const trDict = doc.context.register(doc.context.obj({ S: PDFName.of('TR'), K: [thDict] }));
+    const tableRef = doc.context.register(doc.context.obj({ S: PDFName.of('Table'), K: [trDict] }));
+    const documentDict = doc.context.obj({ S: PDFName.of('Document'), K: [tableRef] });
+    const structTreeRootDict = doc.context.obj({ Type: PDFName.of('StructTreeRoot'), K: [documentDict] });
+    doc.catalog.set(PDFName.of('StructTreeRoot'), doc.context.register(structTreeRootDict));
+
+    const tableInfo: TableInfo = {
+      id: 'table_p1_0', pageNumber: 1,
+      position: { x: 0, y: 0, width: 100, height: 100 },
+      rowCount: 2, columnCount: 2,
+      hasHeaderRow: false, hasHeaderColumn: false, hasSummary: false,
+      cells: [], issues: [], isAccessible: false,
+    };
+
+    await structureAnalyzerAny.enhanceTablesFromTags({ pdfLibDoc: doc }, [tableInfo]);
+
+    // Never paired with the unresolvable struct element -- not silently
+    // stamped with a fabricated structureElementIndex on a fictional page 1.
+    expect(tableInfo.structureMatched).toBeUndefined();
+    expect(tableInfo.pageReassigned).toBeUndefined();
+    expect(tableInfo.structureElementIndex).toBeUndefined();
+    expect(tableInfo.pageNumber).toBe(1); // untouched original layout-detected value
+  });
+
+  /**
    * Regression coverage for TableInfo.tablesOnRealPage, added to let a
    * pageReassigned table's summary-drafting consumer (ai-analysis.service.ts's
    * analyzeTableSummaryFromRender) tell an unambiguous single-table real page
