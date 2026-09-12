@@ -280,5 +280,34 @@ describe('PdfContrastValidator.sampleBackgroundRobust', () => {
       expect(robust).toBeTruthy();
       expect(robust!.variance).toBeGreaterThan(0.02); // correctly reads as uncertain, not confidently the excluded flat patch
     });
+
+    // Regression for a live failure this exclusion itself caused: a
+    // recurring "FIGURE"/"TABLE" caption style, styled consistently across
+    // dozens of real pages, had its genuinely correct background -- plain
+    // white, at the same margin position every time -- excluded as a
+    // "suspected recurring decorative element" purely because enough
+    // earlier pages shared that exact (position, color) signature. With
+    // every flat white candidate excluded this way, the search fell
+    // through to a genuine anti-aliasing blend ring (ink diluted toward
+    // white) as its "least-bad" answer -- fabricating e.g. #8c74b2 as
+    // background instead of the real #ffffff sitting right there, a
+    // permanent ~1.3-1.4:1 measurement no fix-time color escalation could
+    // ever resolve. Unlike the near-black cases above (still correctly
+    // excludable -- a recurring near-black region is a plausible genuine
+    // decorative element, not "just the ordinary page background"),
+    // near-white is exempt from this exclusion entirely.
+    it('does NOT exclude a flat near-white candidate even when its signature has recurred 3+ times', () => {
+      const data = makeWhiteCanvas(); // tier-0 "above" is already flat white
+      const tier0AboveSignature = signatureFor(X, TOP - 5, [255, 255, 255]);
+      const recurrenceCounts = new Map([[tier0AboveSignature, 5]]); // recurred on 5 distinct prior pages
+
+      const robust = pdfContrastValidator.sampleBackgroundRobust(
+        data, X, TOP, ITEM_W, ITEM_H, CW, CH, undefined, recurrenceCounts
+      );
+      expect(robust).toBeTruthy();
+      // Still wins outright -- never treated as suspect in the first place.
+      expect(robust!.color.r).toBeGreaterThan(250);
+      expect(robust!.variance).toBeLessThanOrEqual(0.02);
+    });
   });
 });
