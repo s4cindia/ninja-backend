@@ -96,22 +96,34 @@ function hexToUnitRgb(hex: string): [number, number, number] {
  * comment for why. Splices are applied right-to-left (restore first, then
  * apply) so the apply-side offsets stay valid regardless of the restore
  * insertion's length.
+ *
+ * The restore lands at `run.lastShowEnd` (falling back to `run.end` when
+ * absent, e.g. a hand-built `run` in a unit test with no trailing content
+ * to distinguish) rather than `run.end` itself: `end` can extend past the
+ * run's own last show op to include trailing graphics-state setup for
+ * whatever the NEXT run shows (a run only closes on a positioning op, not
+ * on "no more shows follow"). Restoring at `end` would fire AFTER that
+ * setup and silently override the next run's own intended color instead of
+ * restoring this run's — CodeRabbit finding on PR #544, confirmed live: a
+ * caption immediately followed by a color change for the next (unrelated)
+ * line hit exactly this.
  */
 export function spliceColorFix(
   content: string,
-  run: { start: number; end: number },
+  run: { start: number; end: number; lastShowEnd?: number },
   internalOp: { start: number; end: number } | undefined,
   newColor: [number, number, number],
   originalColor: [number, number, number]
 ): string {
   const [nr, ng, nb] = newColor;
   const [or_, og, ob] = originalColor;
+  const restoreAt = run.lastShowEnd ?? run.end;
 
   // Leading/trailing \n on every inserted snippet — unlike an operator-span
   // replacement (which reuses whitespace already surrounding the original
   // token), an insertion lands between two tokens that may not have any
   // separator of their own (e.g. right after `BT`), so it must bring both.
-  let out = content.slice(0, run.end) + `\n${or_} ${og} ${ob} rg\n` + content.slice(run.end);
+  let out = content.slice(0, restoreAt) + `\n${or_} ${og} ${ob} rg\n` + content.slice(restoreAt);
 
   out = internalOp
     ? out.slice(0, internalOp.start) + `${nr} ${ng} ${nb} rg` + out.slice(internalOp.end)

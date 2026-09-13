@@ -49,6 +49,17 @@ export interface TextRunMatch {
    * undefined when `ambiguous` is true from a mixed-color run.
    */
   internalFillColorOp?: { start: number; end: number };
+  /**
+   * Byte offset right after the run's own LAST show op -- NOT the same as
+   * `end`, which can extend further to include trailing graphics-state
+   * setup for whatever the NEXT run shows (a run only closes on a
+   * positioning op, not on "no more shows follow"). A caller restoring this
+   * run's original color after writing a fix (pdf-contrast-writer.service.ts
+   * always does) must insert that restore here, not at `end` -- inserting
+   * after a trailing color op belonging to the next run would fire AFTER
+   * that op and silently override its color instead of restoring this run's.
+   */
+  lastShowEnd: number;
 }
 
 interface TextUnit {
@@ -284,9 +295,34 @@ function findTextUnits(tokens: Token[]): TextUnit[] {
         if (runHasShow) { flushRun(runEndBeforePendingOperands(tk)); runStart = tk.end; }
         tmF -= tlmD * tld;
         break;
-      case 'Tj': case 'TJ': case "'": case '"': {
-        if (op === "'" || op === '"') tmF -= tlmD * tld;
+      case 'Tj': case 'TJ': {
         if (!runHasShow) { runAnchorX = deviceX(tmE); runAnchorY = deviceY(tmF); runHasShow = true; }
+        runLastShowEnd = tk.end;
+        break;
+      }
+      // `'`/`"` are a positioning move (T*'s tmF shift) FUSED with a show
+      // op in one operator -- unlike Tj/TJ above, they can legitimately
+      // start a NEW run (CodeRabbit finding on PR #544): treating them as
+      // "just another show in the current run" (the original code) kept a
+      // PRIOR line's anchor for the new, differently-positioned line the
+      // quote actually shows, so a target near the quoted line either
+      // matched the wrong (first) line's span or missed entirely. Mirrors
+      // the Td/TD/Tm/T* pattern above: flush before the quote's own
+      // operand(s) (runEndBeforePendingOperands -- '`'` takes one string
+      // operand, `"` takes two numbers plus a string; either way `operands`
+      // holds only tokens accumulated since the last operator fired), then
+      // start the new run there and compute ITS OWN anchor after the move,
+      // rather than reusing whatever anchor an earlier Tj already set.
+      case "'": case '"': {
+        if (runHasShow) {
+          const nextRunStart = runEndBeforePendingOperands(tk);
+          flushRun(nextRunStart);
+          runStart = nextRunStart;
+        }
+        tmF -= tlmD * tld;
+        runAnchorX = deviceX(tmE);
+        runAnchorY = deviceY(tmF);
+        runHasShow = true;
         runLastShowEnd = tk.end;
         break;
       }
@@ -352,5 +388,6 @@ export function locateTextRun(
     confidence,
     ambiguous,
     internalFillColorOp: fillOps.length === 1 ? fillOps[0] : undefined,
+    lastShowEnd: best.lastShowEnd!,
   };
 }

@@ -104,9 +104,13 @@ ET
 
     // New color lands right where "Table 4.1.2." is actually shown.
     expect(result).toMatch(/30 685 Tm\n0 0 0 rg\n\n\(Table 4\.1\.2\.\) Tj/);
-    // The next run's own color-setup is untouched, still intact and
-    // correctly attached to its own Td (not split apart by the restore op).
-    expect(result).toContain('0 0 0 1 k\n\n1 0.44 0.15 rg\n5.453 0 Td\n(Math Navigation Chart) Tj');
+    // The restore lands BEFORE the trailing "0 0 0 1 k" (lastShowEnd, not
+    // the run's full end) -- that trailing op must stay the LAST color
+    // statement before "Math Navigation Chart" shows, still correctly
+    // attached to its own Td (not split apart by the restore op). Restoring
+    // AFTER it (the pre-fix behavior) would fire last and silently override
+    // the next run's own intended color instead of restoring this run's.
+    expect(result).toContain('1 0.44 0.15 rg\n\n0 0 0 1 k\n5.453 0 Td\n(Math Navigation Chart) Tj');
   });
 });
 

@@ -260,6 +260,58 @@ ET
     expect(match!.ambiguous).toBe(false);
   });
 
+  // CodeRabbit finding on PR #544: lastShowEnd must be exposed distinctly
+  // from `end` (not just used internally to gate the mixedColor check) so
+  // a caller restoring color after a fix (pdf-contrast-writer.service.ts
+  // always does) can insert the restore there instead of at `end` --
+  // otherwise the restore fires AFTER the trailing color op meant for the
+  // NEXT run and silently overrides it. See the matching spliceColorFix
+  // test in pdf-contrast-writer.test.ts for the full round trip.
+  it('reports lastShowEnd distinctly from end when trailing content follows the last show', () => {
+    const match = locateTextRun(trailingColorBlock, { x: 30, baselineY: 685 }, 12)!;
+    expect(match).toBeTruthy();
+    expect(match.lastShowEnd).toBeLessThan(match.end);
+    expect(trailingColorBlock.slice(match.start, match.lastShowEnd)).toBe('\n(Table 4.1.2.) Tj');
+  });
+
+  // CodeRabbit finding on PR #544: `'`/`"` fuse a positioning move (the
+  // same tmF shift T* does) with a show op in one operator -- treating
+  // them as "just another show in the current run" (the original code)
+  // kept whatever anchor an earlier Tj already set, even though the quote
+  // moves to and shows an entirely different line. A target near the
+  // quoted line then either matched the WRONG (earlier) line's span or
+  // missed the tolerance window entirely.
+  const quoteLineBlock = `BT
+1 0 0 1 50 700 Tm
+(First line) Tj
+24 TL
+(Second line) '
+ET
+`;
+
+  it('starts a new run at a quote operator (\') rather than reusing the prior show\'s anchor', () => {
+    const firstMatch = locateTextRun(quoteLineBlock, { x: 50, baselineY: 700 }, 5);
+    expect(firstMatch).toBeTruthy();
+    expect(quoteLineBlock.slice(firstMatch!.start, firstMatch!.end)).toContain('First line');
+    expect(quoteLineBlock.slice(firstMatch!.start, firstMatch!.end)).not.toContain('Second line');
+
+    // T*'s own line-height shift (24 TL, applied by ') moves the anchor to
+    // baselineY 676 (700 - 24) -- a target there must resolve to the
+    // quoted line specifically, not the first line's untouched anchor.
+    const secondMatch = locateTextRun(quoteLineBlock, { x: 50, baselineY: 676 }, 5);
+    expect(secondMatch).toBeTruthy();
+    expect(quoteLineBlock.slice(secondMatch!.start, secondMatch!.end)).toContain('Second line');
+    expect(quoteLineBlock.slice(secondMatch!.start, secondMatch!.end)).not.toContain('First line');
+  });
+
+  it('excludes a quote operator\'s own string operand from the PRECEDING run\'s span', () => {
+    const match = locateTextRun(quoteLineBlock, { x: 50, baselineY: 700 }, 5)!;
+    expect(match).toBeTruthy();
+    // The first run must end before "(Second line)" -- the quote's own
+    // operand -- not swallow it the way the pre-fix single-case handling did.
+    expect(quoteLineBlock.slice(match.start, match.end)).not.toContain('Second line');
+  });
+
   // Live-confirmed bug (real 805-page document): Td/TD/T* offsets are in
   // text space and must be scaled by the current text matrix's own a/d
   // before folding into the running device-space position. Every fixture
