@@ -26,6 +26,33 @@ const gemini = (text: string, usage?: any) =>
 describe('analyzeFormulaActualText', () => {
   afterEach(() => vi.restoreAllMocks());
 
+  // Regression test for a real-world bug found on a math-heavy trial document:
+  // gemini-3.6-flash is a reasoning model whose invisible "thinking" tokens
+  // count against maxOutputTokens before any visible text is emitted. At the
+  // original maxOutputTokens: 256 (plain analyzeImage + manual JSON.parse,
+  // no responseSchema), every one of 117 real formulas on that document hit
+  // finishReason MAX_TOKENS and got truncated to a handful of characters --
+  // and parseAiJson's own catch swallows the failure silently, so this
+  // presented as "zero fixes applied, zero errors logged, every round" with
+  // nothing pointing at the cause. Verified live against the real document:
+  // 0/8 sample formulas produced a usable response at maxOutputTokens 256-600
+  // even with a schema; 8/8 succeeded at 2048. This test pins the two knobs
+  // that fix it -- constrained decoding (responseSchema, which also
+  // eliminates the markdown-fenced/conversational preamble Gemini otherwise
+  // prepends) and a token budget large enough to survive invisible thinking
+  // tokens -- so a future edit can't silently drop either one.
+  it('uses schema-constrained decoding with a large enough token budget to survive a reasoning model\'s invisible thinking tokens', async () => {
+    vi.spyOn(svc, 'renderRegionToBase64').mockResolvedValue('ZmFrZQ==');
+    const spy = gemini('{"actualText":"x squared"}');
+
+    await svc.analyzeFormulaActualText(ISSUE, {}, true);
+
+    expect(spy).toHaveBeenCalledTimes(1);
+    const options = spy.mock.calls[0][3];
+    expect(options.responseSchema).toBeTruthy();
+    expect(options.maxOutputTokens).toBeGreaterThanOrEqual(2048);
+  });
+
   it('drafts ActualText from the formula region (tagged → apply-to-pdf, needs review)', async () => {
     vi.spyOn(svc, 'renderRegionToBase64').mockResolvedValue('ZmFrZQ==');
     gemini('{"latex":"E = mc^2","actualText":"E equals m c squared"}', { promptTokens: 10, completionTokens: 5 });
