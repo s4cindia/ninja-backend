@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { PDFDocument, StandardFonts, degrees, rgb } from 'pdf-lib';
 import { spliceColorFix, pdfContrastWriterService } from '../../../../src/services/pdf/pdf-contrast-writer.service';
+import { locateTextRun } from '../../../../src/services/pdf/contrast-content-stream';
 import { decodePageContent } from '../../../../src/services/pdf/pdf-content-stream-io';
 import { pdfAuditService } from '../../../../src/services/pdf/pdf-audit.service';
 import { verifyContrastInRegion } from '../../../../src/services/pdf/color-contrast-verification';
@@ -47,6 +48,69 @@ describe('spliceColorFix', () => {
 
     expect(result.startsWith('BEFORE BT 0 0 0 rg ')).toBe(true);
     expect(result.endsWith('ET AFTER')).toBe(true);
+  });
+
+  // Real-world regression, confirmed live on a real Math_Kim page (see the
+  // matching fixture/test in contrast-content-stream.test.ts): locateTextRun
+  // must hand spliceColorFix a run whose start sits AFTER a Td that
+  // positioned it, not at Td's own start -- otherwise this insertion (the
+  // "no internal op" branch, since color here is inherited from before the
+  // run) lands between Td's own operands and its operator, corrupting the
+  // positioning call. This is the full locate -> splice round trip; the
+  // sibling test only checked locateTextRun's span in isolation.
+  it('produces a syntactically intact Td when the located run was positioned via a relative Td', () => {
+    const content = `BT
+1 0 0 1 50 700 Tm
+(Figure 4.1.1.) Tj
+0 0.68 0.97 0 k
+-20 -3 Td
+(Table 4.1.2.) Tj
+ET
+`;
+    const match = locateTextRun(content, { x: 30, baselineY: 697 }, 15)!;
+    expect(match).toBeTruthy();
+
+    const result = spliceColorFix(content, match, match.internalFillColorOp, [0, 0, 0], [1, 0, 0]);
+
+    expect(result).toContain('-20 -3 Td');
+    expect(result).not.toMatch(/-20 -3 [\d. ]*rg\s*\nTd/);
+  });
+
+  // Real-world regression, confirmed live on a real Math_Kim page (see the
+  // matching fixture/test in contrast-content-stream.test.ts): a color-
+  // setting op after a run's last show op belongs to the NEXT run, not
+  // this one -- overwriting it in place recolors nothing the flagged text
+  // actually shows, while corrupting the next run's own intended color.
+  it('recolors the flagged text (not a trailing color op meant for the next run) and leaves that next run\'s color untouched', () => {
+    const content = `BT
+1 0 0 1 50 700 Tm
+(Figure 4.1.1.) Tj
+0 0 0 1 k
+5.86 0 Td
+(Integer number lines) Tj
+0 0.68 0.97 0 k
+1 0 0 1 30 685 Tm
+(Table 4.1.2.) Tj
+0 0 0 1 k
+5.453 0 Td
+(Math Navigation Chart) Tj
+ET
+`;
+    const match = locateTextRun(content, { x: 30, baselineY: 685 }, 12)!;
+    expect(match).toBeTruthy();
+    expect(match.internalFillColorOp).toBeUndefined();
+
+    const result = spliceColorFix(content, match, match.internalFillColorOp, [0, 0, 0], [1, 0.44, 0.15]);
+
+    // New color lands right where "Table 4.1.2." is actually shown.
+    expect(result).toMatch(/30 685 Tm\n0 0 0 rg\n\n\(Table 4\.1\.2\.\) Tj/);
+    // The restore lands BEFORE the trailing "0 0 0 1 k" (lastShowEnd, not
+    // the run's full end) -- that trailing op must stay the LAST color
+    // statement before "Math Navigation Chart" shows, still correctly
+    // attached to its own Td (not split apart by the restore op). Restoring
+    // AFTER it (the pre-fix behavior) would fire last and silently override
+    // the next run's own intended color instead of restoring this run's.
+    expect(result).toContain('1 0.44 0.15 rg\n\n0 0 0 1 k\n5.453 0 Td\n(Math Navigation Chart) Tj');
   });
 });
 
