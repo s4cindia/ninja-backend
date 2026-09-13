@@ -10,12 +10,19 @@ const MIN_COLUMN_POPULATION_FRACTION = 0.3;
 // How many columns must each clear that population bar before a
 // layout-detected grid is trusted as a real table.
 const MIN_TABULAR_COLUMNS = 2;
-// A column whose single most common cell text covers at least this
-// fraction of its own populated cells, AND whose length is within
-// MARKER_COLUMN_MAX_LENGTH, is treated as a list-bullet/marker column, not
-// real tabular data -- see isGenuinelyTabular's doc comment.
-const MARKER_COLUMN_DOMINANCE_FRACTION = 0.5;
-const MARKER_COLUMN_MAX_LENGTH = 3;
+// Recognized bullet/ordered-list marker syntax -- a bare bullet glyph, or a
+// number/letter/roman-numeral immediately followed by a list delimiter
+// (., ), or :). A column where EVERY populated cell matches this is treated
+// as a list-marker column, not real tabular data -- see isGenuinelyTabular's
+// doc comment. Deliberately does NOT match a bare number/letter alone (e.g.
+// "5", "a", or a repeated categorical value like "Yes") -- those are real
+// short/categorical data until unambiguously formatted as a list marker; a
+// dominance-based check (an earlier version of this fix) wrongly rejected a
+// repeated "Yes"/"No" column and wrongly accepted a "1.", "2.", "3." ordered
+// list (no single distinct value dominates) -- both real CodeRabbit review
+// findings on this fix, fixed by matching marker SYNTAX instead of relying
+// on how often a value repeats.
+const LIST_MARKER_PATTERN = /^(?:[•◦▪▫■□●○‣∙·\-*]|[0-9]{1,3}[.):]|[a-zA-Z][.):]|[ivxlcdmIVXLCDM]{1,6}[.):])$/;
 
 export interface HeadingInfo {
   id: string;
@@ -600,6 +607,17 @@ class StructureAnalyzerService {
       await this.enhanceTablesFromTags(parsedPdf, tables);
       // For tagged PDFs, discard text-layout "tables" that have no matching /Table
       // structure element — they are false positives from the content detector.
+      //
+      // Deliberately does NOT also apply isGenuinelyTabular here (a real
+      // finding from PR #542's review): enhanceTablesFromTags does
+      // POSITIONAL matching against every candidate in `tables` -- removing
+      // one beforehand doesn't remove the real /Table struct element it
+      // would have paired with, it just leaves that element to be force-
+      // paired with a DIFFERENT, unrelated candidate via consumeNextTable's
+      // global-queue fallback, corrupting that pairing instead. A confirmed
+      // structural /Table match is trusted over the layout-only heuristic
+      // unconditionally; isGenuinelyTabular only ever filters the untagged
+      // branch below, where no struct tree exists to corroborate at all.
       const matched = tables.filter(t => t.structureMatched);
       for (const table of matched) {
         // enhanceTablesFromTags may have flipped hasHeaderRow/hasHeaderColumn
@@ -644,11 +662,15 @@ class StructureAnalyzerService {
       return matched;
     }
 
-    for (const table of tables) {
+    // Untagged PDFs have no struct tree to corroborate a layout candidate --
+    // detectTabularContent's own heuristic is the only signal available, so
+    // this is the one place isGenuinelyTabular actually filters anything.
+    const genuinelyTabular = tables.filter(t => this.isGenuinelyTabular(t.cells, t.rowCount, t.columnCount));
+    for (const table of genuinelyTabular) {
       this.validateTableAccessibility(table);
     }
 
-    return tables;
+    return genuinelyTabular;
   }
 
   private syncCellHeaderFlags(table: TableInfo): void {
@@ -697,11 +719,11 @@ class StructureAnalyzerService {
             table.hasHeaderColumn
           );
 
-          // Recurring x-positions alone don't confirm real tabular data --
-          // see isGenuinelyTabular's doc comment.
-          if (this.isGenuinelyTabular(table.cells, table.rowCount, table.columnCount)) {
-            tables.push(table);
-          }
+          // Every layout candidate is kept here, even a false-positive one --
+          // see analyzeTables' own isGenuinelyTabular filtering (applied
+          // only to the FINAL untagged-document result) for why this can't
+          // filter before enhanceTablesFromTags's positional matching runs.
+          tables.push(table);
         }
       }
     }
@@ -744,24 +766,35 @@ class StructureAnalyzerService {
    * column (bullet glyphs, item numbers) and its "text" column are
    * genuinely populated in nearly every row, since a marker and a line of
    * text both appear on every list item -- e.g. a real live sample: column
-   * 0 = "•" in every single row, column 1 = the actual (long) item text.
-   * Distinguishes this from a genuine short-value data column (a real
-   * table's numeric ID or code column) by DOMINANCE, not just length: a
-   * marker column repeats the *same* one or two short glyphs across nearly
-   * all its rows, whereas a real column of short values (page numbers, IDs)
-   * is short but highly VARIED row to row. A column whose single most
-   * common value covers >= MARKER_COLUMN_DOMINANCE_FRACTION of its own
-   * populated cells, and is no longer than MARKER_COLUMN_MAX_LENGTH, is
-   * excluded from the count.
+   * 0 = "•" in every single row, column 1 = the actual (long) item text. A
+   * column is a marker column when EVERY one of its populated cells matches
+   * LIST_MARKER_PATTERN (a real CodeRabbit review finding on this fix: an
+   * earlier dominance-based version -- "does one value cover most of the
+   * column?" -- both false-positived on a real, repeated categorical column
+   * like Yes/Yes/No, hitting the dominance bar exactly at 2/2, and false-
+   * negatived on a real ordered list like "1.", "2.", "3.", where no single
+   * distinct value ever dominates at all. Matching marker SYNTAX instead of
+   * relying on repetition gets both right).
+   *
+   * Only ever applied to the FINAL untagged-document result (see
+   * analyzeTables) -- another real review finding: filtering inside
+   * detectTabularContent, before enhanceTablesFromTags's positional
+   * matching runs, doesn't remove the real /Table struct element a
+   * rejected candidate would have paired with; it just leaves that element
+   * to be force-paired with a different, unrelated candidate via
+   * consumeNextTable's global-queue fallback. A confirmed structural match
+   * is trusted unconditionally; this heuristic only ever prunes layout-only
+   * detections where no struct tree exists to corroborate at all.
    *
    * Known, deliberately out-of-scope residual: a genuine Table of Contents
    * (chapter title | page number) is NOT caught by either guard -- both
    * columns are consistently populated, and page numbers are short but
-   * highly varied (not marker-dominant), so a TOC still measures as
-   * "genuinely tabular" here. Left as a separate, not-yet-attempted follow-up
-   * (the codebase already has TOC-page detection elsewhere, e.g. TocDetector,
-   * not currently wired into table detection) rather than folded into this
-   * fix's already-broader-than-planned scope.
+   * highly varied text that never matches LIST_MARKER_PATTERN (no trailing
+   * delimiter), so a TOC still measures as "genuinely tabular" here. Left
+   * as a separate, not-yet-attempted follow-up (the codebase already has
+   * TOC-page detection elsewhere, e.g. TocDetector, not currently wired
+   * into table detection) rather than folded into this fix's
+   * already-broader-than-planned scope.
    */
   private isGenuinelyTabular(cells: TableCell[], rowCount: number, columnCount: number): boolean {
     const textsByColumn: string[][] = Array.from({ length: columnCount }, () => []);
@@ -772,18 +805,7 @@ class StructureAnalyzerService {
       }
     }
 
-    const isMarkerColumn = (texts: string[]): boolean => {
-      const counts = new Map<string, number>();
-      for (const text of texts) {
-        counts.set(text, (counts.get(text) ?? 0) + 1);
-      }
-      const dominantCount = Math.max(...counts.values());
-      const dominantValue = [...counts.entries()].find(([, count]) => count === dominantCount)![0];
-      return (
-        dominantValue.length <= MARKER_COLUMN_MAX_LENGTH &&
-        dominantCount >= texts.length * MARKER_COLUMN_DOMINANCE_FRACTION
-      );
-    };
+    const isMarkerColumn = (texts: string[]): boolean => texts.every(text => LIST_MARKER_PATTERN.test(text));
 
     const columnsWithMeaningfulPopulation = textsByColumn.filter(
       texts => texts.length >= rowCount * MIN_COLUMN_POPULATION_FRACTION && !isMarkerColumn(texts)

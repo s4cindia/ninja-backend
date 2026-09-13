@@ -25,11 +25,20 @@
  * of a line's text into whichever detected column is nearest -- one
  * dominant column, with the others populated by rare accidental spillover
  * only.
+ *
+ * Two real CodeRabbit review findings on this fix changed WHERE and HOW
+ * isGenuinelyTabular applies (see isGenuinelyTabular's own doc comment for
+ * the full detail): it now only filters the untagged-document branch of
+ * analyzeTables (detectTabularContent itself keeps every candidate, so a
+ * tagged PDF's structure-tree matching is never starved of a real
+ * candidate), and its marker-column check matches marker SYNTAX rather than
+ * relying on value dominance (which false-positived on a repeated
+ * categorical column and false-negatived on a real ordered list).
  */
 
 import { describe, it, expect } from 'vitest';
 import { structureAnalyzerService, TableCell, TableInfo } from '../../../../src/services/pdf/structure-analyzer.service';
-import type { TextBlock, TextLine, TextItem } from '../../../../src/services/pdf/text-extractor.service';
+import type { TextBlock, TextLine, TextItem, DocumentText } from '../../../../src/services/pdf/text-extractor.service';
 
 // isGenuinelyTabular / detectTabularContent are private; exercise via cast,
 // same pattern used throughout this test suite for private helpers.
@@ -99,18 +108,49 @@ describe('StructureAnalyzerService.isGenuinelyTabular', () => {
   it('does not treat a short-but-highly-varied data column (e.g. TOC-style page numbers) as a marker column', () => {
     const cells: TableCell[] = [];
     for (let row = 0; row < 8; row++) {
-      // Short (<= MARKER_COLUMN_MAX_LENGTH) like a real marker, but every
-      // value is DIFFERENT -- no single value dominates >=50% of the
-      // column, so this is real varied short data, not a marker column.
+      // Short like a real marker, but a BARE digit with no trailing
+      // delimiter never matches LIST_MARKER_PATTERN -- real varied short
+      // data, not a marker column.
       cells.push(cell(row, 0, `${row + 1}`));
       cells.push(cell(row, 1, `Section title for chapter ${row}, a longer heading`));
     }
 
     expect(v.isGenuinelyTabular(cells, 8, 2)).toBe(true);
   });
+
+  // Real CodeRabbit review finding on this fix's first version: a dominance-
+  // based marker check ("does one value cover most of the column?") wrongly
+  // rejects a genuine, repeated CATEGORICAL data column -- e.g. a real
+  // Feature/Available table with values "Available, Yes, Yes, No" hits the
+  // dominance bar (2 of 4 = 50%) purely because there are only two possible
+  // answers, not because it's a list marker.
+  it('does not treat a repeated categorical data column (e.g. Yes/No) as a marker column', () => {
+    const cells: TableCell[] = [];
+    const values = ['Available', 'Yes', 'Yes', 'No'];
+    values.forEach((value, row) => {
+      cells.push(cell(row, 0, `Feature ${row}`));
+      cells.push(cell(row, 1, value));
+    });
+
+    expect(v.isGenuinelyTabular(cells, values.length, 2)).toBe(true);
+  });
+
+  // The other half of the same CodeRabbit finding: dominance alone MISSES a
+  // real ordered list, since every marker ("1.", "2.", "3.") is a distinct
+  // value -- none of them "dominates." Matching marker SYNTAX instead
+  // catches this correctly.
+  it('rejects an ordered list where every row has a distinct numbered marker', () => {
+    const cells: TableCell[] = [];
+    for (let row = 0; row < 6; row++) {
+      cells.push(cell(row, 0, `${row + 1}.`));
+      cells.push(cell(row, 1, `Complete exercise ${row} before moving to the next section`));
+    }
+
+    expect(v.isGenuinelyTabular(cells, 6, 2)).toBe(false);
+  });
 });
 
-describe('StructureAnalyzerService.detectTabularContent -- end-to-end false-positive guard', () => {
+describe('StructureAnalyzerService end-to-end false-positive guard', () => {
   function makeItem(text: string, x: number): TextItem {
     return {
       text,
@@ -131,7 +171,49 @@ describe('StructureAnalyzerService.detectTabularContent -- end-to-end false-posi
     };
   }
 
-  it('does not detect a table in a block of ordinary prose whose raw x-position recurrence trips the column filter without genuine multi-row population', () => {
+  function documentTextFor(block: TextBlock): DocumentText {
+    return {
+      pages: [{
+        pageNumber: 1, width: 400, height: 600, text: block.text,
+        items: block.lines.flatMap(l => l.items), lines: block.lines, blocks: [block],
+        wordCount: 0, characterCount: 0,
+      }],
+      fullText: block.text, totalWords: 0, totalCharacters: 0, totalPages: 1,
+      languages: [], readingOrder: 'left-to-right',
+    };
+  }
+
+  // detectTabularContent itself keeps EVERY layout candidate unconditionally
+  // now (a real CodeRabbit review finding on this fix: filtering here, before
+  // enhanceTablesFromTags's positional matching runs, doesn't remove the
+  // real /Table struct element a rejected candidate would have paired with
+  // in a tagged PDF -- it just leaves that element to be force-paired with a
+  // DIFFERENT, unrelated candidate via consumeNextTable's global-queue
+  // fallback, corrupting that pairing instead). isGenuinelyTabular only
+  // filters the FINAL result of the untagged-document branch in
+  // analyzeTables, below, where no struct tree exists to corrupt.
+  it('detectTabularContent itself no longer filters -- every layout candidate is kept for structure-tree matching to consider', () => {
+    const lines: TextLine[] = [];
+    for (let i = 0; i < 8; i++) {
+      lines.push(makeLine([
+        makeItem('•', 0),
+        makeItem(`Understand concept ${i} and how it applies to the lesson`, 20),
+      ]));
+    }
+    const block: TextBlock = {
+      text: lines.map(l => l.text).join('\n'),
+      pageNumber: 1,
+      lines,
+      boundingBox: { x: 0, y: 0, width: 400, height: 96 },
+      type: 'list',
+    };
+
+    const tables: TableInfo[] = v.detectTabularContent([block], 1);
+
+    expect(tables.length).toBe(1);
+  });
+
+  it('an untagged document does not report a table for ordinary prose whose raw x-position recurrence trips the column filter without genuine multi-row population', async () => {
     // 10 lines of body text, every line anchored at x=0 (the paragraph's
     // left margin -- recurs in 100% of lines, a real column). Only 2 of the
     // 10 lines ALSO carry a cluster of 3 short items near x=300 (e.g. a
@@ -159,12 +241,13 @@ describe('StructureAnalyzerService.detectTabularContent -- end-to-end false-posi
       type: 'paragraph',
     };
 
-    const tables: TableInfo[] = v.detectTabularContent([block], 1);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const tables: TableInfo[] = await v.analyzeTables({} as any, documentTextFor(block), false);
 
     expect(tables).toEqual([]);
   });
 
-  it('does not detect a table in a bulleted list, where both the marker and text columns are populated every row', () => {
+  it('an untagged document does not report a table for a bulleted list, where both the marker and text columns are populated every row', async () => {
     // 8 list items: every line has a bullet glyph at x=0 (recurs in 100% of
     // lines) and the item's real text at x=20 (also 100%) -- both columns
     // fully populated every row, which the population guard alone accepts.
@@ -185,7 +268,8 @@ describe('StructureAnalyzerService.detectTabularContent -- end-to-end false-posi
       type: 'list',
     };
 
-    const tables: TableInfo[] = v.detectTabularContent([block], 1);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const tables: TableInfo[] = await v.analyzeTables({} as any, documentTextFor(block), false);
 
     expect(tables).toEqual([]);
   });
