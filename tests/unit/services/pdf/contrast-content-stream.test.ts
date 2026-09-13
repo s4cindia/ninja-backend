@@ -167,6 +167,99 @@ ET
     expect(third!.internalFillColorOp).toBeUndefined();
   });
 
+  // Real-world regression, confirmed live on a real Math_Kim page: a run
+  // positioned via a relative Td (not T*, which multiLineBlock above uses
+  // for its continuation lines and never exercises this) must begin AFTER
+  // the Td -- not at Td's own start, which sits between Td's two operands
+  // and the "Td" keyword itself. pdf-contrast-writer.service.ts's
+  // spliceColorFix inserts a new color op at run.start whenever the run
+  // has no color op of its own (the common case for text inheriting color
+  // from before the run) -- inserting there when run.start pointed at Td's
+  // own start corrupted the positioning call (orphaned its operands from
+  // the operator), silently discarding the position move; text then
+  // rendered at the PREVIOUS line's position instead of its own, so a
+  // fix-and-verify loop kept re-measuring a location with no relationship
+  // to the flagged text, with the recolor having no measurable effect no
+  // matter how many times it escalated. This is the fixture that would
+  // have caught it.
+  const tdPositionedBlock = `BT
+1 0 0 1 50 700 Tm
+(Figure 4.1.1.) Tj
+0 0.68 0.97 0 k
+-20 -3 Td
+(Table 4.1.2.) Tj
+ET
+`;
+
+  it('begins a Td-positioned run strictly after the Td, not at its own start', () => {
+    const match = locateTextRun(tdPositionedBlock, { x: 30, baselineY: 697 }, 15);
+    expect(match).toBeTruthy();
+    // The two numeric operands immediately preceding "Td" must be OUTSIDE
+    // the run's span -- otherwise an insertion at match.start lands between
+    // them and their own operator.
+    expect(tdPositionedBlock.slice(match!.start - 9, match!.start)).toBe('-20 -3 Td');
+    expect(tdPositionedBlock.slice(match!.start, match!.end)).toContain('Table 4.1.2.');
+    expect(tdPositionedBlock.slice(match!.start, match!.end)).not.toContain('Td');
+  });
+
+  // Companion to the test above, on the CLOSING boundary: a run's `end`
+  // must land before the NEXT run's own Td operands too, not just after
+  // its keyword -- pdf-contrast-writer.service.ts's spliceColorFix always
+  // inserts a restore-color op at run.end, so the same corruption that
+  // affected run.start (splicing between an operator's operands and the
+  // operator itself) applies symmetrically here, just landing in the
+  // FOLLOWING run's positioning call instead of this one's.
+  const followedByTdBlock = `BT
+1 0 0 1 50 700 Tm
+(Table 4.1.2.) Tj
+5.453 0 Td
+(Math Navigation Chart) Tj
+ET
+`;
+
+  it('ends a run strictly before the NEXT run\'s Td operands, not at the Td keyword', () => {
+    const match = locateTextRun(followedByTdBlock, { x: 50, baselineY: 700 }, 15);
+    expect(match).toBeTruthy();
+    expect(followedByTdBlock.slice(match!.start, match!.end)).toContain('Table 4.1.2.');
+    expect(followedByTdBlock.slice(match!.end, match!.end + 12)).toBe('5.453 0 Td\n(');
+  });
+
+  // Real-world regression, confirmed live on a real Math_Kim page: a color-
+  // setting op that comes AFTER a run's only (or last) show op -- but
+  // before the run's `end` boundary, since a run only closes on a
+  // positioning op, not on "no more shows follow" -- paints nothing within
+  // THIS run. It's graphics-state setup for whatever the NEXT run shows.
+  // Treating it as this run's own "internal" color op (the pre-existing
+  // behavior) told spliceColorFix to overwrite it in place: the flagged
+  // text ("Table 4.1.2.", genuinely colored by the orange `k` BEFORE this
+  // run, inherited) never actually changed color, while the unrelated next
+  // run's ("Math Navigation...") intended color got silently corrupted.
+  const trailingColorBlock = `BT
+1 0 0 1 50 700 Tm
+(Figure 4.1.1.) Tj
+0 0 0 1 k
+5.86 0 Td
+(Integer number lines) Tj
+0 0.68 0.97 0 k
+1 0 0 1 30 685 Tm
+(Table 4.1.2.) Tj
+0 0 0 1 k
+5.453 0 Td
+(Math Navigation Chart) Tj
+ET
+`;
+
+  it('does not treat a color op after the run\'s last show as its own internal color', () => {
+    const match = locateTextRun(trailingColorBlock, { x: 30, baselineY: 685 }, 12);
+    expect(match).toBeTruthy();
+    expect(trailingColorBlock.slice(match!.start, match!.end)).toContain('Table 4.1.2.');
+    // The real color (the orange "k" before this run, inherited) is outside
+    // the run's span -- the trailing "0 0 0 1 k" after the show must NOT be
+    // picked up as if it were this run's own dedicated color op.
+    expect(match!.internalFillColorOp).toBeUndefined();
+    expect(match!.ambiguous).toBe(false);
+  });
+
   // Live-confirmed bug (real 805-page document): Td/TD/T* offsets are in
   // text space and must be scaled by the current text matrix's own a/d
   // before folding into the running device-space position. Every fixture

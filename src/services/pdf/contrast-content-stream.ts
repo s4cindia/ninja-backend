@@ -56,6 +56,16 @@ interface TextUnit {
   end: number;
   anchorX: number | null;
   anchorY: number | null;
+  /**
+   * Byte offset right after the run's LAST show op (Tj/TJ/'/"), or null if
+   * the run never shows anything (shouldn't happen for a pushed unit, since
+   * flushRun only pushes when runHasShow is true, but kept nullable rather
+   * than asserted). A color-setting op after this point paints nothing
+   * within this run -- the run ends via a positioning op, not a show op, so
+   * content between the last show and the run's own `end` is graphics-state
+   * setup for whatever the NEXT run shows, not this one's own color.
+   */
+  lastShowEnd: number | null;
 }
 
 const num = (t: { t: string; v: string } | undefined): number => (t && t.t === 'n' ? parseFloat(t.v) : 0);
@@ -181,16 +191,36 @@ function findTextUnits(tokens: Token[]): TextUnit[] {
   let runHasShow = false;
   let runAnchorX: number | null = null;
   let runAnchorY: number | null = null;
+  let runLastShowEnd: number | null = null;
 
   const deviceX = (tE: number): number => ctm.a * tE + ctm.e;
   const deviceY = (tF: number): number => ctm.d * tF + ctm.f;
 
   const flushRun = (endPos: number): void => {
-    if (runHasShow) units.push({ start: runStart, end: endPos, anchorX: runAnchorX, anchorY: runAnchorY });
+    if (runHasShow) units.push({ start: runStart, end: endPos, anchorX: runAnchorX, anchorY: runAnchorY, lastShowEnd: runLastShowEnd });
     runHasShow = false;
     runAnchorX = null;
     runAnchorY = null;
+    runLastShowEnd = null;
   };
+
+  // A run's `end` must land BEFORE the next positioning op's own operands
+  // (matching this file's documented contract: "right before the next
+  // positioning op"), not merely before the operator keyword itself --
+  // Td/TD/Tm take numeric operands of their own, written before the
+  // keyword in PDF's postfix syntax, so `tk.start` (the keyword's own
+  // start) still sits BETWEEN those operands and the keyword. A caller
+  // inserting a restore-color op at run.end (spliceColorFix always does,
+  // right after every fix) would splice it into that exact same gap,
+  // corrupting the FOLLOWING run's positioning call the same way an
+  // unfixed run.start once corrupted THIS run's own. `operands` holds
+  // only tokens accumulated since the last operator fired (cleared after
+  // every one), so its first entry -- when non-empty -- is exactly this
+  // upcoming operator's own first operand. T*/ET take no operands, so
+  // `operands` is empty at that point and this correctly falls back to
+  // the keyword's own start.
+  const runEndBeforePendingOperands = (nextOpToken: { start: number }): number =>
+    operands.length > 0 ? operands[0].start : nextOpToken.start;
 
   for (const tk of tokens) {
     if (tk.t !== 'op') { operands.push(tk); continue; }
@@ -206,14 +236,36 @@ function findTextUnits(tokens: Token[]): TextUnit[] {
         ctm = { a: ctm.a * a, d: ctm.d * d, e: ctm.a * e + ctm.e, f: ctm.d * f + ctm.f };
         break;
       }
-      case 'BT': tmE = 0; tmF = 0; tlmA = 1; tlmD = 1; runStart = tk.end; runHasShow = false; runAnchorX = null; runAnchorY = null; break;
+      case 'BT': tmE = 0; tmF = 0; tlmA = 1; tlmD = 1; runStart = tk.end; runHasShow = false; runAnchorX = null; runAnchorY = null; runLastShowEnd = null; break;
       case 'TL': tld = num(operands[operands.length - 1]); break;
       // A positioning op only ends the current run if a show op has already
       // fired since it began — otherwise this is still the run's lead-in
       // (e.g. a color op followed by a Tm, both before the first Tj) and
       // must stay part of the same run's span, not get cut off from it.
+      //
+      // runStart = tk.end (not tk.start) on every branch below: the new
+      // run must begin strictly AFTER the positioning operator, matching
+      // this file's own documented contract on TextRunMatch.start ("right
+      // after the positioning op that placed it"). Td/TD/Tm take their own
+      // preceding numeric operands (unlike BT, which takes none) -- using
+      // tk.start instead put those operands INSIDE the new run's reported
+      // span, meaning a caller inserting new content at that boundary (the
+      // common case: color inherited from outside the run, so
+      // spliceColorFix inserts right at run.start) spliced its insertion
+      // BETWEEN the operands and their own operator, corrupting the
+      // positioning call. Confirmed live: a real Math_Kim page's second
+      // line, positioned via a relative Td (not T*), silently failed to
+      // move after a color-fix write -- pdf.js's error recovery meant a
+      // completely different content stream elsewhere on the page (or
+      // background) is what the writer's fix-and-verify loop kept
+      // measuring, driving the recurring documentwide symptom "recoloring
+      // has no measurable effect, same ratio before and after every
+      // escalation attempt." T* takes no operands of its own, so this
+      // never corrupted anything there -- purely why the existing
+      // multi-line fixture (which uses T* for its continuation lines)
+      // never caught it.
       case 'Td': case 'TD': {
-        if (runHasShow) { flushRun(tk.start); runStart = tk.start; }
+        if (runHasShow) { flushRun(runEndBeforePendingOperands(tk)); runStart = tk.end; }
         const tx = num(operands[operands.length - 2]);
         const ty = num(operands[operands.length - 1]);
         if (op === 'TD') tld = -ty;
@@ -222,19 +274,20 @@ function findTextUnits(tokens: Token[]): TextUnit[] {
         break;
       }
       case 'Tm':
-        if (runHasShow) { flushRun(tk.start); runStart = tk.start; }
+        if (runHasShow) { flushRun(runEndBeforePendingOperands(tk)); runStart = tk.end; }
         tlmA = num(operands[operands.length - 6]);
         tlmD = num(operands[operands.length - 3]);
         tmE = num(operands[operands.length - 2]);
         tmF = num(operands[operands.length - 1]);
         break;
       case 'T*':
-        if (runHasShow) { flushRun(tk.start); runStart = tk.start; }
+        if (runHasShow) { flushRun(runEndBeforePendingOperands(tk)); runStart = tk.end; }
         tmF -= tlmD * tld;
         break;
       case 'Tj': case 'TJ': case "'": case '"': {
         if (op === "'" || op === '"') tmF -= tlmD * tld;
         if (!runHasShow) { runAnchorX = deviceX(tmE); runAnchorY = deviceY(tmF); runHasShow = true; }
+        runLastShowEnd = tk.end;
         break;
       }
       case 'ET': flushRun(tk.start); break;
@@ -272,7 +325,20 @@ export function locateTextRun(
   const runnerUp = candidates[1];
   const proximityAmbiguous = !!runnerUp && (runnerUp.dist - best.dist) <= AMBIGUITY_MARGIN;
 
-  const fillOps = findFillColorOps(tokens, best.start, best.end);
+  // Search only up to the run's own LAST show op, not its full [start,end) --
+  // content between the last show and the run's end boundary is graphics-
+  // state setup for whatever the NEXT run shows (the run only ends on a
+  // positioning op, not on "no more shows follow"), so a color op there
+  // paints nothing within THIS run. Confirmed live: a caption run ("Table
+  // 4.1.2.") immediately followed -- with no intervening positioning op --
+  // by a color change setting up the NEXT run's (unrelated) text color. The
+  // full-span search found that trailing op as this run's sole "internal"
+  // one and told spliceColorFix to overwrite it in place -- silently
+  // recoloring nothing the caption actually shows, while also corrupting
+  // the next run's intended color, every time. lastShowEnd is never null
+  // here: flushRun only ever pushes a unit when runHasShow is true, and
+  // runLastShowEnd is set in the same branch that sets runHasShow.
+  const fillOps = findFillColorOps(tokens, best.start, best.lastShowEnd!);
   const mixedColor = fillOps.length > 1;
 
   const ambiguous = proximityAmbiguous || mixedColor;
