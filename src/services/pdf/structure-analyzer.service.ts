@@ -2,6 +2,21 @@ import { PDFDocument, PDFName, PDFDict, PDFArray, PDFString } from 'pdf-lib';
 import { pdfParserService, ParsedPDF } from './pdf-parser.service';
 import { textExtractorService, TextLine, TextBlock, DocumentText } from './text-extractor.service';
 
+// detectTabularContent's minimum bar for a second (and beyond) column to
+// count as "genuinely part of the table" rather than rare incidental
+// spillover -- see isGenuinelyTabular's doc comment for the real,
+// previously-undiscovered false-positive class this guards against.
+const MIN_COLUMN_POPULATION_FRACTION = 0.3;
+// How many columns must each clear that population bar before a
+// layout-detected grid is trusted as a real table.
+const MIN_TABULAR_COLUMNS = 2;
+// A column whose single most common cell text covers at least this
+// fraction of its own populated cells, AND whose length is within
+// MARKER_COLUMN_MAX_LENGTH, is treated as a list-bullet/marker column, not
+// real tabular data -- see isGenuinelyTabular's doc comment.
+const MARKER_COLUMN_DOMINANCE_FRACTION = 0.5;
+const MARKER_COLUMN_MAX_LENGTH = 3;
+
 export interface HeadingInfo {
   id: string;
   level: number;
@@ -682,12 +697,98 @@ class StructureAnalyzerService {
             table.hasHeaderColumn
           );
 
-          tables.push(table);
+          // Recurring x-positions alone don't confirm real tabular data --
+          // see isGenuinelyTabular's doc comment.
+          if (this.isGenuinelyTabular(table.cells, table.rowCount, table.columnCount)) {
+            tables.push(table);
+          }
         }
       }
     }
 
     return tables;
+  }
+
+  /**
+   * Root-caused live on a real math-workbook-style document: detectColumnPositions
+   * only requires TWO x-positions to each recur in >=50% of a block's lines --
+   * satisfied trivially by ordinary body text, since the left margin alone is
+   * one such position for any paragraph, and a second, rarer recurring
+   * indent (a hanging continuation line, a bullet/number column, an inline
+   * citation) is enough to trip columnPositions.length >= 2. This
+   * misclassified chapter headings and numbered-problem instructions as
+   * "tables" -- confirmed directly: 135 of 136 flagged tables had a
+   * first-row cell count of 1 against a claimed columnCount of 2-5, with
+   * row-0 text like "CHAPTER 1 Introduction: Preventing Exclusion..." and
+   * "Read the problems carefully and solve as many as you can." -- prose,
+   * not headers. The existing merge-safety gate (PR #529) already refuses
+   * to auto-fix these (correctly), but the audit still COUNTED every one as
+   * a real, open accessibility issue -- pure noise inflating the issue
+   * count with nothing an operator could act on.
+   *
+   * First guard -- column POPULATION, not just position recurrence: real
+   * tabular data has multiple columns each consistently populated across
+   * rows (a name/age/city table has real text in every column, every row).
+   * Misdetected prose funnels almost all of a line's text into whichever
+   * detected column is nearest -- overwhelmingly one dominant column, with
+   * the others populated by rare accidental spillover only. Requiring at
+   * least MIN_TABULAR_COLUMNS columns to each appear in at least
+   * MIN_COLUMN_POPULATION_FRACTION of rows catches exactly that signature
+   * while still accepting a genuinely sparse real table (an occasional
+   * blank "notes" column doesn't stop its OTHER columns from clearing the
+   * bar).
+   *
+   * Second guard -- excludes list-marker columns from counting toward that
+   * population bar. A bulleted/numbered list is a SEPARATE false-positive
+   * class the population check alone doesn't catch: both its "marker"
+   * column (bullet glyphs, item numbers) and its "text" column are
+   * genuinely populated in nearly every row, since a marker and a line of
+   * text both appear on every list item -- e.g. a real live sample: column
+   * 0 = "•" in every single row, column 1 = the actual (long) item text.
+   * Distinguishes this from a genuine short-value data column (a real
+   * table's numeric ID or code column) by DOMINANCE, not just length: a
+   * marker column repeats the *same* one or two short glyphs across nearly
+   * all its rows, whereas a real column of short values (page numbers, IDs)
+   * is short but highly VARIED row to row. A column whose single most
+   * common value covers >= MARKER_COLUMN_DOMINANCE_FRACTION of its own
+   * populated cells, and is no longer than MARKER_COLUMN_MAX_LENGTH, is
+   * excluded from the count.
+   *
+   * Known, deliberately out-of-scope residual: a genuine Table of Contents
+   * (chapter title | page number) is NOT caught by either guard -- both
+   * columns are consistently populated, and page numbers are short but
+   * highly varied (not marker-dominant), so a TOC still measures as
+   * "genuinely tabular" here. Left as a separate, not-yet-attempted follow-up
+   * (the codebase already has TOC-page detection elsewhere, e.g. TocDetector,
+   * not currently wired into table detection) rather than folded into this
+   * fix's already-broader-than-planned scope.
+   */
+  private isGenuinelyTabular(cells: TableCell[], rowCount: number, columnCount: number): boolean {
+    const textsByColumn: string[][] = Array.from({ length: columnCount }, () => []);
+    for (const cell of cells) {
+      const text = cell.text.trim();
+      if (text.length > 0) {
+        textsByColumn[cell.column].push(text);
+      }
+    }
+
+    const isMarkerColumn = (texts: string[]): boolean => {
+      const counts = new Map<string, number>();
+      for (const text of texts) {
+        counts.set(text, (counts.get(text) ?? 0) + 1);
+      }
+      const dominantCount = Math.max(...counts.values());
+      const dominantValue = [...counts.entries()].find(([, count]) => count === dominantCount)![0];
+      return (
+        dominantValue.length <= MARKER_COLUMN_MAX_LENGTH &&
+        dominantCount >= texts.length * MARKER_COLUMN_DOMINANCE_FRACTION
+      );
+    };
+
+    const columnsWithMeaningfulPopulation = textsByColumn.filter(
+      texts => texts.length >= rowCount * MIN_COLUMN_POPULATION_FRACTION && !isMarkerColumn(texts)
+    ).length;
+    return columnsWithMeaningfulPopulation >= MIN_TABULAR_COLUMNS;
   }
 
   private detectColumnPositions(lines: TextLine[]): number[] {
