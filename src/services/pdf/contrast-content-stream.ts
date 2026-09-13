@@ -335,6 +335,66 @@ function findTextUnits(tokens: Token[]): TextUnit[] {
   return units;
 }
 
+export interface EnclosingTextObject {
+  /** Byte offset of the `BT` operator that opens the text object containing `runStart`. */
+  btStart: number;
+  /** The CTM (scale+translate only, matching this file's axis-aligned-only convention) in effect at `btStart`. */
+  ctm: { a: number; d: number; e: number; f: number };
+}
+
+/**
+ * Finds the `BT` that opens the text object containing byte offset
+ * `runStart` (typically a `TextRunMatch.start`/`end`), plus the CTM in
+ * effect at that point. `q`/`Q` — and therefore path-painting operators like
+ * `re`/`f` — are illegal inside `BT…ET` (PDF32000-1:2008 Annex A), so a
+ * caller wanting to draw something (e.g. a backplate rectangle) "behind" a
+ * located text run must insert it before the run's *enclosing* `BT`, not at
+ * the run's own start/end — this locates that insertion point. The CTM is
+ * returned so the caller can counteract it (e.g. via its own `q [inverse]
+ * cm ... Q` wrapper) and draw in plain device-space coordinates regardless
+ * of whatever transform is already ambient at the insertion point.
+ *
+ * Returns null if `runStart` isn't actually inside a `BT…ET` block (should
+ * not happen for a genuine `TextRunMatch`, but this module makes no
+ * assumption about caller correctness).
+ */
+export function locateEnclosingTextObject(content: string, runStart: number): EnclosingTextObject | null {
+  const tokens = tokenize(content);
+
+  type Ctm = { a: number; d: number; e: number; f: number };
+  let ctm: Ctm = { a: 1, d: 1, e: 0, f: 0 };
+  const ctmStack: Ctm[] = [];
+  const operands: Array<{ t: string; v: string; start: number; end: number }> = [];
+
+  let btStart: number | null = null;
+  let btCtm: Ctm | null = null;
+
+  for (const tk of tokens) {
+    if (tk.start >= runStart) break;
+    if (tk.t !== 'op') { operands.push(tk); continue; }
+    const op = tk.v;
+    switch (op) {
+      case 'q': ctmStack.push({ ...ctm }); break;
+      case 'Q': { const p = ctmStack.pop(); if (p) ctm = { ...p }; break; }
+      case 'cm': {
+        const a = num(operands[operands.length - 6]);
+        const d = num(operands[operands.length - 3]);
+        const e = num(operands[operands.length - 2]);
+        const f = num(operands[operands.length - 1]);
+        ctm = { a: ctm.a * a, d: ctm.d * d, e: ctm.a * e + ctm.e, f: ctm.d * f + ctm.f };
+        break;
+      }
+      case 'BT': btStart = tk.start; btCtm = { ...ctm }; break;
+      case 'ET': btStart = null; btCtm = null; break;
+      default: break;
+    }
+    operands.length = 0;
+  }
+
+  if (btStart === null || btCtm === null) return null;
+  return { btStart, ctm: btCtm };
+}
+
 /**
  * Finds the text run whose anchor is closest to `target`, within
  * `tolerancePt`. Returns null if nothing is close enough. Flags `ambiguous`

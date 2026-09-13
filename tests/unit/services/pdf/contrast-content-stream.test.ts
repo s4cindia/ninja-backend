@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { locateTextRun } from '../../../../src/services/pdf/contrast-content-stream';
+import { locateTextRun, locateEnclosingTextObject } from '../../../../src/services/pdf/contrast-content-stream';
 
 // Same shape as content-stream.test.ts's twoLineStream (verified pdf-lib output
 // shape: q BT … Tm … Tj … ET Q). Line 1 anchor (50,150), line 2 anchor (50,120).
@@ -431,5 +431,90 @@ ET
       // would mean the old `|| 1` fallback treated the offset as unscaled.
       expect(locateTextRun(stream, { x: 70, baselineY: 700 })).toBeNull();
     });
+  });
+});
+
+describe('locateEnclosingTextObject', () => {
+  it('finds the BT of the run\'s own text object, not a different one on the page', () => {
+    const firstMatch = locateTextRun(twoLineStream, { x: 50, baselineY: 150 });
+    const secondMatch = locateTextRun(twoLineStream, { x: 50, baselineY: 120 });
+
+    const firstBtIndex = twoLineStream.indexOf('BT');
+    const secondBtIndex = twoLineStream.indexOf('BT', firstBtIndex + 1);
+    expect(firstBtIndex).not.toBe(secondBtIndex);
+
+    expect(locateEnclosingTextObject(twoLineStream, firstMatch!.start)!.btStart).toBe(firstBtIndex);
+    expect(locateEnclosingTextObject(twoLineStream, secondMatch!.start)!.btStart).toBe(secondBtIndex);
+  });
+
+  it('finds the same shared BT for every run inside one multi-line text object', () => {
+    const multiLineBlock = `BT
+0 0 0 rg
+/F1 12 Tf
+24 TL
+1 0 0 1 50 700 Tm
+<4C696E6531> Tj
+T*
+<4C696E6532> Tj
+T*
+<4C696E6533> Tj
+ET
+`;
+    const btIndex = multiLineBlock.indexOf('BT');
+    const first = locateTextRun(multiLineBlock, { x: 50, baselineY: 700 });
+    const second = locateTextRun(multiLineBlock, { x: 50, baselineY: 676 });
+    const third = locateTextRun(multiLineBlock, { x: 50, baselineY: 652 });
+
+    expect(locateEnclosingTextObject(multiLineBlock, first!.start)!.btStart).toBe(btIndex);
+    expect(locateEnclosingTextObject(multiLineBlock, second!.start)!.btStart).toBe(btIndex);
+    expect(locateEnclosingTextObject(multiLineBlock, third!.start)!.btStart).toBe(btIndex);
+  });
+
+  it('returns the identity CTM when nothing transforms it beforehand', () => {
+    const match = locateTextRun(twoLineStream, { x: 50, baselineY: 150 });
+    const enclosing = locateEnclosingTextObject(twoLineStream, match!.start);
+    expect(enclosing).toBeTruthy();
+    expect(enclosing!.ctm).toEqual({ a: 1, d: 1, e: 0, f: 0 });
+  });
+
+  it('tracks a cm concatenated before the text object', () => {
+    const stream = `q
+2 0 0 3 10 20 cm
+BT
+1 0 0 1 50 150 Tm
+<41> Tj
+ET
+Q
+`;
+    const match = locateTextRun(stream, { x: 120, baselineY: 470 }); // (50*2+10, 150*3+20)
+    expect(match).toBeTruthy();
+    const enclosing = locateEnclosingTextObject(stream, match!.start);
+    expect(enclosing!.ctm).toEqual({ a: 2, d: 3, e: 10, f: 20 });
+  });
+
+  it('accounts for a q/Q pair closed and reopened before the text object', () => {
+    // The first q/cm/Q is fully closed (popped) before the second q/cm
+    // that actually governs the text object -- a naive "last cm seen"
+    // walk would wrongly pick up the first, already-reverted transform.
+    const stream = `q
+5 0 0 5 0 0 cm
+Q
+q
+2 0 0 2 0 0 cm
+BT
+1 0 0 1 10 10 Tm
+<41> Tj
+ET
+Q
+`;
+    const match = locateTextRun(stream, { x: 20, baselineY: 20 }); // (10*2, 10*2)
+    expect(match).toBeTruthy();
+    const enclosing = locateEnclosingTextObject(stream, match!.start);
+    expect(enclosing!.ctm).toEqual({ a: 2, d: 2, e: 0, f: 0 });
+  });
+
+  it('returns null when the given offset is not inside any BT…ET block', () => {
+    const betweenBlocks = twoLineStream.indexOf('Q\nq') + 2; // between the two text objects
+    expect(locateEnclosingTextObject(twoLineStream, betweenBlocks)).toBeNull();
   });
 });

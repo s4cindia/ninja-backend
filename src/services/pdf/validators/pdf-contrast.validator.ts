@@ -173,6 +173,21 @@ const MIN_INK_SPREAD_FRACTION = 0.5;
 // verify" from "couldn't confidently measure the background here at all."
 export const FLAT_VARIANCE_THRESHOLD = 0.02;
 
+// A second, higher bar on the same luminance-variance measurement — lets
+// pdf-contrast-writer.service.ts's backplate fallback distinguish "mildly
+// non-flat" (a subtle gradient, JPEG noise, a nearby element's edge bleeding
+// into the sample — safe to auto-cover with a solid rectangle) from "wildly
+// non-flat" (a real photo or illustration, where stamping an opaque box
+// behind the text is a visible, potentially jarring change that should stay
+// a human decision, not an auto-applied one). Deliberately conservative
+// starting point (4x FLAT_VARIANCE_THRESHOLD, still well under the 0.25 a
+// 50/50 black/white straddle produces per that constant's own doc comment)
+// — biased toward staying guidance-only when in doubt, matching this whole
+// subsystem's governing "every failure mode bails to success: false rather
+// than guessing" principle. Not yet tuned against a broad document sample;
+// revisit if real trials show it's too permissive or too conservative.
+export const BUSY_VARIANCE_THRESHOLD = 0.08;
+
 // sampleBackgroundRobust searches this many "tiers" of increasing distance
 // before giving up. Tier 0 is the original tight candidates (~5-10px);
 // each further tier steps out roughly one more text-line-height, up to a

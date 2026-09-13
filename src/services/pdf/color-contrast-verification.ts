@@ -23,7 +23,11 @@ import { pdfContrastValidator, RgbColor, FLAT_VARIANCE_THRESHOLD } from './valid
 
 // Must match PdfContrastValidator's own render scale — the sampled region
 // only lines up with the original detection if both render at the same scale.
-const RENDER_SCALE = 1.5;
+// Exported so a caller needing to reproduce this module's exact sampled
+// footprint in PDF-point space (e.g. sizing a backplate rectangle to fully
+// cover it) uses this single source of truth rather than a second, driftable
+// copy of the same number.
+export const RENDER_SCALE = 1.5;
 
 export interface ContrastVerificationResult {
   ratio: number;
@@ -35,6 +39,11 @@ export interface ContrastVerificationResult {
   // best available estimate, but callers should treat a failing result as
   // "couldn't reliably measure" rather than "genuinely fails contrast."
   uncertain: boolean;
+  // The luminance variance behind `uncertain` (bgSample.variance) — exposed
+  // so a caller can distinguish "mildly non-flat" from "wildly non-flat"
+  // rather than only the boolean threshold crossing. See BUSY_VARIANCE_THRESHOLD
+  // in pdf-contrast.validator.ts for how pdf-contrast-writer.service.ts uses this.
+  variance: number;
 }
 
 /**
@@ -133,6 +142,7 @@ export async function verifyContrastInRegion(
       foreground: pdfContrastValidator.rgbToHex(fgColor),
       background: pdfContrastValidator.rgbToHex(bgSample.color),
       uncertain: bgSample.variance > FLAT_VARIANCE_THRESHOLD,
+      variance: bgSample.variance,
     };
   } catch {
     return null;
