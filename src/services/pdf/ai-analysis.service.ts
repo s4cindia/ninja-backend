@@ -9,6 +9,8 @@
  */
 
 import pLimit from 'p-limit';
+import { z } from 'zod';
+import { SchemaType, Schema } from '@google/generative-ai';
 import { createCanvas } from '@napi-rs/canvas';
 import { Prisma } from '@prisma/client';
 import prisma from '../../lib/prisma';
@@ -258,6 +260,31 @@ export function resolveSuggestionStatus(
 // a genuine formula finding, but analyzeFormulaActualText forces it to stay
 // guidance-only regardless of the document's tagged state.
 const FORMULA_ACTUALTEXT_CODES = new Set(['FORMULA-MISSING-ACTUALTEXT', TABLE_LIKELY_FORMULA_CODE]);
+
+// Forces valid JSON matching this shape at generation time (responseMimeType:
+// 'application/json' + responseSchema) instead of relying on prompt wording
+// alone. Without this, Gemini frequently spent its whole maxOutputTokens
+// budget on an unrequested markdown-fenced preamble ("```json\n{...") or
+// visible reasoning ("Wait, the image is a...") before ever reaching the
+// answer, hitting finishReason MAX_TOKENS with the response truncated to a
+// handful of characters -- on a real trial this made analyzeFormulaActualText
+// return null (silently -- parseAiJson's own catch never logs) for every
+// formula on the document, every round, with zero forward progress and no
+// error anywhere to point at. See the matching comment on
+// pdf-alttext.validator.ts's ASSESS_ALT_TEXT_SCHEMA usage for the same
+// failure mode found earlier against plain image classification prompts.
+const FORMULA_ACTUALTEXT_SCHEMA: Schema = {
+  type: SchemaType.OBJECT,
+  properties: {
+    latex: { type: SchemaType.STRING },
+    actualText: { type: SchemaType.STRING },
+  },
+  required: ['actualText'],
+};
+const FormulaActualTextResult = z.object({
+  latex: z.string().optional(),
+  actualText: z.string(),
+});
 
 // ─── Service ─────────────────────────────────────────────────────────────────
 
@@ -1814,13 +1841,24 @@ class AiAnalysisService {
       'No LaTeX, no markup, max ~200 characters.\n' +
       'Respond ONLY with JSON: {"latex":"...","actualText":"..."}';
 
-    let response;
+    let data: { latex?: string; actualText: string };
+    let usage: { promptTokens: number; completionTokens: number } | undefined;
     try {
-      response = await geminiService.analyzeImage(base64, 'image/png', prompt, {
-        model: 'flash',
-        temperature: 0.2,
-        maxOutputTokens: 256,
-      });
+      const result = await geminiService.analyzeImageWithSchema(
+        base64,
+        'image/png',
+        prompt,
+        FormulaActualTextResult,
+        {
+          model: 'flash',
+          temperature: 0.2,
+          maxOutputTokens: 2048,
+          responseSchema: FORMULA_ACTUALTEXT_SCHEMA,
+        },
+        { maxRetries: 2 }
+      );
+      data = result.data;
+      usage = result.usage;
     } catch (err) {
       logger.warn(
         `[AiAnalysis] Formula ActualText draft failed on page ${issue.pageNumber}: ${
@@ -1830,11 +1868,10 @@ class AiAnalysisService {
       return null;
     }
 
-    const parsed = this.parseAiJson<{ latex?: string; actualText?: string }>(response.text);
-    const actualText = parsed?.actualText?.trim();
+    const actualText = data.actualText.trim();
     if (!actualText) return null;
 
-    const latex = parsed?.latex?.trim();
+    const latex = data.latex?.trim();
     // A redirected table-as-formula region is tagged /Table, not /Formula, in
     // the structure tree — pdfModifierService.setActualText now (as of the
     // write-path hardening) accepts an elementTypes override to target Table
@@ -1861,9 +1898,7 @@ class AiAnalysisService {
       model: 'gemini-flash',
       applyMode,
       requiresManualReview: true,
-      usage: response.usage
-        ? { promptTokens: response.usage.promptTokens, completionTokens: response.usage.completionTokens }
-        : undefined,
+      usage,
     };
   }
 
