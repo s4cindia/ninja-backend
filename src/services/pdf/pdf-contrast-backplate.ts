@@ -74,6 +74,25 @@ const DESCENDER_PADDING_FRACTION = 0.3;
  * the verification step's own canvas-space minimums, extended to cover its
  * nearest background-sampling probes (above/right), and extended below the
  * baseline for descenders.
+ *
+ * Known, accepted limitation (CodeRabbit finding on PR #545, deliberately
+ * not fixed here): `boundingBox` assumes normal (non-reflected) text —
+ * PdfContrastValidator.computeTextBoundingBox always extends `width`
+ * rightward from `x` and `height` upward from the baseline, regardless of
+ * the source text item's own transform. If a PDF's content stream renders
+ * genuinely mirrored text (a negative horizontal/vertical scale on `Tm`,
+ * not `cm` — `locateEnclosingTextObject`'s shear/reflection tracking
+ * doesn't see this, since `Tm` is a separate transform this file never
+ * inspects), this rect would cover the wrong side of the glyphs. Fixing it
+ * properly means normalizing `computeTextBoundingBox` itself from the
+ * transformed corner points, which affects every contrast issue's
+ * boundingBox (recolor tiers too, not just this one), not something
+ * scoped to the backplate splice — a separate, larger change. Confirmed
+ * absent from the real document this feature was validated against (0
+ * reflected text items across all pages); left as a known gap for a
+ * document that does have mirrored text, matching this module's own
+ * "bail rather than guess" convention EXCEPT that there is no signal left
+ * in `boundingBox` by the time it reaches this file to bail on.
  */
 export function computeBackplateRect(boundingBox: {
   x: number;
