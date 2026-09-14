@@ -858,15 +858,60 @@ export class PdfStructureWriterService {
   }
 
   /**
-   * Mark a genuinely decorative /Table struct element as /Artifact instead
-   * (MATTERHORN-15-005). Targets the specific table each issue's id refers
-   * to via findTargetTable, same as fixSimpleTableHeaders -- these issues
-   * come from pdf-table.validator.ts's detectLayoutTable/
-   * isGenuinelyTabularDespiteTrivialMatch, which already confirms (against
-   * the real struct tree, not a fuzzy layout heuristic) that this specific
-   * element is a decorative box with no meaningful reading-order content to
-   * preserve, so a whole-tree sweep would be both unnecessary and wrong here
-   * (every other /Table on the page is a separate, unrelated finding).
+   * Finds (or creates) the PDF 2.0 (ISO 32000-2) standard structure
+   * namespace entry in /StructTreeRoot's /Namespaces array, returning its
+   * ref so a caller can bind an element to it via that element's own /NS
+   * entry. /Artifact is a standard STRUCTURE type only in this namespace
+   * (in PDF 1.7/ISO 32000-1, /Artifact is solely a content-stream
+   * marked-content tag, a different mechanism entirely) -- CodeRabbit
+   * finding on PR #547, confirmed live: Math_Kim declares no /Namespaces
+   * at all (a plain PDF 1.7 document), so an unnamespaced "/S /Artifact"
+   * struct element would be non-standard there. PDF 2.0 explicitly
+   * supports introducing this namespace incrementally into an
+   * otherwise-1.7 tree, binding only the specific elements that need it.
+   */
+  private getOrCreatePdf2Namespace(doc: PDFDocument, structRoot: PDFDict): PDFRef {
+    const PDF2_STRUCTURE_NAMESPACE_URI = 'http://iso.org/pdf2/ssn';
+    const existing = structRoot.get(PDFName.of('Namespaces'));
+    const nsRefs: PDFRef[] = existing instanceof PDFArray
+      ? existing.asArray().filter((n): n is PDFRef => n instanceof PDFRef)
+      : [];
+
+    for (const ref of nsRefs) {
+      const ns = doc.context.lookup(ref);
+      if (ns instanceof PDFDict) {
+        const uri = ns.get(PDFName.of('NS'));
+        if (uri instanceof PDFString && uri.decodeText() === PDF2_STRUCTURE_NAMESPACE_URI) return ref;
+      }
+    }
+
+    const nsRef = doc.context.register(doc.context.obj({
+      Type: PDFName.of('Namespace'),
+      NS: PDFString.of(PDF2_STRUCTURE_NAMESPACE_URI),
+    }));
+    structRoot.set(PDFName.of('Namespaces'), doc.context.obj([...nsRefs, nsRef]));
+    return nsRef;
+  }
+
+  /**
+   * Marks the specific /Table struct element each issue's id refers to as
+   * /Artifact instead (MATTERHORN-15-005). Targets via findTargetTable,
+   * same as fixSimpleTableHeaders -- deliberately NOT a whole-document
+   * sweep for "any structurally trivial /Table" (an earlier version of
+   * this method did exactly that, and it was wrong): a trivial real /Table
+   * is ALSO the exact shape MATTERHORN-15-001 issues are about (genuinely
+   * tabular LAYOUT content spuriously paired with an unrelated decorative
+   * box -- see pdf-table.validator.ts's isGenuinelyTabularDespiteTrivial
+   * Match), and that distinction lives entirely in LAYOUT-analysis data
+   * this writer has no access to. A structural-only sweep can't tell the
+   * two apart, and confirmed live against Math_Kim that it doesn't just
+   * "also fix" -001 boxes -- it actively regresses them: once the
+   * underlying box is retagged away from /Table, pdf-table.validator.ts's
+   * own tagged-PDF matching discards the now-unmatched LAYOUT candidate as
+   * a text-detector false positive, silently making MATTERHORN-15-001
+   * stop being reported at all for that region without ever actually
+   * fixing it. Only the specific element a confirmed MATTERHORN-15-005
+   * issue names may be touched.
    *
    * renameElement only changes /S -- MCID-safe by construction, no
    * content-stream changes, matching the same guarantee fixSimpleTableHeaders
@@ -876,13 +921,38 @@ export class PdfStructureWriterService {
    * of them, then renames in a second pass -- unlike fixSimpleTableHeaders
    * (which only ever touches TD/TH children, never a /Table's own /S),
    * this method renames the /Table itself, which findTargetTable's
-   * positional "Nth /Table on this page" indexing depends on staying stable
-   * across the whole batch. Renaming eagerly, one issue at a time, would
-   * make an earlier issue's fix silently shift the index every LATER
-   * same-page issue resolves against (an already-renamed table no longer
-   * matches `sTag === 'Table'`), causing spurious "No Table element found"
-   * failures for real, otherwise-fixable tables -- confirmed live against
-   * Math_Kim (6 of 49 real cases failed this way before this two-pass split).
+   * positional "Nth /Table on this page" indexing depends on staying
+   * stable across the whole batch. This protects same-page issues WITHIN
+   * one call, but production (applyApprovedSuggestions, the single-
+   * suggestion controller) calls this ONE issue at a time -- so the real
+   * fix for cross-call index drift is at the CALLER: applyApprovedSuggestions
+   * now collects every table-artifact-fix issue from the same approval
+   * batch and calls this once with all of them, before any other fix in
+   * that batch runs, rather than looping one issue per call (CodeRabbit/
+   * Codex finding on PR #547; confirmed live -- 6 of 49 real Math_Kim
+   * cases failed under naive one-issue-at-a-time positional targeting).
+   * The single-suggestion controller endpoint has no such batch to collect
+   * (each HTTP request only knows about the one suggestion it's applying)
+   * -- applying multiple table-artifact-fix suggestions there one at a time
+   * without an intervening re-audit can still hit this same drift; treated
+   * as a known, accepted residual limitation of that manual path rather
+   * than solved here (would need a "re-audit between every positional
+   * apply" change, a materially larger effort, not worth blocking this fix
+   * on given the primary automated/batch remediation path is fully safe).
+   *
+   * Also addresses a second real finding from the same review round: the
+   * target element's own TR/TD children no longer make structural sense
+   * once it becomes an Artifact (they were only ever decorative box
+   * padding -- that's this whole fix's premise). Cleared via the same
+   * "descendants become unreachable, not literally removed from the file"
+   * semantics deleteElement already documents, rather than leaving a
+   * dangling Table-shaped subtree under a role that no longer describes it.
+   *
+   * Not independently verified against a real PDF/UA validator -- veraPDF
+   * is unavailable in this environment (see pdf-audit.service.ts's own
+   * fallback). The same veraPDF pass already wired into the staging audit
+   * pipeline will re-check this once deployed, matching how every other
+   * structural fix in this file gets its real-world confirmation.
    *
    * @param issues - MATTERHORN-15-005 AuditIssues for a confirmed-decorative
    *   trivial-struct-match table (see ai-analysis.service.ts's dispatch gate)
@@ -902,6 +972,9 @@ export class PdfStructureWriterService {
       target: this.findTargetTable(doc, structRoot, issue.element),
     }));
 
+    const anyTarget = targets.some(t => t.target);
+    const nsRef = anyTarget ? this.getOrCreatePdf2Namespace(doc, structRoot) : null;
+
     const results: FixResult[] = [];
 
     for (const { issue, target } of targets) {
@@ -916,6 +989,8 @@ export class PdfStructureWriterService {
         }
 
         this.renameElement(doc, target.ref, 'Artifact');
+        target.dict.set(PDFName.of('NS'), nsRef!);
+        target.dict.delete(PDFName.of('K')); // TR/TD children no longer make sense under Artifact
 
         results.push({
           issueId: issue.id,

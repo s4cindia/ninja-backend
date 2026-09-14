@@ -144,6 +144,61 @@ describe('aiAnalysisService.applyApprovedSuggestions', () => {
     );
   });
 
+  /**
+   * Regression for a real bug found live against Math_Kim: markTableAsArtifact
+   * renames the /Table struct element itself, which findTargetTable's
+   * positional "Nth /Table on this page" indexing depends on staying stable
+   * across the whole batch. Calling it once PER ISSUE (as every other
+   * structure-writer suggestion type here does) let an earlier same-page fix
+   * silently shift the index every later same-page lookup resolved against
+   * -- 6 of 49 real cases failed this way. Fixed by collecting every
+   * table-artifact-fix issue in this approval run and calling
+   * markTableAsArtifact exactly ONCE with all of them, before the main
+   * per-suggestion loop processes anything.
+   */
+  it('batches every table-artifact-fix suggestion into a single markTableAsArtifact call, not one per issue', async () => {
+    const jobWithIssues = {
+      id: 'job-1',
+      output: {
+        fileName: 'doc.pdf',
+        auditReport: {
+          issues: [
+            { id: 'table-artifact-1', code: 'MATTERHORN-15-005', element: 'table_p1_0' },
+            { id: 'table-artifact-2', code: 'MATTERHORN-15-005', element: 'table_p1_1' },
+          ],
+        },
+      },
+    };
+    vi.mocked(prisma.job.findUnique).mockResolvedValue(jobWithIssues as any);
+    vi.mocked(prisma.aiAnalysis.findMany).mockResolvedValue([
+      { issueId: 'table-artifact-1', suggestionType: 'table-artifact-fix' },
+      { issueId: 'table-artifact-2', suggestionType: 'table-artifact-fix' },
+    ] as any);
+    vi.mocked(fileStorageService.getRemediatedFile).mockResolvedValue(Buffer.from('pdf'));
+    vi.mocked(pdfModifierService.loadPDF).mockResolvedValue({} as any);
+    vi.mocked(pdfModifierService.savePDF).mockResolvedValue(Buffer.from('modified-pdf'));
+    vi.mocked(fileStorageService.saveRemediatedFile).mockResolvedValue('s3://remediated/doc.pdf');
+
+    const { pdfStructureWriterService } = await import('../../../../src/services/pdf/pdf-structure-writer.service');
+    vi.mocked(pdfStructureWriterService.markTableAsArtifact).mockReturnValue([
+      { issueId: 'table-artifact-1', success: true, before: 'Table', after: 'Retagged as Artifact' },
+      { issueId: 'table-artifact-2', success: true, before: 'Table', after: 'Retagged as Artifact' },
+    ]);
+
+    const result = await aiAnalysisService.applyApprovedSuggestions('job-1', 1, 'user-1', 'apply_all');
+
+    expect(pdfStructureWriterService.markTableAsArtifact).toHaveBeenCalledTimes(1);
+    expect(pdfStructureWriterService.markTableAsArtifact).toHaveBeenCalledWith(
+      {},
+      expect.arrayContaining([
+        expect.objectContaining({ id: 'table-artifact-1' }),
+        expect.objectContaining({ id: 'table-artifact-2' }),
+      ])
+    );
+    expect(result.applied).toBe(2);
+    expect(result.failed).toBe(0);
+  });
+
   it('throws when the job does not exist', async () => {
     vi.mocked(prisma.job.findUnique).mockResolvedValue(null as any);
 

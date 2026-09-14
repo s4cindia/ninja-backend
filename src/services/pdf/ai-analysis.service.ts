@@ -2116,6 +2116,27 @@ class AiAnalysisService {
     const elementById = new Map(auditIssues.map(i => [i.id, i.element ?? i.id]));
     const issueById = new Map(auditIssues.map(i => [i.id, i]));
 
+    // Batch every table-artifact-fix suggestion in THIS approval run into a
+    // single markTableAsArtifact call, before the main per-suggestion loop
+    // below touches anything -- that method renames the /Table struct
+    // element itself, which findTargetTable's positional "Nth /Table on
+    // this page" indexing depends on staying stable across the whole
+    // batch. Looping one issue per call (as every other structure-writer
+    // fix here does) would let an earlier same-page fix silently shift the
+    // index every later same-page lookup resolves against -- confirmed
+    // live against Math_Kim (6 of 49 real cases failed this way). See
+    // markTableAsArtifact's own doc comment for why a whole-document sweep
+    // isn't the fix instead (it would also touch MATTERHORN-15-001's boxes).
+    const tableArtifactIssues = approved
+      .filter(a => a.suggestionType === 'table-artifact-fix')
+      .map(a => issueById.get(a.issueId))
+      .filter((i): i is AuditIssue => !!i);
+    const tableArtifactResultById = new Map(
+      tableArtifactIssues.length > 0
+        ? pdfStructureWriterService.markTableAsArtifact(doc, tableArtifactIssues).map(r => [r.issueId, r] as const)
+        : []
+    );
+
     const STRUCTURE_WRITER_TYPES = new Set(['heading-fix', 'list-fix', 'table-header-fix', 'table-artifact-fix', 'bookmark-generate', 'heading-multiple-h1-fix', 'pdfua-identifier', 'color-contrast-fix', 'alt-text-decorative']);
 
     let applied = 0;
@@ -2149,9 +2170,14 @@ class AiAnalysisService {
           const r = results[0];
           modification = { success: r.success, description: r.after, error: r.error };
         } else if (suggestionType === 'table-artifact-fix') {
-          const results = pdfStructureWriterService.markTableAsArtifact(doc, [originalIssue]);
-          const r = results[0];
-          modification = { success: r.success, description: r.after, error: r.error };
+          // Already applied above, batched with every other table-artifact-fix
+          // suggestion in this same approval run -- see that batching's own
+          // comment for why (avoids the positional index drift a one-issue-
+          // at-a-time call would risk once an earlier same-page fix lands).
+          const r = tableArtifactResultById.get(issueId);
+          modification = r
+            ? { success: r.success, description: r.after, error: r.error }
+            : { success: false, error: 'table-artifact-fix result missing from batch' };
         } else if (suggestionType === 'bookmark-generate') {
           const result = pdfStructureWriterService.generateBookmarksFromHeadings(doc);
           modification = {
