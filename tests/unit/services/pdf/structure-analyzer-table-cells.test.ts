@@ -157,6 +157,66 @@ describe('structureAnalyzerService table cell extraction', () => {
     }
   }, 30000);
 
+  /**
+   * Regression coverage for TableCell.sourceItems (Slice 2b of the
+   * MATTERHORN-15-001 from-scratch retagger): buildTableCells already
+   * aggregates multiple TextItems into cell.text via .join(' ') when more
+   * than one item lands in the same row/column bucket -- this asserts
+   * those source items are ALSO retained individually, not just joined
+   * away, since table-content-tagger.ts's matchCellRanges needs to locate
+   * each one's own content-stream run separately (a cell's content can
+   * span multiple runs -- confirmed live via Slice 2a's diagnostic: only
+   * 45.7% of cells' full text was captured by matching a single anchor).
+   */
+  it('retains every source TextItem per cell, not just the first (anchor)', async () => {
+    const doc = await PDFDocument.create();
+    const page = doc.addPage([400, 600]);
+    const font = await doc.embedFont(StandardFonts.Helvetica);
+    const draw = (text: string, x: number, y: number) =>
+      page.drawText(text, { x, y, size: 12, font, color: rgb(0, 0, 0) });
+
+    // Row 0 establishes both columns (60, 200). Row 1's column-0 cell is
+    // drawn as TWO separate text items close together (both round to the
+    // nearest detected column) -- the real-world shape a multi-run cell
+    // takes (e.g. "Step" + "2." on their own separate runs).
+    draw('Header1', 60, 500);
+    draw('Header2', 200, 500);
+    draw('Step', 60, 480);
+    draw('2.', 90, 480);
+    draw('Value', 200, 480);
+    draw('Foo', 60, 460);
+    draw('Bar', 200, 460);
+
+    const buffer = Buffer.from(await doc.save());
+    const parsedPdf = await pdfParserService.parseBuffer(buffer, 'multi-item-cell.pdf');
+
+    try {
+      const structure = await structureAnalyzerService.analyzeStructure(parsedPdf, {
+        analyzeHeadings: false,
+        analyzeTables: true,
+        analyzeLists: false,
+        analyzeLinks: false,
+        analyzeReadingOrder: false,
+        analyzeLanguage: false,
+      });
+
+      const table = structure.tables[0];
+      const multiItemCell = table.cells.find(c => c.row === 1 && c.column === 0);
+      expect(multiItemCell).toBeDefined();
+      expect(multiItemCell!.text).toBe('Step 2.');
+      expect(multiItemCell!.sourceItems).toBeDefined();
+      expect(multiItemCell!.sourceItems!.length).toBe(2);
+      expect(multiItemCell!.sourceItems!.map(i => i.text)).toEqual(['Step', '2.']);
+
+      // A genuinely single-item cell still gets a one-element sourceItems array.
+      const singleItemCell = table.cells.find(c => c.row === 2 && c.column === 0);
+      expect(singleItemCell?.sourceItems?.length).toBe(1);
+      expect(singleItemCell?.sourceItems?.[0]?.text).toBe('Foo');
+    } finally {
+      await pdfParserService.close(parsedPdf);
+    }
+  }, 30000);
+
   it('marks row-0 cells as headers when tag data promotes hasHeaderRow after cells are built', async () => {
     const doc = await PDFDocument.create();
     await drawGrid(doc);
