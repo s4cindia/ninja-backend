@@ -180,6 +180,34 @@ describe('PdfStructureWriterService.markTableAsArtifact', () => {
     expect(table2Dict.get(PDFName.of('NS'))).toEqual(nsArray[0]);
   });
 
+  /**
+   * Regression for CodeRabbit's second-round finding on PR #547: pdf-lib
+   * always writes a %PDF-1.7 header, so binding a struct element to the PDF
+   * 2.0 structure namespace (NS: http://iso.org/pdf2/ssn) without also
+   * bumping the catalog's own /Version to 2.0 leaves the saved file
+   * advertising 1.7 while containing a 2.0-only structure type --
+   * ISO/TS 32005:2023 requires document-level PDF 2.0 versioning wherever
+   * that namespace is used.
+   */
+  it('bumps the catalog Version to 2.0 when a table is actually converted', async () => {
+    const doc = await PDFDocument.create();
+    doc.addPage([400, 600]);
+    const [pageRef] = doc.getPages().map(p => p.ref);
+    const tableRef = buildTrivialTable(doc, pageRef);
+
+    const documentRef = doc.context.register(doc.context.obj({ S: PDFName.of('Document'), K: [tableRef] }));
+    const structTreeRootRef = doc.context.register(
+      doc.context.obj({ Type: PDFName.of('StructTreeRoot'), K: [documentRef] })
+    );
+    doc.catalog.set(PDFName.of('StructTreeRoot'), structTreeRootRef);
+
+    expect(doc.catalog.get(PDFName.of('Version'))).toBeUndefined();
+
+    pdfStructureWriterService.markTableAsArtifact(doc, [issueFor('table_p1_0')]);
+
+    expect(doc.catalog.get(PDFName.of('Version'))).toEqual(PDFName.of('2.0'));
+  });
+
   it('clears TR/TD children on a converted Table, since they no longer make structural sense under Artifact', async () => {
     const doc = await PDFDocument.create();
     doc.addPage([400, 600]);
@@ -215,6 +243,7 @@ describe('PdfStructureWriterService.markTableAsArtifact', () => {
 
     const structTreeRoot = doc.context.lookup(structTreeRootRef) as PDFDict;
     expect(structTreeRoot.get(PDFName.of('Namespaces'))).toBeUndefined();
+    expect(doc.catalog.get(PDFName.of('Version'))).toBeUndefined();
   });
 
   it('fails rather than guessing when the issue has no resolvable element id', async () => {

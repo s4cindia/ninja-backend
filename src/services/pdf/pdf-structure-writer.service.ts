@@ -868,10 +868,21 @@ export class PdfStructureWriterService {
    * at all (a plain PDF 1.7 document), so an unnamespaced "/S /Artifact"
    * struct element would be non-standard there. PDF 2.0 explicitly
    * supports introducing this namespace incrementally into an
-   * otherwise-1.7 tree, binding only the specific elements that need it.
+   * otherwise-1.7 tree, binding only the specific elements that need it --
+   * ISO/TS 32005:2023 requires the DOCUMENT itself to be versioned as PDF
+   * 2.0 (via the catalog /Version, avoiding a header rewrite for an
+   * incremental update like this one) whenever that namespace is actually
+   * used, not just the individual namespace entry -- CodeRabbit finding on
+   * PR #547: pdf-lib always writes a %PDF-1.7 header, so without this a
+   * saved file would advertise 1.7 while containing a 2.0-only /Artifact
+   * structure type. Set every time this runs (idempotent -- same value
+   * each call), not only on first creation, since an already-existing
+   * namespace being reused still means the document uses it.
    */
   private getOrCreatePdf2Namespace(doc: PDFDocument, structRoot: PDFDict): PDFRef {
     const PDF2_STRUCTURE_NAMESPACE_URI = 'http://iso.org/pdf2/ssn';
+    doc.catalog.set(PDFName.of('Version'), PDFName.of('2.0'));
+
     const existing = structRoot.get(PDFName.of('Namespaces'));
     const nsRefs: PDFRef[] = existing instanceof PDFArray
       ? existing.asArray().filter((n): n is PDFRef => n instanceof PDFRef)
