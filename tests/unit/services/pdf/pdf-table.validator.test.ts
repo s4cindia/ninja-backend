@@ -480,6 +480,151 @@ describe('PDFTableValidator', () => {
       expect(result.issues.some(i => i.code === TABLE_LIKELY_FORMULA_CODE)).toBe(false);
     });
   });
+
+  /**
+   * Regression coverage for a real Math_Kim finding: EVERY /Table structure
+   * element matched in that document (165/165) turned out to be a trivial
+   * single-cell decorative box (a caption/label styling box), never a real
+   * multi-row grid — confirmed by walking the real struct tree directly.
+   * Two distinct defects hide behind that same trivial match:
+   *  - a genuine decorative box (isGenuinelyTabularDespiteTrivialMatch
+   *    false) — correctly "should be marked as artifact" (MATTERHORN-15-005).
+   *  - genuinely tabular LAYOUT content spuriously paired with an unrelated
+   *    decorative box (isGenuinelyTabularDespiteTrivialMatch true) — the
+   *    match corroborates nothing, so this is effectively untagged as a
+   *    table (MATTERHORN-15-001), not "missing headers" (no real header row
+   *    exists to add TH to) or "should be artifact" (the content isn't
+   *    decorative).
+   * Before this fix, such a table scored only +20 ("no headers") in
+   * detectLayoutTable's additive scoring — short of the 30-point threshold
+   * — and was flagged as a serious MATTERHORN-15-002 "missing headers" on
+   * content that has no real column grid to put headers on at all.
+   */
+  describe('trivial single-cell struct match (decorative box vs. spuriously-paired genuine table)', () => {
+    it('routes a trivial match with genuinely tabular layout content to MATTERHORN-15-001, not 15-002 or 15-005', async () => {
+      const mockParsedPdf = createMockParsedPdf(true);
+      const table: TableInfo = {
+        ...createMockTable(1, 0, 4, 3, false, false, false),
+        structureRowCount: 1,
+        structureCellCount: 1,
+        isGenuinelyTabularDespiteTrivialMatch: true,
+      };
+      const mockStructure = createMockStructure([table]);
+
+      vi.mocked(pdfParserService.parse).mockResolvedValue(mockParsedPdf);
+      vi.mocked(structureAnalyzerService.analyzeStructure).mockResolvedValue(mockStructure);
+
+      const result = await pdfTableValidator.validate(mockParsedPdf);
+
+      expect(result.metadata.trivialMatchNotTagged).toBe(1);
+      expect(result.metadata.layoutTables).toBe(0);
+      expect(result.metadata.dataTables).toBe(0);
+      const issue = result.issues.find(i => i.code === 'MATTERHORN-15-001');
+      expect(issue).toBeDefined();
+      expect(issue?.severity).toBe('critical');
+      expect(issue?.message).toContain('not tagged as a table');
+      expect(result.issues.some(i => i.code === 'MATTERHORN-15-002')).toBe(false);
+      expect(result.issues.some(i => i.code === 'MATTERHORN-15-005')).toBe(false);
+      // Exactly one issue for this table — not also a normal table issue.
+      expect(result.issues).toHaveLength(1);
+    });
+
+    it('routes a trivial match with genuinely non-tabular content to MATTERHORN-15-005, not 15-001 or 15-002', async () => {
+      const mockParsedPdf = createMockParsedPdf(true);
+      const table: TableInfo = {
+        ...createMockTable(1, 0, 4, 3, false, false, false),
+        structureRowCount: 1,
+        structureCellCount: 1,
+        isGenuinelyTabularDespiteTrivialMatch: false,
+      };
+      const mockStructure = createMockStructure([table]);
+
+      vi.mocked(pdfParserService.parse).mockResolvedValue(mockParsedPdf);
+      vi.mocked(structureAnalyzerService.analyzeStructure).mockResolvedValue(mockStructure);
+
+      const result = await pdfTableValidator.validate(mockParsedPdf);
+
+      expect(result.metadata.trivialMatchNotTagged).toBe(0);
+      expect(result.metadata.layoutTables).toBe(1);
+      const issue = result.issues.find(i => i.code === 'MATTERHORN-15-005');
+      expect(issue).toBeDefined();
+      expect(issue?.severity).toBe('moderate');
+      expect(result.issues.some(i => i.code === 'MATTERHORN-15-001')).toBe(false);
+      expect(result.issues.some(i => i.code === 'MATTERHORN-15-002')).toBe(false);
+    });
+
+    it('routes a trivial match to the artifact path even when hasSummary/large-table heuristics would otherwise say "definitely data table"', async () => {
+      // Regression for the exact bug found live: the trivial-match signal
+      // was originally folded into detectLayoutTable's additive score
+      // (+40), but hasSummary (-50) and the large-table heuristic (-20)
+      // could still outweigh it, leaving a trivial match flagged as a
+      // serious "missing headers" MATTERHORN-15-002 for 3 of 6 real
+      // sampled cases. The fix makes the trivial-match check a decisive
+      // early return, bypassing the additive score entirely.
+      const mockParsedPdf = createMockParsedPdf(true);
+      const table: TableInfo = {
+        ...createMockTable(1, 0, 24, 3, false, false, true), // hasSummary=true, large — "definitely data table" by the old heuristics
+        structureRowCount: 1,
+        structureCellCount: 1,
+        isGenuinelyTabularDespiteTrivialMatch: false,
+      };
+      const mockStructure = createMockStructure([table]);
+
+      vi.mocked(pdfParserService.parse).mockResolvedValue(mockParsedPdf);
+      vi.mocked(structureAnalyzerService.analyzeStructure).mockResolvedValue(mockStructure);
+
+      const result = await pdfTableValidator.validate(mockParsedPdf);
+
+      expect(result.issues.some(i => i.code === 'MATTERHORN-15-002')).toBe(false);
+      expect(result.issues.find(i => i.code === 'MATTERHORN-15-005')).toBeDefined();
+    });
+
+    it('does not affect a table with a genuine multi-row/multi-cell struct match', async () => {
+      const mockParsedPdf = createMockParsedPdf(true);
+      const table: TableInfo = {
+        ...createMockTable(1, 0, 5, 3, false, false, false),
+        structureRowCount: 5,
+        structureCellCount: 15,
+      };
+      const mockStructure = createMockStructure([table]);
+
+      vi.mocked(pdfParserService.parse).mockResolvedValue(mockParsedPdf);
+      vi.mocked(structureAnalyzerService.analyzeStructure).mockResolvedValue(mockStructure);
+
+      const result = await pdfTableValidator.validate(mockParsedPdf);
+
+      expect(result.metadata.trivialMatchNotTagged).toBe(0);
+      // Same shape as the pre-existing "should identify serious issue for
+      // table without headers" test — unaffected by the new checks.
+      expect(result.issues.some(i => i.code === 'MATTERHORN-15-002')).toBe(true);
+    });
+
+    it('routes a genuinely tabular trivial match to MATTERHORN-15-001 even on a confirmed-formula page with an implausible aspect ratio', async () => {
+      // Regression for a real CodeRabbit finding: isLikelyMisclassifiedFormula
+      // ran BEFORE the trivial-match check, so a genuinely tabular trivial
+      // match on a confirmed-formula page with an implausible aspect ratio
+      // was redirected to TABLE-LIKELY-FORMULA-MISSING-ACTUALTEXT instead —
+      // targeting the unrelated decorative box, not the real tabular content.
+      const mockParsedPdf = createMockParsedPdf(true);
+      const table: TableInfo = {
+        ...createMockTable(9, 0, 3, 20, false, false, false), // same shape isLikelyMisclassifiedFormula's own tests use
+        structureRowCount: 1,
+        structureCellCount: 1,
+        isGenuinelyTabularDespiteTrivialMatch: true,
+      };
+      const mockStructure = createMockStructure([table]);
+
+      vi.mocked(pdfParserService.parse).mockResolvedValue(mockParsedPdf);
+      vi.mocked(structureAnalyzerService.analyzeStructure).mockResolvedValue(mockStructure);
+
+      const result = await pdfTableValidator.validate(mockParsedPdf, new Set([9]));
+
+      expect(result.metadata.redirectedToFormula).toBe(0);
+      expect(result.metadata.trivialMatchNotTagged).toBe(1);
+      expect(result.issues.some(i => i.code === TABLE_LIKELY_FORMULA_CODE)).toBe(false);
+      expect(result.issues.find(i => i.code === 'MATTERHORN-15-001')).toBeDefined();
+    });
+  });
 });
 
 // Helper functions to create mock data

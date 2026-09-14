@@ -107,6 +107,42 @@ export interface TableInfo {
    * (can't confirm which table the render described -- stays guidance-only).
    */
   tablesOnRealPage?: number;
+  /**
+   * Total TR count and total cell (TH+TD) count found by walking the REAL
+   * matched /Table structure element itself (checkTableHeaders/
+   * checkRowForHeaders) -- set only when structureMatched. Deliberately
+   * distinct from rowCount/columnCount, which come from LAYOUT-detected
+   * page content and can badly overstate a real struct element that's
+   * actually a trivial single-cell decorative box: Math_Kim has ~66 tables
+   * where layout clustering sees a multi-row/multi-column shape (a caption
+   * plus nearby prose/data merged by spatial proximity) but the struct
+   * tree's own /Table is genuinely just one TR with one cell wrapping the
+   * caption text alone -- a bordered box used for visual styling, not a
+   * real data table. detectLayoutTable (pdf-table.validator.ts) uses this
+   * signal to route such tables to the existing "should be Artifact"
+   * moderate path instead of flagging a serious MATTERHORN-15-002 that
+   * doesn't apply to a table with no real column grid at all.
+   */
+  structureRowCount?: number;
+  structureCellCount?: number;
+  /**
+   * Set only when structureRowCount/structureCellCount indicate a trivial
+   * (<=1 row, <=1 cell) real match: whether the LAYOUT-detected content
+   * (cells/rowCount/columnCount) itself looks genuinely tabular by the same
+   * content-based check the untagged branch already uses (isGenuinelyTabular).
+   * A trivial real match provides zero corroboration either way (unlike a
+   * genuine multi-row match, which is trusted unconditionally — see
+   * enhanceTablesFromTags' own doc comment), so this distinguishes two very
+   * different defects that both produce a trivial match: a real decorative
+   * caption box (isGenuinelyTabular false) vs. genuinely tabular content
+   * that's spuriously paired with an unrelated decorative box and is
+   * therefore effectively untagged as a table (isGenuinelyTabular true) —
+   * pdf-table.validator.ts routes each to different guidance. Left
+   * undefined for a pageReassigned match — its cells/rowCount/columnCount
+   * describe a different page's content (see pageReassigned's own doc
+   * comment), so classifying them here would be judging unrelated content.
+   */
+  isGenuinelyTabularDespiteTrivialMatch?: boolean;
 }
 
 export interface ListInfo {
@@ -985,6 +1021,25 @@ class StructureAnalyzerService {
             }
 
             await this.checkTableHeaders(node, pdfDoc, matchingTable);
+
+            // See isGenuinelyTabularDespiteTrivialMatch's own doc comment:
+            // only meaningful (and only worth the extra pass) when the real
+            // match itself turned out trivial. Skipped for a pageReassigned
+            // match (CodeRabbit/Codex finding on PR #546) -- consumeNextTable's
+            // cross-page fallback means cells/rowCount/columnCount still
+            // describe the candidate's ORIGINAL (different) page, not this
+            // element's real one, so isGenuinelyTabular would be classifying
+            // unrelated content and could emit a critical "not tagged" (or an
+            // artifact) finding with a bounding box copied from another page.
+            if (
+              !matchingTable.pageReassigned &&
+              (matchingTable.structureRowCount ?? Infinity) <= 1 &&
+              (matchingTable.structureCellCount ?? Infinity) <= 1
+            ) {
+              matchingTable.isGenuinelyTabularDespiteTrivialMatch = this.isGenuinelyTabular(
+                matchingTable.cells, matchingTable.rowCount, matchingTable.columnCount
+              );
+            }
           }
         }
       }
@@ -1065,31 +1120,51 @@ class StructureAnalyzerService {
     table: TableInfo
   ): Promise<void> {
     try {
-      const kids = tableNode.get(PDFName.of('K'));
-      if (kids instanceof PDFArray) {
-        for (let i = 0; i < kids.size(); i++) {
-          const kid = kids.get(i);
-          const resolved = kid instanceof PDFDict ? kid : pdfDoc.context.lookup(kid);
-          if (resolved instanceof PDFDict) {
-            const typeRef = resolved.get(PDFName.of('S'));
-            const type = typeRef?.toString();
-            
-            if (type === '/THead') {
-              table.hasHeaderRow = true;
-            } else if (type === '/TH') {
-              table.hasHeaderRow = true;
-            } else if (type === '/TR') {
-              await this.checkRowForHeaders(resolved, pdfDoc, table);
-            } else if (type === '/TBody') {
-              // Recurse into TBody to find TR children
-              await this.checkTableHeaders(resolved, pdfDoc, table);
-            }
-          }
+      for (const resolved of this.resolveChildDicts(tableNode, pdfDoc)) {
+        const typeRef = resolved.get(PDFName.of('S'));
+        const type = typeRef?.toString();
+
+        if (type === '/TH') {
+          table.hasHeaderRow = true;
+        } else if (type === '/TR') {
+          table.structureRowCount = (table.structureRowCount ?? 0) + 1;
+          await this.checkRowForHeaders(resolved, pdfDoc, table);
+        } else if (type === '/THead' || type === '/TBody' || type === '/TFoot') {
+          // /THead also sets hasHeaderRow (its own TH descendants confirm
+          // that via checkRowForHeaders, but a /THead wrapping the header
+          // row is itself already a reliable signal) -- recurse the same as
+          // /TBody/TFoot so THead's own TR/cell children are counted too,
+          // instead of being silently skipped (CodeRabbit/Codex finding on
+          // PR #546: a real multi-cell THead + a trivial one-row TBody was
+          // undercounted to structureRowCount=1, wrongly tripping the
+          // trivial-table rule on a correctly-tagged table).
+          if (type === '/THead') table.hasHeaderRow = true;
+          await this.checkTableHeaders(resolved, pdfDoc, table);
         }
       }
     } catch (err) {
       console.warn('Failed to check table headers:', err instanceof Error ? err.message : 'Unknown error');
     }
+  }
+
+  /**
+   * Normalizes a structure element's `/K` entry into resolved child dicts,
+   * whether it's the common array form or the equally valid PDF32000
+   * singleton form (a lone dict/ref standing in for a one-element array) --
+   * CodeRabbit/Codex finding on PR #546: the previous `kids instanceof
+   * PDFArray` guard silently skipped every child of a table using the
+   * singleton form, leaving hasHeaderRow/structureRowCount/
+   * structureCellCount all unset (not merely undercounted) for such a table.
+   */
+  private resolveChildDicts(node: PDFDict, pdfDoc: PDFDocument): PDFDict[] {
+    const kids = node.get(PDFName.of('K'));
+    const raw = kids instanceof PDFArray ? kids.asArray() : kids ? [kids] : [];
+    const dicts: PDFDict[] = [];
+    for (const kid of raw) {
+      const resolved = kid instanceof PDFDict ? kid : pdfDoc.context.lookup(kid);
+      if (resolved instanceof PDFDict) dicts.push(resolved);
+    }
+    return dicts;
   }
 
   private async checkRowForHeaders(
@@ -1098,19 +1173,17 @@ class StructureAnalyzerService {
     table: TableInfo
   ): Promise<void> {
     try {
-      const kids = rowNode.get(PDFName.of('K'));
-      if (kids instanceof PDFArray) {
-        for (let i = 0; i < kids.size(); i++) {
-          const kid = kids.get(i);
-          const resolved = kid instanceof PDFDict ? kid : pdfDoc.context.lookup(kid);
-          if (resolved instanceof PDFDict) {
-            const typeRef = resolved.get(PDFName.of('S'));
-            const type = typeRef?.toString();
-            if (type === '/TH') {
-              table.hasHeaderRow = true;
-              return;
-            }
-          }
+      for (const resolved of this.resolveChildDicts(rowNode, pdfDoc)) {
+        const typeRef = resolved.get(PDFName.of('S'));
+        const type = typeRef?.toString();
+        // No early return on the first /TH -- structureCellCount needs
+        // every cell in the row counted, not just enough to confirm
+        // hasHeaderRow (see TableInfo.structureCellCount's doc comment).
+        if (type === '/TH' || type === '/TD') {
+          table.structureCellCount = (table.structureCellCount ?? 0) + 1;
+        }
+        if (type === '/TH') {
+          table.hasHeaderRow = true;
         }
       }
     } catch (err) {

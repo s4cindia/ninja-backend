@@ -44,6 +44,14 @@ export interface TableValidationResult {
     dataTables: number;
     /** Tables redirected to a formula suggestion instead of a table issue — see TABLE_LIKELY_FORMULA_CODE. */
     redirectedToFormula: number;
+    /**
+     * Tables whose matched /Table struct element turned out trivial (<=1 row,
+     * <=1 cell) but whose LAYOUT-detected content is genuinely tabular —
+     * routed to a "not tagged as a table" finding instead of "missing
+     * headers" or "should be artifact". See TableInfo.
+     * isGenuinelyTabularDespiteTrivialMatch's doc comment.
+     */
+    trivialMatchNotTagged: number;
   };
 }
 
@@ -120,9 +128,24 @@ class PDFTableValidator {
     let layoutTableCount = 0;
     let dataTableCount = 0;
     let redirectedToFormulaCount = 0;
+    let trivialMatchNotTaggedCount = 0;
 
     for (const table of structure.tables) {
       const pageSize = pageDims.get(table.pageNumber) ?? { width: 0, height: 0 };
+
+      // Checked before isLikelyMisclassifiedFormula (CodeRabbit finding on
+      // PR #546): that check's own bar (header-less, on a confirmed-formula
+      // page, implausible aspect ratio) can otherwise also match a
+      // genuinely tabular trivial-match table, redirecting it to a formula
+      // suggestion whose target element is the unrelated decorative box,
+      // not the real tabular content. The struct-tree-derived trivial-match
+      // signal is decisive ground truth (same rationale as detectLayoutTable's
+      // own early return below), so it takes priority over that heuristic.
+      if (table.isGenuinelyTabularDespiteTrivialMatch) {
+        trivialMatchNotTaggedCount++;
+        issues.push(this.buildTrivialMatchNotTaggedIssue(table, pageSize));
+        continue;
+      }
 
       if (this.isLikelyMisclassifiedFormula(table, confirmedFormulaPages)) {
         redirectedToFormulaCount++;
@@ -153,6 +176,7 @@ class PDFTableValidator {
       layoutTables: layoutTableCount,
       dataTables: dataTableCount,
       redirectedToFormula: redirectedToFormulaCount,
+      trivialMatchNotTagged: trivialMatchNotTaggedCount,
     };
 
     logger.info(`[PDFTableValidator] Validation complete - ${issues.length} issues found`);
@@ -242,12 +266,80 @@ class PDFTableValidator {
   }
 
   /**
+   * Build a "not tagged as a table" finding for LAYOUT-detected content
+   * that's genuinely tabular (isGenuinelyTabular) but whose matched /Table
+   * struct element is trivial (<=1 row, <=1 cell) — almost certainly an
+   * unrelated decorative caption/label box that consumeNextTable's
+   * positional pairing happened to pair with this content, not a real
+   * table skeleton. A trivial match corroborates nothing (unlike a genuine
+   * multi-row match), so this is functionally the same defect as a real
+   * data table with no /Table tagging at all: MATTERHORN-15-001, not
+   * "missing headers" (there's no real header row to promote) or "should
+   * be artifact" (the content isn't decorative).
+   */
+  private buildTrivialMatchNotTaggedIssue(
+    table: TableInfo,
+    pageSize: { width: number; height: number }
+  ): AuditIssue {
+    const tableDimensions = `${table.rowCount}×${table.columnCount}`;
+    return this.createIssue({
+      source: 'pdf-table',
+      severity: 'critical',
+      code: 'MATTERHORN-15-001',
+      message: `Table-like content on page ${table.pageNumber} (${tableDimensions}) is not tagged as a table`,
+      wcagCriteria: ['1.3.1'],
+      location: `Page ${table.pageNumber}, Table ${table.id}`,
+      suggestion:
+        'This content looks genuinely tabular, but the /Table structure element it matched is a trivial single-cell box unrelated to this grid — likely a decorative caption or label box mistakenly paired with it during structure analysis. Tag the actual grid as a real Table with TR/TH/TD elements.',
+      category: 'table-structure',
+      element: table.id,
+      context: `Table dimensions: ${tableDimensions}`,
+      pageNumber: table.pageNumber,
+      boundingBox: {
+        x: table.position.x,
+        y: table.position.y,
+        width: table.position.width,
+        height: table.position.height,
+        pageWidth: pageSize.width,
+        pageHeight: pageSize.height,
+      },
+    });
+  }
+
+  /**
    * Detect if a table is used for layout purposes
    *
    * @param table - Table information
    * @returns Layout table detection result
    */
   private detectLayoutTable(table: TableInfo): LayoutTableDetection {
+    // A decisive, direct signal, checked before any of the fuzzy heuristics
+    // below: the REAL matched /Table structure element itself is just one
+    // TR with one cell -- a bordered box wrapping a caption/label, not a
+    // real column grid. By the time this runs, validate() has already
+    // routed away the case where the LAYOUT-detected content is genuinely
+    // tabular despite this trivial match (isGenuinelyTabularDespiteTrivial
+    // Match -- that's a "not tagged as a table" defect, not a layout
+    // table), so only the true decorative-box case reaches here.
+    // rowCount/columnCount below come from LAYOUT-detected content and can
+    // badly overstate this (spatial clustering merges the caption with
+    // nearby prose/data into what looks like a multi-row shape); the "has
+    // a /Summary" and "large table" heuristics below can also independently
+    // overrule this (a decorative box can still carry a /Summary attribute)
+    // if folded into the same additive score, so this returns early with
+    // certainty instead of contributing points to it.
+    if (
+      table.structureMatched &&
+      (table.structureRowCount ?? Infinity) <= 1 &&
+      (table.structureCellCount ?? Infinity) <= 1
+    ) {
+      return {
+        isLayoutTable: true,
+        confidence: 0.95,
+        reasons: ['single-cell decorative box in structure tree'],
+      };
+    }
+
     const reasons: string[] = [];
     let layoutScore = 0;
 
