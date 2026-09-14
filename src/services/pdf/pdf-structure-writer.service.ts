@@ -710,18 +710,23 @@ export class PdfStructureWriterService {
    * elements to the target page (via resolveElementPageRef, since a direct
    * /Pg is often absent) and indexes into that page's list in document
    * order, mirroring pdfModifierService.setTableSummary's targeting.
+   *
+   * Returns both the dict and its ref -- renameElement/reparentElement/
+   * deleteElement all key off the ref, not the dict, so callers that need to
+   * mutate the element itself (not just read it, as fixSimpleTableHeaders
+   * originally only needed) require both.
    */
-  private findTargetTable(doc: PDFDocument, structRoot: PDFDict, elementId: string | undefined): PDFDict | null {
+  private findTargetTable(doc: PDFDocument, structRoot: PDFDict, elementId: string | undefined): { dict: PDFDict; ref: PDFRef } | null {
     const match = elementId?.match(/table_p(\d+)_(\d+)/);
     if (!match) return null;
     const targetPage = parseInt(match[1], 10);
     const targetIndex = parseInt(match[2], 10);
 
-    const allTables: PDFDict[] = [];
+    const allTables: Array<{ dict: PDFDict; ref: PDFRef }> = [];
     this.traverseStructTree(doc, structRoot, (node, ref) => {
       if (!ref) return;
       const sTag = node.get(PDFName.of('S'))?.toString().replace(/^\//, '');
-      if (sTag === 'Table') allTables.push(node);
+      if (sTag === 'Table') allTables.push({ dict: node, ref });
     });
 
     let pageRef: PDFRef;
@@ -731,12 +736,12 @@ export class PdfStructureWriterService {
       return null;
     }
     const tablesOnPage = allTables.filter(t => {
-      const pg = this.resolveElementPageRef(doc, t);
+      const pg = this.resolveElementPageRef(doc, t.dict);
       // A confident (structure-tree-sourced) /Pg wins outright, matching or
       // not -- only fall back to MCID verification when there's no /Pg
       // anywhere in this table's own subtree to consult in the first place.
       if (pg) return pg.toString() === pageRef.toString();
-      return this.resolvesToPageViaMcid(doc, t, targetPage);
+      return this.resolvesToPageViaMcid(doc, t.dict, targetPage);
     });
 
     return tablesOnPage[targetIndex] ?? null;
@@ -777,8 +782,8 @@ export class PdfStructureWriterService {
 
     for (const issue of issues) {
       try {
-        const table = this.findTargetTable(doc, structRoot, issue.element);
-        if (!table) {
+        const target = this.findTargetTable(doc, structRoot, issue.element);
+        if (!target) {
           results.push({
             issueId: issue.id, success: false,
             before: 'unknown', after: 'unknown',
@@ -786,6 +791,7 @@ export class PdfStructureWriterService {
           });
           continue;
         }
+        const table = target.dict;
 
         // Find the first TR — may be a direct child OR nested inside THead/TBody
         let firstTR = this.findFirstChild(doc, table, 'TR');
@@ -838,6 +844,84 @@ export class PdfStructureWriterService {
           success: true,
           before: 'First-row cells tagged as TD',
           after: `Promoted ${fixedCellCount} TD cell(s) to TH with scope="Column"`,
+        });
+      } catch (err) {
+        results.push({
+          issueId: issue.id, success: false,
+          before: 'unknown', after: 'unknown',
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+
+    return results;
+  }
+
+  /**
+   * Mark a genuinely decorative /Table struct element as /Artifact instead
+   * (MATTERHORN-15-005). Targets the specific table each issue's id refers
+   * to via findTargetTable, same as fixSimpleTableHeaders -- these issues
+   * come from pdf-table.validator.ts's detectLayoutTable/
+   * isGenuinelyTabularDespiteTrivialMatch, which already confirms (against
+   * the real struct tree, not a fuzzy layout heuristic) that this specific
+   * element is a decorative box with no meaningful reading-order content to
+   * preserve, so a whole-tree sweep would be both unnecessary and wrong here
+   * (every other /Table on the page is a separate, unrelated finding).
+   *
+   * renameElement only changes /S -- MCID-safe by construction, no
+   * content-stream changes, matching the same guarantee fixSimpleTableHeaders
+   * and fixHeadingHierarchy already rely on.
+   *
+   * Resolves every issue's target ref in a first pass, BEFORE renaming any
+   * of them, then renames in a second pass -- unlike fixSimpleTableHeaders
+   * (which only ever touches TD/TH children, never a /Table's own /S),
+   * this method renames the /Table itself, which findTargetTable's
+   * positional "Nth /Table on this page" indexing depends on staying stable
+   * across the whole batch. Renaming eagerly, one issue at a time, would
+   * make an earlier issue's fix silently shift the index every LATER
+   * same-page issue resolves against (an already-renamed table no longer
+   * matches `sTag === 'Table'`), causing spurious "No Table element found"
+   * failures for real, otherwise-fixable tables -- confirmed live against
+   * Math_Kim (6 of 49 real cases failed this way before this two-pass split).
+   *
+   * @param issues - MATTERHORN-15-005 AuditIssues for a confirmed-decorative
+   *   trivial-struct-match table (see ai-analysis.service.ts's dispatch gate)
+   */
+  markTableAsArtifact(doc: PDFDocument, issues: AuditIssue[]): FixResult[] {
+    const structRoot = this.getStructTreeRoot(doc);
+    if (!structRoot) {
+      return issues.map(i => ({
+        issueId: i.id, success: false,
+        before: 'unknown', after: 'unknown',
+        error: 'No structure tree root found',
+      }));
+    }
+
+    const targets = issues.map(issue => ({
+      issue,
+      target: this.findTargetTable(doc, structRoot, issue.element),
+    }));
+
+    const results: FixResult[] = [];
+
+    for (const { issue, target } of targets) {
+      try {
+        if (!target) {
+          results.push({
+            issueId: issue.id, success: false,
+            before: 'unknown', after: 'unknown',
+            error: `No Table element found matching "${issue.element}"`,
+          });
+          continue;
+        }
+
+        this.renameElement(doc, target.ref, 'Artifact');
+
+        results.push({
+          issueId: issue.id,
+          success: true,
+          before: 'Tagged as Table (decorative box, no real column grid)',
+          after: 'Retagged as Artifact',
         });
       } catch (err) {
         results.push({
