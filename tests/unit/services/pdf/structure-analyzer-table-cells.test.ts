@@ -103,6 +103,61 @@ describe('structureAnalyzerService table cell extraction', () => {
     }
   }, 30000);
 
+  /**
+   * Regression coverage for TableCell.anchor (added for the Part B / Phase 1
+   * MATTERHORN-15-001 correlation spike -- see the plan at
+   * C:\Users\avrve\.claude\plans\delegated-prancing-candy.md). Anchors must
+   * use the SAME {x, baselineY} convention pdf-contrast-writer.service.ts's
+   * locateTextRun expects (raw PDF-space bottom-up baseline, i.e. the
+   * source TextItem's own transform[5] -- not TextItem.position.y, which
+   * this module deliberately flips to top-down for its own consumers). The
+   * grid here is drawn with pdf-lib's own drawText(x, y), which places text
+   * with its baseline directly at the given (bottom-up) y -- so a correct
+   * anchor should land close to the exact x/y each cell's text was drawn
+   * at, not the top-down-flipped position.y.
+   */
+  it('populates a {x, baselineY} anchor per cell, in locateTextRun\'s raw PDF-space convention', async () => {
+    const buffer = await buildGridPdf();
+    const parsedPdf = await pdfParserService.parseBuffer(buffer, 'grid-anchor.pdf');
+
+    try {
+      const structure = await structureAnalyzerService.analyzeStructure(parsedPdf, {
+        analyzeHeadings: false,
+        analyzeTables: true,
+        analyzeLists: false,
+        analyzeLinks: false,
+        analyzeReadingOrder: false,
+        analyzeLanguage: false,
+      });
+
+      const table = structure.tables[0];
+      // drawGrid: columns = [60, 200, 340]; row 0 drawn at y=500, each
+      // subsequent row 20pt lower (y -= 20 per row, bottom-up PDF space).
+      const expected: Array<{ row: number; column: number; x: number; y: number }> = [
+        { row: 0, column: 0, x: 60, y: 500 },
+        { row: 0, column: 2, x: 340, y: 500 },
+        { row: 2, column: 1, x: 200, y: 460 },
+        { row: 3, column: 2, x: 340, y: 440 },
+      ];
+
+      for (const { row, column, x, y } of expected) {
+        const cell = table.cells.find(c => c.row === row && c.column === column);
+        expect(cell?.anchor).toBeDefined();
+        expect(cell!.anchor!.x).toBeCloseTo(x, 0);
+        // A few points of tolerance for font metrics -- this is a real
+        // extraction, not exact arithmetic.
+        expect(Math.abs(cell!.anchor!.baselineY - y)).toBeLessThan(3);
+      }
+
+      // Every populated cell in a text-only grid like this one should have
+      // an anchor -- buildTableCells only ever pushes a cell after at least
+      // one TextItem was assigned to it.
+      expect(table.cells.every(c => c.anchor !== undefined)).toBe(true);
+    } finally {
+      await pdfParserService.close(parsedPdf);
+    }
+  }, 30000);
+
   it('marks row-0 cells as headers when tag data promotes hasHeaderRow after cells are built', async () => {
     const doc = await PDFDocument.create();
     await drawGrid(doc);
