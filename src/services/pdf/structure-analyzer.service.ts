@@ -70,6 +70,21 @@ export interface TableCell {
    * was assigned to it).
    */
   anchor?: { x: number; baselineY: number };
+  /**
+   * Every TextItem assigned to this cell (not just the first, which
+   * `anchor` alone captures) -- added for the MATTERHORN-15-001
+   * from-scratch retagger's Slice 2b: `cell.text` is often joined from
+   * MULTIPLE items (buildTableCells already does this), and each one can
+   * live in its own separate content-stream run (line wraps, a fraction's
+   * numerator/denominator, trailing punctuation on its own positioning-
+   * delimited run -- confirmed live via Slice 2a's diagnostic: only 45.7%
+   * of cells' full text was captured by matching the single item `anchor`
+   * points at). table-content-tagger.ts's matchCellRanges consumes this
+   * to match every item individually rather than assuming one run covers
+   * the whole cell. Same undefined-only-if-no-source-item caveat as
+   * `anchor`.
+   */
+  sourceItems?: TextItem[];
 }
 
 export interface TableInfo {
@@ -895,10 +910,10 @@ class StructureAnalyzerService {
 
     lines.forEach((line, rowIndex) => {
       const rowText: string[][] = columnPositions.map(() => []);
-      // Tracks the first TextItem assigned to each column in this row, so a
-      // cell's anchor position can be recovered without re-deriving it from
-      // the already-joined text.
-      const rowFirstItem: (TextItem | undefined)[] = columnPositions.map(() => undefined);
+      // Tracks every TextItem assigned to each column in this row, so a
+      // cell's anchor (first item) and full source-item list can both be
+      // recovered without re-deriving them from the already-joined text.
+      const rowItems: TextItem[][] = columnPositions.map(() => []);
 
       for (const item of line.items) {
         const roundedX = Math.round(item.position.x / 10) * 10;
@@ -912,14 +927,13 @@ class StructureAnalyzerService {
           }
         }
         rowText[columnIndex].push(item.text);
-        if (!rowFirstItem[columnIndex]) {
-          rowFirstItem[columnIndex] = item;
-        }
+        rowItems[columnIndex].push(item);
       }
 
       rowText.forEach((texts, columnIndex) => {
         if (texts.length === 0) return;
-        const firstItem = rowFirstItem[columnIndex];
+        const items = rowItems[columnIndex];
+        const firstItem = items[0];
         cells.push({
           row: rowIndex,
           column: columnIndex,
@@ -928,6 +942,7 @@ class StructureAnalyzerService {
           rowSpan: 1,
           colSpan: 1,
           anchor: firstItem ? { x: firstItem.position.x, baselineY: firstItem.transform[5] } : undefined,
+          sourceItems: items.length > 0 ? items : undefined,
         });
       });
     });
