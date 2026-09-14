@@ -192,8 +192,13 @@ export function matchCellRanges(
  */
 function namedFormMcids(doc: PDFDocument, pageNumber: number, content: string): Set<number> | null {
   const page = doc.getPage(pageNumber - 1);
-  const resourcesRaw = page.node.get(PDFName.of('Resources'));
-  const resources = resourcesRaw instanceof PDFRef ? doc.context.lookup(resourcesRaw) : resourcesRaw;
+  // /Resources is an inheritable page-tree attribute -- a page can omit it
+  // locally and rely on a /Pages ancestor's copy. A direct page.node.get()
+  // would miss that and wrongly bail below. page.node.Resources() (pdf-lib)
+  // walks the page tree via getInheritableAttribute/ascend, matching how
+  // a real PDF consumer resolves it (CodeRabbit finding on PR #550,
+  // confirmed real via pdf-lib's own source).
+  const resources = page.node.Resources();
   const propsRaw = resources instanceof PDFDict ? resources.get(PDFName.of('Properties')) : undefined;
   const props = propsRaw instanceof PDFRef ? doc.context.lookup(propsRaw) : propsRaw;
 
@@ -285,6 +290,13 @@ export interface InsertedSpan {
  * content-stream.ts and pdf-contrast-writer.service.ts's own splice logic)
  * so an earlier insertion's offset never gets invalidated by a later one.
  */
+// Conservative bare-PDF-name allowlist for the tag actually interpolated
+// into inserted content-stream text. PDF name syntax technically permits
+// far more (via #XX hex escapes), but every real caller of this function
+// only ever needs plain struct-tree tag names (Span, P, TD, TH, ...) --
+// scoping validation to what's actually used, not full PDF name escaping.
+const SAFE_TAG_RE = /^[A-Za-z][A-Za-z0-9]*$/;
+
 export function insertMarkedContentSpans(
   doc: PDFDocument,
   pageNumber: number,
@@ -293,10 +305,48 @@ export function insertMarkedContentSpans(
 ): InsertedSpan[] {
   if (requests.length === 0) return [];
 
+  if (!SAFE_TAG_RE.test(tag)) {
+    // Interpolated directly into the inserted BDC text below -- an
+    // unvalidated tag containing PDF delimiters/whitespace could inject
+    // malformed or unintended content-stream tokens (CodeRabbit finding on
+    // PR #550, confirmed real: only ever called with the default 'Span'
+    // today, but the public signature accepts any string).
+    throw new Error(`insertMarkedContentSpans: unsafe tag "${tag}" -- must match ${SAFE_TAG_RE}.`);
+  }
+
+  const content = decodePageContent(doc, pageNumber);
+  if (content === null) {
+    throw new Error(`insertMarkedContentSpans: no readable content stream for page ${pageNumber}`);
+  }
+
   // Checking only sorted-adjacent pairs is sufficient (not just cheaper
   // than all-pairs): for sorted non-overlapping-and-non-touching intervals,
-  // transitivity guarantees no non-adjacent pair overlaps either.
+  // transitivity guarantees no non-adjacent pair overlaps either. Validated
+  // BEFORE this check runs (immediately below) since the overlap
+  // comparisons assume well-formed, in-bounds integers.
   const ordered = [...requests].sort((a, b) => a.range.start - b.range.start);
+
+  for (const { range } of ordered) {
+    // String.slice silently clamps/coerces out-of-range or non-integer
+    // indices instead of throwing -- an upstream bug (bad match data, bad
+    // merge logic) could otherwise corrupt the content stream instead of
+    // failing loudly, inconsistent with this function's own "bail rather
+    // than guess" convention used everywhere else here (CodeRabbit finding
+    // on PR #550, confirmed real).
+    if (
+      !Number.isInteger(range.start) ||
+      !Number.isInteger(range.end) ||
+      range.start < 0 ||
+      range.start >= range.end ||
+      range.end > content.length
+    ) {
+      throw new Error(
+        `insertMarkedContentSpans: invalid range [${range.start},${range.end}) for page ${pageNumber} ` +
+        `(content length ${content.length}).`
+      );
+    }
+  }
+
   for (let i = 1; i < ordered.length; i++) {
     const prev = ordered[i - 1].range;
     const cur = ordered[i].range;
@@ -307,11 +357,6 @@ export function insertMarkedContentSpans(
         `caller (which cell genuinely owns this content), not guessed here.`
       );
     }
-  }
-
-  const content = decodePageContent(doc, pageNumber);
-  if (content === null) {
-    throw new Error(`insertMarkedContentSpans: no readable content stream for page ${pageNumber}`);
   }
 
   const existingMcids = pageContentMcids(doc, pageNumber) ?? new Set<number>();

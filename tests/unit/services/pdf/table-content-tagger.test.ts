@@ -157,6 +157,29 @@ function addNamedFormMcid(doc: PDFDocument, pageNumber: number, name: string, mc
   writePageContent(doc, pageNumber, `${original}\nq /Span /${name} BDC\nQ EMC\n`);
 }
 
+/**
+ * Same shape as addNamedFormMcid, but places the /Properties entry on the
+ * page's /Pages ANCESTOR's /Resources instead of the page's own dict, and
+ * removes the page's own /Resources entirely -- reproducing the inheritable-
+ * attribute case namedFormMcids's page.node.Resources() fix (CodeRabbit
+ * finding on PR #550) exists for: a page can legally omit /Resources
+ * locally and rely on inheriting an ancestor's copy.
+ */
+function addInheritedNamedFormMcid(doc: PDFDocument, pageNumber: number, name: string, mcid: number): void {
+  const page = doc.getPage(pageNumber - 1);
+  const parent = page.node.Parent();
+  if (!parent) throw new Error('test setup: page has no /Pages parent');
+
+  page.node.delete(PDFName.of('Resources'));
+
+  const propsDict = doc.context.obj({ [name]: doc.context.obj({ MCID: mcid }) });
+  const resourcesDict = doc.context.obj({ Properties: propsDict });
+  parent.set(PDFName.of('Resources'), resourcesDict);
+
+  const original = decodePageContent(doc, pageNumber)!;
+  writePageContent(doc, pageNumber, `${original}\nq /Span /${name} BDC\nQ EMC\n`);
+}
+
 /** Walks pdfjs's includeMarkedContent item stream, joining shown text under each MCID (format p{objId}_mc{mcid}). */
 function extractTextByMcid(textContent: { items: unknown[] }): Map<number, string> {
   const byMcid = new Map<number, string>();
@@ -353,6 +376,63 @@ describe('insertMarkedContentSpans', () => {
 
     expect(() => insertMarkedContentSpans(doc, 1, [{ range: { start: match.start, end: match.lastShowEnd } }]))
       .toThrow(/named-properties-resource/);
+  });
+
+  /**
+   * Regression for a real CodeRabbit finding on PR #550: /Resources is an
+   * inheritable page-tree attribute. A page that omits it locally (relying
+   * on a /Pages ancestor's copy) previously made namedFormMcids see no
+   * /Resources at all, wrongly bailing (or missing a real MCID) instead of
+   * resolving the inherited one.
+   */
+  it('resolves a named-properties-resource MCID inherited from a /Pages ancestor, not just a page-local /Resources', async () => {
+    const doc = await realPdfWithLines([{ text: 'FooLine', x: 50, y: 500 }]);
+    addInheritedNamedFormMcid(doc, 1, 'P0', 9);
+
+    const content = decodePageContent(doc, 1)!;
+    const match = locateTextRun(content, { x: 50, baselineY: 500 })!;
+    const spans = insertMarkedContentSpans(doc, 1, [{ range: { start: match.start, end: match.lastShowEnd } }]);
+
+    expect(spans[0].mcid).toBe(10);
+  });
+
+  /**
+   * Regression for a real CodeRabbit finding on PR #550: String.slice
+   * silently clamps/coerces malformed offsets instead of throwing, so an
+   * upstream bug in match/merge logic could otherwise corrupt the content
+   * stream instead of failing loudly.
+   */
+  it('rejects an out-of-bounds or malformed range rather than corrupting the content stream', async () => {
+    const doc = await realPdfWithLines([{ text: 'FooLine', x: 50, y: 500 }]);
+    const content = decodePageContent(doc, 1)!;
+
+    expect(() => insertMarkedContentSpans(doc, 1, [{ range: { start: 0, end: content.length + 1000 } }]))
+      .toThrow(/invalid range/);
+    expect(() => insertMarkedContentSpans(doc, 1, [{ range: { start: -1, end: 5 } }]))
+      .toThrow(/invalid range/);
+    expect(() => insertMarkedContentSpans(doc, 1, [{ range: { start: 10, end: 5 } }]))
+      .toThrow(/invalid range/);
+    expect(() => insertMarkedContentSpans(doc, 1, [{ range: { start: 0.5, end: 5 } }]))
+      .toThrow(/invalid range/);
+
+    // The page's content stream must be untouched after every rejected call.
+    expect(decodePageContent(doc, 1)).toBe(content);
+  });
+
+  /**
+   * Regression for a real CodeRabbit finding on PR #550: the optional `tag`
+   * is interpolated directly into the inserted BDC text with no validation
+   * -- a tag containing PDF delimiters/whitespace could inject malformed or
+   * unintended content-stream tokens.
+   */
+  it('rejects an unsafe tag rather than interpolating it unvalidated into the content stream', async () => {
+    const doc = await realPdfWithLines([{ text: 'FooLine', x: 50, y: 500 }]);
+    const content = decodePageContent(doc, 1)!;
+    const match = locateTextRun(content, { x: 50, baselineY: 500 })!;
+
+    expect(() => insertMarkedContentSpans(
+      doc, 1, [{ range: { start: match.start, end: match.lastShowEnd } }], 'Span >> BDC /Evil'
+    )).toThrow(/unsafe tag/);
   });
 
   it('returns an empty array for an empty request list without touching the page', async () => {
