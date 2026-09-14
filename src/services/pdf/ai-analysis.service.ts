@@ -742,6 +742,32 @@ class AiAnalysisService {
     if (TABLE_LAYOUT_CODES.has(code)) {
       const table = issue.element ? tableById.get(issue.element) : undefined;
       if (!table) return null;
+
+      // A trivial (<=1 row, <=1 cell) real struct match is decisive ground
+      // truth, not a fuzzy heuristic (see detectLayoutTable's own early
+      // return in pdf-table.validator.ts, which this mirrors) -- any
+      // MATTERHORN-15-005 issue reaching this dispatch already had the
+      // genuinely-tabular case routed to TABLE_NOT_TAGGED_CODES instead
+      // (isGenuinelyTabularDespiteTrivialMatch would be true there), so a
+      // trivial match here is confirmed decorative, not merely suspected by
+      // detectLayoutTable's other, fuzzier column/row/size scoring. Safe to
+      // auto-apply deterministically -- no AI call needed, same rationale as
+      // TABLE_HEADER_AUTO_FIX_CODES' eligible branch above.
+      if (
+        table.structureMatched &&
+        (table.structureRowCount ?? Infinity) <= 1 &&
+        (table.structureCellCount ?? Infinity) <= 1
+      ) {
+        return {
+          suggestionType: 'table-artifact-fix',
+          guidance: 'This table is a decorative single-cell box (confirmed via the real structure tree, not a real column grid) and will be retagged as an Artifact in the PDF structure tree.',
+          confidence: 0.9,
+          rationale: 'Structure-tree match is a trivial single-cell element -- confirmed decorative, not a genuine data table',
+          model: 'rule-based',
+          applyMode: 'apply-to-pdf',
+        };
+      }
+
       return this.analyzeTableLayout(issue, table);
     }
 
@@ -2090,7 +2116,28 @@ class AiAnalysisService {
     const elementById = new Map(auditIssues.map(i => [i.id, i.element ?? i.id]));
     const issueById = new Map(auditIssues.map(i => [i.id, i]));
 
-    const STRUCTURE_WRITER_TYPES = new Set(['heading-fix', 'list-fix', 'table-header-fix', 'bookmark-generate', 'heading-multiple-h1-fix', 'pdfua-identifier', 'color-contrast-fix', 'alt-text-decorative']);
+    // Batch every table-artifact-fix suggestion in THIS approval run into a
+    // single markTableAsArtifact call, before the main per-suggestion loop
+    // below touches anything -- that method renames the /Table struct
+    // element itself, which findTargetTable's positional "Nth /Table on
+    // this page" indexing depends on staying stable across the whole
+    // batch. Looping one issue per call (as every other structure-writer
+    // fix here does) would let an earlier same-page fix silently shift the
+    // index every later same-page lookup resolves against -- confirmed
+    // live against Math_Kim (6 of 49 real cases failed this way). See
+    // markTableAsArtifact's own doc comment for why a whole-document sweep
+    // isn't the fix instead (it would also touch MATTERHORN-15-001's boxes).
+    const tableArtifactIssues = approved
+      .filter(a => a.suggestionType === 'table-artifact-fix')
+      .map(a => issueById.get(a.issueId))
+      .filter((i): i is AuditIssue => !!i);
+    const tableArtifactResultById = new Map(
+      tableArtifactIssues.length > 0
+        ? pdfStructureWriterService.markTableAsArtifact(doc, tableArtifactIssues).map(r => [r.issueId, r] as const)
+        : []
+    );
+
+    const STRUCTURE_WRITER_TYPES = new Set(['heading-fix', 'list-fix', 'table-header-fix', 'table-artifact-fix', 'bookmark-generate', 'heading-multiple-h1-fix', 'pdfua-identifier', 'color-contrast-fix', 'alt-text-decorative']);
 
     let applied = 0;
     let failed = 0;
@@ -2122,6 +2169,15 @@ class AiAnalysisService {
           const results = pdfStructureWriterService.fixSimpleTableHeaders(doc, [originalIssue]);
           const r = results[0];
           modification = { success: r.success, description: r.after, error: r.error };
+        } else if (suggestionType === 'table-artifact-fix') {
+          // Already applied above, batched with every other table-artifact-fix
+          // suggestion in this same approval run -- see that batching's own
+          // comment for why (avoids the positional index drift a one-issue-
+          // at-a-time call would risk once an earlier same-page fix lands).
+          const r = tableArtifactResultById.get(issueId);
+          modification = r
+            ? { success: r.success, description: r.after, error: r.error }
+            : { success: false, error: 'table-artifact-fix result missing from batch' };
         } else if (suggestionType === 'bookmark-generate') {
           const result = pdfStructureWriterService.generateBookmarksFromHeadings(doc);
           modification = {
