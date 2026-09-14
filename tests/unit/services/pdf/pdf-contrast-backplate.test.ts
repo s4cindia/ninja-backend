@@ -3,33 +3,37 @@ import { computeBackplateRect, spliceBackplate } from '../../../../src/services/
 import { RENDER_SCALE } from '../../../../src/services/pdf/color-contrast-verification';
 
 describe('computeBackplateRect', () => {
-  it('converts a baseline-anchored, top-left-origin boundingBox to a bottom-left-origin re rect', () => {
+  it('converts a baseline-anchored, top-left-origin boundingBox to a bottom-left-origin re rect, padded for tier-0 probe coverage and descenders', () => {
     // Matches PdfContrastValidator.computeTextBoundingBox's convention:
     // y is the baseline (top-left terms), height is the font size the
     // glyph ascends by *above* that baseline.
     const rect = computeBackplateRect({ x: 100, y: 250, width: 80, height: 14, pageHeight: 700 });
     expect(rect.x).toBe(100);
-    // Bottom-left y of the baseline = pageHeight - boundingBox.y, and stays
-    // the rect's fixed bottom edge regardless of any height padding.
-    expect(rect.y).toBe(700 - 250);
-    expect(rect.width).toBe(80);
-    expect(rect.height).toBe(14);
+    // Bottom-left y of the baseline = pageHeight - boundingBox.y, minus a
+    // descender pad (30% of height) so the rect's bottom edge extends
+    // below the baseline rather than sitting exactly on it.
+    expect(rect.y).toBeCloseTo(700 - 250 - 14 * 0.3);
+    // Width grows by the tier-0 right-probe's own gap+width (4+6 canvas px).
+    expect(rect.width).toBeCloseTo(80 + 10 / RENDER_SCALE);
+    // Height grows by the tier-0 above-probe (5 canvas px) plus the descender pad.
+    expect(rect.height).toBeCloseTo(14 + 5 / RENDER_SCALE + 14 * 0.3);
   });
 
-  it('pads width/height up to the verification step\'s own canvas-space minimums, never down', () => {
+  it("pads width/height up to the verification step's own canvas-space minimums plus tier-0 probe coverage, never down", () => {
     // A tiny glyph box (e.g. a single punctuation mark) would otherwise be
     // narrower/shorter than what color-contrast-verification.ts actually
     // samples (10x6 canvas px at RENDER_SCALE) -- undersizing the backplate
     // would leave contaminated edge pixels visible to the re-verify step.
     const rect = computeBackplateRect({ x: 0, y: 100, width: 1, height: 1, pageHeight: 200 });
-    expect(rect.width).toBeCloseTo(10 / RENDER_SCALE);
-    expect(rect.height).toBeCloseTo(6 / RENDER_SCALE);
+    const flooredHeight = 6 / RENDER_SCALE;
+    expect(rect.width).toBeCloseTo((10 + 10) / RENDER_SCALE);
+    expect(rect.height).toBeCloseTo(flooredHeight + 5 / RENDER_SCALE + flooredHeight * 0.3);
   });
 
-  it('leaves width/height unpadded when they already exceed the minimums', () => {
+  it('still adds tier-0 probe coverage and descender padding when width/height already exceed the minimums', () => {
     const rect = computeBackplateRect({ x: 0, y: 100, width: 200, height: 20, pageHeight: 200 });
-    expect(rect.width).toBe(200);
-    expect(rect.height).toBe(20);
+    expect(rect.width).toBeCloseTo(200 + 10 / RENDER_SCALE);
+    expect(rect.height).toBeCloseTo(20 + 5 / RENDER_SCALE + 20 * 0.3);
   });
 });
 

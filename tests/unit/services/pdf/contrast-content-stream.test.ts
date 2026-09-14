@@ -474,7 +474,7 @@ ET
     const match = locateTextRun(twoLineStream, { x: 50, baselineY: 150 });
     const enclosing = locateEnclosingTextObject(twoLineStream, match!.start);
     expect(enclosing).toBeTruthy();
-    expect(enclosing!.ctm).toEqual({ a: 1, d: 1, e: 0, f: 0 });
+    expect(enclosing!.ctm).toEqual({ a: 1, d: 1, e: 0, f: 0, sheared: false });
   });
 
   it('tracks a cm concatenated before the text object', () => {
@@ -489,7 +489,7 @@ Q
     const match = locateTextRun(stream, { x: 120, baselineY: 470 }); // (50*2+10, 150*3+20)
     expect(match).toBeTruthy();
     const enclosing = locateEnclosingTextObject(stream, match!.start);
-    expect(enclosing!.ctm).toEqual({ a: 2, d: 3, e: 10, f: 20 });
+    expect(enclosing!.ctm).toEqual({ a: 2, d: 3, e: 10, f: 20, sheared: false });
   });
 
   it('accounts for a q/Q pair closed and reopened before the text object', () => {
@@ -510,11 +510,60 @@ Q
     const match = locateTextRun(stream, { x: 20, baselineY: 20 }); // (10*2, 10*2)
     expect(match).toBeTruthy();
     const enclosing = locateEnclosingTextObject(stream, match!.start);
-    expect(enclosing!.ctm).toEqual({ a: 2, d: 2, e: 0, f: 0 });
+    expect(enclosing!.ctm).toEqual({ a: 2, d: 2, e: 0, f: 0, sheared: false });
   });
 
   it('returns null when the given offset is not inside any BT…ET block', () => {
     const betweenBlocks = twoLineStream.indexOf('Q\nq') + 2; // between the two text objects
     expect(locateEnclosingTextObject(twoLineStream, betweenBlocks)).toBeNull();
+  });
+
+  it('returns null when a shear/rotation cm is in effect at the text object (would misplace an inverted backplate)', () => {
+    const stream = `q
+1 0.1 0 1 0 0 cm
+BT
+1 0 0 1 50 150 Tm
+<41> Tj
+ET
+Q
+`;
+    // locateTextRun's own anchor matching only uses a/d/e/f (this file's
+    // axis-aligned-only convention), so it still finds the run at (50,150)
+    // even though the CTM is sheared -- only locateEnclosingTextObject cares.
+    const match = locateTextRun(stream, { x: 50, baselineY: 150 });
+    expect(match).toBeTruthy();
+    expect(locateEnclosingTextObject(stream, match!.start)).toBeNull();
+  });
+
+  it('still resolves a CTM when a shear was applied and fully reverted (q/cm[shear]/Q) before the text object', () => {
+    const stream = `q
+1 0.1 0 1 0 0 cm
+Q
+q
+2 0 0 2 0 0 cm
+BT
+1 0 0 1 10 10 Tm
+<41> Tj
+ET
+Q
+`;
+    const match = locateTextRun(stream, { x: 20, baselineY: 20 }); // (10*2, 10*2)
+    expect(match).toBeTruthy();
+    const enclosing = locateEnclosingTextObject(stream, match!.start);
+    expect(enclosing!.ctm).toEqual({ a: 2, d: 2, e: 0, f: 0, sheared: false });
+  });
+
+  it('rejects a shear applied via c (not just b) on the cm operator', () => {
+    const stream = `q
+1 0 0.1 1 0 0 cm
+BT
+1 0 0 1 50 150 Tm
+<41> Tj
+ET
+Q
+`;
+    const match = locateTextRun(stream, { x: 50, baselineY: 150 });
+    expect(match).toBeTruthy();
+    expect(locateEnclosingTextObject(stream, match!.start)).toBeNull();
   });
 });

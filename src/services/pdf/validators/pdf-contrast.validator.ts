@@ -179,14 +179,16 @@ export const FLAT_VARIANCE_THRESHOLD = 0.02;
 // into the sample — safe to auto-cover with a solid rectangle) from "wildly
 // non-flat" (a real photo or illustration, where stamping an opaque box
 // behind the text is a visible, potentially jarring change that should stay
-// a human decision, not an auto-applied one). Deliberately conservative
-// starting point (4x FLAT_VARIANCE_THRESHOLD, still well under the 0.25 a
-// 50/50 black/white straddle produces per that constant's own doc comment)
-// — biased toward staying guidance-only when in doubt, matching this whole
-// subsystem's governing "every failure mode bails to success: false rather
-// than guessing" principle. Not yet tuned against a broad document sample;
-// revisit if real trials show it's too permissive or too conservative.
-export const BUSY_VARIANCE_THRESHOLD = 0.08;
+// a human decision, not an auto-applied one). Tuned against a real 214-issue
+// document sample (Math_Kim): every genuinely-uncertain case measured
+// 0.095-0.144, all confirmed by visual crop inspection to be plain-color
+// table cells contaminated by an adjacent border rule, not photos — none
+// anywhere near the 0.25 a 50/50 black/white straddle produces (that
+// constant's own doc comment). The original 0.08 (4x FLAT_VARIANCE_THRESHOLD)
+// excluded every one of them, so this whole tier measured 0 real-world wins.
+// 0.15 covers that full measured range with headroom while staying well
+// under the photo-level-chaos reference point.
+export const BUSY_VARIANCE_THRESHOLD = 0.15;
 
 // sampleBackgroundRobust searches this many "tiers" of increasing distance
 // before giving up. Tier 0 is the original tight candidates (~5-10px);

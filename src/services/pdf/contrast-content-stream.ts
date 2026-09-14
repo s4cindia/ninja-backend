@@ -358,11 +358,31 @@ export interface EnclosingTextObject {
  * not happen for a genuine `TextRunMatch`, but this module makes no
  * assumption about caller correctness).
  */
+// b/c non-zero beyond this is treated as a genuine shear/rotation, not
+// floating-point noise from the content stream's own decimal formatting.
+const SHEAR_EPSILON = 1e-6;
+
 export function locateEnclosingTextObject(content: string, runStart: number): EnclosingTextObject | null {
   const tokens = tokenize(content);
 
-  type Ctm = { a: number; d: number; e: number; f: number };
-  let ctm: Ctm = { a: 1, d: 1, e: 0, f: 0 };
+  // CodeRabbit finding on PR #545: this module's a/d/e/f-only Ctm tracks
+  // scale+translate and silently drops a `cm`'s b/c (rotation/skew)
+  // operands -- fine for locateTextRun's anchor matching (a wrong anchor
+  // there just costs a match, not a wrong paint), but spliceBackplate
+  // inverts the returned ctm and draws a real rectangle through it: a local
+  // shear (possible even on a page with zero page-level rotation, e.g.
+  // `1 0.1 0 1 0 0 cm` before BT) silently becomes an identity inverse,
+  // painting a skewed or misplaced backplate. `sheared` is tracked as part
+  // of the CTM state itself (saved/restored by q/Q exactly like a/d/e/f) --
+  // a shear applied and then properly reverted via q/cm[shear]/Q before
+  // reaching btStart must NOT taint the result. Reject rather than guess
+  // when a shear IS still in effect at btStart, matching this whole
+  // subsystem's governing "bail to failure, don't guess" principle --
+  // support for genuinely sheared content is a real, separate undertaking
+  // (tracking and inverting the full 6-component affine matrix), not a
+  // quick fix.
+  type Ctm = { a: number; d: number; e: number; f: number; sheared: boolean };
+  let ctm: Ctm = { a: 1, d: 1, e: 0, f: 0, sheared: false };
   const ctmStack: Ctm[] = [];
   const operands: Array<{ t: string; v: string; start: number; end: number }> = [];
 
@@ -378,10 +398,16 @@ export function locateEnclosingTextObject(content: string, runStart: number): En
       case 'Q': { const p = ctmStack.pop(); if (p) ctm = { ...p }; break; }
       case 'cm': {
         const a = num(operands[operands.length - 6]);
+        const b = num(operands[operands.length - 5]);
+        const c = num(operands[operands.length - 4]);
         const d = num(operands[operands.length - 3]);
         const e = num(operands[operands.length - 2]);
         const f = num(operands[operands.length - 1]);
-        ctm = { a: ctm.a * a, d: ctm.d * d, e: ctm.a * e + ctm.e, f: ctm.d * f + ctm.f };
+        const thisOpSheared = Math.abs(b) > SHEAR_EPSILON || Math.abs(c) > SHEAR_EPSILON;
+        ctm = {
+          a: ctm.a * a, d: ctm.d * d, e: ctm.a * e + ctm.e, f: ctm.d * f + ctm.f,
+          sheared: ctm.sheared || thisOpSheared,
+        };
         break;
       }
       case 'BT': btStart = tk.start; btCtm = { ...ctm }; break;
@@ -391,7 +417,7 @@ export function locateEnclosingTextObject(content: string, runStart: number): En
     operands.length = 0;
   }
 
-  if (btStart === null || btCtm === null) return null;
+  if (btStart === null || btCtm === null || btCtm.sheared) return null;
   return { btStart, ctm: btCtm };
 }
 
