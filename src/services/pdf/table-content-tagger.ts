@@ -28,9 +28,10 @@
 // twice in this codebase (Seam-C's content-stream.ts, and this file's own
 // pdf-contrast-writer.service.ts).
 
-import { PDFDocument } from 'pdf-lib';
+import { PDFDocument, PDFName, PDFDict, PDFRef } from 'pdf-lib';
 import { locateTextRun, TextRunMatch } from './contrast-content-stream';
 import { decodePageContent, writePageContent, pageContentMcids } from './pdf-content-stream-io';
+import { tokenize } from '../zone-extractor/seam-c/content-stream';
 import type { TableCell } from './structure-analyzer.service';
 
 // Same threshold pdf-contrast-writer.service.ts applies fixes at -- below
@@ -164,6 +165,75 @@ export function matchCellRanges(
   return { status, ranges, matchedItemCount, totalItemCount: items.length };
 }
 
+/**
+ * pageContentMcids (pdf-content-stream-io.ts) only recognizes the inline
+ * `<<...>> BDC` form -- a real PDF can also open marked content via a named
+ * /Resources /Properties reference (`/Tag /PropertyName BDC`), and that
+ * property's own dict can carry /MCID just like an inline one would. Missing
+ * those makes nextMcid allocation below start too low and collide with an
+ * MCID this module simply couldn't see (Codex finding on PR #550, confirmed
+ * real). pageContentMcids's own doc comment already accepts this as a known
+ * gap for ITS original purpose -- there, a missed MCID just means "can't
+ * help this page-resolution fallback," never a wrong answer -- but that
+ * reasoning does not transfer here, where an incomplete set actively causes
+ * a real MCID collision, not just a missed opportunity.
+ *
+ * Resolves every named-form BDC's referenced property against this page's
+ * own /Resources /Properties directly, extracting the property's actual
+ * MCID value where present. Not reused from strip-marked-content.ts's
+ * resolvePagePropertyMcidStates: that function's return shape only carries
+ * a resolved/unresolved *state* per property name, discarding the numeric
+ * /MCID value this allocator needs to avoid a collision -- same detection
+ * logic (mirrors that module's own BDC-operand-shape check), different
+ * output. Returns null when any named-form BDC's property can't be
+ * confirmed either way (missing from /Properties, or /Properties/Resources
+ * absent altogether) -- bail rather than guess, matching this file's and
+ * this codebase's established convention throughout.
+ */
+function namedFormMcids(doc: PDFDocument, pageNumber: number, content: string): Set<number> | null {
+  const page = doc.getPage(pageNumber - 1);
+  const resourcesRaw = page.node.get(PDFName.of('Resources'));
+  const resources = resourcesRaw instanceof PDFRef ? doc.context.lookup(resourcesRaw) : resourcesRaw;
+  const propsRaw = resources instanceof PDFDict ? resources.get(PDFName.of('Properties')) : undefined;
+  const props = propsRaw instanceof PDFRef ? doc.context.lookup(propsRaw) : propsRaw;
+
+  // name -> its resolved /MCID value, or null if the property resolves but carries no /MCID.
+  const propertyMcid = new Map<string, number | null>();
+  if (props instanceof PDFDict) {
+    for (const [key, valueRaw] of props.entries()) {
+      const value = valueRaw instanceof PDFRef ? doc.context.lookup(valueRaw) : valueRaw;
+      const name = key instanceof PDFName ? key.decodeText() : String(key);
+      const mcidObj = value instanceof PDFDict ? value.get(PDFName.of('MCID')) : undefined;
+      const asNumber = mcidObj as { asNumber?: () => number } | undefined;
+      const n = asNumber && typeof asNumber.asNumber === 'function' ? asNumber.asNumber() : undefined;
+      propertyMcid.set(name, typeof n === 'number' ? n : null);
+    }
+  }
+
+  const tokens = tokenize(content);
+  const operands: ReturnType<typeof tokenize> = [];
+  const found = new Set<number>();
+
+  for (const tk of tokens) {
+    if (tk.t !== 'op') { operands.push(tk); continue; }
+    if (tk.v === 'BDC') {
+      // Inline-dict form's operand immediately before BDC is always `>>`;
+      // the named-properties-resource form is instead two plain names
+      // (tag, property) -- same shape check strip-marked-content.ts uses.
+      const propOperand = operands[operands.length - 1];
+      const tagOperand = operands[operands.length - 2];
+      if (propOperand?.t === 'name' && tagOperand?.t === 'name') {
+        const propName = propOperand.v.replace(/^\//, '');
+        if (!propertyMcid.has(propName)) return null; // unresolvable -- bail
+        const mcid = propertyMcid.get(propName);
+        if (mcid !== null && mcid !== undefined) found.add(mcid);
+      }
+    }
+    operands.length = 0;
+  }
+  return found;
+}
+
 export interface RangeInsertionRequest {
   range: ContentRange;
   /**
@@ -193,13 +263,22 @@ export interface InsertedSpan {
  * matchCellRanges, which merges WITHIN one cell's own ranges) -- this
  * function has no notion of which ranges came from the same cell, so
  * merging here could wrongly combine two different cells' adjacent content
- * under one MCID. Instead, any two requests with byte-identical ranges are
- * rejected outright (throws) rather than silently double-wrapped or
- * merged: Slice 2a's diagnostic found zero cross-cell range collisions in
- * a real sample, so this should be rare in practice; if it ever happens,
- * it needs resolution at the caller's level (which cell genuinely owns
- * this content), not a guess here -- matches this codebase's established
- * "bail rather than guess" convention for structure-tree mutation.
+ * under one MCID. Instead, any two requests whose ranges overlap OR touch
+ * (share a boundary) are rejected outright (throws) rather than silently
+ * double-wrapped, merged, or emitted with crossing BDC/EMC nesting --
+ * touching ranges are unsafe too, not just genuine overlaps: two
+ * insertions landing at the exact same byte offset (one range's `end`
+ * equalling another's `start`) have no correctness-preserving insertion
+ * order, since applying them at that shared offset can interleave one
+ * mark's close with the other's open (`BDC_A ... BDC_B ... EMC_A ... EMC_B`),
+ * which is invalid marked-content nesting regardless of insertion order
+ * (Codex finding on PR #550, confirmed real -- the original check only
+ * caught byte-IDENTICAL ranges, missing both the overlap and the touch
+ * case). Slice 2a's diagnostic found zero cross-cell range collisions in a
+ * real sample, so this should be rare in practice; if it ever happens, it
+ * needs resolution at the caller's level (which cell genuinely owns this
+ * content), not a guess here -- matches this codebase's established "bail
+ * rather than guess" convention for structure-tree mutation.
  *
  * All insertions for the page are collected first and applied strictly
  * right-to-left by byte offset (same proven discipline as Seam-C's
@@ -214,16 +293,20 @@ export function insertMarkedContentSpans(
 ): InsertedSpan[] {
   if (requests.length === 0) return [];
 
-  const seen = new Set<string>();
-  for (const req of requests) {
-    const key = `${req.range.start}:${req.range.end}`;
-    if (seen.has(key)) {
+  // Checking only sorted-adjacent pairs is sufficient (not just cheaper
+  // than all-pairs): for sorted non-overlapping-and-non-touching intervals,
+  // transitivity guarantees no non-adjacent pair overlaps either.
+  const ordered = [...requests].sort((a, b) => a.range.start - b.range.start);
+  for (let i = 1; i < ordered.length; i++) {
+    const prev = ordered[i - 1].range;
+    const cur = ordered[i].range;
+    if (cur.start <= prev.end) {
       throw new Error(
-        `insertMarkedContentSpans: two requested ranges are byte-identical (${key}) on page ${pageNumber} -- ` +
-        `this must be resolved by the caller (which cell genuinely owns this content), not guessed here.`
+        `insertMarkedContentSpans: requested ranges overlap or touch on page ${pageNumber} ` +
+        `([${prev.start},${prev.end}) and [${cur.start},${cur.end})) -- this must be resolved by the ` +
+        `caller (which cell genuinely owns this content), not guessed here.`
       );
     }
-    seen.add(key);
   }
 
   const content = decodePageContent(doc, pageNumber);
@@ -232,9 +315,16 @@ export function insertMarkedContentSpans(
   }
 
   const existingMcids = pageContentMcids(doc, pageNumber) ?? new Set<number>();
+  const namedForm = namedFormMcids(doc, pageNumber, content);
+  if (namedForm === null) {
+    throw new Error(
+      `insertMarkedContentSpans: page ${pageNumber} uses a named-properties-resource BDC form this module ` +
+      `can't confirm carries no MCID -- bailing rather than risking an MCID collision.`
+    );
+  }
+  for (const m of namedForm) existingMcids.add(m);
   let nextMcid = existingMcids.size > 0 ? Math.max(...existingMcids) + 1 : 0;
 
-  const ordered = [...requests].sort((a, b) => a.range.start - b.range.start);
   const spans: InsertedSpan[] = [];
   const insertions: Array<{ offset: number; text: string }> = [];
 

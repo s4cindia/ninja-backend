@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { PDFDocument, StandardFonts } from 'pdf-lib';
+import { PDFDocument, StandardFonts, PDFName, PDFDict, PDFRef } from 'pdf-lib';
 import {
   mergeRanges,
   matchCellRanges,
@@ -130,6 +130,33 @@ async function realPdfWithLines(lines: Array<{ text: string; x: number; y: numbe
   return PDFDocument.load(await src.save());
 }
 
+/**
+ * Adds a /Resources /Properties entry (name -> {MCID: mcid} or a
+ * no-MCID dict when `mcid` is null) to a page, and appends a named-form
+ * `/Span /{name} BDC ... EMC` marked-content sequence to its content
+ * stream -- the form pageContentMcids' inline-dict regex can't see at all,
+ * which namedFormMcids exists to resolve.
+ */
+function addNamedFormMcid(doc: PDFDocument, pageNumber: number, name: string, mcid: number | null): void {
+  const page = doc.getPage(pageNumber - 1);
+  const resourcesRaw = page.node.get(PDFName.of('Resources'));
+  const resources = resourcesRaw instanceof PDFRef ? doc.context.lookup(resourcesRaw) : resourcesRaw;
+  if (!(resources instanceof PDFDict)) throw new Error('test setup: page has no /Resources dict');
+
+  const props = resources.get(PDFName.of('Properties'));
+  let propsDict = props instanceof PDFRef ? doc.context.lookup(props) : props;
+  if (!(propsDict instanceof PDFDict)) {
+    propsDict = doc.context.obj({});
+    resources.set(PDFName.of('Properties'), propsDict as PDFDict);
+  }
+
+  const targetDict = mcid === null ? doc.context.obj({}) : doc.context.obj({ MCID: mcid });
+  (propsDict as PDFDict).set(PDFName.of(name), targetDict);
+
+  const original = decodePageContent(doc, pageNumber)!;
+  writePageContent(doc, pageNumber, `${original}\nq /Span /${name} BDC\nQ EMC\n`);
+}
+
 /** Walks pdfjs's includeMarkedContent item stream, joining shown text under each MCID (format p{objId}_mc{mcid}). */
 function extractTextByMcid(textContent: { items: unknown[] }): Map<number, string> {
   const byMcid = new Map<number, string>();
@@ -247,6 +274,85 @@ describe('insertMarkedContentSpans', () => {
     const range: ContentRange = { start: 10, end: 20 };
 
     expect(() => insertMarkedContentSpans(doc, 1, [{ range, id: 'a' }, { range: { ...range }, id: 'b' }])).toThrow();
+  });
+
+  /**
+   * Regression for a real Codex finding on PR #550: the original check only
+   * caught byte-IDENTICAL ranges. A genuine partial overlap between two
+   * different requests would have gone through, splicing crossing BDC/EMC
+   * nesting (`BDC_A ... BDC_B ... EMC_A ... EMC_B`) -- invalid regardless of
+   * insertion order.
+   */
+  it('rejects genuinely overlapping (non-identical) ranges rather than emitting crossing BDC/EMC nesting', async () => {
+    const doc = await realPdfWithLines([{ text: 'FooLine', x: 50, y: 500 }]);
+
+    expect(() => insertMarkedContentSpans(doc, 1, [
+      { range: { start: 10, end: 20 }, id: 'a' },
+      { range: { start: 15, end: 25 }, id: 'b' },
+    ])).toThrow(/overlap/);
+  });
+
+  /**
+   * Same finding: touching ranges (one's `end` equals the next's `start`)
+   * are unsafe too, not just genuine overlaps -- two insertions landing at
+   * the exact same byte offset have no correctness-preserving order.
+   */
+  it('rejects touching ranges (one range\'s end equals the next range\'s start)', async () => {
+    const doc = await realPdfWithLines([{ text: 'FooLine', x: 50, y: 500 }]);
+
+    expect(() => insertMarkedContentSpans(doc, 1, [
+      { range: { start: 10, end: 20 }, id: 'a' },
+      { range: { start: 20, end: 30 }, id: 'b' },
+    ])).toThrow(/overlap/);
+  });
+
+  /**
+   * Regression for the other real Codex finding on PR #550: pageContentMcids
+   * only recognizes the inline `<<...>> BDC` form. A page using the
+   * equally-valid named-properties-resource form (`/Tag /PropertyName BDC`)
+   * indirecting through a real, registered /Resources /Properties entry
+   * that itself carries /MCID could previously have its MCID silently
+   * missed, letting nextMcid start too low and collide with it.
+   */
+  it('extends MCID allocation past a named-properties-resource BDC form\'s own MCID, not just the inline-dict form', async () => {
+    const doc = await realPdfWithLines([{ text: 'FooLine', x: 50, y: 500 }]);
+    addNamedFormMcid(doc, 1, 'P0', 9);
+
+    const content = decodePageContent(doc, 1)!;
+    const match = locateTextRun(content, { x: 50, baselineY: 500 })!;
+    const spans = insertMarkedContentSpans(doc, 1, [{ range: { start: match.start, end: match.lastShowEnd } }]);
+
+    expect(spans[0].mcid).toBe(10);
+  });
+
+  it('does not bail on a named-properties-resource BDC form that resolves but carries no /MCID', async () => {
+    const doc = await realPdfWithLines([{ text: 'FooLine', x: 50, y: 500 }]);
+    addNamedFormMcid(doc, 1, 'OC0', null);
+
+    const content = decodePageContent(doc, 1)!;
+    const match = locateTextRun(content, { x: 50, baselineY: 500 })!;
+    const spans = insertMarkedContentSpans(doc, 1, [{ range: { start: match.start, end: match.lastShowEnd } }]);
+
+    expect(spans[0].mcid).toBe(0);
+  });
+
+  /**
+   * Same finding's other half: a named-form BDC referencing a property this
+   * module can't resolve (missing /Resources/Properties entirely here) must
+   * bail rather than risk allocating an MCID that collides with whatever
+   * that unresolvable property actually carries.
+   */
+  it('bails when a named-properties-resource BDC form references an unresolvable property', async () => {
+    const doc = await realPdfWithLines([{ text: 'FooLine', x: 50, y: 500 }]);
+
+    const original = decodePageContent(doc, 1)!;
+    writePageContent(doc, 1, `${original}\n/Span /P0 BDC\nq Q\nEMC\n`);
+
+    const content = decodePageContent(doc, 1)!;
+    const match = locateTextRun(content, { x: 50, baselineY: 500 })!;
+
+    expect(() => insertMarkedContentSpans(doc, 1, [{ range: { start: match.start, end: match.lastShowEnd } }]))
+      .toThrow(/named-properties-resource/);
   });
 
   it('returns an empty array for an empty request list without touching the page', async () => {
