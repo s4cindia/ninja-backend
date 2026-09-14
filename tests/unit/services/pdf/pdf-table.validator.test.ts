@@ -598,6 +598,32 @@ describe('PDFTableValidator', () => {
       // table without headers" test — unaffected by the new checks.
       expect(result.issues.some(i => i.code === 'MATTERHORN-15-002')).toBe(true);
     });
+
+    it('routes a genuinely tabular trivial match to MATTERHORN-15-001 even on a confirmed-formula page with an implausible aspect ratio', async () => {
+      // Regression for a real CodeRabbit finding: isLikelyMisclassifiedFormula
+      // ran BEFORE the trivial-match check, so a genuinely tabular trivial
+      // match on a confirmed-formula page with an implausible aspect ratio
+      // was redirected to TABLE-LIKELY-FORMULA-MISSING-ACTUALTEXT instead —
+      // targeting the unrelated decorative box, not the real tabular content.
+      const mockParsedPdf = createMockParsedPdf(true);
+      const table: TableInfo = {
+        ...createMockTable(9, 0, 3, 20, false, false, false), // same shape isLikelyMisclassifiedFormula's own tests use
+        structureRowCount: 1,
+        structureCellCount: 1,
+        isGenuinelyTabularDespiteTrivialMatch: true,
+      };
+      const mockStructure = createMockStructure([table]);
+
+      vi.mocked(pdfParserService.parse).mockResolvedValue(mockParsedPdf);
+      vi.mocked(structureAnalyzerService.analyzeStructure).mockResolvedValue(mockStructure);
+
+      const result = await pdfTableValidator.validate(mockParsedPdf, new Set([9]));
+
+      expect(result.metadata.redirectedToFormula).toBe(0);
+      expect(result.metadata.trivialMatchNotTagged).toBe(1);
+      expect(result.issues.some(i => i.code === TABLE_LIKELY_FORMULA_CODE)).toBe(false);
+      expect(result.issues.find(i => i.code === 'MATTERHORN-15-001')).toBeDefined();
+    });
   });
 });
 

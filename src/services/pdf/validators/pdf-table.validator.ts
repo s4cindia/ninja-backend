@@ -133,23 +133,23 @@ class PDFTableValidator {
     for (const table of structure.tables) {
       const pageSize = pageDims.get(table.pageNumber) ?? { width: 0, height: 0 };
 
-      if (this.isLikelyMisclassifiedFormula(table, confirmedFormulaPages)) {
-        redirectedToFormulaCount++;
-        issues.push(this.buildRedirectedFormulaIssue(table, pageSize));
-        continue;
-      }
-
-      // The matched /Table struct element is trivial (<=1 row, <=1 cell —
-      // see TableInfo.isGenuinelyTabularDespiteTrivialMatch), but the LAYOUT-
-      // detected content it was paired with genuinely looks tabular. The
-      // match provides no real corroboration here (unlike a genuine
-      // multi-row match), so this content is effectively untagged as a
-      // table, not "missing headers" (there's no real header row to add
-      // TH to) or "should be artifact" (it isn't decorative). Checked
-      // before detectLayoutTable, which only ever sees the decorative case.
+      // Checked before isLikelyMisclassifiedFormula (CodeRabbit finding on
+      // PR #546): that check's own bar (header-less, on a confirmed-formula
+      // page, implausible aspect ratio) can otherwise also match a
+      // genuinely tabular trivial-match table, redirecting it to a formula
+      // suggestion whose target element is the unrelated decorative box,
+      // not the real tabular content. The struct-tree-derived trivial-match
+      // signal is decisive ground truth (same rationale as detectLayoutTable's
+      // own early return below), so it takes priority over that heuristic.
       if (table.isGenuinelyTabularDespiteTrivialMatch) {
         trivialMatchNotTaggedCount++;
         issues.push(this.buildTrivialMatchNotTaggedIssue(table, pageSize));
+        continue;
+      }
+
+      if (this.isLikelyMisclassifiedFormula(table, confirmedFormulaPages)) {
+        redirectedToFormulaCount++;
+        issues.push(this.buildRedirectedFormulaIssue(table, pageSize));
         continue;
       }
 

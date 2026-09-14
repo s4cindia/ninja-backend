@@ -132,4 +132,102 @@ describe('structureAnalyzerService: trivial single-cell struct match detection',
     // th + td in row 1, td + td in row 2 = 4 total cells.
     expect(tableInfo.structureCellCount).toBe(4);
   });
+
+  /**
+   * Regression for a real CodeRabbit/Codex finding on PR #546: /THead sets
+   * hasHeaderRow but previously never recursed into its own /TR children
+   * (unlike /TBody, which did), so a genuinely well-tagged table with a
+   * multi-cell header row under /THead plus a trivial one-row /TBody was
+   * undercounted to structureRowCount=1/structureCellCount=1 -- wrongly
+   * tripping the trivial-table rule on a correctly-tagged table.
+   */
+  it('recurses into /THead the same as /TBody, so a real multi-cell header row is not miscounted as trivial', async () => {
+    const doc = await PDFDocument.create();
+    doc.addPage([400, 600]);
+    const pageRef = doc.getPages()[0].ref;
+    const th1 = doc.context.register(doc.context.obj({ S: PDFName.of('TH'), Pg: pageRef }));
+    const th2 = doc.context.register(doc.context.obj({ S: PDFName.of('TH'), Pg: pageRef }));
+    const headerTr = doc.context.register(doc.context.obj({ S: PDFName.of('TR'), K: [th1, th2] }));
+    const thead = doc.context.register(doc.context.obj({ S: PDFName.of('THead'), K: [headerTr] }));
+    const td = doc.context.register(doc.context.obj({ S: PDFName.of('TD'), Pg: pageRef }));
+    const bodyTr = doc.context.register(doc.context.obj({ S: PDFName.of('TR'), K: [td] }));
+    const tbody = doc.context.register(doc.context.obj({ S: PDFName.of('TBody'), K: [bodyTr] }));
+    const tableDict = doc.context.register(doc.context.obj({ S: PDFName.of('Table'), K: [thead, tbody] }));
+    const documentDict = doc.context.obj({ S: PDFName.of('Document'), K: [tableDict] });
+    const structTreeRootDict = doc.context.obj({ Type: PDFName.of('StructTreeRoot'), K: [documentDict] });
+    doc.catalog.set(PDFName.of('StructTreeRoot'), doc.context.register(structTreeRootDict));
+
+    const tableInfo = makeTableInfo('table_p1_0', 1, genuinelyTabularCells(), 4, 3);
+    await structureAnalyzerAny.enhanceTablesFromTags({ pdfLibDoc: doc }, [tableInfo]);
+
+    expect(tableInfo.hasHeaderRow).toBe(true);
+    // 1 header row + 1 body row = 2 rows; 2 TH + 1 TD = 3 cells -- not the
+    // trivial (<=1, <=1) shape, so isGenuinelyTabularDespiteTrivialMatch
+    // must never even be computed for this correctly-tagged table.
+    expect(tableInfo.structureRowCount).toBe(2);
+    expect(tableInfo.structureCellCount).toBe(3);
+    expect(tableInfo.isGenuinelyTabularDespiteTrivialMatch).toBeUndefined();
+  });
+
+  /**
+   * Regression for a real Codex finding on PR #546: a valid PDF32000
+   * single-child /K representation (a lone dict/ref instead of a
+   * one-element array) previously made both walkers' `kids instanceof
+   * PDFArray` guard skip the node entirely, leaving hasHeaderRow/
+   * structureRowCount/structureCellCount all unset -- silently defeating
+   * the exact one-row/one-cell decorative box this whole feature targets.
+   */
+  it('handles a singleton (non-array) /K on both the Table and its TR, not just the array form', async () => {
+    const doc = await PDFDocument.create();
+    doc.addPage([400, 600]);
+    const pageRef = doc.getPages()[0].ref;
+    const td = doc.context.register(doc.context.obj({ S: PDFName.of('TD'), Pg: pageRef }));
+    // TR.K is a lone ref, not [ref] -- and so is Table.K below.
+    const trDict = doc.context.register(doc.context.obj({ S: PDFName.of('TR'), K: td }));
+    const tableDict = doc.context.register(doc.context.obj({ S: PDFName.of('Table'), K: trDict }));
+    const documentDict = doc.context.obj({ S: PDFName.of('Document'), K: [tableDict] });
+    const structTreeRootDict = doc.context.obj({ Type: PDFName.of('StructTreeRoot'), K: [documentDict] });
+    doc.catalog.set(PDFName.of('StructTreeRoot'), doc.context.register(structTreeRootDict));
+
+    const tableInfo = makeTableInfo('table_p1_0', 1, genuinelyTabularCells(), 4, 3);
+    await structureAnalyzerAny.enhanceTablesFromTags({ pdfLibDoc: doc }, [tableInfo]);
+
+    expect(tableInfo.structureRowCount).toBe(1);
+    expect(tableInfo.structureCellCount).toBe(1);
+    expect(tableInfo.isGenuinelyTabularDespiteTrivialMatch).toBe(true);
+  });
+
+  /**
+   * Regression for a real Codex finding on PR #546: consumeNextTable's
+   * cross-page fallback (pageReassigned) leaves cells/rowCount/columnCount
+   * describing the candidate's ORIGINAL (different) page, not the real
+   * struct element's page -- classifying them with isGenuinelyTabular would
+   * judge unrelated content and could emit a critical "not tagged" finding
+   * with a bounding box copied from another page entirely.
+   */
+  it('does not compute isGenuinelyTabularDespiteTrivialMatch for a pageReassigned (cross-page-fallback) match', async () => {
+    const doc = await PDFDocument.create();
+    doc.addPage([400, 600]); // page 1 -- has the only real /Table (trivial)
+    doc.addPage([400, 600]); // page 2 -- no real /Table at all
+    const pageRefs = doc.getPages().map(p => p.ref);
+
+    const td = doc.context.register(doc.context.obj({ S: PDFName.of('TD'), Pg: pageRefs[0] }));
+    const trDict = doc.context.register(doc.context.obj({ S: PDFName.of('TR'), K: [td] }));
+    const tableDict = doc.context.register(doc.context.obj({ S: PDFName.of('Table'), K: [trDict] }));
+    const documentDict = doc.context.obj({ S: PDFName.of('Document'), K: [tableDict] });
+    const structTreeRootDict = doc.context.obj({ Type: PDFName.of('StructTreeRoot'), K: [documentDict] });
+    doc.catalog.set(PDFName.of('StructTreeRoot'), doc.context.register(structTreeRootDict));
+
+    // Layout-detected on page 2 (which has no real /Table of its own), so it
+    // can only be consumed via the global-queue fallback onto page 1's table
+    // -- exactly the pageReassigned path.
+    const tableInfo = makeTableInfo('table_p2_0', 2, genuinelyTabularCells(), 4, 3);
+    await structureAnalyzerAny.enhanceTablesFromTags({ pdfLibDoc: doc }, [tableInfo]);
+
+    expect(tableInfo.structureMatched).toBe(true);
+    expect(tableInfo.pageReassigned).toBe(true);
+    expect(tableInfo.structureRowCount).toBe(1);
+    expect(tableInfo.structureCellCount).toBe(1);
+    expect(tableInfo.isGenuinelyTabularDespiteTrivialMatch).toBeUndefined();
+  });
 });
