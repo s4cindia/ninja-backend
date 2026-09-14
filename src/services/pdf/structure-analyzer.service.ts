@@ -1,6 +1,6 @@
 import { PDFDocument, PDFName, PDFDict, PDFArray, PDFString } from 'pdf-lib';
 import { pdfParserService, ParsedPDF } from './pdf-parser.service';
-import { textExtractorService, TextLine, TextBlock, DocumentText } from './text-extractor.service';
+import { textExtractorService, TextLine, TextBlock, TextItem, DocumentText } from './text-extractor.service';
 
 // detectTabularContent's minimum bar for a second (and beyond) column to
 // count as "genuinely part of the table" rather than rare incidental
@@ -57,6 +57,19 @@ export interface TableCell {
   isHeader: boolean;
   rowSpan: number;
   colSpan: number;
+  /**
+   * Position anchor of the cell's first text item, in the same
+   * {x, baselineY} convention pdf-contrast-writer.service.ts's
+   * locateTextRun expects: baselineY is the item's raw PDF-space
+   * (bottom-up) baseline -- i.e. its own transform[5], NOT
+   * TextItem.position.y, which this module deliberately flips to
+   * top-down for its own consumers (see processTextItem in
+   * text-extractor.service.ts). Populated by buildTableCells; undefined
+   * only if a cell somehow has no source TextItem (shouldn't happen in
+   * practice, since a cell is only ever pushed when at least one item
+   * was assigned to it).
+   */
+  anchor?: { x: number; baselineY: number };
 }
 
 export interface TableInfo {
@@ -882,6 +895,10 @@ class StructureAnalyzerService {
 
     lines.forEach((line, rowIndex) => {
       const rowText: string[][] = columnPositions.map(() => []);
+      // Tracks the first TextItem assigned to each column in this row, so a
+      // cell's anchor position can be recovered without re-deriving it from
+      // the already-joined text.
+      const rowFirstItem: (TextItem | undefined)[] = columnPositions.map(() => undefined);
 
       for (const item of line.items) {
         const roundedX = Math.round(item.position.x / 10) * 10;
@@ -895,10 +912,14 @@ class StructureAnalyzerService {
           }
         }
         rowText[columnIndex].push(item.text);
+        if (!rowFirstItem[columnIndex]) {
+          rowFirstItem[columnIndex] = item;
+        }
       }
 
       rowText.forEach((texts, columnIndex) => {
         if (texts.length === 0) return;
+        const firstItem = rowFirstItem[columnIndex];
         cells.push({
           row: rowIndex,
           column: columnIndex,
@@ -906,6 +927,7 @@ class StructureAnalyzerService {
           isHeader: (hasHeaderRow && rowIndex === 0) || (hasHeaderColumn && columnIndex === 0),
           rowSpan: 1,
           colSpan: 1,
+          anchor: firstItem ? { x: firstItem.position.x, baselineY: firstItem.transform[5] } : undefined,
         });
       });
     });
