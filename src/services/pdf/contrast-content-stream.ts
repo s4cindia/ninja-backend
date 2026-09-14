@@ -335,6 +335,92 @@ function findTextUnits(tokens: Token[]): TextUnit[] {
   return units;
 }
 
+export interface EnclosingTextObject {
+  /** Byte offset of the `BT` operator that opens the text object containing `runStart`. */
+  btStart: number;
+  /** The CTM (scale+translate only, matching this file's axis-aligned-only convention) in effect at `btStart`. */
+  ctm: { a: number; d: number; e: number; f: number };
+}
+
+/**
+ * Finds the `BT` that opens the text object containing byte offset
+ * `runStart` (typically a `TextRunMatch.start`/`end`), plus the CTM in
+ * effect at that point. `q`/`Q` — and therefore path-painting operators like
+ * `re`/`f` — are illegal inside `BT…ET` (PDF32000-1:2008 Annex A), so a
+ * caller wanting to draw something (e.g. a backplate rectangle) "behind" a
+ * located text run must insert it before the run's *enclosing* `BT`, not at
+ * the run's own start/end — this locates that insertion point. The CTM is
+ * returned so the caller can counteract it (e.g. via its own `q [inverse]
+ * cm ... Q` wrapper) and draw in plain device-space coordinates regardless
+ * of whatever transform is already ambient at the insertion point.
+ *
+ * Returns null if `runStart` isn't actually inside a `BT…ET` block (should
+ * not happen for a genuine `TextRunMatch`, but this module makes no
+ * assumption about caller correctness).
+ */
+// b/c non-zero beyond this is treated as a genuine shear/rotation, not
+// floating-point noise from the content stream's own decimal formatting.
+const SHEAR_EPSILON = 1e-6;
+
+export function locateEnclosingTextObject(content: string, runStart: number): EnclosingTextObject | null {
+  const tokens = tokenize(content);
+
+  // CodeRabbit finding on PR #545: this module's a/d/e/f-only Ctm tracks
+  // scale+translate and silently drops a `cm`'s b/c (rotation/skew)
+  // operands -- fine for locateTextRun's anchor matching (a wrong anchor
+  // there just costs a match, not a wrong paint), but spliceBackplate
+  // inverts the returned ctm and draws a real rectangle through it: a local
+  // shear (possible even on a page with zero page-level rotation, e.g.
+  // `1 0.1 0 1 0 0 cm` before BT) silently becomes an identity inverse,
+  // painting a skewed or misplaced backplate. `sheared` is tracked as part
+  // of the CTM state itself (saved/restored by q/Q exactly like a/d/e/f) --
+  // a shear applied and then properly reverted via q/cm[shear]/Q before
+  // reaching btStart must NOT taint the result. Reject rather than guess
+  // when a shear IS still in effect at btStart, matching this whole
+  // subsystem's governing "bail to failure, don't guess" principle --
+  // support for genuinely sheared content is a real, separate undertaking
+  // (tracking and inverting the full 6-component affine matrix), not a
+  // quick fix.
+  type Ctm = { a: number; d: number; e: number; f: number; sheared: boolean };
+  let ctm: Ctm = { a: 1, d: 1, e: 0, f: 0, sheared: false };
+  const ctmStack: Ctm[] = [];
+  const operands: Array<{ t: string; v: string; start: number; end: number }> = [];
+
+  let btStart: number | null = null;
+  let btCtm: Ctm | null = null;
+
+  for (const tk of tokens) {
+    if (tk.start >= runStart) break;
+    if (tk.t !== 'op') { operands.push(tk); continue; }
+    const op = tk.v;
+    switch (op) {
+      case 'q': ctmStack.push({ ...ctm }); break;
+      case 'Q': { const p = ctmStack.pop(); if (p) ctm = { ...p }; break; }
+      case 'cm': {
+        const a = num(operands[operands.length - 6]);
+        const b = num(operands[operands.length - 5]);
+        const c = num(operands[operands.length - 4]);
+        const d = num(operands[operands.length - 3]);
+        const e = num(operands[operands.length - 2]);
+        const f = num(operands[operands.length - 1]);
+        const thisOpSheared = Math.abs(b) > SHEAR_EPSILON || Math.abs(c) > SHEAR_EPSILON;
+        ctm = {
+          a: ctm.a * a, d: ctm.d * d, e: ctm.a * e + ctm.e, f: ctm.d * f + ctm.f,
+          sheared: ctm.sheared || thisOpSheared,
+        };
+        break;
+      }
+      case 'BT': btStart = tk.start; btCtm = { ...ctm }; break;
+      case 'ET': btStart = null; btCtm = null; break;
+      default: break;
+    }
+    operands.length = 0;
+  }
+
+  if (btStart === null || btCtm === null || btCtm.sheared) return null;
+  return { btStart, ctm: btCtm };
+}
+
 /**
  * Finds the text run whose anchor is closest to `target`, within
  * `tolerancePt`. Returns null if nothing is close enough. Flags `ambiguous`

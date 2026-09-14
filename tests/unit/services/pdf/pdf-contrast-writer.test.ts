@@ -5,6 +5,7 @@ import { locateTextRun } from '../../../../src/services/pdf/contrast-content-str
 import { decodePageContent } from '../../../../src/services/pdf/pdf-content-stream-io';
 import { pdfAuditService } from '../../../../src/services/pdf/pdf-audit.service';
 import { verifyContrastInRegion } from '../../../../src/services/pdf/color-contrast-verification';
+import { BUSY_VARIANCE_THRESHOLD } from '../../../../src/services/pdf/validators/pdf-contrast.validator';
 import type { AuditIssue } from '../../../../src/services/audit/base-audit.service';
 
 // Wraps the real implementation by default (most tests exercise genuine
@@ -272,6 +273,94 @@ describe('PdfContrastWriterService.fixColorContrast', () => {
     expect(result.error).toContain('Could not confidently measure');
     const afterContent = decodePageContent(doc, 1)!;
     expect(afterContent).toBe(beforeContent); // reverted despite the mocked ratio nominally "passing"
+  });
+
+  it('draws a backplate and reports success when the background is only moderately non-uniform', async () => {
+    // Both text-color escalations fail the same way (uncertain), but this
+    // time with a variance comfortably under BUSY_VARIANCE_THRESHOLD (0.15)
+    // -- e.g. a subtle gradient or a neighboring element's edge bleeding
+    // into the sample, not a real photo/illustration. The writer should
+    // fall back to a backplate rather than giving up.
+    const mockVerify = vi.mocked(verifyContrastInRegion);
+    mockVerify.mockClear();
+    mockVerify
+      .mockResolvedValueOnce({ ratio: 3.0, passes: false, foreground: '#888888', background: '#ffffff', uncertain: true, variance: 0.05 })
+      .mockResolvedValueOnce({ ratio: 6.0, passes: false, foreground: '#000000', background: '#ffffff', uncertain: true, variance: 0.05 })
+      .mockResolvedValueOnce({ ratio: 18.0, passes: true, foreground: '#000000', background: '#ffffff', uncertain: false, variance: 0.001 });
+
+    const doc = await realPdfWithText(60, 450, 14, { bold: false });
+    const originalReport = await pdfAuditService.runAuditFromBuffer(
+      Buffer.from(await doc.save()), 'writer-test-backplate-success', 'test.pdf', 'custom', ['contrast']
+    );
+    const issue = originalReport.issues.find(i => i.code === 'COLOR-CONTRAST')!;
+
+    const result = await pdfContrastWriterService.fixColorContrast(doc, issue);
+
+    expect(mockVerify).toHaveBeenCalledTimes(3);
+    expect(result.success).toBe(true);
+    expect(result.after).toContain('backplate');
+    expect(result.after).toContain('verified 18:1');
+
+    const content = decodePageContent(doc, 1)!;
+    expect(content).toContain(' re\nf\nQ'); // the backplate's own fill sequence landed in the page
+    expect(content).toContain('Tj'); // original text-show op still present, untouched
+  });
+
+  it('leaves a genuinely busy background as guidance-only rather than stamping a backplate over it', async () => {
+    // Same shape as the moderate-variance case above, but variance is well
+    // past BUSY_VARIANCE_THRESHOLD (0.15) -- a real photo/illustration, not
+    // a subtle gradient. The backplate must never even be attempted here:
+    // stamping an opaque box behind text on a busy background is a visible,
+    // potentially jarring change that should stay a human decision.
+    const mockVerify = vi.mocked(verifyContrastInRegion);
+    mockVerify.mockClear();
+    mockVerify
+      .mockResolvedValueOnce({ ratio: 3.0, passes: false, foreground: '#888888', background: '#ffffff', uncertain: true, variance: 0.5 })
+      .mockResolvedValueOnce({ ratio: 6.0, passes: false, foreground: '#000000', background: '#ffffff', uncertain: true, variance: 0.5 });
+
+    const doc = await realPdfWithText(60, 450, 14, { bold: false });
+    const originalReport = await pdfAuditService.runAuditFromBuffer(
+      Buffer.from(await doc.save()), 'writer-test-backplate-skipped-busy', 'test.pdf', 'custom', ['contrast']
+    );
+    const issue = originalReport.issues.find(i => i.code === 'COLOR-CONTRAST')!;
+    const beforeContent = decodePageContent(doc, 1)!;
+
+    const result = await pdfContrastWriterService.fixColorContrast(doc, issue);
+
+    // Exactly 2 calls -- proves the backplate path was skipped outright,
+    // not attempted and then separately failed (which would be 3 calls).
+    expect(mockVerify).toHaveBeenCalledTimes(2);
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('Could not confidently measure');
+    const afterContent = decodePageContent(doc, 1)!;
+    expect(afterContent).toBe(beforeContent);
+  });
+
+  it('backplates a variance measured against a real Math_Kim document (table-border-contaminated cell, not a photo)', async () => {
+    // Regression for the live-validation finding that set BUSY_VARIANCE_
+    // THRESHOLD to 0.15: every genuinely-uncertain case measured on that
+    // 214-issue document sample fell in 0.095-0.144 (a table row's border
+    // rule sitting in the tier-0 probe, not a photo) -- the prior 0.08
+    // excluded all of them, so this whole tier measured 0 real-world wins.
+    expect(BUSY_VARIANCE_THRESHOLD).toBe(0.15);
+
+    const mockVerify = vi.mocked(verifyContrastInRegion);
+    mockVerify.mockClear();
+    mockVerify
+      .mockResolvedValueOnce({ ratio: 3.0, passes: false, foreground: '#888888', background: '#ffffff', uncertain: true, variance: 0.1272 })
+      .mockResolvedValueOnce({ ratio: 6.0, passes: false, foreground: '#000000', background: '#ffffff', uncertain: true, variance: 0.1272 })
+      .mockResolvedValueOnce({ ratio: 18.0, passes: true, foreground: '#000000', background: '#ffffff', uncertain: false, variance: 0.001 });
+
+    const doc = await realPdfWithText(60, 450, 14, { bold: false });
+    const originalReport = await pdfAuditService.runAuditFromBuffer(
+      Buffer.from(await doc.save()), 'writer-test-backplate-real-variance', 'test.pdf', 'custom', ['contrast']
+    );
+    const issue = originalReport.issues.find(i => i.code === 'COLOR-CONTRAST')!;
+
+    const result = await pdfContrastWriterService.fixColorContrast(doc, issue);
+
+    expect(result.success).toBe(true);
+    expect(result.after).toContain('backplate');
   });
 
   it('fails gracefully when the issue has no contrastData', async () => {

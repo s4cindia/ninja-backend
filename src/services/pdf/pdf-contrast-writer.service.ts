@@ -58,9 +58,11 @@ import { PDFDocument } from 'pdf-lib';
 import { AuditIssue } from '../audit/base-audit.service';
 import { logger } from '../../lib/logger';
 import { decodePageContent, writePageContent } from './pdf-content-stream-io';
-import { locateTextRun } from './contrast-content-stream';
+import { locateTextRun, locateEnclosingTextObject } from './contrast-content-stream';
 import { computeCompliantColor } from './color-contrast-correction';
 import { verifyContrastInRegion } from './color-contrast-verification';
+import { computeBackplateRect, spliceBackplate } from './pdf-contrast-backplate';
+import { BUSY_VARIANCE_THRESHOLD } from './validators/pdf-contrast.validator';
 import type { FixResult } from './pdf-structure-writer.service';
 
 // Independent safety gate — enforced here regardless of what a caller (the
@@ -75,9 +77,15 @@ const MIN_APPLY_CONFIDENCE = 0.80;
 // so passing it as the target forces computeCompliantColor's own black/white
 // fallback path. Reused here rather than re-deriving "which extreme is
 // better against this background" independently.
-const EXTREME_TARGET_RATIO = 21;
+// Exported so pdf-contrast-backplate.ts can request the same theoretical-
+// maximum ratio when computing a backplate color against the original text
+// foreground — same rationale as this constant's own use below (forces
+// computeCompliantColor's black/white fallback path).
+export const EXTREME_TARGET_RATIO = 21;
 
-function hexToUnitRgb(hex: string): [number, number, number] {
+// Exported for pdf-contrast-backplate.ts — single source of truth for the
+// hex -> unit-RGB conversion the `rg` operator needs.
+export function hexToUnitRgb(hex: string): [number, number, number] {
   const clean = hex.replace(/^#/, '');
   const round4 = (n: number) => Math.round(n * 10000) / 10000;
   return [
@@ -191,7 +199,7 @@ export class PdfContrastWriterService {
       const rewritten = spliceColorFix(content, match, match.internalFillColorOp, hexToUnitRgb(hex), originalRgb);
       writePageContent(doc, pageNumber, rewritten);
     };
-    const verify = async (): Promise<{ ratio: number; passes: boolean; uncertain: boolean } | null> => {
+    const verify = async (): Promise<{ ratio: number; passes: boolean; uncertain: boolean; variance: number } | null> => {
       const buffer = Buffer.from(await doc.save());
       return verifyContrastInRegion(buffer, pageNumber, boundingBox, cd.requiredRatio, cd.background);
     };
@@ -227,6 +235,46 @@ export class PdfContrastWriterService {
       appliedColor = computeCompliantColor(cd.foreground, cd.background, EXTREME_TARGET_RATIO).color;
       applyColor(appliedColor);
       verification = await verify();
+    }
+
+    // Third tier: recoloring text can never fix contrast against a
+    // background that can't be measured at all (moderate and extreme text
+    // colors above have both now failed for the same reason). A solid
+    // backplate rectangle behind the text turns that unmeasurable
+    // background into a known, flat one instead. Gated on how FAR into
+    // "uncertain" territory this specific region falls, not just the
+    // boolean: BUSY_VARIANCE_THRESHOLD separates a mildly non-uniform
+    // background (a subtle gradient, JPEG noise, a neighboring element's
+    // edge bleeding into the sample -- safe to auto-cover) from a
+    // genuinely busy one (a real photo/illustration, where stamping an
+    // opaque box is a visible, potentially jarring change that should stay
+    // a human decision). See BUSY_VARIANCE_THRESHOLD's own doc comment.
+    if (verification && verification.uncertain && verification.variance <= BUSY_VARIANCE_THRESHOLD) {
+      const enclosing = locateEnclosingTextObject(content, match.start);
+      const backplateColorHex = computeCompliantColor(cd.background, cd.foreground, EXTREME_TARGET_RATIO).color;
+      const rect = computeBackplateRect(boundingBox);
+      const spliced = enclosing ? spliceBackplate(content, enclosing, rect, hexToUnitRgb(backplateColorHex)) : null;
+
+      if (spliced) {
+        writePageContent(doc, pageNumber, spliced);
+        const backplateVerification = await verify();
+        if (backplateVerification && backplateVerification.passes && !backplateVerification.uncertain) {
+          logger.info(
+            `[ContrastWriter] Backplate ${backplateColorHex} behind original text verified ` +
+            `(${backplateVerification.ratio}:1) on page ${pageNumber}`
+          );
+          return {
+            issueId: issue.id,
+            success: true,
+            before,
+            after: `backplate ${backplateColorHex} behind original text (verified ${backplateVerification.ratio}:1)`,
+          };
+        }
+        // Backplate didn't verify either -- revert before falling through
+        // to the unchanged failure path below (which itself reverts again,
+        // harmlessly, from the same pristine `content`).
+        writePageContent(doc, pageNumber, content);
+      }
     }
 
     if (!verification || !verification.passes || verification.uncertain) {
