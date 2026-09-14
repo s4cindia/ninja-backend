@@ -107,6 +107,39 @@ export interface TableInfo {
    * (can't confirm which table the render described -- stays guidance-only).
    */
   tablesOnRealPage?: number;
+  /**
+   * Total TR count and total cell (TH+TD) count found by walking the REAL
+   * matched /Table structure element itself (checkTableHeaders/
+   * checkRowForHeaders) -- set only when structureMatched. Deliberately
+   * distinct from rowCount/columnCount, which come from LAYOUT-detected
+   * page content and can badly overstate a real struct element that's
+   * actually a trivial single-cell decorative box: Math_Kim has ~66 tables
+   * where layout clustering sees a multi-row/multi-column shape (a caption
+   * plus nearby prose/data merged by spatial proximity) but the struct
+   * tree's own /Table is genuinely just one TR with one cell wrapping the
+   * caption text alone -- a bordered box used for visual styling, not a
+   * real data table. detectLayoutTable (pdf-table.validator.ts) uses this
+   * signal to route such tables to the existing "should be Artifact"
+   * moderate path instead of flagging a serious MATTERHORN-15-002 that
+   * doesn't apply to a table with no real column grid at all.
+   */
+  structureRowCount?: number;
+  structureCellCount?: number;
+  /**
+   * Set only when structureRowCount/structureCellCount indicate a trivial
+   * (<=1 row, <=1 cell) real match: whether the LAYOUT-detected content
+   * (cells/rowCount/columnCount) itself looks genuinely tabular by the same
+   * content-based check the untagged branch already uses (isGenuinelyTabular).
+   * A trivial real match provides zero corroboration either way (unlike a
+   * genuine multi-row match, which is trusted unconditionally — see
+   * enhanceTablesFromTags' own doc comment), so this distinguishes two very
+   * different defects that both produce a trivial match: a real decorative
+   * caption box (isGenuinelyTabular false) vs. genuinely tabular content
+   * that's spuriously paired with an unrelated decorative box and is
+   * therefore effectively untagged as a table (isGenuinelyTabular true) —
+   * pdf-table.validator.ts routes each to different guidance.
+   */
+  isGenuinelyTabularDespiteTrivialMatch?: boolean;
 }
 
 export interface ListInfo {
@@ -985,6 +1018,15 @@ class StructureAnalyzerService {
             }
 
             await this.checkTableHeaders(node, pdfDoc, matchingTable);
+
+            // See isGenuinelyTabularDespiteTrivialMatch's own doc comment:
+            // only meaningful (and only worth the extra pass) when the real
+            // match itself turned out trivial.
+            if ((matchingTable.structureRowCount ?? Infinity) <= 1 && (matchingTable.structureCellCount ?? Infinity) <= 1) {
+              matchingTable.isGenuinelyTabularDespiteTrivialMatch = this.isGenuinelyTabular(
+                matchingTable.cells, matchingTable.rowCount, matchingTable.columnCount
+              );
+            }
           }
         }
       }
@@ -1079,6 +1121,7 @@ class StructureAnalyzerService {
             } else if (type === '/TH') {
               table.hasHeaderRow = true;
             } else if (type === '/TR') {
+              table.structureRowCount = (table.structureRowCount ?? 0) + 1;
               await this.checkRowForHeaders(resolved, pdfDoc, table);
             } else if (type === '/TBody') {
               // Recurse into TBody to find TR children
@@ -1106,9 +1149,14 @@ class StructureAnalyzerService {
           if (resolved instanceof PDFDict) {
             const typeRef = resolved.get(PDFName.of('S'));
             const type = typeRef?.toString();
+            // No early return on the first /TH -- structureCellCount needs
+            // every cell in the row counted, not just enough to confirm
+            // hasHeaderRow (see TableInfo.structureCellCount's doc comment).
+            if (type === '/TH' || type === '/TD') {
+              table.structureCellCount = (table.structureCellCount ?? 0) + 1;
+            }
             if (type === '/TH') {
               table.hasHeaderRow = true;
-              return;
             }
           }
         }

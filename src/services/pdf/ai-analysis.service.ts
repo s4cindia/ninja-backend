@@ -144,6 +144,16 @@ const TABLE_SCOPE_CODES = new Set(['MATTERHORN-15-004', 'TABLE-SCOPE-MISSING']);
 // data point -- see project memory) rather than a claim that resolves something it didn't.
 const TABLE_HEADER_AUTO_FIX_CODES = new Set(['MATTERHORN-15-002', 'TABLE-ACCESSIBILITY']);
 const TABLE_LAYOUT_CODES = new Set(['MATTERHORN-15-005', 'TABLE-LAYOUT-UNTAGGED']);
+// pdf-table.validator.ts's buildTrivialMatchNotTaggedIssue: genuinely tabular
+// LAYOUT-detected content whose matched /Table struct element turned out
+// trivial (a decorative box mistakenly paired with it, not a real column
+// grid). No mechanical fix is possible here -- there's no existing table
+// skeleton to promote TD->TH within, unlike TABLE_HEADER_AUTO_FIX_CODES'
+// eligible case -- a human needs to build real Table/TR/TH/TD tagging
+// around the actual grid from scratch. Fully deterministic (the exact
+// cause is already known from the struct-tree walk), so this is answered
+// with a rule-based guidance-only suggestion, no AI call needed.
+const TABLE_NOT_TAGGED_CODES = new Set(['MATTERHORN-15-001']);
 const LIST_CODES = new Set(['LIST-NOT-TAGGED', 'LIST-IMPROPER-MARKUP']);
 const READING_ORDER_CODES = new Set(['MATTERHORN-09-004', 'READING-ORDER-SUSPECT', 'READING-ORDER-COLUMN', 'READING-ORDER-RTOL']);
 const HEADING_CODES = new Set(['HEADING-SKIP', 'HEADING-MULTIPLE-H1', 'HEADING-NESTING', 'MATTERHORN-06-001']);
@@ -735,6 +745,12 @@ class AiAnalysisService {
       return this.analyzeTableLayout(issue, table);
     }
 
+    if (TABLE_NOT_TAGGED_CODES.has(code)) {
+      const table = issue.element ? tableById.get(issue.element) : undefined;
+      if (!table) return null;
+      return this.analyzeTableNotTagged(table);
+    }
+
     if (LIST_CODES.has(code)) {
       if (!page) return null;
       // For tagged PDFs, LIST-IMPROPER-MARKUP can be fixed by rewrapping LI elements
@@ -1259,6 +1275,33 @@ class AiAnalysisService {
       logger.warn(`[AiAnalysis] analyzeTableLayout failed: ${err instanceof Error ? err.message : String(err)}`);
       return null;
     }
+  }
+
+  /**
+   * MATTERHORN-15-001 via TABLE_NOT_TAGGED_CODES: genuinely tabular LAYOUT-
+   * detected content whose matched /Table struct element is trivial (a
+   * decorative box, not a real column grid) -- see pdf-table.validator.ts's
+   * buildTrivialMatchNotTaggedIssue. No AI call needed: the exact cause is
+   * already fully known from the struct-tree walk, and no mechanical fix is
+   * possible either -- unlike TABLE_HEADER_AUTO_FIX_CODES' TD->TH promotion,
+   * there's no existing table skeleton to promote within here at all, so
+   * this always stays guidance-only for a human to build real Table/TR/TH/TD
+   * tagging around the actual grid.
+   */
+  private analyzeTableNotTagged(table: TableInfo): AiSuggestionResult {
+    return {
+      suggestionType: 'table-not-tagged',
+      guidance:
+        `This ${table.rowCount}×${table.columnCount} region looks like real tabular data, but its matched ` +
+        `/Table structure element is a trivial single-cell box unrelated to this grid — most likely a decorative ` +
+        `caption or label box that structure analysis mistakenly paired with it. A human needs to add proper ` +
+        `Table/TR/TH/TD tagging around the actual grid content; this can't be done by promoting existing tags ` +
+        `since no real table skeleton exists to promote within.`,
+      confidence: 0.85,
+      rationale: 'Matched /Table struct element has <=1 row and <=1 cell, but the layout-detected content passes the genuinely-tabular content check',
+      model: 'rule-based',
+      applyMode: 'guidance-only',
+    };
   }
 
   private async analyzeList(
