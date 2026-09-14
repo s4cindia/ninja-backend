@@ -104,9 +104,8 @@ describe('structureAnalyzerService table cell extraction', () => {
   }, 30000);
 
   /**
-   * Regression coverage for TableCell.anchor (added for the Part B / Phase 1
-   * MATTERHORN-15-001 correlation spike -- see the plan at
-   * C:\Users\avrve\.claude\plans\delegated-prancing-candy.md). Anchors must
+   * Regression coverage for TableCell.anchor (added for the MATTERHORN-15-001
+   * from-scratch retagger's Phase 1 correlation spike). Anchors must
    * use the SAME {x, baselineY} convention pdf-contrast-writer.service.ts's
    * locateTextRun expects (raw PDF-space bottom-up baseline, i.e. the
    * source TextItem's own transform[5] -- not TextItem.position.y, which
