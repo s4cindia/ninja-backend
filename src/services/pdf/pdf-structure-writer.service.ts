@@ -936,21 +936,25 @@ export class PdfStructureWriterService {
    * with a gap at the front is exactly as broken as one with a gap in the
    * middle.
    *
-   * Does NOT touch /StructTreeRoot's /ParentTreeNextKey -- that's a
-   * DIFFERENT PDF mechanism entirely (assigning /StructParent keys to
-   * standalone objects like Link annotations, confirmed via
-   * zone-extractor/seam-c/struct-tree-builder.ts's own usage: it increments
-   * ParentTreeNextKey only for annotation keys, using each page's own index
-   * directly -- never derived from or affecting it -- for page-content
-   * keys). Page-content MCIDs are keyed by /StructParents, not by this
-   * counter.
+   * /StructTreeRoot's /ParentTreeNextKey is a DIFFERENT PDF mechanism
+   * (assigning /StructParent keys to standalone objects like Link
+   * annotations, confirmed via zone-extractor/seam-c/struct-tree-builder.ts's
+   * own usage) -- page-content MCIDs are keyed by /StructParents, not by
+   * this counter, so this method has no reason to read or write it EXCEPT
+   * when introducing a brand-new page key that could violate the counter's
+   * own "always greater than every key in the tree" invariant; see the
+   * new-page-entry path below. Never creates /ParentTreeNextKey from
+   * nothing, and never touches it when extending an ALREADY-existing
+   * page's array (that path introduces no new top-level key).
    *
-   * Deliberately does NOT handle a page's existing /ParentTree value being
-   * something OTHER than an array (e.g. a lone dict/ref for a page that
-   * historically used exactly one MCID) -- throws instead of inventing
-   * promotion-to-array logic nobody has confirmed is needed against a real
-   * target document. Revisit only if live validation (Slice 2d) actually
-   * hits this shape.
+   * Rejects (throws on) two /ParentTree shapes rather than handling them,
+   * both intentionally out of scope until live validation (Slice 2d)
+   * actually hits one: a page's existing /ParentTree value being something
+   * OTHER than an array (e.g. a lone dict/ref for a page that historically
+   * used exactly one MCID -- promoting it to array form is unverified
+   * guesswork), and a hierarchical /Kids number tree at the /ParentTree
+   * root (this codebase doesn't currently produce or need to read one;
+   * walking /Kids to the correct leaf is real, separate work).
    */
   extendParentTree(doc: PDFDocument, pageNumber: number, entries: Array<{ mcid: number; structElementRef: PDFRef }>): void {
     if (entries.length === 0) return;
@@ -990,6 +994,24 @@ export class PdfStructureWriterService {
       }
       numsArr = looked;
     } else {
+      // A number-tree node has EITHER /Kids (an intermediate/root node in a
+      // multi-level hierarchical tree -- real documents with very many
+      // pages use this to avoid one giant flat array) OR /Nums (a leaf
+      // node with actual key-value pairs), never both. Blindly adding an
+      // empty /Nums here when /Kids is already present would (a) never
+      // find any real existing page mapping, since those live under /Kids,
+      // not here, and (b) produce an invalid node carrying both keys.
+      // Walking /Kids to find the correct leaf is real, separate work --
+      // this codebase doesn't currently produce or need to read a
+      // hierarchical tree anywhere (Math_Kim's own /ParentTree is
+      // confirmed flat/Nums-only), so bail rather than guess, matching
+      // this method's other unsupported-shape checks (CodeRabbit/Codex
+      // finding on PR #551, confirmed real).
+      if (parentTreeDict.get(PDFName.of('Kids'))) {
+        throw new Error(
+          'extendParentTree: /StructTreeRoot /ParentTree uses a hierarchical /Kids number tree -- unsupported.'
+        );
+      }
       numsArr = doc.context.obj([]) as unknown as PDFArray;
       parentTreeDict.set(PDFName.of('Nums'), numsArr);
     }
@@ -1050,6 +1072,27 @@ export class PdfStructureWriterService {
     const valueArr = doc.context.obj(sorted.map(e => e.structElementRef));
     numsArr.insert(insertPos, valueArr);
     numsArr.insert(insertPos, PDFNumber.of(pageKey));
+
+    // /ParentTreeNextKey is documented as always greater than every key
+    // anywhere in the parent tree -- a separate mechanism (assigning
+    // /StructParent keys to standalone objects like Link annotations)
+    // relies on that invariant to hand out a guaranteed-unused key. This
+    // branch just introduced a brand-new pageKey; if it's >= the current
+    // counter, the invariant breaks and a later annotation-tagging
+    // operation could reuse pageKey, colliding with the mapping just
+    // written. Only ever RAISES an existing counter -- never creates one
+    // from nothing (this method has no business introducing a mechanism
+    // the document never used), and silently leaves a malformed (non-
+    // PDFNumber) existing value alone rather than treating an unrelated
+    // pre-existing quirk as this call's problem to fix (Codex finding on
+    // PR #551, confirmed real).
+    const nextKeyRaw = structRoot.get(PDFName.of('ParentTreeNextKey'));
+    if (nextKeyRaw) {
+      const nextKeyResolved = nextKeyRaw instanceof PDFRef ? doc.context.lookup(nextKeyRaw) : nextKeyRaw;
+      if (nextKeyResolved instanceof PDFNumber && pageKey >= nextKeyResolved.asNumber()) {
+        structRoot.set(PDFName.of('ParentTreeNextKey'), PDFNumber.of(pageKey + 1));
+      }
+    }
   }
 
   /**

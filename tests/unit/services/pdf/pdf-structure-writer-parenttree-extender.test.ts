@@ -187,4 +187,71 @@ describe('PdfStructureWriterService.extendParentTree', () => {
 
     expect(structRoot.get(PDFName.of('ParentTree'))).toBeUndefined();
   });
+
+  /**
+   * Regression for a real CodeRabbit/Codex finding on PR #551: a number-tree
+   * node has EITHER /Kids (a hierarchical intermediate/root node) OR /Nums
+   * (a leaf with real key-value pairs), never both. Blindly adding an empty
+   * /Nums beside an existing /Kids would (a) never find a real page mapping
+   * living under /Kids, and (b) produce an invalid node carrying both keys.
+   */
+  it('throws rather than adding a root /Nums beside an existing hierarchical /Kids tree', async () => {
+    const { doc, page } = await setup();
+    setStructParents(page, 0);
+    const kidRef = doc.context.register(doc.context.obj({ Nums: doc.context.obj([]) }));
+    attachStructTreeRoot(doc, {
+      ParentTree: doc.context.register(doc.context.obj({ Kids: doc.context.obj([kidRef]) })),
+    });
+
+    const elemRef = buildStructElem(doc);
+    expect(() => pdfStructureWriterService.extendParentTree(doc, 1, [{ mcid: 0, structElementRef: elemRef }])).toThrow(/hierarchical/);
+  });
+
+  /**
+   * Regression for a real Codex finding on PR #551: /ParentTreeNextKey must
+   * stay greater than every key in the parent tree (a separate mechanism --
+   * assigning /StructParent keys to annotations -- relies on that
+   * invariant). Introducing a brand-new page key >= the current counter
+   * must raise it, or a later annotation-tagging operation could reuse the
+   * same key.
+   */
+  it('raises /ParentTreeNextKey when a newly-inserted page key would violate its invariant', async () => {
+    const { doc, page } = await setup();
+    setStructParents(page, 5);
+    const structRoot = attachStructTreeRoot(doc, {
+      ParentTree: doc.context.register(doc.context.obj({ Nums: doc.context.obj([]) })),
+      ParentTreeNextKey: PDFNumber.of(3), // already <= the new key (5) -- must be raised
+    });
+
+    const elemRef = buildStructElem(doc);
+    pdfStructureWriterService.extendParentTree(doc, 1, [{ mcid: 0, structElementRef: elemRef }]);
+
+    expect((structRoot.get(PDFName.of('ParentTreeNextKey')) as PDFNumber).asNumber()).toBe(6);
+  });
+
+  it('does not touch /ParentTreeNextKey when extending an EXISTING page entry (no new top-level key introduced)', async () => {
+    const { doc, page } = await setup();
+    setStructParents(page, 0);
+    const elem0 = buildStructElem(doc);
+    const structRoot = attachStructTreeRoot(doc, {
+      ParentTree: doc.context.register(doc.context.obj({ Nums: doc.context.obj([PDFNumber.of(0), doc.context.obj([elem0])]) })),
+      ParentTreeNextKey: PDFNumber.of(1),
+    });
+
+    const elem1 = buildStructElem(doc);
+    pdfStructureWriterService.extendParentTree(doc, 1, [{ mcid: 1, structElementRef: elem1 }]);
+
+    expect((structRoot.get(PDFName.of('ParentTreeNextKey')) as PDFNumber).asNumber()).toBe(1);
+  });
+
+  it('does not invent /ParentTreeNextKey on a document that never had one', async () => {
+    const { doc, page } = await setup();
+    setStructParents(page, 0);
+    const structRoot = attachStructTreeRoot(doc); // no ParentTreeNextKey field at all
+
+    const elemRef = buildStructElem(doc);
+    pdfStructureWriterService.extendParentTree(doc, 1, [{ mcid: 0, structElementRef: elemRef }]);
+
+    expect(structRoot.get(PDFName.of('ParentTreeNextKey'))).toBeUndefined();
+  });
 });
