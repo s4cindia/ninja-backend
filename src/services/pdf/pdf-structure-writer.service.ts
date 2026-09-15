@@ -1178,6 +1178,29 @@ export class PdfStructureWriterService {
    * same-page batching contract. This slice validates exactly one table
    * per page; broader multi-table-per-page batching is Slice 2e's job.
    *
+   * Every entry's positioning anchor + parent is resolved and validated
+   * BEFORE either mutation phase (content-stream, then struct-tree) begins
+   * -- an entry that can't resolve is excluded from insertMarkedContentSpans
+   * entirely, never attempted then reported failed afterward. Content-stream
+   * mutation ahead of full validation previously meant a failed entry could
+   * leave orphan MCIDs with no owning struct element or /ParentTree mapping
+   * (CodeRabbit/Codex finding on PR #552, confirmed real). Full
+   * transactional rollback of a content-stream splice is real, separate work
+   * not worth building here -- preventing the mutation from starting for an
+   * entry that can't complete is simpler and just as correct. Every valid
+   * entry's TH cells also get a /Scope attribute derived independently from
+   * `hasHeaderRow`/`hasHeaderColumn` and the cell's own row/column (not from
+   * `isHeader` alone, which can't distinguish which case applies) -- per
+   * Matterhorn 07-002, PAC 2024 checks /Scope independently of the TH tag
+   * itself (same CodeRabbit/Codex review round). /ParentTree is extended
+   * ONCE per page across every entry's combined MCIDs, sorted by MCID --
+   * not once per entry -- since insertMarkedContentSpans assigns MCIDs in
+   * content-stream byte-offset order across the whole page's batch, not
+   * grouped by entry; two entries whose cells interleave in byte order could
+   * otherwise hand a single entry's own call a non-contiguous MCID subset,
+   * which extendParentTree correctly rejects even though the page's whole
+   * MCID sequence is internally consistent.
+   *
    * @param entries - MATTERHORN-15-001 AuditIssues paired with the
    *   corresponding LAYOUT-detected TableInfo (looked up via issue.element,
    *   which doubles as both the TableInfo's own id and the id
@@ -1219,31 +1242,6 @@ export class PdfStructureWriterService {
         continue;
       }
 
-      type CellPlan = { entryIndex: number; cellIndex: number; cell: TableCell; coverage: CellCoverageResult };
-      const cellPlans: CellPlan[] = [];
-      const requests: RangeInsertionRequest[] = [];
-
-      pageEntries.forEach((e, entryIndex) => {
-        e.table.cells.forEach((cell, cellIndex) => {
-          const coverage = matchCellRanges(pageContent!, cell);
-          cellPlans.push({ entryIndex, cellIndex, cell, coverage });
-          coverage.ranges.forEach((range, rangeIndex) => {
-            requests.push({ range, id: `${entryIndex}:${cellIndex}:${rangeIndex}` });
-          });
-        });
-      });
-
-      let inserted: InsertedSpan[];
-      try {
-        inserted = insertMarkedContentSpans(doc, pageNumber, requests);
-      } catch (err) {
-        for (const e of pageEntries) {
-          results.push({ issueId: e.issue.id, success: false, before: 'unknown', after: 'unknown', error: err instanceof Error ? err.message : String(err) });
-        }
-        continue;
-      }
-      const mcidById = new Map(inserted.map(s => [s.id!, s.mcid]));
-
       let pageRef: PDFRef;
       try {
         pageRef = doc.getPage(pageNumber - 1).ref;
@@ -1254,32 +1252,94 @@ export class PdfStructureWriterService {
         continue;
       }
 
-      // Resolve every entry's positioning anchor BEFORE mutating any of them
-      // -- findTargetTable's own "Nth /Table on this page" indexing depends
-      // on tree state staying stable within this call. This method also
-      // retags each resolved anchor away from /Table (see below), so a
-      // second entry's fresh re-walk could otherwise miss an anchor an
-      // earlier entry already retagged in the SAME call -- the identical
-      // lesson markTableAsArtifact already learned (PR #547).
-      const targets = pageEntries.map(e => ({ e, target: this.findTargetTable(doc, structRoot, e.issue.element) }));
-      const anyTarget = targets.some(t => t.target);
-      const nsRef = anyTarget ? this.getOrCreatePdf2Namespace(doc, structRoot) : null;
+      // Resolve and validate EVERY entry's positioning anchor + parent
+      // BEFORE any document mutation happens (content-stream or struct-tree)
+      // -- two things this protects against, both real findings on PR #552:
+      //  1. findTargetTable's own "Nth /Table on this page" indexing depends
+      //     on tree state staying stable within this call; this method also
+      //     retags each resolved anchor away from /Table later, so a second
+      //     entry's fresh re-walk could otherwise miss an anchor an earlier
+      //     entry already retagged in the SAME call -- the identical lesson
+      //     markTableAsArtifact already learned (PR #547).
+      //  2. insertMarkedContentSpans below WRITES to the content stream --
+      //     an entry whose anchor or parent can't be resolved must be
+      //     excluded from that call entirely, not attempted and reported
+      //     failed afterward. Real content-stream mutation ahead of full
+      //     validation previously meant a failed entry could still leave
+      //     orphan MCIDs in the content stream with no owning struct element
+      //     and no /ParentTree mapping -- a corrupted, partially-tagged
+      //     document, silently reported as just one more failed FixResult.
+      //     Full transactional rollback of a content-stream splice is real,
+      //     separate work not worth building here (CodeRabbit/Codex finding
+      //     on PR #552) -- preventing the mutation from ever starting for an
+      //     entry that can't complete is simpler and just as correct.
+      type ValidEntry = { entryIndex: number; e: { issue: AuditIssue; table: TableInfo }; targetRef: PDFRef; parentRaw: PDFRef };
+      const validEntries: ValidEntry[] = [];
+      pageEntries.forEach((e, entryIndex) => {
+        const target = this.findTargetTable(doc, structRoot, e.issue.element);
+        if (!target) {
+          results.push({ issueId: e.issue.id, success: false, before: 'unknown', after: 'unknown', error: `No positioning anchor found matching "${e.issue.element}"` });
+          return;
+        }
+        const parentRaw = target.dict.get(PDFName.of('P'));
+        if (!(parentRaw instanceof PDFRef)) {
+          results.push({ issueId: e.issue.id, success: false, before: 'unknown', after: 'unknown', error: 'Positioning anchor has no /P (parent) entry' });
+          return;
+        }
+        validEntries.push({ entryIndex, e, targetRef: target.ref, parentRaw });
+      });
 
-      targets.forEach(({ e, target }, entryIndex) => {
+      if (validEntries.length === 0) continue;
+
+      type CellPlan = { entryIndex: number; cellIndex: number; cell: TableCell; coverage: CellCoverageResult };
+      const cellPlans: CellPlan[] = [];
+      const requests: RangeInsertionRequest[] = [];
+
+      for (const ve of validEntries) {
+        ve.e.table.cells.forEach((cell, cellIndex) => {
+          const coverage = matchCellRanges(pageContent!, cell);
+          cellPlans.push({ entryIndex: ve.entryIndex, cellIndex, cell, coverage });
+          coverage.ranges.forEach((range, rangeIndex) => {
+            requests.push({ range, id: `${ve.entryIndex}:${cellIndex}:${rangeIndex}` });
+          });
+        });
+      }
+
+      // Only NOW does the content stream get rewritten -- every entry
+      // reaching this point already has a confirmed-resolvable anchor and
+      // parent.
+      let inserted: InsertedSpan[];
+      try {
+        inserted = insertMarkedContentSpans(doc, pageNumber, requests);
+      } catch (err) {
+        for (const ve of validEntries) {
+          results.push({ issueId: ve.e.issue.id, success: false, before: 'unknown', after: 'unknown', error: err instanceof Error ? err.message : String(err) });
+        }
+        continue;
+      }
+      const mcidById = new Map(inserted.map(s => [s.id!, s.mcid]));
+
+      const nsRef = this.getOrCreatePdf2Namespace(doc, structRoot);
+
+      // Collected across ALL of this page's valid entries and committed to
+      // /ParentTree in ONE call below, sorted by MCID -- not once per entry.
+      // insertMarkedContentSpans assigns MCIDs in content-stream byte-offset
+      // order across the WHOLE page's request batch, not grouped by which
+      // entry submitted them; if two entries' cells physically interleave in
+      // byte order, a single entry's own MCIDs are not guaranteed to form a
+      // contiguous run on their own, but extendParentTree requires each call
+      // to append an exactly-contiguous range. A per-entry call could
+      // incorrectly throw on a non-contiguous subset even though the WHOLE
+      // page's MCID sequence is internally consistent (CodeRabbit finding on
+      // PR #552, confirmed real).
+      const pageParentTreeEntries: Array<{ mcid: number; structElementRef: PDFRef }> = [];
+
+      for (const ve of validEntries) {
+        const { entryIndex, e, targetRef, parentRaw } = ve;
         try {
-          if (!target) {
-            results.push({ issueId: e.issue.id, success: false, before: 'unknown', after: 'unknown', error: `No positioning anchor found matching "${e.issue.element}"` });
-            return;
-          }
-          const parentRaw = target.dict.get(PDFName.of('P'));
-          if (!(parentRaw instanceof PDFRef)) {
-            results.push({ issueId: e.issue.id, success: false, before: 'unknown', after: 'unknown', error: 'Positioning anchor has no /P (parent) entry' });
-            return;
-          }
-
           const tableObj = doc.context.obj({ Type: PDFName.of('StructElem'), S: PDFName.of('Table'), P: parentRaw, Pg: pageRef });
           const tableRef = doc.context.register(tableObj as PDFDict);
-          this.insertIntoKidsAfter(doc, parentRaw, target.ref, tableRef);
+          this.insertIntoKidsAfter(doc, parentRaw, targetRef, tableRef);
 
           // Retag the spuriously-paired trivial box to /Artifact, same
           // operations markTableAsArtifact performs (renameElement + PDF2
@@ -1304,9 +1364,12 @@ export class PdfStructureWriterService {
           // spuriously paired with a decorative box (PR #546) -- that box is
           // exactly what MATTERHORN-15-005's existing fix already retags,
           // so it no longer sits around as an untouched leftover here either.
-          this.renameElement(doc, target.ref, 'Artifact');
-          target.dict.set(PDFName.of('NS'), nsRef!);
-          target.dict.delete(PDFName.of('K'));
+          const targetDict = doc.context.lookup(targetRef);
+          if (targetDict instanceof PDFDict) {
+            this.renameElement(doc, targetRef, 'Artifact');
+            targetDict.set(PDFName.of('NS'), nsRef);
+            targetDict.delete(PDFName.of('K'));
+          }
 
           const myCells = cellPlans.filter(cp => cp.entryIndex === entryIndex);
           const byRow = new Map<number, CellPlan[]>();
@@ -1316,7 +1379,6 @@ export class PdfStructureWriterService {
             byRow.set(cp.cell.row, list);
           }
 
-          const parentTreeEntries: Array<{ mcid: number; structElementRef: PDFRef }> = [];
           let cellCount = 0;
           let leafCount = 0;
 
@@ -1327,6 +1389,22 @@ export class PdfStructureWriterService {
               const cellTag = cp.cell.isHeader ? 'TH' : 'TD';
               const cellRef = this.createElement(doc, cellTag, trRef, pageRef);
               cellCount++;
+              if (cellTag === 'TH') {
+                // isHeader alone can't distinguish WHICH kind of header this
+                // is (CodeRabbit/Codex finding on PR #552) -- re-derive from
+                // the same two conditions structure-analyzer.service.ts's
+                // own isHeader formula ORs together
+                // ((hasHeaderRow && row===0) || (hasHeaderColumn &&
+                // column===0)), since both can independently be true for the
+                // same corner cell. Per Matterhorn 07-002, every TH needs a
+                // /Scope PAC 2024 checks independently of the tag itself --
+                // building a table with TH cells but no /Scope trades one
+                // accessibility failure for another.
+                const isRowHeaderCell = e.table.hasHeaderRow && cp.cell.row === 0;
+                const isColumnHeaderCell = e.table.hasHeaderColumn && cp.cell.column === 0;
+                const scope = isRowHeaderCell && isColumnHeaderCell ? 'Both' : isRowHeaderCell ? 'Column' : 'Row';
+                this.writeScopeAttribute(doc, cellRef, scope);
+              }
               cp.coverage.ranges.forEach((_, rangeIndex) => {
                 const id = `${entryIndex}:${cp.cellIndex}:${rangeIndex}`;
                 const mcid = mcidById.get(id);
@@ -1334,14 +1412,10 @@ export class PdfStructureWriterService {
                 const spanRef = this.createElement(doc, 'Span', cellRef, pageRef);
                 const spanDict = doc.context.lookup(spanRef);
                 if (spanDict instanceof PDFDict) spanDict.set(PDFName.of('K'), PDFNumber.of(mcid));
-                parentTreeEntries.push({ mcid, structElementRef: spanRef });
+                pageParentTreeEntries.push({ mcid, structElementRef: spanRef });
                 leafCount++;
               });
             }
-          }
-
-          if (parentTreeEntries.length > 0) {
-            this.extendParentTree(doc, pageNumber, parentTreeEntries);
           }
 
           results.push({
@@ -1353,7 +1427,12 @@ export class PdfStructureWriterService {
         } catch (err) {
           results.push({ issueId: e.issue.id, success: false, before: 'unknown', after: 'unknown', error: err instanceof Error ? err.message : String(err) });
         }
-      });
+      }
+
+      if (pageParentTreeEntries.length > 0) {
+        pageParentTreeEntries.sort((a, b) => a.mcid - b.mcid);
+        this.extendParentTree(doc, pageNumber, pageParentTreeEntries);
+      }
     }
 
     return results;

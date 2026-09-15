@@ -16,6 +16,7 @@
 import { describe, it, expect } from 'vitest';
 import { PDFDocument, PDFName, PDFDict, PDFArray, PDFRef, PDFNumber, StandardFonts } from 'pdf-lib';
 import { pdfStructureWriterService } from '../../../../src/services/pdf/pdf-structure-writer.service';
+import { decodePageContent, pageContentMcids } from '../../../../src/services/pdf/pdf-content-stream-io';
 import type { AuditIssue } from '../../../../src/services/audit/base-audit.service';
 import type { TableInfo, TableCell, TextItem } from '../../../../src/services/pdf/structure-analyzer.service';
 
@@ -152,6 +153,28 @@ function getKidsTags(doc: PDFDocument, parentRef: PDFRef): string[] {
     const dict = doc.context.lookup(ref as PDFRef) as PDFDict;
     return (dict.get(PDFName.of('S'))?.toString() ?? '?').replace(/^\//, '');
   });
+}
+
+/** Reads back the /Scope value from a struct element's /A (Table-owner attribute dict), if any. */
+function getScope(doc: PDFDocument, ref: PDFRef): string | undefined {
+  const dict = doc.context.lookup(ref) as PDFDict;
+  const aRaw = dict.get(PDFName.of('A'));
+  const aArr = aRaw instanceof PDFArray ? aRaw.asArray() : aRaw ? [aRaw] : [];
+  for (const item of aArr) {
+    const obj = item instanceof PDFRef ? doc.context.lookup(item) : item;
+    if (obj instanceof PDFDict && obj.get(PDFName.of('O'))?.toString() === '/Table') {
+      return obj.get(PDFName.of('Scope'))?.toString().replace(/^\//, '');
+    }
+  }
+  return undefined;
+}
+
+/** Finds the ref spliced in immediately after `afterRef` in `parentRef`'s /K array. */
+function findRefAfter(doc: PDFDocument, parentRef: PDFRef, afterRef: PDFRef): PDFRef {
+  const parent = doc.context.lookup(parentRef) as PDFDict;
+  const kids = (parent.get(PDFName.of('K')) as PDFArray).asArray();
+  const idx = kids.findIndex(r => (r as PDFRef).objectNumber === afterRef.objectNumber);
+  return kids[idx + 1] as PDFRef;
 }
 
 describe('PdfStructureWriterService.buildTableFromLayout', () => {
@@ -357,5 +380,156 @@ describe('PdfStructureWriterService.buildTableFromLayout', () => {
     const results = pdfStructureWriterService.buildTableFromLayout(doc, [{ issue: issueFor('table_p1_0'), table }]);
     expect(results[0].success).toBe(false);
     expect(results[0].error).toMatch(/structure tree/i);
+  });
+
+  /**
+   * Regression for CodeRabbit/Codex findings on PR #552: writes /Scope on
+   * every generated TH, derived from hasHeaderRow/hasHeaderColumn and the
+   * cell's own row/column independently -- not from isHeader alone, which
+   * ORs both conditions together and can't tell them apart. The (0,0)
+   * corner cell here satisfies BOTH conditions at once (Scope=Both); (0,1)
+   * satisfies only the header-row condition (Scope=Column); (1,0) satisfies
+   * only the header-column condition (Scope=Row); (1,1) is a plain TD.
+   */
+  it('writes the correct /Scope on generated TH cells, derived independently of isHeader', async () => {
+    const { doc, trivialBoxRef, parentRef } = await buildDocWithTrivialBoxAndSiblings([
+      { text: 'Corner', x: 50, y: 500 },
+      { text: 'ColHead', x: 200, y: 500 },
+      { text: 'RowHead', x: 50, y: 470 },
+      { text: 'Data', x: 200, y: 470 },
+    ]);
+
+    const cells: TableCell[] = [
+      cell(0, 0, [buildItem(50, 500, 'Corner')], true),
+      cell(0, 1, [buildItem(200, 500, 'ColHead')], true),
+      cell(1, 0, [buildItem(50, 470, 'RowHead')], true),
+      cell(1, 1, [buildItem(200, 470, 'Data')], false),
+    ];
+    const table = tableInfo({
+      id: 'table_p1_0', pageNumber: 1, cells, rowCount: 2, columnCount: 2,
+      hasHeaderRow: true, hasHeaderColumn: true,
+    });
+
+    const results = pdfStructureWriterService.buildTableFromLayout(doc, [{ issue: issueFor('table_p1_0'), table }]);
+    expect(results[0].success).toBe(true);
+
+    const newTableRef = findRefAfter(doc, parentRef, trivialBoxRef);
+    const newTable = doc.context.lookup(newTableRef) as PDFDict;
+    const trRefs = (newTable.get(PDFName.of('K')) as PDFArray).asArray() as PDFRef[];
+
+    const scopesByRowCol: Record<string, { tag: string; scope?: string }> = {};
+    trRefs.forEach((trRef, rowIdx) => {
+      const tr = doc.context.lookup(trRef) as PDFDict;
+      const cellRefs = (tr.get(PDFName.of('K')) as PDFArray).asArray() as PDFRef[];
+      cellRefs.forEach((cellRef, colIdx) => {
+        const cellDict = doc.context.lookup(cellRef) as PDFDict;
+        scopesByRowCol[`${rowIdx},${colIdx}`] = {
+          tag: (cellDict.get(PDFName.of('S'))?.toString() ?? '?').replace(/^\//, ''),
+          scope: getScope(doc, cellRef),
+        };
+      });
+    });
+
+    expect(scopesByRowCol['0,0']).toEqual({ tag: 'TH', scope: 'Both' });
+    expect(scopesByRowCol['0,1']).toEqual({ tag: 'TH', scope: 'Column' });
+    expect(scopesByRowCol['1,0']).toEqual({ tag: 'TH', scope: 'Row' });
+    expect(scopesByRowCol['1,1']).toEqual({ tag: 'TD', scope: undefined });
+  });
+
+  /**
+   * Regression for CodeRabbit/Codex findings on PR #552: an entry whose
+   * positioning anchor can't be resolved must be excluded from
+   * insertMarkedContentSpans entirely -- never attempted then reported
+   * failed afterward, which would otherwise leave orphan MCIDs in the
+   * content stream with no owning struct element or /ParentTree mapping.
+   * Confirms this at the level that actually matters: the second (valid)
+   * entry on the same page still succeeds, and exactly ONE MCID exists on
+   * the page afterward -- not two, and not zero.
+   */
+  it('excludes an unresolvable entry from content-stream mutation while a valid entry on the same page still succeeds', async () => {
+    const { doc } = await buildDocWithTwoTrivialBoxesSamePage([
+      { text: 'First', x: 50, y: 500 },
+    ]);
+
+    const validTable = tableInfo({
+      id: 'table_p1_0', pageNumber: 1, rowCount: 1, columnCount: 1,
+      cells: [cell(0, 0, [buildItem(50, 500, 'First')])],
+    });
+    const invalidTable = tableInfo({
+      id: 'table_p1_99', pageNumber: 1, rowCount: 1, columnCount: 1,
+      cells: [cell(0, 0, [buildItem(50, 500, 'First')])],
+    });
+
+    const validIssue = issueFor('table_p1_0');
+    const invalidIssue = issueFor('table_p1_99');
+    const results = pdfStructureWriterService.buildTableFromLayout(doc, [
+      { issue: validIssue, table: validTable },
+      { issue: invalidIssue, table: invalidTable },
+    ]);
+
+    // Invalid entries are reported during an earlier preflight pass than
+    // valid ones, so array order doesn't match input order for a mixed
+    // batch -- look up by issueId rather than assuming index.
+    const validResult = results.find(r => r.issueId === validIssue.id)!;
+    const invalidResult = results.find(r => r.issueId === invalidIssue.id)!;
+    expect(validResult.success).toBe(true);
+    expect(invalidResult.success).toBe(false);
+    expect(invalidResult.error).toMatch(/positioning anchor/i);
+
+    const mcids = pageContentMcids(doc, 1);
+    expect(mcids?.size).toBe(1);
+  });
+
+  it('does not touch the content stream at all when every entry on a page has an unresolvable positioning anchor', async () => {
+    const { doc } = await buildDocWithTrivialBoxAndSiblings([{ text: 'X', x: 50, y: 500 }]);
+    const before = decodePageContent(doc, 1);
+
+    const cells: TableCell[] = [cell(0, 0, [buildItem(50, 500, 'X')])];
+    const table = tableInfo({ id: 'table_p1_99', pageNumber: 1, cells, rowCount: 1, columnCount: 1 });
+    const results = pdfStructureWriterService.buildTableFromLayout(doc, [{ issue: issueFor('table_p1_99'), table }]);
+
+    expect(results[0].success).toBe(false);
+    const after = decodePageContent(doc, 1);
+    expect(after).toBe(before);
+    expect(pageContentMcids(doc, 1)?.size ?? 0).toBe(0);
+  });
+
+  /**
+   * Regression for a CodeRabbit finding on PR #552: insertMarkedContentSpans
+   * assigns MCIDs in content-stream BYTE-OFFSET order across the whole
+   * page's batch, not grouped by which entry submitted them. Draw order here
+   * (A1, B1, A2, B2) means entry A's own two items end up as MCIDs {0,2}
+   * and entry B's as {1,3} -- NEITHER entry's own MCID set is contiguous on
+   * its own, only the page's full combined {0,1,2,3} is. A per-entry
+   * extendParentTree call (the pre-fix design) would incorrectly throw on
+   * either entry's non-contiguous subset; the single combined per-page call
+   * must succeed for both.
+   */
+  it('correctly wires ParentTree via one combined per-page call even when two entries\' MCIDs interleave in byte order', async () => {
+    const { doc } = await buildDocWithTwoTrivialBoxesSamePage([
+      { text: 'A1', x: 50, y: 500 },
+      { text: 'B1', x: 50, y: 400 },
+      { text: 'A2', x: 50, y: 300 },
+      { text: 'B2', x: 50, y: 200 },
+    ]);
+
+    const tableA = tableInfo({
+      id: 'table_p1_0', pageNumber: 1, rowCount: 1, columnCount: 1,
+      cells: [cell(0, 0, [buildItem(50, 500, 'A1'), buildItem(50, 300, 'A2')])],
+    });
+    const tableB = tableInfo({
+      id: 'table_p1_1', pageNumber: 1, rowCount: 1, columnCount: 1,
+      cells: [cell(0, 0, [buildItem(50, 400, 'B1'), buildItem(50, 200, 'B2')])],
+    });
+
+    const results = pdfStructureWriterService.buildTableFromLayout(doc, [
+      { issue: issueFor('table_p1_0'), table: tableA },
+      { issue: issueFor('table_p1_1'), table: tableB },
+    ]);
+
+    expect(results[0].success).toBe(true);
+    expect(results[1].success).toBe(true);
+    expect(results[0].after).toContain('2 tagged MCID span(s)');
+    expect(results[1].after).toContain('2 tagged MCID span(s)');
   });
 });
