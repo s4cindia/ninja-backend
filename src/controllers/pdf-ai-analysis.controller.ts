@@ -18,6 +18,9 @@ import { pdfModifierService } from '../services/pdf/pdf-modifier.service';
 import { pdfStructureWriterService } from '../services/pdf/pdf-structure-writer.service';
 import { pdfContrastWriterService } from '../services/pdf/pdf-contrast-writer.service';
 import { pdfReauditService } from '../services/pdf/pdf-reaudit.service';
+import { pdfComprehensiveParserService } from '../services/pdf/pdf-comprehensive-parser.service';
+import { pdfParserService } from '../services/pdf/pdf-parser.service';
+import type { TableInfo } from '../services/pdf/structure-analyzer.service';
 import { TABLE_LIKELY_FORMULA_CODE } from '../services/pdf/validators/pdf-table.validator';
 import type { AuditIssue } from '../services/audit/base-audit.service';
 import { aiConfig } from '../config/ai.config';
@@ -474,6 +477,36 @@ export class PdfAiAnalysisController {
         const results = pdfStructureWriterService.markTableAsArtifact(doc, [originalIssue]);
         const r = results[0];
         modification = { success: r.success, description: r.after, error: r.error };
+      } else if (suggestionType === 'table-from-layout-fix') {
+        // Same documented residual limitation as table-artifact-fix above:
+        // this endpoint only ever knows about ONE suggestion per request,
+        // so there's no same-page batch to collect here the way
+        // aiAnalysisService.applyApprovedSuggestions's bulk path does.
+        // buildTableFromLayout additionally needs the issue's real
+        // TableInfo (cells/sourceItems/anchor), not just the AuditIssue --
+        // re-derived fresh here via the same pdfComprehensiveParserService
+        // parse the analysis-time dispatch and the bulk apply path both
+        // use, matched by table.id === element.
+        let parsedForTable: Awaited<ReturnType<typeof pdfComprehensiveParserService.parseBuffer>> | null = null;
+        try {
+          parsedForTable = await pdfComprehensiveParserService.parseBuffer(pdfBuffer, fileName);
+          let table: TableInfo | undefined;
+          for (const p of parsedForTable.pages) {
+            table = p.tables.find(t => t.id === elementId);
+            if (table) break;
+          }
+          if (!table) {
+            modification = { success: false, error: `No TableInfo found for element "${elementId}"` };
+          } else {
+            const results = pdfStructureWriterService.buildTableFromLayout(doc, [{ issue: originalIssue, table }]);
+            const r = results[0];
+            modification = { success: r.success, description: r.after, error: r.error };
+          }
+        } finally {
+          if (parsedForTable?.parsedPdf) {
+            await pdfParserService.close(parsedForTable.parsedPdf).catch(() => {});
+          }
+        }
       } else if (suggestionType === 'bookmark-generate') {
         const result = pdfStructureWriterService.generateBookmarksFromHeadings(doc);
         modification = {

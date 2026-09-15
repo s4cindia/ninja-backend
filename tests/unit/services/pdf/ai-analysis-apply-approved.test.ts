@@ -22,6 +22,8 @@ vi.mock('../../../../src/services/pdf/pdf-modifier.service');
 vi.mock('../../../../src/services/pdf/pdf-structure-writer.service');
 vi.mock('../../../../src/services/pdf/pdf-contrast-writer.service');
 vi.mock('../../../../src/services/pdf/remediation-cycle-history.service');
+vi.mock('../../../../src/services/pdf/pdf-comprehensive-parser.service');
+vi.mock('../../../../src/services/pdf/pdf-parser.service');
 vi.mock('../../../../src/lib/logger', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
 }));
@@ -197,6 +199,83 @@ describe('aiAnalysisService.applyApprovedSuggestions', () => {
     );
     expect(result.applied).toBe(2);
     expect(result.failed).toBe(0);
+  });
+
+  /**
+   * Regression for the analogous batching requirement buildTableFromLayout
+   * has (Slice 2d, PR #552): calling it once per issue would violate its
+   * own single-combined-/ParentTree-commit contract, not just risk index
+   * drift the way markTableAsArtifact's did. Also covers the real
+   * architectural difference from table-artifact-fix: this batching needs
+   * each issue's TableInfo, freshly re-parsed via
+   * pdfComprehensiveParserService (not already available from the stored
+   * audit report), matched by table.id === issue.element.
+   */
+  it('batches every table-from-layout-fix suggestion into a single buildTableFromLayout call, not one per issue', async () => {
+    const jobWithIssues = {
+      id: 'job-1',
+      output: {
+        fileName: 'doc.pdf',
+        auditReport: {
+          issues: [
+            { id: 'table-layout-1', code: 'MATTERHORN-15-001', element: 'table_p1_0' },
+            { id: 'table-layout-2', code: 'MATTERHORN-15-001', element: 'table_p1_1' },
+          ],
+        },
+      },
+    };
+    vi.mocked(prisma.job.findUnique).mockResolvedValue(jobWithIssues as any);
+    vi.mocked(prisma.aiAnalysis.findMany).mockResolvedValue([
+      { issueId: 'table-layout-1', suggestionType: 'table-from-layout-fix' },
+      { issueId: 'table-layout-2', suggestionType: 'table-from-layout-fix' },
+    ] as any);
+    vi.mocked(fileStorageService.getRemediatedFile).mockResolvedValue(Buffer.from('pdf'));
+    vi.mocked(pdfModifierService.loadPDF).mockResolvedValue({} as any);
+    vi.mocked(pdfModifierService.savePDF).mockResolvedValue(Buffer.from('modified-pdf'));
+    vi.mocked(fileStorageService.saveRemediatedFile).mockResolvedValue('s3://remediated/doc.pdf');
+
+    const { pdfStructureWriterService } = await import('../../../../src/services/pdf/pdf-structure-writer.service');
+    const { pdfComprehensiveParserService } = await import('../../../../src/services/pdf/pdf-comprehensive-parser.service');
+    const table1 = { id: 'table_p1_0', pageNumber: 1, cells: [] } as any;
+    const table2 = { id: 'table_p1_1', pageNumber: 1, cells: [] } as any;
+    vi.mocked(pdfComprehensiveParserService.parseBuffer).mockResolvedValue({
+      pages: [{ tables: [table1, table2] }],
+      parsedPdf: undefined,
+    } as any);
+    vi.mocked(pdfStructureWriterService.buildTableFromLayout).mockReturnValue([
+      { issueId: 'table-layout-1', success: true, before: 'Untagged', after: 'Built Table' },
+      { issueId: 'table-layout-2', success: true, before: 'Untagged', after: 'Built Table' },
+    ]);
+
+    const result = await aiAnalysisService.applyApprovedSuggestions('job-1', 1, 'user-1', 'apply_all');
+
+    expect(pdfStructureWriterService.buildTableFromLayout).toHaveBeenCalledTimes(1);
+    expect(pdfStructureWriterService.buildTableFromLayout).toHaveBeenCalledWith(
+      {},
+      expect.arrayContaining([
+        expect.objectContaining({ issue: expect.objectContaining({ id: 'table-layout-1' }), table: table1 }),
+        expect.objectContaining({ issue: expect.objectContaining({ id: 'table-layout-2' }), table: table2 }),
+      ])
+    );
+    expect(result.applied).toBe(2);
+    expect(result.failed).toBe(0);
+  });
+
+  it('does not call pdfComprehensiveParserService when no table-from-layout-fix suggestions are in the batch', async () => {
+    vi.mocked(prisma.aiAnalysis.findMany).mockResolvedValue([
+      { issueId: 'issue-1', suggestionType: 'alt-text', value: 'A red apple' },
+    ] as any);
+    vi.mocked(fileStorageService.getRemediatedFile).mockResolvedValue(Buffer.from('pdf'));
+    vi.mocked(pdfModifierService.loadPDF).mockResolvedValue({} as any);
+    vi.mocked(pdfModifierService.setAltText).mockResolvedValue({ success: true, description: 'set' } as any);
+    vi.mocked(pdfModifierService.savePDF).mockResolvedValue(Buffer.from('modified-pdf'));
+    vi.mocked(fileStorageService.saveRemediatedFile).mockResolvedValue('s3://remediated/doc.pdf');
+
+    const { pdfComprehensiveParserService } = await import('../../../../src/services/pdf/pdf-comprehensive-parser.service');
+
+    await aiAnalysisService.applyApprovedSuggestions('job-1', 1, 'user-1', 'apply_all');
+
+    expect(pdfComprehensiveParserService.parseBuffer).not.toHaveBeenCalled();
   });
 
   it('throws when the job does not exist', async () => {
