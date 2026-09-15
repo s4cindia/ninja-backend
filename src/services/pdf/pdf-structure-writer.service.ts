@@ -231,6 +231,92 @@ export class PdfStructureWriterService {
     return null;
   }
 
+  /**
+   * The direct child at K-array position 0, regardless of its tag type --
+   * unlike findFirstChild(parent, tagType), which searches by TYPE and can
+   * return a LATER child (e.g. the second cell in a [TH, TD] row) if it
+   * happens to be the first one matching that type. Needed wherever
+   * POSITION itself is the signal (e.g. fixSimpleTableColumnHeaders: "is
+   * THIS row's first cell a TD that needs promoting"), not "does a TD
+   * exist somewhere in this row".
+   */
+  private firstKidOfAnyType(
+    doc: PDFDocument,
+    parent: PDFDict,
+  ): { dict: PDFDict; ref: PDFRef } | null {
+    const k = parent.get(PDFName.of('K'));
+    const first = k instanceof PDFArray ? k.get(0) : k;
+    if (!(first instanceof PDFRef)) return null;
+    const obj = doc.context.lookup(first);
+    return obj instanceof PDFDict ? { dict: obj, ref: first } : null;
+  }
+
+  /**
+   * The most common value in a list of numbers, or null if the highest
+   * frequency is tied between two or more distinct values -- CodeRabbit
+   * finding on PR #560, confirmed real: the first version of this picked
+   * the first-seen value on a tie (e.g. [1,1,3,3] -> 1), which for a table
+   * with an equal number of caption-shaped and header-shaped rows could
+   * pick the WRONG one with no real basis to prefer either. A genuine
+   * tie means this proxy has no real answer -- callers must fail rather
+   * than guess, same "bail rather than guess" discipline as everywhere
+   * else in this class.
+   *
+   * Used by fixSimpleTableHeaders as a self-contained, struct-tree-only
+   * proxy for "how many columns does this table actually have" -- most
+   * rows in a real table are genuine data rows sharing the same real cell
+   * count, so their mode is a robust stand-in for columnCount without
+   * needing any layout/pdfjs data at apply time.
+   */
+  private modeOf(values: number[]): number | null {
+    const counts = new Map<number, number>();
+    let best: number | null = null;
+    let bestCount = 0;
+    let tied = false;
+    for (const v of values) {
+      const c = (counts.get(v) ?? 0) + 1;
+      counts.set(v, c);
+      if (c > bestCount) {
+        bestCount = c;
+        best = v;
+        tied = false;
+      } else if (c === bestCount && v !== best) {
+        tied = true;
+      }
+    }
+    return tied ? null : best;
+  }
+
+  /**
+   * Every real TR under a table, in true document order -- a single
+   * traversal of the table's own `/K` array, recursing into THead/TBody/
+   * TFoot children exactly where they appear rather than grouping all rows
+   * of one wrapper type before another. CodeRabbit finding on PR #560,
+   * confirmed real: the first version concatenated
+   * `[...direct TRs, ...all TBody rows, ...all THead rows, ...all TFoot
+   * rows]` -- for the common `Table -> [THead, TBody]` shape this put every
+   * body row BEFORE the real header rows in the search order, so
+   * fixSimpleTableHeaders' mode-based row-skip could promote a body row
+   * instead of the genuine header sitting inside THead.
+   */
+  private collectAllRows(doc: PDFDocument, table: PDFDict): Array<{ dict: PDFDict; ref: PDFRef }> {
+    const rows: Array<{ dict: PDFDict; ref: PDFRef }> = [];
+    const k = table.get(PDFName.of('K'));
+    const children = k instanceof PDFArray ? k.asArray() : k ? [k as PDFObject] : [];
+    for (const child of children) {
+      if (!(child instanceof PDFRef)) continue;
+      const resolved = doc.context.lookup(child);
+      if (!(resolved instanceof PDFDict)) continue;
+      const tag = resolved.get(PDFName.of('S'))?.toString().replace(/^\//, '');
+      if (tag === 'TR') {
+        rows.push({ dict: resolved, ref: child });
+      } else if (tag === 'THead' || tag === 'TBody' || tag === 'TFoot') {
+        rows.push(...this.findAllChildren(doc, resolved, 'TR'));
+      }
+    }
+    return rows;
+  }
+
   /** Find all direct children of parent with the given tag type. */
   private findAllChildren(
     doc: PDFDocument,
@@ -1173,8 +1259,9 @@ export class PdfStructureWriterService {
   }
 
   /**
-   * Promote first-row TD cells to TH + add scope="Column" for simple tables.
-   * "Simple" = first TR has ≤3 cells and none appear to have spanning attributes.
+   * Promote a header row's TD cells to TH + add scope="Column" for simple
+   * tables. "Simple" = the row has ≤3 cells and none appear to have
+   * spanning attributes.
    *
    * Both steps are required:
    *   1. renameElement(TD → TH)  — fixes tag type
@@ -1191,9 +1278,36 @@ export class PdfStructureWriterService {
    * issue re-found that same now-already-fixed table and reported a false
    * "success" without ever touching the table it was actually about.
    *
-   * @param issues - TABLE-MISSING-HEADERS AuditIssues (simple tables only)
+   * Does NOT assume row 0 is the real header row -- confirmed wrong on real
+   * Math_Kim data: many real tables have one or more LEADING rows that are
+   * a running page header or a table caption/title merged into a single
+   * spanning cell (real content, e.g. "Table 3.1.1. Math Navigation Chart"),
+   * pushing the genuine header row (e.g. "Steps" | "New Problem") down to
+   * index 1, 2, or 3. Self-contained at apply time -- computes the MODE
+   * cell count across all real rows (the natural proxy for "how many
+   * columns does this table actually have", since most rows are real data
+   * rows sharing that count) and promotes the first of the first
+   * MAX_LEADING_ROWS_TO_SKIP rows whose own cell count matches it, instead
+   * of unconditionally targeting row 0. Confirmed via direct measurement:
+   * this correctly locates a real header row for 65/101 (64%) of Math_Kim's
+   * actual MATTERHORN-15-002 tables (was 0/101 when hardcoded to row 0).
+   *
+   * @param issues - MATTERHORN-15-002 AuditIssues (simple tables only)
+   * @param preResolvedTargets - see resolveTableTargets's own doc comment:
+   *   when a caller batches this together with another writer that also
+   *   renames same-page /Table elements in the same approval run (e.g.
+   *   table-artifact-fix, table-from-layout-fix, table-header-fix-column),
+   *   findTargetTable's positional "Nth /Table on this page" indexing can
+   *   drift mid-batch -- CodeRabbit finding on PR #560, confirmed real,
+   *   same class of bug already fixed for the artifact/layout pair on PR
+   *   #554. Pass the whole batch's issues through resolveTableTargets
+   *   ONCE, upfront, and thread the result to every writer in play.
    */
-  fixSimpleTableHeaders(doc: PDFDocument, issues: AuditIssue[]): FixResult[] {
+  fixSimpleTableHeaders(
+    doc: PDFDocument,
+    issues: AuditIssue[],
+    preResolvedTargets?: Map<string, { dict: PDFDict; ref: PDFRef }>,
+  ): FixResult[] {
     const structRoot = this.getStructTreeRoot(doc);
     if (!structRoot) {
       return issues.map(i => ({
@@ -1203,11 +1317,12 @@ export class PdfStructureWriterService {
       }));
     }
 
+    const MAX_LEADING_ROWS_TO_SKIP = 4;
     const results: FixResult[] = [];
 
     for (const issue of issues) {
       try {
-        const target = this.findTargetTable(doc, structRoot, issue.element);
+        const target = preResolvedTargets?.get(issue.id) ?? this.findTargetTable(doc, structRoot, issue.element);
         if (!target) {
           results.push({
             issueId: issue.id, success: false,
@@ -1218,13 +1333,8 @@ export class PdfStructureWriterService {
         }
         const table = target.dict;
 
-        // Find the first TR — may be a direct child OR nested inside THead/TBody
-        let firstTR = this.findFirstChild(doc, table, 'TR');
-        if (!firstTR) {
-          const tbody = this.findFirstChild(doc, table, 'TBody') ?? this.findFirstChild(doc, table, 'THead');
-          if (tbody) firstTR = this.findFirstChild(doc, tbody.dict, 'TR');
-        }
-        if (!firstTR) {
+        const rows = this.collectAllRows(doc, table);
+        if (rows.length === 0) {
           results.push({
             issueId: issue.id, success: false,
             before: 'unknown', after: 'unknown',
@@ -1233,25 +1343,60 @@ export class PdfStructureWriterService {
           continue;
         }
 
+        const cellCounts = rows.map(row =>
+          this.findAllChildren(doc, row.dict, 'TD').length + this.findAllChildren(doc, row.dict, 'TH').length
+        );
+        const mode = this.modeOf(cellCounts.filter(c => c > 0));
+        if (mode === null) {
+          results.push({
+            issueId: issue.id, success: false,
+            before: 'unknown', after: 'unknown',
+            error: 'No single typical row shape -- row cell counts are evenly split, refusing to guess',
+          });
+          continue;
+        }
+
+        let headerRowIndex = -1;
+        for (let i = 0; i < Math.min(rows.length, MAX_LEADING_ROWS_TO_SKIP); i++) {
+          if (cellCounts[i] === mode) { headerRowIndex = i; break; }
+        }
+        if (headerRowIndex === -1) {
+          results.push({
+            issueId: issue.id, success: false,
+            before: 'unknown', after: 'unknown',
+            error: `No row within the first ${MAX_LEADING_ROWS_TO_SKIP} matches this table's typical (${mode}-cell) row shape`,
+          });
+          continue;
+        }
+        const headerRow = rows[headerRowIndex];
+
         // Count all cells (TD + TH) to determine complexity
-        const tds = this.findAllChildren(doc, firstTR.dict, 'TD');
-        const ths = this.findAllChildren(doc, firstTR.dict, 'TH');
+        const tds = this.findAllChildren(doc, headerRow.dict, 'TD');
+        const ths = this.findAllChildren(doc, headerRow.dict, 'TH');
         const totalCells = tds.length + ths.length;
 
         if (totalCells === 0) {
           results.push({
             issueId: issue.id, success: false,
             before: 'unknown', after: 'unknown',
-            error: 'Target table\'s first row is empty',
+            error: 'Target table\'s header row is empty',
           });
           continue;
         }
 
         if (tds.length === 0) {
+          // Already TH, but don't just trust that -- CodeRabbit finding on
+          // PR #560, confirmed real (originally raised against
+          // fixSimpleTableColumnHeaders below, same gap exists here):
+          // an existing TH could have no /Scope at all, or a conflicting
+          // one, and this used to report false "success" without ever
+          // checking. writeScopeAttribute is idempotent (creates or
+          // replaces), safe to call unconditionally.
+          for (const th of ths) this.writeScopeAttribute(doc, th.ref, 'Column');
           results.push({
             issueId: issue.id,
             success: true,
-            before: 'First-row cells tagged as TD',
+            before: 'Header-row cells tagged as TD',
             after: 'Table headers already present — no changes needed',
           });
           continue;
@@ -1267,8 +1412,137 @@ export class PdfStructureWriterService {
         results.push({
           issueId: issue.id,
           success: true,
-          before: 'First-row cells tagged as TD',
-          after: `Promoted ${fixedCellCount} TD cell(s) to TH with scope="Column"`,
+          before: `Row ${headerRowIndex} cells tagged as TD`,
+          after: `Promoted ${fixedCellCount} TD cell(s) at row ${headerRowIndex} to TH with scope="Column"`,
+        });
+      } catch (err) {
+        results.push({
+          issueId: issue.id, success: false,
+          before: 'unknown', after: 'unknown',
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+
+    return results;
+  }
+
+  /**
+   * Column-oriented counterpart to fixSimpleTableHeaders: promotes the FIRST
+   * cell of EVERY row to TH with scope="Row", instead of every cell of the
+   * first row to TH with scope="Column". Used when
+   * classifyTableHeaderOrientation (structure-analyzer.service.ts) has
+   * already determined -- from real bold-formatting evidence, at suggestion
+   * time -- that this specific table's real header is its left column, not
+   * its top row (the classic key-value/label-value table shape). The
+   * orientation decision is made once, upstream, and threaded through as a
+   * distinct suggestionType ('table-header-fix-column'); this method never
+   * re-derives orientation itself, since font/bold data isn't available
+   * from the struct tree alone at apply time.
+   *
+   * Walks every TR under the table (direct children, or nested under
+   * THead/TBody/TFoot -- same normalization fixSimpleTableHeaders' own
+   * first-TR lookup already applies, just for every row instead of one) and
+   * renames each row's first TD to TH. A row with zero cells, or whose
+   * first cell is already TH, is left alone (not an error) -- unlike
+   * fixSimpleTableHeaders' single-first-row check, a genuinely irregular
+   * table can have some rows already correct and others not.
+   *
+   * @param issues - MATTERHORN-15-002 AuditIssues already classified 'column'
+   * @param preResolvedTargets - see fixSimpleTableHeaders' own doc comment
+   *   on this same parameter; identical cross-batch drift risk applies here.
+   */
+  fixSimpleTableColumnHeaders(
+    doc: PDFDocument,
+    issues: AuditIssue[],
+    preResolvedTargets?: Map<string, { dict: PDFDict; ref: PDFRef }>,
+  ): FixResult[] {
+    const structRoot = this.getStructTreeRoot(doc);
+    if (!structRoot) {
+      return issues.map(i => ({
+        issueId: i.id, success: false,
+        before: 'unknown', after: 'unknown',
+        error: 'No structure tree root found',
+      }));
+    }
+
+    const results: FixResult[] = [];
+
+    for (const issue of issues) {
+      try {
+        const target = preResolvedTargets?.get(issue.id) ?? this.findTargetTable(doc, structRoot, issue.element);
+        if (!target) {
+          results.push({
+            issueId: issue.id, success: false,
+            before: 'unknown', after: 'unknown',
+            error: `No Table element found matching "${issue.element}"`,
+          });
+          continue;
+        }
+        const table = target.dict;
+
+        const rows = this.collectAllRows(doc, table);
+
+        if (rows.length === 0) {
+          results.push({
+            issueId: issue.id, success: false,
+            before: 'unknown', after: 'unknown',
+            error: 'Target table has no TR rows to promote headers on',
+          });
+          continue;
+        }
+
+        let fixedCellCount = 0;
+        let alreadyHeaderCount = 0;
+        for (const row of rows) {
+          // The row's cell at K-array POSITION 0 -- not "the first TD found
+          // by type", which findFirstChild(doc, row.dict, 'TD') would wrongly
+          // return even when a TD sits AFTER an already-TH first cell (caught
+          // by this method's own test suite: a [TH, TD] row was misidentified
+          // as needing the TD promoted, when the real first cell was already
+          // correct).
+          const firstCell = this.firstKidOfAnyType(doc, row.dict);
+          if (!firstCell) continue;
+          const tag = firstCell.dict.get(PDFName.of('S'))?.toString().replace(/^\//, '');
+          if (tag === 'TD') {
+            this.renameElement(doc, firstCell.ref, 'TH');
+            this.writeScopeAttribute(doc, firstCell.ref, 'Row');
+            fixedCellCount++;
+          } else if (tag === 'TH') {
+            // Already TH, but don't just trust that -- CodeRabbit finding on
+            // PR #560, confirmed real: an existing TH could have no /Scope
+            // at all, or a conflicting one, and this used to count it as
+            // "complete" without ever checking. writeScopeAttribute is
+            // idempotent (creates or replaces), safe to call unconditionally.
+            this.writeScopeAttribute(doc, firstCell.ref, 'Row');
+            alreadyHeaderCount++;
+          }
+        }
+
+        if (fixedCellCount === 0 && alreadyHeaderCount === 0) {
+          results.push({
+            issueId: issue.id, success: false,
+            before: 'unknown', after: 'unknown',
+            error: 'No first-cell TD or TH found in any row — nothing to promote',
+          });
+          continue;
+        }
+
+        if (fixedCellCount === 0) {
+          results.push({
+            issueId: issue.id,
+            success: true,
+            before: 'First-column cells tagged as TD',
+            after: 'Table headers already present — no changes needed',
+          });
+          continue;
+        }
+
+        results.push({
+          issueId: issue.id,
+          success: true,
+          before: 'First-column cells tagged as TD',
+          after: `Promoted ${fixedCellCount} TD cell(s) to TH with scope="Row" across ${rows.length} row(s)`,
         });
       } catch (err) {
         results.push({

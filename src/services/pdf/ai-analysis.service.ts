@@ -31,7 +31,7 @@ import { imageExtractorService, ImageInfo } from './image-extractor.service';
 import { pdfParserService } from './pdf-parser.service';
 import { AuditIssue } from '../audit/base-audit.service';
 import type { PdfParseResult, PdfPage } from './pdf-comprehensive-parser.service';
-import type { TableInfo } from './structure-analyzer.service';
+import { classifyTableHeaderOrientation, findRegularHeaderRowIndex, type TableInfo } from './structure-analyzer.service';
 import { TABLE_LIKELY_FORMULA_CODE } from './validators/pdf-table.validator';
 import type { ParsedPDF } from './pdf-parser.service';
 import { decodePageContent } from './pdf-content-stream-io';
@@ -720,32 +720,85 @@ class AiAnalysisService {
     if (TABLE_HEADERS_CODES.has(code) || TABLE_SCOPE_CODES.has(code)) {
       const table = (issue.element ? tableById.get(issue.element) : undefined) ?? page?.tables[0];
       if (!table) return null;
-      // Simple tables (≤SIMPLE_TABLE_MAX_COLUMNS columns) in tagged PDFs can have first-row TDs
-      // promoted to TH -- but only when the first row is actually regular. There's no real
-      // rowSpan/colSpan detection anywhere in this codebase (TableCell's are always hardcoded
-      // to 1, even from tagged-structure enhancement), so columnCount alone can't rule out a
-      // merged header cell. buildTableCells (structure-analyzer.service.ts) already gives a
-      // free, real signal for this though: it skips emitting a cell for any column bucket with
-      // no text in a given row, so a header row with a merged/spanning cell shows up here with
-      // fewer cells than columnCount. Requiring an exact match is a cheap, always-available
-      // proxy for "this specific row -- the only one fixSimpleTableHeaders touches -- looks
-      // structurally regular", without needing to parse PDF/UA span attributes to get it.
-      const headerRowCellCount = table.cells.filter(c => c.row === 0).length;
-      const headerRowLooksRegular = headerRowCellCount === table.columnCount;
+      // Simple tables (≤SIMPLE_TABLE_MAX_COLUMNS columns) in tagged PDFs can have TD
+      // cells mechanically promoted to TH. Two independent checks, tried in order --
+      // COLUMN before ROW, deliberately: a fully-populated table (every row has
+      // exactly columnCount cells, the common case) ALWAYS satisfies the row check
+      // below regardless of whether it's really row- or column-oriented, so the row
+      // check alone can't distinguish the two shapes for such a table -- only the
+      // column check's real bold-formatting evidence can. Checking column first
+      // means a genuine key-value table with real bold labels is never
+      // shadowed by the weaker, more common row-regularity signal.
+      //
+      // 1. classifyTableHeaderOrientation: bold-formatting evidence.
+      //    'column' -- a genuine key-value (label|value) table, real header
+      //    is the LEFT COLUMN, not any row. Adds no measured value on
+      //    Math_Kim itself (zero bold text anywhere in its table cells) but
+      //    is a real, distinct, independently-tested shape other documents
+      //    with real bold-styled headers can still benefit from.
+      //    'ambiguous' -- BOTH a real row signal and a real column signal
+      //    fire (a genuine corner-header table). Bails entirely rather than
+      //    falling through to findRegularHeaderRowIndex below, which has no
+      //    bold requirement at all and would otherwise confidently apply a
+      //    row-only fix to a table that also needs its column tagged
+      //    (CodeRabbit finding on PR #560, confirmed real).
+      // 2. findRegularHeaderRowIndex: does SOME row within the first few (not
+      //    necessarily row 0) have exactly columnCount cells? Real Math_Kim
+      //    data confirmed row 0 is often a running page header or a table
+      //    caption merged into one spanning cell, pushing the genuine header
+      //    row down to index 1-3 -- the OLD row-0-only regularity check never
+      //    passed on any of 101 real MATTERHORN-15-002 tables; this one
+      //    passes on 65/101 (64%). Only decides ELIGIBILITY here -- the
+      //    writer (fixSimpleTableHeaders) independently re-derives the actual
+      //    row index from the real struct tree at apply time (a different
+      //    data source than this TableInfo/pdfjs-derived check), rather than
+      //    trusting a value computed here. This does NOT fully rule out the
+      //    two computations disagreeing on a genuinely irregular table
+      //    (CodeRabbit finding on PR #560, confirmed real but not fixed here
+      //    -- tracked as issue #561, a real architectural gap rather than a
+      //    quick fix: doing so properly means threading a specific row index
+      //    all the way from suggestion generation through DB persistence to
+      //    apply time). Live-validated on all 65 of Math_Kim's real
+      //    successfully-applied cases via a genuine re-audit round-trip --
+      //    this mismatch did not manifest on any real case measured so far.
+      //
+      // There's still no real rowSpan/colSpan detection anywhere in this
+      // codebase (a known, pre-existing, unaddressed limitation).
       if (
         parsed.isTagged &&
         TABLE_HEADER_AUTO_FIX_CODES.has(code) &&
-        table.columnCount <= SIMPLE_TABLE_MAX_COLUMNS &&
-        headerRowLooksRegular
+        table.columnCount <= SIMPLE_TABLE_MAX_COLUMNS
       ) {
-        return {
-          suggestionType: 'table-header-fix',
-          guidance: `First-row cells will be promoted to TH with scope="Column" in the PDF structure tree.`,
-          confidence: 0.88,
-          rationale: `PDF is tagged — simple table (${table.columnCount} columns) first-row cells can be renamed TD→TH algorithmically`,
-          model: 'rule-based',
-          applyMode: 'apply-to-pdf',
-        };
+        // summaries-to-pdf-headers-as-guidance is intentionally treated as
+        // automatic for header fixes (matches this mode's own pre-existing
+        // name/intent) -- only a real 'guidance-only' tableFixMode should
+        // downgrade these to guidance-only (CodeRabbit finding on PR #560,
+        // confirmed real: both branches below used to hardcode
+        // 'apply-to-pdf' regardless of config, so an operator who
+        // configured guidance-only headers could still have one silently
+        // applied on approval).
+        const headerApplyMode = config.tableFixMode === 'guidance-only' ? 'guidance-only' : 'apply-to-pdf';
+        const orientation = classifyTableHeaderOrientation(table);
+        if (orientation === 'column') {
+          return {
+            suggestionType: 'table-header-fix-column',
+            guidance: `First-column cells will be promoted to TH with scope="Row" in the PDF structure tree.`,
+            confidence: 0.88,
+            rationale: `PDF is tagged — bold formatting confirms column 0 as the real header (key-value table shape); simple table (${table.columnCount} columns) first-column cells can be renamed TD→TH algorithmically`,
+            model: 'rule-based',
+            applyMode: headerApplyMode,
+          };
+        }
+        if (orientation !== 'ambiguous' && findRegularHeaderRowIndex(table) !== null) {
+          return {
+            suggestionType: 'table-header-fix',
+            guidance: `A header row will be promoted to TH with scope="Column" in the PDF structure tree.`,
+            confidence: 0.85,
+            rationale: `PDF is tagged — simple table (${table.columnCount} columns) has a regular-shaped row that can be renamed TD→TH algorithmically`,
+            model: 'rule-based',
+            applyMode: headerApplyMode,
+          };
+        }
       }
       return this.analyzeTableHeaders(issue, table);
     }
@@ -2216,27 +2269,29 @@ class AiAnalysisService {
       await this.ensureFigureForImages(doc, pdfBuffer, fileName, altTextImageIds);
     }
 
-    // Both table-artifact-fix and table-from-layout-fix issues get batched
-    // into ONE call each (below) -- but first, resolve BOTH batches' target
-    // /Table struct elements from the SAME still-fully-unmutated tree, in
-    // ONE combined pass, before EITHER writer mutates anything.
+    // table-artifact-fix, table-from-layout-fix, table-header-fix, and
+    // table-header-fix-column issues all resolve their target /Table struct
+    // element positionally (findTargetTable's "Nth /Table on this page"),
+    // and table-artifact-fix/table-from-layout-fix each rename some /Table
+    // to /Artifact as part of their own operation -- so resolve every one of
+    // these FOUR suggestion types' targets from the SAME still-fully-
+    // unmutated tree, in ONE combined pass, before ANY of them mutates
+    // anything.
     //
-    // Why: markTableAsArtifact and buildTableFromLayout each independently
-    // rename some /Table element to /Artifact as part of their own
-    // operation (markTableAsArtifact always; buildTableFromLayout for the
-    // spuriously-paired trivial box behind each entry it processes).
-    // findTargetTable's positional "Nth /Table on this page" indexing
-    // depends on the tree staying stable relative to when table_p{page}_
-    // {index} ids were originally computed (at analysis time, against the
-    // fully-unmodified tree) -- if one writer's batch call runs first and
-    // renames a same-page table away, the SECOND writer's own internal
-    // findTargetTable resolution would see a shifted tree on any page where
-    // both suggestion types coexist, corrupting whichever runs second
-    // (CodeRabbit/Codex finding on PR #554, confirmed real). Reordering the
-    // two batches does NOT fix this -- both directions have the identical
-    // symmetric risk, since both writers eventually rename something. See
+    // Why: findTargetTable's positional indexing depends on the tree staying
+    // stable relative to when table_p{page}_{index} ids were originally
+    // computed (at analysis time, against the fully-unmodified tree) -- if
+    // one writer's batch call runs first and renames a same-page table away,
+    // a LATER writer's own internal findTargetTable resolution would see a
+    // shifted tree on any page where multiple of these suggestion types
+    // coexist, corrupting whichever runs later (CodeRabbit/Codex finding on
+    // PR #554 for the artifact/layout pair, confirmed real; CodeRabbit
+    // finding on PR #560, confirmed real, extending the same risk to the two
+    // new header-fix types). Reordering the batches does NOT fix this -- any
+    // ordering has the identical symmetric risk, since more than one of
+    // these can rename something on the same page. See
     // pdfStructureWriterService.resolveTableTargets's own doc comment for
-    // the full reasoning; its result is passed to both writer calls below
+    // the full reasoning; its result is passed to every writer call below
     // via their own preResolvedTargets parameter.
     const tableArtifactIssues = approved
       .filter(a => a.suggestionType === 'table-artifact-fix')
@@ -2246,9 +2301,13 @@ class AiAnalysisService {
       .filter(a => a.suggestionType === 'table-from-layout-fix')
       .map(a => issueById.get(a.issueId))
       .filter((i): i is AuditIssue => !!i);
+    const tableHeaderIssues = approved
+      .filter(a => a.suggestionType === 'table-header-fix' || a.suggestionType === 'table-header-fix-column')
+      .map(a => issueById.get(a.issueId))
+      .filter((i): i is AuditIssue => !!i);
     const preResolvedTableTargets =
-      tableArtifactIssues.length > 0 || tableFromLayoutIssues.length > 0
-        ? pdfStructureWriterService.resolveTableTargets(doc, [...tableArtifactIssues, ...tableFromLayoutIssues])
+      tableArtifactIssues.length > 0 || tableFromLayoutIssues.length > 0 || tableHeaderIssues.length > 0
+        ? pdfStructureWriterService.resolveTableTargets(doc, [...tableArtifactIssues, ...tableFromLayoutIssues, ...tableHeaderIssues])
         : undefined;
 
     // Batch every table-artifact-fix suggestion in THIS approval run into a
@@ -2319,7 +2378,7 @@ class AiAnalysisService {
       }
     }
 
-    const STRUCTURE_WRITER_TYPES = new Set(['heading-fix', 'list-fix', 'table-header-fix', 'table-artifact-fix', 'table-from-layout-fix', 'bookmark-generate', 'heading-multiple-h1-fix', 'pdfua-identifier', 'color-contrast-fix', 'alt-text-decorative']);
+    const STRUCTURE_WRITER_TYPES = new Set(['heading-fix', 'list-fix', 'table-header-fix', 'table-header-fix-column', 'table-artifact-fix', 'table-from-layout-fix', 'bookmark-generate', 'heading-multiple-h1-fix', 'pdfua-identifier', 'color-contrast-fix', 'alt-text-decorative']);
 
     let applied = 0;
     let failed = 0;
@@ -2348,7 +2407,11 @@ class AiAnalysisService {
           const r = results[0];
           modification = { success: r.success, description: r.after, error: r.error };
         } else if (suggestionType === 'table-header-fix') {
-          const results = pdfStructureWriterService.fixSimpleTableHeaders(doc, [originalIssue]);
+          const results = pdfStructureWriterService.fixSimpleTableHeaders(doc, [originalIssue], preResolvedTableTargets);
+          const r = results[0];
+          modification = { success: r.success, description: r.after, error: r.error };
+        } else if (suggestionType === 'table-header-fix-column') {
+          const results = pdfStructureWriterService.fixSimpleTableColumnHeaders(doc, [originalIssue], preResolvedTableTargets);
           const r = results[0];
           modification = { success: r.success, description: r.after, error: r.error };
         } else if (suggestionType === 'table-artifact-fix') {

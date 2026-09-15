@@ -173,6 +173,143 @@ export interface TableInfo {
   isGenuinelyTabularDespiteTrivialMatch?: boolean;
 }
 
+/**
+ * Suggestion-time confidence gate mirroring fixSimpleTableHeaders' own
+ * apply-time row-finding logic (pdf-structure-writer.service.ts) -- "would
+ * that writer actually find a real header row for this table?" Uses
+ * `TableInfo.cells`/`columnCount` (the layout/pdfjs-derived data available
+ * at suggestion time) rather than struct-tree cell counts (only available
+ * at apply time), but asks the identical question: does one of the first
+ * `maxRowsToSkip` rows have exactly `columnCount` populated cells?
+ *
+ * Exists because row 0 is NOT reliably the real header row on real data --
+ * confirmed on Math_Kim: many tables have one or more LEADING rows that are
+ * a running page header or a table caption/title merged into a single
+ * spanning cell (e.g. "Table 3.1.1. Math Navigation Chart for Equivalent
+ * Fractions", occupying only one column bucket), pushing the genuine header
+ * row (e.g. "Steps" | "New Problem") down to index 1, 2, or 3. Confirmed via
+ * direct measurement: 65/101 (64%) of Math_Kim's real MATTERHORN-15-002
+ * tables have a fully-populated row within the first 4 (row-index
+ * distribution: 56 at index 1, 5 at index 2, 4 at index 3) -- a table whose
+ * row 0 already happens to be the real header (columnCount is unusually
+ * simple/caption-free) is naturally included too, at index 0.
+ *
+ * Only used to decide WHETHER to offer the apply-to-pdf suggestion, not
+ * WHICH row to promote -- the writer re-derives that independently from the
+ * real struct tree at apply time (its own mode-based cell-count check),
+ * deliberately not threaded through from here, to avoid the same class of
+ * suggestion-time/apply-time positional drift this codebase has hit before
+ * (e.g. the cross-batch drift bug fixed in Slice 2f).
+ */
+export function findRegularHeaderRowIndex(table: TableInfo, maxRowsToSkip = 4): number | null {
+  if (table.pageReassigned) return null;
+  for (let r = 0; r < Math.min(table.rowCount, maxRowsToSkip); r++) {
+    const cellsInRow = table.cells.filter(c => c.row === r).length;
+    if (cellsInRow === table.columnCount) return r;
+  }
+  return null;
+}
+
+/**
+ * Classifies whether a structure-matched table's real header signal lives in
+ * the first COLUMN (the classic key-value/label-value shape), using the same
+ * real pdfjs font-weight data (`cell.sourceItems[].font.isBold`)
+ * `detectTabularContent`'s own untagged-PDF heuristic already uses for
+ * exactly this purpose (see its `hasHeaderColumn` derivation) -- applied
+ * here to structure-MATCHED tables, which currently have NO equivalent
+ * signal at all (checkTableHeaders/checkRowForHeaders only ever derive
+ * `hasHeaderRow` from a real `/TH`, and never derive `hasHeaderColumn`
+ * structurally).
+ *
+ * Row-orientation is handled separately by findRegularHeaderRowIndex above
+ * (a general structural check, no typographic evidence needed) -- the
+ * caller (ai-analysis.service.ts's dispatch) tries THIS function's column
+ * case FIRST, since a fully-populated table (every row has exactly
+ * columnCount cells -- the common case) always satisfies
+ * findRegularHeaderRowIndex regardless of real orientation, so only this
+ * function's real bold evidence can tell a genuine column-headered table
+ * apart from an ordinary row-headered one. Confirmed empirically that
+ * Math_Kim itself has zero cells anywhere with real bold-formatted text
+ * (0/1719 table cells, generic/subset font names with no "-Bold" suffix and
+ * no bold descriptor flag), so this specific check adds no measured value
+ * on Math_Kim's own data -- kept because it's a real, distinct table shape
+ * (genuine column headers) that OTHER documents with real bold-styled
+ * headers can still benefit from, and because it's independently tested
+ * and correct.
+ *
+ * A header COLUMN needs a column-0 cell for EVERY real row (not just "more
+ * than one"), ALL bold (`.every`, a strong bar appropriate for a less
+ * common orientation that must not be guessed at) -- a sparse table where
+ * some rows have no column-0 cell at all (their real first cell sits in
+ * column 1) must not qualify, since fixSimpleTableColumnHeaders promotes
+ * whichever cell sits first in EVERY row. Excludes the corner cell (row 0,
+ * column 0) from ever counting as row-header evidence on its own, since
+ * it's a member of both groups.
+ *
+ * Returns `'ambiguous'` (distinct from `null`) when BOTH signals fire --
+ * a genuine corner-header table, real bold evidence for both orientations
+ * at once -- so the caller can bail entirely rather than falling through
+ * to findRegularHeaderRowIndex, which has no way to see this table's real
+ * column evidence and would otherwise confidently apply a row-only fix
+ * that leaves the also-real column headers untagged. `null` means neither
+ * signal fires (genuinely no bold evidence either way), which the caller
+ * SHOULD still try findRegularHeaderRowIndex for.
+ *
+ * Deliberately returns null (not `'ambiguous'`) for `pageReassigned` tables
+ * without inspecting cells at all: their `cells`/`sourceItems` describe a
+ * DIFFERENT page's content (see `TableInfo.pageReassigned`'s own doc
+ * comment), so a bold signal read from them is not evidence about this
+ * table's real headers -- unlike fixSimpleTableHeaders' own mechanical
+ * TD->TH rename (safe for pageReassigned since it only retags existing
+ * struct elements, never reads cell content), a WRONG orientation decision
+ * here would produce a confidently-wrong accessibility tag, not just a
+ * missed opportunity.
+ */
+export function classifyTableHeaderOrientation(table: TableInfo): 'row' | 'column' | 'ambiguous' | null {
+  if (table.pageReassigned) return null;
+
+  const isCellBold = (cell: TableCell): boolean =>
+    !!cell.sourceItems?.some(item => item.font.isBold);
+
+  const row0Cells = table.cells.filter(c => c.row === 0);
+  const col0Cells = table.cells.filter(c => c.column === 0);
+
+  // The corner cell (row 0, column 0) belongs to both row0Cells and
+  // col0Cells -- if it alone is bold, that's real evidence FOR a column
+  // header (the label above the label column), not evidence that the whole
+  // first row is a header. Excluding it from the row-signal check avoids
+  // a genuine column-headered table falsely also triggering the row signal
+  // through nothing but corner-cell bleed-through (caught by this
+  // function's own test suite: a 2-column key-value table with only its
+  // first column bold otherwise resolved to null -- both signals firing --
+  // instead of the correct 'column').
+  const rowHeaderSignal = row0Cells.filter(c => c.column !== 0).some(isCellBold);
+  // Requires a column-0 cell for EVERY real row, not just "more than one
+  // and all bold" -- CodeRabbit finding on PR #560, confirmed real: a
+  // sparse table where only 2 of 5 rows even HAVE a column-0 cell (the
+  // other 3 rows' real first cell sits in column 1, e.g. because column 0
+  // is empty for those rows) would previously pass this check if those 2
+  // happened to be bold, then fixSimpleTableColumnHeaders' "promote every
+  // row's first real cell" would wrongly promote a genuine column-1 VALUE
+  // cell on the other 3 rows.
+  const columnHeaderSignal = col0Cells.length === table.rowCount && col0Cells.length > 1 && col0Cells.every(isCellBold);
+
+  // Both signals firing is a genuine corner-header table (real bold
+  // evidence for BOTH orientations), not "no evidence either way" --
+  // CodeRabbit finding on PR #560, confirmed real: collapsing this into
+  // the same null as "neither signal fires" let the caller's OWN
+  // structural-regularity fallback (findRegularHeaderRowIndex, which has
+  // no bold requirement at all) silently pick 'row' for a table that
+  // genuinely also needs its first column tagged -- a confidently wrong,
+  // half-correct fix, not a safe non-decision. Distinguishing 'ambiguous'
+  // from null lets the caller bail entirely rather than falling through to
+  // a check that can't see this table's real column evidence at all.
+  if (rowHeaderSignal && columnHeaderSignal) return 'ambiguous';
+  if (rowHeaderSignal) return 'row';
+  if (columnHeaderSignal) return 'column';
+  return null;
+}
+
 export interface ListInfo {
   id: string;
   pageNumber: number;

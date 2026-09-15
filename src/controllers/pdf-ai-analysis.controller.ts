@@ -473,6 +473,10 @@ export class PdfAiAnalysisController {
         const results = pdfStructureWriterService.fixSimpleTableHeaders(doc, [originalIssue]);
         const r = results[0];
         modification = { success: r.success, description: r.after, error: r.error };
+      } else if (suggestionType === 'table-header-fix-column') {
+        const results = pdfStructureWriterService.fixSimpleTableColumnHeaders(doc, [originalIssue]);
+        const r = results[0];
+        modification = { success: r.success, description: r.after, error: r.error };
       } else if (suggestionType === 'table-artifact-fix') {
         const results = pdfStructureWriterService.markTableAsArtifact(doc, [originalIssue]);
         const r = results[0];
