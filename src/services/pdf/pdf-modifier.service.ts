@@ -602,6 +602,79 @@ export class PdfModifierService {
     }
   }
   /**
+   * Resolve the /Figure struct element for a given imageId (format
+   * "img_p{page}_{index}_{xObjectName}", the same id image-extractor.service.ts
+   * builds for every image it surfaces) WITHOUT writing anything -- the
+   * read-side counterpart to setAltText's own resolution below, reusing its
+   * exact same page-filtering and MCID-exact-match logic
+   * (findStructureElementsByType, resolveElementPageRef/resolvesToPageViaMcid,
+   * findFigureByImageMcid).
+   *
+   * Exists so alt-text DETECTION (image-extractor.service.ts) and alt-text
+   * WRITING (setAltText, below) can never disagree about which Figure a
+   * given image resolves to. Before this, image-extractor.service.ts ran its
+   * own separate, looser correlation (xObjectName forward-match, falling
+   * back to the Nth "unmatched" Figure in whole-DOCUMENT traversal order
+   * when that missed) -- which meant an MCID-bound Figure (the normal,
+   * common tagging form, and what buildFigureFromImage itself produces) was
+   * NEVER found by the forward xObjectName lookup and instead silently
+   * borrowed alt text from an unrelated Figure elsewhere in the document.
+   * Confirmed on real Math_Kim data: a real audit reported zero alt-text
+   * issues even though setAltText itself failed to resolve 104/224 of the
+   * document's real images -- the two paths were measuring different,
+   * disagreeing notions of "does this image have a Figure".
+   *
+   * Deliberately does NOT fall back to setAltText's own last-resort
+   * `figuresOnPage[targetIndex]` positional match -- that heuristic is safe
+   * for the WRITE path (a human has already reviewed and approved applying
+   * a specific suggestion to a specific image) but unsafe for DETECTION: on
+   * a page with exactly one real Figure and one genuinely untagged image, a
+   * positional index match would deterministically re-attribute that one
+   * Figure's alt text to whichever image happens to land at the matching
+   * index -- a smaller-blast-radius (page-scoped, not document-scoped)
+   * version of the exact bug this method exists to fix. Confirmed live by
+   * this file's own regression test (image-extractor-alttext.test.ts):
+   * re-adding this fallback here makes an untagged image incorrectly
+   * inherit an unrelated Figure's alt text.
+   *
+   * Returns null on ANY resolution failure (no structure tree, no Figures,
+   * no page match, no MCID match) -- same "bail rather than guess"
+   * discipline as setAltText itself; callers must treat null as "no Figure
+   * for this image", never fall back to guessing one.
+   */
+  resolveFigureForImage(doc: PDFDocument, imageId: string): PDFDict | null {
+    const structTreeRoot = this.getStructTreeRoot(doc);
+    if (!structTreeRoot) return null;
+
+    const match = imageId.match(/img_p(\d+)_(\d+)/);
+    const targetPage = match ? parseInt(match[1], 10) : 1;
+
+    const figures = this.findStructureElementsByType(
+      structTreeRoot,
+      new Set(['Figure', 'figure']),
+      doc.context
+    );
+    if (figures.length === 0) return null;
+
+    let pageRef: PDFRef;
+    try {
+      pageRef = doc.getPage(targetPage - 1).ref;
+    } catch {
+      return null;
+    }
+    const figuresOnPage = figures.filter(fig => {
+      const pg = this.resolveElementPageRef(fig, doc);
+      if (pg) return pg.toString() === pageRef.toString();
+      return this.resolvesToPageViaMcid(fig, doc, targetPage);
+    });
+
+    const xObjectName = imageId.match(/^img_p\d+_\d+_(.+)$/)?.[1];
+    if (!xObjectName) return null;
+
+    return this.findFigureByImageMcid(doc, figuresOnPage, targetPage, xObjectName);
+  }
+
+  /**
    * Set alt text on a Figure element in the PDF structure tree.
    * Matches by imageId format "img_p{page}_{index}_{name}" from imageExtractorService.
    *

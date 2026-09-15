@@ -20,6 +20,7 @@ import { GeminiBlockedResponseError } from '../ai/gemini-errors';
 import { getModelPricing } from '../../config/pricing.config';
 import { aiConfig } from '../../config/ai.config';
 import { fileStorageService } from '../storage/file-storage.service';
+import type { PDFDocument } from 'pdf-lib';
 import { pdfModifierService } from './pdf-modifier.service';
 import { pdfStructureWriterService, type FixResult } from './pdf-structure-writer.service';
 import { pdfContrastWriterService } from './pdf-contrast-writer.service';
@@ -2085,6 +2086,69 @@ class AiAnalysisService {
   }
 
   /**
+   * Ensures a real /Figure struct element exists for every imageId in
+   * `imageIds` before an alt-text write is attempted, building one via
+   * pdfStructureWriterService.buildFigureFromImage for whichever ones
+   * pdfModifierService.resolveFigureForImage can't find yet (checked
+   * against the doc AS IT STANDS RIGHT NOW -- callers must invoke this
+   * before any other batch in the same apply run mutates doc, so the fresh
+   * ParsedPDF/pdfjsDoc parse of pdfBuffer this method makes for
+   * buildFigureFromImage's own position-based anchor search stays
+   * consistent with doc's state; see applyApprovedSuggestions's own call
+   * site for why it runs first there).
+   *
+   * Shared by both applyApprovedSuggestions's bulk batching (below) and
+   * pdf-ai-analysis.controller.ts's single-suggestion applySuggestion, so
+   * the two apply paths can never diverge on when a missing Figure gets
+   * built -- mirrors this file's own applyApprovedSuggestions extraction,
+   * which exists for the identical reason (see that method's own doc
+   * comment).
+   *
+   * A build failure for some subset of imageIds is not surfaced here --
+   * setAltText's own existing "No Figure element" error reports it
+   * naturally per-suggestion afterward, the same bail-rather-than-guess
+   * behavior as every other writer in these apply paths.
+   */
+  async ensureFigureForImages(
+    doc: PDFDocument,
+    pdfBuffer: Buffer,
+    fileName: string,
+    imageIds: string[]
+  ): Promise<void> {
+    const missing = imageIds.filter(id => !pdfModifierService.resolveFigureForImage(doc, id));
+    if (missing.length === 0) return;
+
+    let parsedForImages: ParsedPDF | null = null;
+    try {
+      parsedForImages = await pdfParserService.parseBuffer(pdfBuffer, fileName);
+      const docImages = await imageExtractorService.extractImages(parsedForImages, {
+        includeBase64: false,
+        minWidth: 1,
+        minHeight: 1,
+      });
+      const imageInfoById = new Map(docImages.pages.flatMap(p => p.images).map(img => [img.id, img]));
+      const images = missing
+        .map(imageId => {
+          const info = imageInfoById.get(imageId);
+          return info ? { imageId, pageNumber: info.pageNumber, position: info.position } : null;
+        })
+        .filter((i): i is { imageId: string; pageNumber: number; position: ImageInfo['position'] } => !!i);
+
+      if (images.length > 0) {
+        const results = await pdfStructureWriterService.buildFigureFromImage(doc, parsedForImages, images);
+        const failed = results.filter(r => !r.success).length;
+        if (failed > 0) {
+          logger.warn(`[AiAnalysis] buildFigureFromImage: ${failed}/${results.length} image(s) could not get a Figure built -- setAltText will fail honestly for these`);
+        }
+      }
+    } finally {
+      if (parsedForImages) {
+        await pdfParserService.close(parsedForImages).catch(() => {});
+      }
+    }
+  }
+
+  /**
    * Applies every eligible `applyMode: 'apply-to-pdf'` suggestion to the
    * job's PDF and saves the result. Extracted from
    * pdf-ai-analysis.controller.ts's applyAll so the auto-remediation loop can
@@ -2135,6 +2199,22 @@ class AiAnalysisService {
     const auditIssues = (auditReport.issues ?? []) as AuditIssue[];
     const elementById = new Map(auditIssues.map(i => [i.id, i.element ?? i.id]));
     const issueById = new Map(auditIssues.map(i => [i.id, i]));
+
+    // Build every missing Figure this approval run's alt-text suggestions
+    // need FIRST, before any other batch below touches doc -- see
+    // ensureFigureForImages's own doc comment for why running it first
+    // matters (its fresh ParsedPDF/pdfjsDoc parse of pdfBuffer must reflect
+    // the exact same doc state it's about to mutate). Once a real Figure
+    // exists, setAltText's own existing MCID-exact resolution (unchanged)
+    // finds it naturally in the main per-suggestion loop further below --
+    // this call's only job is making the Figure exist.
+    const ALT_TEXT_FIGURE_TYPES = new Set(['alt-text', 'alt-text-improvement', 'alt-text-decorative']);
+    const altTextImageIds = approved
+      .filter(a => ALT_TEXT_FIGURE_TYPES.has(a.suggestionType))
+      .map(a => elementById.get(a.issueId) ?? a.issueId);
+    if (altTextImageIds.length > 0) {
+      await this.ensureFigureForImages(doc, pdfBuffer, fileName, altTextImageIds);
+    }
 
     // Both table-artifact-fix and table-from-layout-fix issues get batched
     // into ONE call each (below) -- but first, resolve BOTH batches' target
