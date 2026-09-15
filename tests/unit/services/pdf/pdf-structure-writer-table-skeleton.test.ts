@@ -103,6 +103,48 @@ async function buildDocWithTrivialBoxAndSiblings(
   return { doc, trivialBoxRef, parentRef: documentRef };
 }
 
+/**
+ * Two trivial boxes on the SAME page, both real /Table elements (table_p1_0
+ * and table_p1_1 per findTargetTable's own "Nth /Table on this page"
+ * indexing), for exercising the two-pass batch-safety requirement: fixing
+ * both in one buildTableFromLayout call must not let the first entry's
+ * retag-to-Artifact shift what "the Nth /Table on this page" means for the
+ * second entry's own findTargetTable re-walk (the exact lesson
+ * markTableAsArtifact already learned in PR #547).
+ */
+async function buildDocWithTwoTrivialBoxesSamePage(
+  lines: Array<{ text: string; x: number; y: number }>,
+): Promise<{ doc: PDFDocument; parentRef: PDFRef }> {
+  const src = await PDFDocument.create();
+  const page = src.addPage([400, 600]);
+  const font = await src.embedFont(StandardFonts.Helvetica);
+  for (const l of lines) page.drawText(l.text, { x: l.x, y: l.y, size: 14, font });
+  const doc = await PDFDocument.load(await src.save());
+  const pageRef = doc.getPage(0).ref;
+
+  const buildTrivialBox = () => {
+    const tdRef = doc.context.register(doc.context.obj({ S: PDFName.of('TD'), Pg: pageRef }));
+    const trRef = doc.context.register(doc.context.obj({ S: PDFName.of('TR'), K: [tdRef] }));
+    return doc.context.register(doc.context.obj({ S: PDFName.of('Table'), K: [trRef], Pg: pageRef }));
+  };
+  const box0Ref = buildTrivialBox();
+  const box1Ref = buildTrivialBox();
+
+  const documentRef = doc.context.register(
+    doc.context.obj({ S: PDFName.of('Document'), K: [box0Ref, box1Ref] })
+  );
+  (doc.context.lookup(box0Ref) as PDFDict).set(PDFName.of('P'), documentRef);
+  (doc.context.lookup(box1Ref) as PDFDict).set(PDFName.of('P'), documentRef);
+
+  const structTreeRootRef = doc.context.register(
+    doc.context.obj({ Type: PDFName.of('StructTreeRoot'), K: [documentRef] })
+  );
+  doc.catalog.set(PDFName.of('StructTreeRoot'), structTreeRootRef);
+  doc.getPage(0).node.set(PDFName.of('StructParents'), PDFNumber.of(0));
+
+  return { doc, parentRef: documentRef };
+}
+
 function getKidsTags(doc: PDFDocument, parentRef: PDFRef): string[] {
   const parent = doc.context.lookup(parentRef) as PDFDict;
   const k = parent.get(PDFName.of('K')) as PDFArray;
@@ -228,7 +270,7 @@ describe('PdfStructureWriterService.buildTableFromLayout', () => {
     expect(results[0].after).toContain('0 tagged MCID span(s)');
   });
 
-  it('inserts the new Table immediately after the trivial box, preserving sibling order on both sides', async () => {
+  it('inserts the new Table immediately after the trivial box, and retags the box to Artifact', async () => {
     const { doc, parentRef } = await buildDocWithTrivialBoxAndSiblings(
       [{ text: 'Solo', x: 50, y: 500 }], 2, 2
     );
@@ -240,9 +282,60 @@ describe('PdfStructureWriterService.buildTableFromLayout', () => {
     pdfStructureWriterService.buildTableFromLayout(doc, [{ issue: issueFor('table_p1_0'), table }]);
 
     const after = getKidsTags(doc, parentRef);
-    // Original trivial box and all siblings preserved in order, new Table
-    // spliced in immediately after the trivial box.
-    expect(after).toEqual(['P', 'P', 'Table', 'Table', 'P', 'P']);
+    // Sibling order and count preserved; the trivial box's own slot now
+    // reads /Artifact (not /Table) since it's retagged in place, and the
+    // new real Table is spliced in immediately after it. Retagging the box
+    // is required, not just cleanup: structure-analyzer.service.ts's
+    // enhanceTablesFromTags pairs LAYOUT candidates to struct-tree /Table
+    // elements via queue-based FIFO positional matching per page -- leaving
+    // the old box tagged /Table alongside the new one would make the walk
+    // find TWO /Table elements where it used to find one, shifting every
+    // LATER same-page /Table's FIFO position by one (confirmed live against
+    // Math_Kim: the flagged issue stayed flagged, and an unrelated table on
+    // the same page got its structural match corrupted to the new table's
+    // shape).
+    expect(after).toEqual(['P', 'P', 'Artifact', 'Table', 'P', 'P']);
+  });
+
+  /**
+   * Two-pass batch-safety regression: two MATTERHORN-15-001 issues resolving
+   * to two different trivial boxes on the SAME page, fixed in one call.
+   * findTargetTable's "Nth /Table on this page" indexing must stay stable
+   * across the whole batch -- if the first entry's retag-to-Artifact ran
+   * before the second entry's findTargetTable re-walk, the second entry
+   * would see only one remaining /Table on the page (the first already
+   * retagged), shifting what index 1 means and spuriously failing or
+   * mismatching. Same lesson markTableAsArtifact already learned (PR #547).
+   */
+  it('fixes two trivial boxes on the same page in one batch without an earlier retag shifting a later lookup\'s index', async () => {
+    const { doc, parentRef } = await buildDocWithTwoTrivialBoxesSamePage([
+      { text: 'First', x: 50, y: 500 },
+      { text: 'Second', x: 50, y: 470 },
+    ]);
+
+    const table0 = tableInfo({
+      id: 'table_p1_0', pageNumber: 1, rowCount: 1, columnCount: 1,
+      cells: [cell(0, 0, [buildItem(50, 500, 'First')])],
+    });
+    const table1 = tableInfo({
+      id: 'table_p1_1', pageNumber: 1, rowCount: 1, columnCount: 1,
+      cells: [cell(0, 0, [buildItem(50, 470, 'Second')])],
+    });
+
+    const results = pdfStructureWriterService.buildTableFromLayout(doc, [
+      { issue: issueFor('table_p1_0'), table: table0 },
+      { issue: issueFor('table_p1_1'), table: table1 },
+    ]);
+
+    expect(results[0].success).toBe(true);
+    expect(results[1].success).toBe(true);
+
+    // Both trivial boxes retagged to Artifact, both new Tables present --
+    // 2 Artifact + 2 Table = 4 kids, up from the original 2 trivial boxes.
+    const after = getKidsTags(doc, parentRef);
+    expect(after.filter(t => t === 'Artifact')).toHaveLength(2);
+    expect(after.filter(t => t === 'Table')).toHaveLength(2);
+    expect(after).toHaveLength(4);
   });
 
   it('fails honestly when the positioning anchor cannot be resolved', async () => {

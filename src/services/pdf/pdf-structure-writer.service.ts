@@ -1254,9 +1254,19 @@ export class PdfStructureWriterService {
         continue;
       }
 
-      pageEntries.forEach((e, entryIndex) => {
+      // Resolve every entry's positioning anchor BEFORE mutating any of them
+      // -- findTargetTable's own "Nth /Table on this page" indexing depends
+      // on tree state staying stable within this call. This method also
+      // retags each resolved anchor away from /Table (see below), so a
+      // second entry's fresh re-walk could otherwise miss an anchor an
+      // earlier entry already retagged in the SAME call -- the identical
+      // lesson markTableAsArtifact already learned (PR #547).
+      const targets = pageEntries.map(e => ({ e, target: this.findTargetTable(doc, structRoot, e.issue.element) }));
+      const anyTarget = targets.some(t => t.target);
+      const nsRef = anyTarget ? this.getOrCreatePdf2Namespace(doc, structRoot) : null;
+
+      targets.forEach(({ e, target }, entryIndex) => {
         try {
-          const target = this.findTargetTable(doc, structRoot, e.issue.element);
           if (!target) {
             results.push({ issueId: e.issue.id, success: false, before: 'unknown', after: 'unknown', error: `No positioning anchor found matching "${e.issue.element}"` });
             return;
@@ -1270,6 +1280,33 @@ export class PdfStructureWriterService {
           const tableObj = doc.context.obj({ Type: PDFName.of('StructElem'), S: PDFName.of('Table'), P: parentRaw, Pg: pageRef });
           const tableRef = doc.context.register(tableObj as PDFDict);
           this.insertIntoKidsAfter(doc, parentRaw, target.ref, tableRef);
+
+          // Retag the spuriously-paired trivial box to /Artifact, same
+          // operations markTableAsArtifact performs (renameElement + PDF2
+          // namespace binding + clearing now-meaningless /K children). This
+          // is not just cleanup: structure-analyzer.service.ts's
+          // enhanceTablesFromTags pairs LAYOUT candidates to real struct-tree
+          // /Table elements via queue-based FIFO positional matching per
+          // page (findTaggedTables/consumeNextTable) -- walking the tree in
+          // document order and consuming the next LAYOUT candidate for every
+          // element still typed /Table it finds. Leaving the old box tagged
+          // /Table alongside the newly-inserted one means the walk now finds
+          // TWO /Table elements where it used to find one, shifting every
+          // LATER same-page /Table's FIFO position by one -- confirmed live
+          // against Math_Kim: the flagged issue stayed flagged (still paired
+          // to the untouched old box) while an UNRELATED table on the same
+          // page got its structural match corrupted to the new table's own
+          // shape. Retagging removes the box from the walk's /Table count
+          // entirely (net-zero change to the page's tally at that tree
+          // position), restoring correct FIFO alignment for every other
+          // same-page table. Also the semantically correct outcome, not a
+          // workaround: MATTERHORN-15-001 is genuinely tabular LAYOUT content
+          // spuriously paired with a decorative box (PR #546) -- that box is
+          // exactly what MATTERHORN-15-005's existing fix already retags,
+          // so it no longer sits around as an untouched leftover here either.
+          this.renameElement(doc, target.ref, 'Artifact');
+          target.dict.set(PDFName.of('NS'), nsRef!);
+          target.dict.delete(PDFName.of('K'));
 
           const myCells = cellPlans.filter(cp => cp.entryIndex === entryIndex);
           const byRow = new Map<number, CellPlan[]>();
