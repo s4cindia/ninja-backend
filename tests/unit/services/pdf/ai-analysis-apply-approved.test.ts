@@ -24,6 +24,7 @@ vi.mock('../../../../src/services/pdf/pdf-contrast-writer.service');
 vi.mock('../../../../src/services/pdf/remediation-cycle-history.service');
 vi.mock('../../../../src/services/pdf/pdf-comprehensive-parser.service');
 vi.mock('../../../../src/services/pdf/pdf-parser.service');
+vi.mock('../../../../src/services/pdf/image-extractor.service');
 vi.mock('../../../../src/lib/logger', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
 }));
@@ -58,6 +59,9 @@ describe('aiAnalysisService.applyApprovedSuggestions', () => {
     ] as any);
     vi.mocked(fileStorageService.getRemediatedFile).mockResolvedValue(Buffer.from('pdf'));
     vi.mocked(pdfModifierService.loadPDF).mockResolvedValue({} as any);
+    // A Figure already resolves for this image -- ensureFigureForImages's
+    // buildFigureFromImage prerequisite is a no-op, not exercised by this test.
+    vi.mocked(pdfModifierService.resolveFigureForImage).mockReturnValue({} as any);
     vi.mocked(pdfModifierService.setAltText).mockResolvedValue({ success: true, description: 'set' } as any);
     vi.mocked(pdfModifierService.savePDF).mockResolvedValue(Buffer.from('modified-pdf'));
     vi.mocked(fileStorageService.saveRemediatedFile).mockResolvedValue('s3://remediated/doc.pdf');
@@ -133,6 +137,7 @@ describe('aiAnalysisService.applyApprovedSuggestions', () => {
     ] as any);
     vi.mocked(fileStorageService.getRemediatedFile).mockResolvedValue(Buffer.from('pdf'));
     vi.mocked(pdfModifierService.loadPDF).mockResolvedValue({} as any);
+    vi.mocked(pdfModifierService.resolveFigureForImage).mockReturnValue({} as any);
     vi.mocked(pdfModifierService.setAltText).mockResolvedValue({ success: false, error: 'element not found' } as any);
 
     const result = await aiAnalysisService.applyApprovedSuggestions('job-1', 5, 'user-1', 'apply_all');
@@ -362,6 +367,7 @@ describe('aiAnalysisService.applyApprovedSuggestions', () => {
     ] as any);
     vi.mocked(fileStorageService.getRemediatedFile).mockResolvedValue(Buffer.from('pdf'));
     vi.mocked(pdfModifierService.loadPDF).mockResolvedValue({} as any);
+    vi.mocked(pdfModifierService.resolveFigureForImage).mockReturnValue({} as any);
     vi.mocked(pdfModifierService.setAltText).mockResolvedValue({ success: true, description: 'set' } as any);
     vi.mocked(pdfModifierService.savePDF).mockResolvedValue(Buffer.from('modified-pdf'));
     vi.mocked(fileStorageService.saveRemediatedFile).mockResolvedValue('s3://remediated/doc.pdf');
@@ -371,6 +377,87 @@ describe('aiAnalysisService.applyApprovedSuggestions', () => {
     await aiAnalysisService.applyApprovedSuggestions('job-1', 1, 'user-1', 'apply_all');
 
     expect(pdfComprehensiveParserService.parseBuffer).not.toHaveBeenCalled();
+  });
+
+  /**
+   * Part 2 of the alt-text correlation/dispatch fix: a genuinely-untagged
+   * image has no /Figure for setAltText to target at all. Before this,
+   * setAltText would just fail honestly ("No Figure element..."), leaving
+   * the suggestion permanently inapplicable. Now buildFigureFromImage runs
+   * FIRST (batched, via ensureFigureForImages), building the missing Figure
+   * so setAltText's own existing resolution can find it.
+   */
+  it('builds a missing Figure via buildFigureFromImage before applying an alt-text suggestion whose image has none', async () => {
+    vi.mocked(prisma.aiAnalysis.findMany).mockResolvedValue([
+      { issueId: 'issue-1', suggestionType: 'alt-text', value: 'A red apple' },
+    ] as any);
+    vi.mocked(fileStorageService.getRemediatedFile).mockResolvedValue(Buffer.from('pdf'));
+    vi.mocked(pdfModifierService.loadPDF).mockResolvedValue({} as any);
+    // No Figure resolves for this image yet -- must trigger the prerequisite build.
+    vi.mocked(pdfModifierService.resolveFigureForImage).mockReturnValue(null);
+    vi.mocked(pdfModifierService.setAltText).mockResolvedValue({ success: true, description: 'set' } as any);
+    vi.mocked(pdfModifierService.savePDF).mockResolvedValue(Buffer.from('modified-pdf'));
+    vi.mocked(fileStorageService.saveRemediatedFile).mockResolvedValue('s3://remediated/doc.pdf');
+
+    const { pdfParserService } = await import('../../../../src/services/pdf/pdf-parser.service');
+    const { imageExtractorService } = await import('../../../../src/services/pdf/image-extractor.service');
+    const { pdfStructureWriterService } = await import('../../../../src/services/pdf/pdf-structure-writer.service');
+    const parsedPdf = { fake: 'parsed-pdf' } as any;
+    vi.mocked(pdfParserService.parseBuffer).mockResolvedValue(parsedPdf);
+    vi.mocked(pdfParserService.close).mockResolvedValue(undefined as any);
+    vi.mocked(imageExtractorService.extractImages).mockResolvedValue({
+      pages: [{
+        pageNumber: 1,
+        totalImages: 1,
+        images: [{ id: 'issue-1', pageNumber: 1, index: 0, position: { x: 10, y: 20, width: 30, height: 40 } } as any],
+      }],
+      totalImages: 1,
+      imageFormats: {},
+      imagesWithAltText: 0,
+      imagesWithoutAltText: 1,
+      decorativeImages: 0,
+    } as any);
+    vi.mocked(pdfStructureWriterService.buildFigureFromImage).mockResolvedValue([
+      { issueId: 'issue-1', success: true, before: 'Untagged', after: 'Built Figure' },
+    ]);
+
+    const result = await aiAnalysisService.applyApprovedSuggestions('job-1', 1, 'user-1', 'apply_all');
+
+    expect(pdfParserService.parseBuffer).toHaveBeenCalledTimes(1);
+    expect(imageExtractorService.extractImages).toHaveBeenCalledWith(parsedPdf, expect.objectContaining({ minWidth: 1, minHeight: 1 }));
+    expect(pdfStructureWriterService.buildFigureFromImage).toHaveBeenCalledTimes(1);
+    expect(pdfStructureWriterService.buildFigureFromImage).toHaveBeenCalledWith(
+      {},
+      parsedPdf,
+      [{ imageId: 'issue-1', pageNumber: 1, position: { x: 10, y: 20, width: 30, height: 40 } }]
+    );
+    expect(pdfParserService.close).toHaveBeenCalledWith(parsedPdf);
+    // buildFigureFromImage ran BEFORE setAltText, and setAltText still went ahead.
+    expect(pdfModifierService.setAltText).toHaveBeenCalledWith({}, 'issue-1', 'A red apple');
+    expect(result.applied).toBe(1);
+    expect(result.failed).toBe(0);
+  });
+
+  it('does not call buildFigureFromImage when the alt-text suggestion\'s image already has a resolvable Figure', async () => {
+    vi.mocked(prisma.aiAnalysis.findMany).mockResolvedValue([
+      { issueId: 'issue-1', suggestionType: 'alt-text', value: 'A red apple' },
+    ] as any);
+    vi.mocked(fileStorageService.getRemediatedFile).mockResolvedValue(Buffer.from('pdf'));
+    vi.mocked(pdfModifierService.loadPDF).mockResolvedValue({} as any);
+    vi.mocked(pdfModifierService.resolveFigureForImage).mockReturnValue({ fake: 'figure-dict' } as any);
+    vi.mocked(pdfModifierService.setAltText).mockResolvedValue({ success: true, description: 'set' } as any);
+    vi.mocked(pdfModifierService.savePDF).mockResolvedValue(Buffer.from('modified-pdf'));
+    vi.mocked(fileStorageService.saveRemediatedFile).mockResolvedValue('s3://remediated/doc.pdf');
+
+    const { pdfParserService } = await import('../../../../src/services/pdf/pdf-parser.service');
+    const { pdfStructureWriterService } = await import('../../../../src/services/pdf/pdf-structure-writer.service');
+
+    const result = await aiAnalysisService.applyApprovedSuggestions('job-1', 1, 'user-1', 'apply_all');
+
+    expect(pdfParserService.parseBuffer).not.toHaveBeenCalled();
+    expect(pdfStructureWriterService.buildFigureFromImage).not.toHaveBeenCalled();
+    expect(result.applied).toBe(1);
+    expect(result.failed).toBe(0);
   });
 
   it('throws when the job does not exist', async () => {

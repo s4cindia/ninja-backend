@@ -523,6 +523,9 @@ export class PdfAiAnalysisController {
         const result = await pdfContrastWriterService.fixColorContrast(doc, originalIssue);
         modification = { success: result.success, description: result.after, error: result.error };
       } else if (suggestionType === 'alt-text-decorative') {
+        // Same prerequisite as the value-based alt-text branch below -- see
+        // that branch's own comment.
+        await aiAnalysisService.ensureFigureForImages(doc, pdfBuffer, fileName, [elementId]);
         // Hardcoded '' rather than the stored value — '' is falsy and would
         // otherwise trip the "no value to apply" guard below for no reason.
         modification = await pdfModifierService.setAltText(doc, elementId, '');
@@ -531,6 +534,13 @@ export class PdfAiAnalysisController {
         if (!value) throw AppError.badRequest('This suggestion has no value to apply');
 
         if (suggestionType === 'alt-text' || suggestionType === 'alt-text-improvement') {
+          // A genuinely-untagged image has no /Figure for setAltText to
+          // target yet -- build one first (batched per page internally,
+          // though this single-suggestion endpoint only ever has one image
+          // to build for; see ensureFigureForImages's own doc comment for
+          // why this is shared with applyApprovedSuggestions's own bulk
+          // path rather than duplicated).
+          await aiAnalysisService.ensureFigureForImages(doc, pdfBuffer, fileName, [elementId]);
           modification = await pdfModifierService.setAltText(doc, elementId, value);
         } else if (suggestionType === 'table-summary') {
           modification = await pdfModifierService.setTableSummary(doc, elementId, value);

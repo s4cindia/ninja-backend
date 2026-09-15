@@ -1,7 +1,8 @@
 import * as pdfjsLib from 'pdfjs-dist/legacy/build/pdf.mjs';
-import { PDFName, PDFDict, PDFStream, PDFRawStream, PDFArray, PDFString, PDFHexString, PDFRef, PDFNumber, PDFObject } from 'pdf-lib';
+import { PDFName, PDFDict, PDFStream, PDFRawStream, PDFArray, PDFString, PDFHexString } from 'pdf-lib';
 import sharp from 'sharp';
 import { pdfParserService, ParsedPDF } from './pdf-parser.service';
+import { pdfModifierService } from './pdf-modifier.service';
 
 interface ImagePlacement {
   xObjectName: string;
@@ -11,8 +12,7 @@ interface ImagePlacement {
   height: number;
 }
 
-interface StructureTreeImageInfo {
-  xObjectName?: string;
+interface FigureAltInfo {
   altText?: string;
   isDecorative?: boolean;
 }
@@ -93,6 +93,13 @@ class ImageExtractorService {
     const startPage = pageRange?.start || 1;
     const endPage = pageRange?.end || parsedPdf.structure.pageCount;
 
+    // Computed ONCE for the whole read-only extraction pass and reused by
+    // every resolveFigureForImage call below -- see that method's own doc
+    // comment on precomputedFigures for why this matters (a real ~18.5s cost
+    // on Math_Kim's 1313 real sub-images, confirmed via direct timing, from
+    // re-walking the entire struct tree once per image instead of once here).
+    const precomputedFigures = pdfModifierService.getAllFigureElements(parsedPdf.pdfLibDoc);
+
     // Process pages in parallel batches (smaller batch — images are memory-intensive)
     const IMAGE_BATCH_SIZE = 5;
     for (let i = startPage; i <= endPage; i += IMAGE_BATCH_SIZE) {
@@ -106,6 +113,7 @@ class ImageExtractorService {
             formats,
             minWidth,
             minHeight,
+            precomputedFigures,
           })
         )
       );
@@ -149,6 +157,7 @@ class ImageExtractorService {
       formats?: ('jpeg' | 'png' | 'jbig2' | 'jpx')[];
       minWidth: number;
       minHeight: number;
+      precomputedFigures?: PDFDict[];
     }
   ): Promise<PageImages> {
     const images: ImageInfo[] = [];
@@ -159,12 +168,6 @@ class ImageExtractorService {
       const operatorList = await page.getOperatorList();
       
       const imagePlacements = this.extractImagePlacements(operatorList, viewport);
-
-      const structureTreeInfo = this.extractStructureTreeInfo(parsedPdf, pageNumber);
-      // Figures that have alt/decorative info but no xObjectName (MCID-indirect reference):
-      // matched in page order as fallback when xObjectName lookup misses.
-      const unmatchedStructInfos = structureTreeInfo.filter(s => !s.xObjectName && (s.altText !== undefined || s.isDecorative !== undefined));
-      let unmatchedFallbackIndex = 0;
 
       const pdfLibPage = parsedPdf.pdfLibDoc.getPages()[pageNumber - 1];
       const resources = pdfLibPage?.node?.get(PDFName.of('Resources'));
@@ -198,10 +201,19 @@ class ImageExtractorService {
                     || imagePlacements[index]
                     || { xObjectName, x: 0, y: 0, width: 100, height: 100 };
 
-                  // Primary match by xObjectName; fallback to N-th unmatched structure Figure
-                  // (covers MCID-indirect references where Figure has /Alt but no direct xObjectName)
-                  const structInfo = structureTreeInfo.find(s => s.xObjectName === xObjectName)
-                    ?? unmatchedStructInfos[unmatchedFallbackIndex++];
+                  // Resolve the SAME Figure setAltText itself would resolve for this
+                  // exact image id (MCID-exact match, page-scoped positional fallback)
+                  // -- see resolveFigureForImage's own doc comment for why this must be
+                  // the single shared resolution used by both detection and writing.
+                  const imageId = `img_p${pageNumber}_${index}_${xObjectName}`;
+                  const figureDict = pdfModifierService.resolveFigureForImage(
+                    parsedPdf.pdfLibDoc,
+                    imageId,
+                    options.precomputedFigures
+                  );
+                  const structInfo: FigureAltInfo | undefined = figureDict
+                    ? this.extractFigureInfo(figureDict)
+                    : undefined;
 
                   const imageInfo = await this.processImage(
                     xObject,
@@ -311,84 +323,22 @@ class ImageExtractorService {
     return placements;
   }
 
-  private extractStructureTreeInfo(
-    parsedPdf: ParsedPDF,
-    pageNumber: number
-  ): StructureTreeImageInfo[] {
-    const imageInfos: StructureTreeImageInfo[] = [];
-    
-    try {
-      const catalog = parsedPdf.pdfLibDoc.context.lookup(
-        parsedPdf.pdfLibDoc.context.trailerInfo.Root
-      );
-      
-      if (!(catalog instanceof PDFDict)) return imageInfos;
-      
-      const structTreeRootRef = catalog.get(PDFName.of('StructTreeRoot'));
-      if (!structTreeRootRef) return imageInfos;
-      
-      const structTreeRoot = parsedPdf.pdfLibDoc.context.lookup(structTreeRootRef);
-      if (!(structTreeRoot instanceof PDFDict)) return imageInfos;
-      
-      const pageRef = this.getPageRef(parsedPdf, pageNumber);
-      
-      this.traverseStructureTree(structTreeRoot, parsedPdf, pageRef, imageInfos);
-    } catch (err) {
-      console.warn('Failed to extract structure tree info:', err);
-    }
-    
-    return imageInfos;
-  }
+  /**
+   * Pull alt-text/decorative info out of an ALREADY-RESOLVED Figure struct
+   * element (see resolveFigureForImage's own doc comment for how the
+   * correct Figure is found per image -- this method's only job is reading
+   * its /Alt, /ActualText and /A /Placement entries, not locating it).
+   */
+  private extractFigureInfo(node: PDFDict): FigureAltInfo {
+    const info: FigureAltInfo = {};
 
-  private getPageRef(parsedPdf: ParsedPDF, pageNumber: number): PDFRef | null {
-    try {
-      const pages = parsedPdf.pdfLibDoc.getPages();
-      if (pageNumber >= 1 && pageNumber <= pages.length) {
-        const page = pages[pageNumber - 1];
-        return page.ref;
-      }
-    } catch {
-    }
-    return null;
-  }
-
-  private traverseStructureTree(
-    node: PDFDict,
-    parsedPdf: ParsedPDF,
-    targetPageRef: PDFRef | null,
-    results: StructureTreeImageInfo[]
-  ): void {
-    try {
-      const sType = node.get(PDFName.of('S'));
-      const sTypeStr = sType?.toString() || '';
-      
-      if (sTypeStr === '/Figure' || sTypeStr === '/Image') {
-        const info = this.extractFigureInfo(node, parsedPdf, targetPageRef);
-        if (info && (info.altText !== undefined || info.isDecorative !== undefined || info.xObjectName)) {
-          results.push(info);
-        }
-      }
-      
-      const kids = node.get(PDFName.of('K'));
-      this.processKids(kids, parsedPdf, targetPageRef, results);
-    } catch {
-    }
-  }
-
-  private extractFigureInfo(
-    node: PDFDict,
-    parsedPdf: ParsedPDF,
-    targetPageRef: PDFRef | null
-  ): StructureTreeImageInfo | null {
-    const info: StructureTreeImageInfo = {};
-    
     const alt = node.get(PDFName.of('Alt'));
     if (alt instanceof PDFString) {
       info.altText = alt.decodeText();
     } else if (alt instanceof PDFHexString) {
       info.altText = alt.decodeText();
     }
-    
+
     const actualText = node.get(PDFName.of('ActualText'));
     // Only fall back to ActualText when /Alt is absent entirely. An explicit
     // empty /Alt ("") is a deliberate decorative marker and must be preserved,
@@ -400,10 +350,11 @@ class ImageExtractorService {
         info.altText = actualText.decodeText();
       }
     }
-    
+
     const aRef = node.get(PDFName.of('A'));
     if (aRef) {
-      const a = parsedPdf.pdfLibDoc.context.lookup(aRef);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- pdf-lib context.lookup requires PDFRef cast
+      const a = node.context.lookup(aRef as any);
       if (a instanceof PDFDict) {
         const placement = a.get(PDFName.of('Placement'));
         if (placement?.toString() === '/Artifact') {
@@ -412,7 +363,8 @@ class ImageExtractorService {
       } else if (a instanceof PDFArray) {
         for (let i = 0; i < a.size(); i++) {
           const attrRef = a.get(i);
-          const attr = parsedPdf.pdfLibDoc.context.lookup(attrRef);
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any -- pdf-lib context.lookup requires PDFRef cast
+          const attr = node.context.lookup(attrRef as any);
           if (attr instanceof PDFDict) {
             const placement = attr.get(PDFName.of('Placement'));
             if (placement?.toString() === '/Artifact') {
@@ -423,136 +375,8 @@ class ImageExtractorService {
         }
       }
     }
-    
-    const k = node.get(PDFName.of('K'));
-    const xObjectName = this.resolveXObjectFromK(k, parsedPdf, targetPageRef);
-    if (xObjectName) {
-      info.xObjectName = xObjectName;
-    }
-    
+
     return info;
-  }
-
-  private resolveXObjectFromK(
-    k: PDFObject | undefined,
-    parsedPdf: ParsedPDF,
-    targetPageRef: PDFRef | null
-  ): string | undefined {
-    if (!k) return undefined;
-
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- pdf-lib context.lookup requires PDFRef cast
-    const resolved = parsedPdf.pdfLibDoc.context.lookup(k as any);
-
-    if (resolved instanceof PDFDict) {
-      const type = resolved.get(PDFName.of('Type'));
-      if (type?.toString() === '/OBJR') {
-        const pg = resolved.get(PDFName.of('Pg'));
-        if (targetPageRef && pg) {
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any -- pdf-lib context.lookup requires PDFRef cast
-          const pgResolved = parsedPdf.pdfLibDoc.context.lookup(pg as any);
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any -- pdf-lib context.lookup requires PDFRef cast
-          if (pgResolved !== parsedPdf.pdfLibDoc.context.lookup(targetPageRef as any)) {
-            return undefined;
-          }
-        }
-
-        const obj = resolved.get(PDFName.of('Obj'));
-        if (obj && obj instanceof PDFRef) {
-          const xObjectName = this.findXObjectNameByRef(parsedPdf, targetPageRef, obj);
-          if (xObjectName) {
-            return xObjectName;
-          }
-        }
-      }
-
-      const name = resolved.get(PDFName.of('Name'));
-      if (name) {
-        return name.toString().replace('/', '');
-      }
-    } else if (resolved instanceof PDFArray) {
-      for (let i = 0; i < resolved.size(); i++) {
-        const item = resolved.get(i);
-        const xObjectName = this.resolveXObjectFromK(item, parsedPdf, targetPageRef);
-        if (xObjectName) return xObjectName;
-      }
-    } else if (resolved instanceof PDFNumber) {
-      return undefined;
-    }
-    
-    return undefined;
-  }
-
-  private findXObjectNameByRef(
-    parsedPdf: ParsedPDF,
-    targetPageRef: PDFRef | null,
-    objRef: PDFRef
-  ): string | undefined {
-    try {
-      if (!targetPageRef) return undefined;
-      
-      const pages = parsedPdf.pdfLibDoc.getPages();
-      let targetPage = null;
-      
-      for (const page of pages) {
-        if (page.ref === targetPageRef) {
-          targetPage = page;
-          break;
-        }
-      }
-      
-      if (!targetPage) return undefined;
-      
-      const resourcesRef = targetPage.node.get(PDFName.of('Resources'));
-      if (!resourcesRef) return undefined;
-      
-      const resources = parsedPdf.pdfLibDoc.context.lookup(resourcesRef);
-      if (!(resources instanceof PDFDict)) return undefined;
-      
-      const xObjectsRef = resources.get(PDFName.of('XObject'));
-      if (!xObjectsRef) return undefined;
-      
-      const xObjects = parsedPdf.pdfLibDoc.context.lookup(xObjectsRef);
-      if (!(xObjects instanceof PDFDict)) return undefined;
-      
-      for (const [name, ref] of xObjects.entries()) {
-        if (ref instanceof PDFRef && 
-            ref.objectNumber === objRef.objectNumber && 
-            ref.generationNumber === objRef.generationNumber) {
-          return name.toString().replace('/', '');
-        }
-      }
-    } catch {
-    }
-    
-    return undefined;
-  }
-
-  private processKids(
-    kids: PDFObject | undefined,
-    parsedPdf: ParsedPDF,
-    targetPageRef: PDFRef | null,
-    results: StructureTreeImageInfo[]
-  ): void {
-    if (!kids) return;
-
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- pdf-lib context.lookup requires PDFRef cast
-    const resolved = parsedPdf.pdfLibDoc.context.lookup(kids as any);
-
-    if (resolved instanceof PDFArray) {
-      for (let i = 0; i < resolved.size(); i++) {
-        const kid = resolved.get(i);
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any -- pdf-lib context.lookup requires PDFRef cast
-        const kidResolved = parsedPdf.pdfLibDoc.context.lookup(kid as any);
-        if (kidResolved instanceof PDFDict) {
-          this.traverseStructureTree(kidResolved, parsedPdf, targetPageRef, results);
-        }
-      }
-    } else if (resolved instanceof PDFDict) {
-      const type = resolved.get(PDFName.of('Type'));
-      if (type?.toString() !== '/OBJR' && type?.toString() !== '/MCR') {
-        this.traverseStructureTree(resolved, parsedPdf, targetPageRef, results);
-      }
-    }
   }
 
   private multiplyTransforms(t1: number[], t2: number[]): number[] {
