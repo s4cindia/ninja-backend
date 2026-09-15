@@ -1233,6 +1233,19 @@ export class PdfStructureWriterService {
    * codebase's existing primitives (createElement, renameElement, etc.) make
    * very unlikely in practice, not attempted here.
    *
+   * CALLER CONTRACT (CodeRabbit finding on PR #552, confirmed real): this
+   * method mutates `doc` IN PLACE and does not roll those mutations back on
+   * a reported failure -- a failed entry's content-stream/struct-tree
+   * changes remain in `doc` even though its own FixResult says `success:
+   * false`. A caller MUST check `results.every(r => r.success)` before
+   * persisting `doc` (e.g. via pdfModifierService.savePDF). If any entry
+   * failed, do not save `doc` as-is and do not retry the failed entries
+   * in place -- discard `doc` entirely and reload a fresh PDFDocument from
+   * the original, unmodified buffer before trying again. This mirrors how
+   * `ai-analysis.service.ts`'s `applyApprovedSuggestions` already treats a
+   * PDFDocument for an entire apply-cycle: never partially persisted,
+   * always a fresh load per attempt.
+   *
    * Every valid entry's TH cells also get a /Scope attribute derived independently from
    * `hasHeaderRow`/`hasHeaderColumn` and the cell's own row/column (not from
    * `isHeader` alone, which can't distinguish which case applies) -- per
@@ -1412,12 +1425,18 @@ export class PdfStructureWriterService {
       // be a lie if that later call throws -- these are only provisional
       // until the commit actually lands.
       const pageResults: FixResult[] = [];
+      // Parallel to pageResults' success entries -- lets the final commit's
+      // failure path (below) retag each newly-built Table rather than
+      // leaving it dangling as a structurally-complete-looking but
+      // ParentTree-orphaned table (CodeRabbit finding on PR #552).
+      const pageTableRefsByEntry = new Map<number, PDFRef>();
 
       for (const ve of validEntries) {
         const { entryIndex, e, targetRef, parentRaw } = ve;
         try {
           const tableObj = doc.context.obj({ Type: PDFName.of('StructElem'), S: PDFName.of('Table'), P: parentRaw, Pg: pageRef });
           const tableRef = doc.context.register(tableObj as PDFDict);
+          pageTableRefsByEntry.set(entryIndex, tableRef);
           this.insertIntoKidsAfter(doc, parentRaw, targetRef, tableRef);
 
           // Retag the spuriously-paired trivial box to /Artifact, same
@@ -1526,6 +1545,33 @@ export class PdfStructureWriterService {
           results.push(...pageResults);
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
+          // Not full transactional rollback (CodeRabbit asked for that on
+          // PR #552 and correctly labeled it a heavy lift -- true rollback
+          // of a content-stream splice plus every struct element created
+          // during this page's loop is real, disproportionate work). This
+          // is a cheap, meaningful partial mitigation instead: a Table this
+          // call can no longer honestly claim is wired into /ParentTree
+          // gets retagged to /Artifact -- same operations used elsewhere in
+          // this method for the trivial box -- so if a caller persists the
+          // document anyway, what's left behind is an inert, non-misleading
+          // Artifact rather than a structurally-complete-looking table with
+          // orphaned MCIDs no reader can correctly resolve.
+          validEntries.forEach((ve, i) => {
+            const r = pageResults[i];
+            if (!r.success) return;
+            const tableRef = pageTableRefsByEntry.get(ve.entryIndex);
+            const tableDict = tableRef ? doc.context.lookup(tableRef) : undefined;
+            if (tableDict instanceof PDFDict) {
+              this.renameElement(doc, tableRef!, 'Artifact');
+              tableDict.set(PDFName.of('NS'), nsRef);
+              // Same "descendants become unreachable garbage, not literally
+              // removed from the file" semantics deleteElement already
+              // documents -- the TR/TH/TD/Span children below still exist
+              // as registered objects but are no longer reachable from a
+              // struct element real readers will walk.
+              tableDict.delete(PDFName.of('K'));
+            }
+          });
           for (const r of pageResults) {
             results.push(r.success ? { ...r, success: false, error: message } : r);
           }
