@@ -29,7 +29,15 @@ import {
 } from 'pdf-lib';
 import { AuditIssue } from '../audit/base-audit.service';
 import { logger } from '../../lib/logger';
-import { pageContentMcids } from './pdf-content-stream-io';
+import { pageContentMcids, decodePageContent } from './pdf-content-stream-io';
+import {
+  matchCellRanges,
+  insertMarkedContentSpans,
+  type RangeInsertionRequest,
+  type InsertedSpan,
+  type CellCoverageResult,
+} from './table-content-tagger';
+import type { TableCell, TableInfo } from './structure-analyzer.service';
 
 // ─── Public Types ─────────────────────────────────────────────────────────────
 
@@ -145,6 +153,37 @@ export class PdfStructureWriterService {
     } else {
       parent.set(PDFName.of('K'), doc.context.obj([childRef]));
     }
+  }
+
+  /**
+   * Insert newRef into parentRef's /K array immediately after afterRef.
+   * Unlike appendToKids (which always appends at the very end), this
+   * preserves reading-order proximity to a specific existing sibling --
+   * needed when a document's whole body sits under one flat root container
+   * rather than nested per-page/per-section containers (Slice 2d finding,
+   * confirmed live: Math_Kim's /Document node has 2000+ direct children
+   * spanning the entire book; appendToKids there would place new content
+   * at the very end of the WHOLE DOCUMENT's reading order regardless of
+   * which page it's actually on). Throws rather than guessing when afterRef
+   * isn't found in parentRef's /K array, or /K isn't an array at all (a
+   * lone-child parent has no meaningful "position" for this to preserve) --
+   * matches this file's established "bail rather than guess" convention.
+   */
+  private insertIntoKidsAfter(doc: PDFDocument, parentRef: PDFRef, afterRef: PDFRef, newRef: PDFRef): void {
+    const parent = doc.context.lookup(parentRef);
+    if (!(parent instanceof PDFDict)) {
+      throw new Error('insertIntoKidsAfter: parent does not resolve to a dictionary');
+    }
+    const k = parent.get(PDFName.of('K'));
+    if (!(k instanceof PDFArray)) {
+      throw new Error('insertIntoKidsAfter: parent /K is not an array -- cannot position relative to a sibling');
+    }
+    const arr = k.asArray();
+    const idx = arr.findIndex(item => item instanceof PDFRef && item.objectNumber === afterRef.objectNumber);
+    if (idx === -1) {
+      throw new Error('insertIntoKidsAfter: afterRef not found in parent /K array');
+    }
+    k.insert(idx + 1, newRef);
   }
 
   /** Remove targetRef from the /K array of the element at parentRef. */
@@ -956,9 +995,25 @@ export class PdfStructureWriterService {
    * root (this codebase doesn't currently produce or need to read one;
    * walking /Kids to the correct leaf is real, separate work).
    */
-  extendParentTree(doc: PDFDocument, pageNumber: number, entries: Array<{ mcid: number; structElementRef: PDFRef }>): void {
-    if (entries.length === 0) return;
-
+  /**
+   * Resolves (creating if wholly absent) the page's /StructParents key and
+   * /StructTreeRoot /ParentTree /Nums array, validating every document-shape
+   * assumption extendParentTree depends on -- WITHOUT touching any specific
+   * entries. Split out from extendParentTree so a caller (buildTableFromLayout)
+   * can preflight "would this page's ParentTree even accept new entries" BEFORE
+   * committing to a content-stream mutation, rather than discovering a shape
+   * problem only after inserting real MCIDs with nowhere to wire them
+   * (CodeRabbit finding on PR #552, confirmed real: the previous preflight only
+   * covered findTargetTable/parent resolution, not ParentTree shape).
+   *
+   * Every failure mode here is a property of the DOCUMENT as it already
+   * stands -- knowable before any entries are considered, unlike the
+   * contiguity checks in extendParentTree itself, which depend on what's
+   * being requested and can only be evaluated once real MCIDs exist (see
+   * extendParentTree's own doc comment for why that residual case is
+   * accepted, not preflighted).
+   */
+  private resolveParentTreeNumsArray(doc: PDFDocument, pageNumber: number): { numsArr: PDFArray; pageKey: number } {
     const page = doc.getPage(pageNumber - 1);
     const structParentsRaw = page.node.get(PDFName.of('StructParents'));
     const structParents = structParentsRaw instanceof PDFRef ? doc.context.lookup(structParentsRaw) : structParentsRaw;
@@ -1015,6 +1070,15 @@ export class PdfStructureWriterService {
       numsArr = doc.context.obj([]) as unknown as PDFArray;
       parentTreeDict.set(PDFName.of('Nums'), numsArr);
     }
+
+    return { numsArr, pageKey };
+  }
+
+  extendParentTree(doc: PDFDocument, pageNumber: number, entries: Array<{ mcid: number; structElementRef: PDFRef }>): void {
+    if (entries.length === 0) return;
+
+    const { numsArr, pageKey } = this.resolveParentTreeNumsArray(doc, pageNumber);
+    const structRoot = this.getStructTreeRoot(doc)!;
 
     const sorted = [...entries].sort((a, b) => a.mcid - b.mcid);
     const raw = numsArr.asArray();
@@ -1093,6 +1157,431 @@ export class PdfStructureWriterService {
         structRoot.set(PDFName.of('ParentTreeNextKey'), PDFNumber.of(pageKey + 1));
       }
     }
+  }
+
+  /**
+   * Builds a real Table/TR/TH/TD struct-tree skeleton for MATTERHORN-15-001
+   * cases -- genuinely tabular LAYOUT content with no existing tagging of
+   * its own (structure-analyzer.service.ts's TableInfo/TableCell, carrying
+   * `anchor`/`sourceItems` per PR #549/#550). Unlike every other method in
+   * this file, this INSERTS new content-stream marked content and
+   * struct-tree elements rather than renaming/reparenting/deleting existing
+   * ones -- Slice 2d of the plan, wiring table-content-tagger.ts's
+   * matchCellRanges/insertMarkedContentSpans (Slice 2b) together with
+   * extendParentTree (Slice 2c).
+   *
+   * Per-cell resolution: matchCellRanges finds every source TextItem's real
+   * content-stream location; a cell needing multiple ranges (content split
+   * across several runs -- confirmed common, Slice 2a's diagnostic found
+   * only 45.7% of cells resolve to a single run) gets one fresh /Span leaf
+   * PER RANGE, each with its own MCID. Cells that only partially resolve
+   * are tagged for the resolved subset only (honest but incomplete, per
+   * CellCoverageResult's own documented tradeoff) -- whether that's
+   * acceptable, or whether such a cell needs some other fallback treatment,
+   * is left to a caller/future decision, not this method.
+   *
+   * Table placement (open question in the plan, resolved empirically here,
+   * Slice 2d finding): naively appending to the trivial decorative box's
+   * own parent (the box findTargetTable resolves the issue's element id
+   * to) is WRONG for a document whose whole body sits under one flat root
+   * container -- confirmed live against Math_Kim: the trivial box's parent
+   * is /Document with 2000+ direct children spanning the ENTIRE book, and
+   * appendToKids always appends at the very END of that array. Blindly
+   * appending there would place the new Table at the end of the WHOLE
+   * DOCUMENT's reading order, nowhere near the page it's actually on.
+   * Fixed via insertIntoKidsAfter: the new Table is spliced immediately
+   * AFTER the trivial box's own position in its parent's /K array,
+   * preserving at least rough reading-order proximity to where the real
+   * table actually sits. This is a heuristic, not a proven-optimal
+   * position (the trivial box's position was never meant to indicate
+   * anything about the real table's layout, only found usable for
+   * cross-referencing) -- worth a real placement-quality check before this
+   * graduates beyond one validated case.
+   *
+   * Groups entries by page and calls insertMarkedContentSpans ONCE per page
+   * (not per table, not per cell) -- required by that function's own
+   * same-page batching contract. This slice validates exactly one table
+   * per page; broader multi-table-per-page batching is Slice 2e's job.
+   *
+   * Every entry's positioning anchor + parent is resolved and validated
+   * BEFORE either mutation phase (content-stream, then struct-tree) begins
+   * -- an entry that can't resolve is excluded from insertMarkedContentSpans
+   * entirely, never attempted then reported failed afterward. Content-stream
+   * mutation ahead of full validation previously meant a failed entry could
+   * leave orphan MCIDs with no owning struct element or /ParentTree mapping
+   * (CodeRabbit/Codex finding on PR #552, confirmed real).
+   *
+   * The page's /ParentTree shape (resolveParentTreeNumsArray) is ALSO
+   * preflighted before the content-stream mutation, for the same reason --
+   * CodeRabbit correctly pushed back that the first round of validation
+   * covered findTargetTable/parent resolution but not this, so a malformed
+   * /ParentTree or an unsupported hierarchical /Kids number tree still
+   * surfaced only after real MCIDs and struct elements already existed with
+   * nowhere to wire them. Every one of those is a property of the document
+   * as it already stands, knowable up front. What ISN'T preflighted, and is
+   * an explicitly accepted residual risk rather than a silently-ignored one:
+   * extendParentTree's own MCID-contiguity checks depend on the ACTUAL MCIDs
+   * assigned by insertMarkedContentSpans, which only exist after that call
+   * runs -- if a later entry on a multi-entry page throws partway through
+   * struct-tree building (e.g. an unexpected createElement failure) AFTER
+   * this page's ONE combined content-stream mutation has already committed,
+   * that entry's MCIDs can be left without a /ParentTree mapping. Closing
+   * this fully would mean either transactional rollback of a content-stream
+   * splice, or wrapping this whole page's struct-tree-building phase so any
+   * entry's failure discards every other entry's already-built structure too
+   * -- both real, disproportionate undertakings for a failure mode this
+   * codebase's existing primitives (createElement, renameElement, etc.) make
+   * very unlikely in practice, not attempted here.
+   *
+   * CALLER CONTRACT (CodeRabbit finding on PR #552, confirmed real): this
+   * method mutates `doc` IN PLACE and does not roll those mutations back on
+   * a reported failure -- a failed entry's content-stream/struct-tree
+   * changes remain in `doc` even though its own FixResult says `success:
+   * false`. A caller MUST check `results.every(r => r.success)` before
+   * persisting `doc` (e.g. via pdfModifierService.savePDF). If any entry
+   * failed, do not save `doc` as-is and do not retry the failed entries
+   * in place -- discard `doc` entirely and reload a fresh PDFDocument from
+   * the original, unmodified buffer before trying again. This mirrors how
+   * `ai-analysis.service.ts`'s `applyApprovedSuggestions` already treats a
+   * PDFDocument for an entire apply-cycle: never partially persisted,
+   * always a fresh load per attempt.
+   *
+   * Every valid entry's TH cells also get a /Scope attribute derived independently from
+   * `hasHeaderRow`/`hasHeaderColumn` and the cell's own row/column (not from
+   * `isHeader` alone, which can't distinguish which case applies) -- per
+   * Matterhorn 07-002, PAC 2024 checks /Scope independently of the TH tag
+   * itself (same CodeRabbit/Codex review round). /ParentTree is extended
+   * ONCE per page across every entry's combined MCIDs, sorted by MCID --
+   * not once per entry -- since insertMarkedContentSpans assigns MCIDs in
+   * content-stream byte-offset order across the whole page's batch, not
+   * grouped by entry; two entries whose cells interleave in byte order could
+   * otherwise hand a single entry's own call a non-contiguous MCID subset,
+   * which extendParentTree correctly rejects even though the page's whole
+   * MCID sequence is internally consistent.
+   *
+   * @param entries - MATTERHORN-15-001 AuditIssues paired with the
+   *   corresponding LAYOUT-detected TableInfo (looked up via issue.element,
+   *   which doubles as both the TableInfo's own id and the id
+   *   findTargetTable resolves to the spuriously-paired trivial box, per
+   *   PR #546/#547's established pairing)
+   */
+  buildTableFromLayout(doc: PDFDocument, entries: Array<{ issue: AuditIssue; table: TableInfo }>): FixResult[] {
+    const structRoot = this.getStructTreeRoot(doc);
+    if (!structRoot) {
+      return entries.map(e => ({
+        issueId: e.issue.id, success: false, before: 'unknown', after: 'unknown',
+        error: 'No structure tree root found',
+      }));
+    }
+
+    const byPage = new Map<number, Array<{ issue: AuditIssue; table: TableInfo }>>();
+    for (const e of entries) {
+      const list = byPage.get(e.table.pageNumber) ?? [];
+      list.push(e);
+      byPage.set(e.table.pageNumber, list);
+    }
+
+    const results: FixResult[] = [];
+
+    for (const [pageNumber, pageEntries] of byPage) {
+      let pageContent: string | null;
+      try {
+        pageContent = decodePageContent(doc, pageNumber);
+      } catch (err) {
+        for (const e of pageEntries) {
+          results.push({ issueId: e.issue.id, success: false, before: 'unknown', after: 'unknown', error: err instanceof Error ? err.message : String(err) });
+        }
+        continue;
+      }
+      if (pageContent === null) {
+        for (const e of pageEntries) {
+          results.push({ issueId: e.issue.id, success: false, before: 'unknown', after: 'unknown', error: `No readable content stream for page ${pageNumber}` });
+        }
+        continue;
+      }
+
+      let pageRef: PDFRef;
+      try {
+        pageRef = doc.getPage(pageNumber - 1).ref;
+      } catch (err) {
+        for (const e of pageEntries) {
+          results.push({ issueId: e.issue.id, success: false, before: 'unknown', after: 'unknown', error: err instanceof Error ? err.message : String(err) });
+        }
+        continue;
+      }
+
+      // Resolve and validate EVERY entry's positioning anchor + parent
+      // BEFORE any document mutation happens (content-stream or struct-tree)
+      // -- two things this protects against, both real findings on PR #552:
+      //  1. findTargetTable's own "Nth /Table on this page" indexing depends
+      //     on tree state staying stable within this call; this method also
+      //     retags each resolved anchor away from /Table later, so a second
+      //     entry's fresh re-walk could otherwise miss an anchor an earlier
+      //     entry already retagged in the SAME call -- the identical lesson
+      //     markTableAsArtifact already learned (PR #547).
+      //  2. insertMarkedContentSpans below WRITES to the content stream --
+      //     an entry whose anchor or parent can't be resolved must be
+      //     excluded from that call entirely, not attempted and reported
+      //     failed afterward. Real content-stream mutation ahead of full
+      //     validation previously meant a failed entry could still leave
+      //     orphan MCIDs in the content stream with no owning struct element
+      //     and no /ParentTree mapping -- a corrupted, partially-tagged
+      //     document, silently reported as just one more failed FixResult.
+      //     Full transactional rollback of a content-stream splice is real,
+      //     separate work not worth building here (CodeRabbit/Codex finding
+      //     on PR #552) -- preventing the mutation from ever starting for an
+      //     entry that can't complete is simpler and just as correct.
+      type ValidEntry = { entryIndex: number; e: { issue: AuditIssue; table: TableInfo }; targetRef: PDFRef; parentRaw: PDFRef };
+      const validEntries: ValidEntry[] = [];
+      pageEntries.forEach((e, entryIndex) => {
+        const target = this.findTargetTable(doc, structRoot, e.issue.element);
+        if (!target) {
+          results.push({ issueId: e.issue.id, success: false, before: 'unknown', after: 'unknown', error: `No positioning anchor found matching "${e.issue.element}"` });
+          return;
+        }
+        const parentRaw = target.dict.get(PDFName.of('P'));
+        if (!(parentRaw instanceof PDFRef)) {
+          results.push({ issueId: e.issue.id, success: false, before: 'unknown', after: 'unknown', error: 'Positioning anchor has no /P (parent) entry' });
+          return;
+        }
+        validEntries.push({ entryIndex, e, targetRef: target.ref, parentRaw });
+      });
+
+      if (validEntries.length === 0) continue;
+
+      // Preflight the page's /ParentTree shape BEFORE the content-stream
+      // mutation below -- closes the deterministic half of a CodeRabbit
+      // pushback on PR #552: extendParentTree previously only ran AFTER
+      // insertMarkedContentSpans and struct-tree creation, so a document-
+      // shape problem (no /StructParents, no struct tree root, a malformed
+      // /ParentTree, or an unsupported hierarchical /Kids number tree --
+      // see resolveParentTreeNumsArray's own doc comment) surfaced only
+      // once real MCIDs and struct elements already existed with nowhere
+      // to wire them. Every one of those conditions is a property of the
+      // document as it already stands, knowable before any entries are
+      // considered -- unlike extendParentTree's own contiguity checks,
+      // which depend on the actual MCIDs assigned below and can't be
+      // known until insertMarkedContentSpans has already run (an entry
+      // that throws mid-struct-tree-build on a multi-entry page, after
+      // this page's ONE combined content-stream mutation has committed,
+      // remains a narrower accepted residual risk -- see this method's own
+      // top-level doc comment).
+      try {
+        this.resolveParentTreeNumsArray(doc, pageNumber);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        for (const ve of validEntries) {
+          results.push({ issueId: ve.e.issue.id, success: false, before: 'unknown', after: 'unknown', error: message });
+        }
+        continue;
+      }
+
+      type CellPlan = { entryIndex: number; cellIndex: number; cell: TableCell; coverage: CellCoverageResult };
+      const cellPlans: CellPlan[] = [];
+      const requests: RangeInsertionRequest[] = [];
+
+      for (const ve of validEntries) {
+        ve.e.table.cells.forEach((cell, cellIndex) => {
+          const coverage = matchCellRanges(pageContent!, cell);
+          cellPlans.push({ entryIndex: ve.entryIndex, cellIndex, cell, coverage });
+          coverage.ranges.forEach((range, rangeIndex) => {
+            requests.push({ range, id: `${ve.entryIndex}:${cellIndex}:${rangeIndex}` });
+          });
+        });
+      }
+
+      // Only NOW does the content stream get rewritten -- every entry
+      // reaching this point already has a confirmed-resolvable anchor and
+      // parent.
+      let inserted: InsertedSpan[];
+      try {
+        inserted = insertMarkedContentSpans(doc, pageNumber, requests);
+      } catch (err) {
+        for (const ve of validEntries) {
+          results.push({ issueId: ve.e.issue.id, success: false, before: 'unknown', after: 'unknown', error: err instanceof Error ? err.message : String(err) });
+        }
+        continue;
+      }
+      const mcidById = new Map(inserted.map(s => [s.id!, s.mcid]));
+
+      const nsRef = this.getOrCreatePdf2Namespace(doc, structRoot);
+
+      // Collected across ALL of this page's valid entries and committed to
+      // /ParentTree in ONE call below, sorted by MCID -- not once per entry.
+      // insertMarkedContentSpans assigns MCIDs in content-stream byte-offset
+      // order across the WHOLE page's request batch, not grouped by which
+      // entry submitted them; if two entries' cells physically interleave in
+      // byte order, a single entry's own MCIDs are not guaranteed to form a
+      // contiguous run on their own, but extendParentTree requires each call
+      // to append an exactly-contiguous range. A per-entry call could
+      // incorrectly throw on a non-contiguous subset even though the WHOLE
+      // page's MCID sequence is internally consistent (CodeRabbit finding on
+      // PR #552, confirmed real).
+      const pageParentTreeEntries: Array<{ mcid: number; structElementRef: PDFRef }> = [];
+      // Buffered rather than pushed straight into `results`: an entry's
+      // struct-tree build can succeed here while the ParentTree commit for
+      // the WHOLE page still hasn't happened yet (that's one combined call
+      // below, after this loop). Pushing "success: true" immediately would
+      // be a lie if that later call throws -- these are only provisional
+      // until the commit actually lands.
+      const pageResults: FixResult[] = [];
+      // Parallel to pageResults' success entries -- lets the final commit's
+      // failure path (below) retag each newly-built Table rather than
+      // leaving it dangling as a structurally-complete-looking but
+      // ParentTree-orphaned table (CodeRabbit finding on PR #552).
+      const pageTableRefsByEntry = new Map<number, PDFRef>();
+
+      for (const ve of validEntries) {
+        const { entryIndex, e, targetRef, parentRaw } = ve;
+        try {
+          const tableObj = doc.context.obj({ Type: PDFName.of('StructElem'), S: PDFName.of('Table'), P: parentRaw, Pg: pageRef });
+          const tableRef = doc.context.register(tableObj as PDFDict);
+          pageTableRefsByEntry.set(entryIndex, tableRef);
+          this.insertIntoKidsAfter(doc, parentRaw, targetRef, tableRef);
+
+          // Retag the spuriously-paired trivial box to /Artifact, same
+          // operations markTableAsArtifact performs (renameElement + PDF2
+          // namespace binding + clearing now-meaningless /K children). This
+          // is not just cleanup: structure-analyzer.service.ts's
+          // enhanceTablesFromTags pairs LAYOUT candidates to real struct-tree
+          // /Table elements via queue-based FIFO positional matching per
+          // page (findTaggedTables/consumeNextTable) -- walking the tree in
+          // document order and consuming the next LAYOUT candidate for every
+          // element still typed /Table it finds. Leaving the old box tagged
+          // /Table alongside the newly-inserted one means the walk now finds
+          // TWO /Table elements where it used to find one, shifting every
+          // LATER same-page /Table's FIFO position by one -- confirmed live
+          // against Math_Kim: the flagged issue stayed flagged (still paired
+          // to the untouched old box) while an UNRELATED table on the same
+          // page got its structural match corrupted to the new table's own
+          // shape. Retagging removes the box from the walk's /Table count
+          // entirely (net-zero change to the page's tally at that tree
+          // position), restoring correct FIFO alignment for every other
+          // same-page table. Also the semantically correct outcome, not a
+          // workaround: MATTERHORN-15-001 is genuinely tabular LAYOUT content
+          // spuriously paired with a decorative box (PR #546) -- that box is
+          // exactly what MATTERHORN-15-005's existing fix already retags,
+          // so it no longer sits around as an untouched leftover here either.
+          const targetDict = doc.context.lookup(targetRef);
+          if (targetDict instanceof PDFDict) {
+            this.renameElement(doc, targetRef, 'Artifact');
+            targetDict.set(PDFName.of('NS'), nsRef);
+            targetDict.delete(PDFName.of('K'));
+          }
+
+          const myCells = cellPlans.filter(cp => cp.entryIndex === entryIndex);
+          const byRow = new Map<number, CellPlan[]>();
+          for (const cp of myCells) {
+            const list = byRow.get(cp.cell.row) ?? [];
+            list.push(cp);
+            byRow.set(cp.cell.row, list);
+          }
+
+          let cellCount = 0;
+          let leafCount = 0;
+
+          for (const rowIdx of [...byRow.keys()].sort((a, b) => a - b)) {
+            const trRef = this.createElement(doc, 'TR', tableRef, pageRef);
+            const rowCells = byRow.get(rowIdx)!.sort((a, b) => a.cell.column - b.cell.column);
+            for (const cp of rowCells) {
+              const cellTag = cp.cell.isHeader ? 'TH' : 'TD';
+              const cellRef = this.createElement(doc, cellTag, trRef, pageRef);
+              cellCount++;
+              if (cellTag === 'TH') {
+                // isHeader alone can't distinguish WHICH kind of header this
+                // is (CodeRabbit/Codex finding on PR #552) -- re-derive from
+                // the same two conditions structure-analyzer.service.ts's
+                // own isHeader formula ORs together
+                // ((hasHeaderRow && row===0) || (hasHeaderColumn &&
+                // column===0)), since both can independently be true for the
+                // same corner cell. Per Matterhorn 07-002, every TH needs a
+                // /Scope PAC 2024 checks independently of the tag itself --
+                // building a table with TH cells but no /Scope trades one
+                // accessibility failure for another.
+                const isRowHeaderCell = e.table.hasHeaderRow && cp.cell.row === 0;
+                const isColumnHeaderCell = e.table.hasHeaderColumn && cp.cell.column === 0;
+                const scope = isRowHeaderCell && isColumnHeaderCell ? 'Both' : isRowHeaderCell ? 'Column' : 'Row';
+                this.writeScopeAttribute(doc, cellRef, scope);
+              }
+              cp.coverage.ranges.forEach((_, rangeIndex) => {
+                const id = `${entryIndex}:${cp.cellIndex}:${rangeIndex}`;
+                const mcid = mcidById.get(id);
+                if (mcid === undefined) return;
+                const spanRef = this.createElement(doc, 'Span', cellRef, pageRef);
+                const spanDict = doc.context.lookup(spanRef);
+                if (spanDict instanceof PDFDict) spanDict.set(PDFName.of('K'), PDFNumber.of(mcid));
+                pageParentTreeEntries.push({ mcid, structElementRef: spanRef });
+                leafCount++;
+              });
+            }
+          }
+
+          pageResults.push({
+            issueId: e.issue.id,
+            success: true,
+            before: `Untagged layout table (${e.table.rowCount}x${e.table.columnCount}, ${e.table.cells.length} cells)`,
+            after: `Built Table/${byRow.size} TR/${cellCount} cells, ${leafCount} tagged MCID span(s)`,
+          });
+        } catch (err) {
+          pageResults.push({ issueId: e.issue.id, success: false, before: 'unknown', after: 'unknown', error: err instanceof Error ? err.message : String(err) });
+        }
+      }
+
+      // The one combined per-page ParentTree commit -- see this method's own
+      // doc comment for why a per-entry call would be wrong. If THIS throws
+      // (the accepted residual risk: an earlier entry's mid-build exception
+      // left a genuine MCID gap, or some other contiguity/shape surprise
+      // resolveParentTreeNumsArray's preflight didn't catch), every entry
+      // provisionally marked successful above never actually got its
+      // ParentTree wiring -- flip them to failed rather than reporting a
+      // success that isn't real. This also means buildTableFromLayout never
+      // throws uncaught: every other writer method in this file returns a
+      // FixResult[] even on failure, and this call previously sat outside
+      // any try/catch entirely.
+      if (pageParentTreeEntries.length > 0) {
+        pageParentTreeEntries.sort((a, b) => a.mcid - b.mcid);
+        try {
+          this.extendParentTree(doc, pageNumber, pageParentTreeEntries);
+          results.push(...pageResults);
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          // Not full transactional rollback (CodeRabbit asked for that on
+          // PR #552 and correctly labeled it a heavy lift -- true rollback
+          // of a content-stream splice plus every struct element created
+          // during this page's loop is real, disproportionate work). This
+          // is a cheap, meaningful partial mitigation instead: a Table this
+          // call can no longer honestly claim is wired into /ParentTree
+          // gets retagged to /Artifact -- same operations used elsewhere in
+          // this method for the trivial box -- so if a caller persists the
+          // document anyway, what's left behind is an inert, non-misleading
+          // Artifact rather than a structurally-complete-looking table with
+          // orphaned MCIDs no reader can correctly resolve.
+          validEntries.forEach((ve, i) => {
+            const r = pageResults[i];
+            if (!r.success) return;
+            const tableRef = pageTableRefsByEntry.get(ve.entryIndex);
+            const tableDict = tableRef ? doc.context.lookup(tableRef) : undefined;
+            if (tableDict instanceof PDFDict) {
+              this.renameElement(doc, tableRef!, 'Artifact');
+              tableDict.set(PDFName.of('NS'), nsRef);
+              // Same "descendants become unreachable garbage, not literally
+              // removed from the file" semantics deleteElement already
+              // documents -- the TR/TH/TD/Span children below still exist
+              // as registered objects but are no longer reachable from a
+              // struct element real readers will walk.
+              tableDict.delete(PDFName.of('K'));
+            }
+          });
+          for (const r of pageResults) {
+            results.push(r.success ? { ...r, success: false, error: message } : r);
+          }
+        }
+      } else {
+        results.push(...pageResults);
+      }
+    }
+
+    return results;
   }
 
   /**
