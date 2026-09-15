@@ -611,9 +611,23 @@ export class PdfModifierService {
    * reuse it instead of paying for the full traversal per image.
    */
   getAllFigureElements(doc: PDFDocument): PDFDict[] {
-    const structTreeRoot = this.getStructTreeRoot(doc);
-    if (!structTreeRoot) return [];
-    return this.findStructureElementsByType(structTreeRoot, new Set(['Figure', 'figure']), doc.context);
+    try {
+      const structTreeRoot = this.getStructTreeRoot(doc);
+      if (!structTreeRoot) return [];
+      return this.findStructureElementsByType(structTreeRoot, new Set(['Figure', 'figure']), doc.context);
+    } catch {
+      // A dangling/malformed PDFRef anywhere in the struct tree can make
+      // doc.context.lookup throw mid-traversal. This is called ONCE, outside
+      // the per-page Promise.all in image-extractor.service.ts's extraction
+      // loop (see resolveFigureForImage's own doc comment on
+      // precomputedFigures) -- unlike the old per-image call, there's no
+      // per-page try/catch upstream to isolate a single bad reference, so an
+      // uncaught throw here would reject the WHOLE document's extraction
+      // instead of degrading to "no Figures found" for this call.
+      // resolveFigureForImage already treats an empty list the same as "no
+      // structure tree" (returns null, never guesses), so [] is safe here.
+      return [];
+    }
   }
 
   /**
@@ -653,9 +667,26 @@ export class PdfModifierService {
    * inherit an unrelated Figure's alt text.
    *
    * Returns null on ANY resolution failure (no structure tree, no Figures,
-   * no page match, no MCID match) -- same "bail rather than guess"
-   * discipline as setAltText itself; callers must treat null as "no Figure
-   * for this image", never fall back to guessing one.
+   * no page match, no MCID match, no OBJR match) -- same "bail rather than
+   * guess" discipline as setAltText itself; callers must treat null as "no
+   * Figure for this image", never fall back to guessing one. Also returns
+   * null (rather than throwing) on a dangling/malformed structure-tree
+   * reference anywhere in resolution -- a single bad PDFRef degrades to "no
+   * Figure for this image" instead of rejecting the caller's whole batch
+   * (image-extractor.service.ts's extraction loop has no per-image try/catch
+   * around this call when using a precomputedFigures list -- see below).
+   *
+   * Tries an exact MCID match first (findFigureByImageMcid -- the common,
+   * marked-content-wrapped tagging form), then an exact OBJR match
+   * (findFigureByObjr -- the direct-object-reference form some authoring
+   * tools use instead of MCID-wrapping). A Figure is tagged one way or the
+   * other, never both, so trying both in sequence is safe: the removed
+   * resolveXObjectFromK/findXObjectNameByRef pair (before this method
+   * existed) handled the OBJR form correctly but never found MCID-bound
+   * Figures at all; this method's first version (MCID-only) fixed the
+   * common case but dropped OBJR support entirely -- a real regression
+   * caught by CodeRabbit review, fixed by adding both paths here instead of
+   * picking one.
    *
    * `precomputedFigures` (optional): pass the result of getAllFigureElements
    * when resolving MANY images against the same doc in one read-only pass
@@ -672,35 +703,42 @@ export class PdfModifierService {
    * newly-inserted elements. Do not precompute across a mutation boundary.
    */
   resolveFigureForImage(doc: PDFDocument, imageId: string, precomputedFigures?: PDFDict[]): PDFDict | null {
-    const structTreeRoot = this.getStructTreeRoot(doc);
-    if (!structTreeRoot) return null;
-
-    const match = imageId.match(/img_p(\d+)_(\d+)/);
-    const targetPage = match ? parseInt(match[1], 10) : 1;
-
-    const figures = precomputedFigures ?? this.findStructureElementsByType(
-      structTreeRoot,
-      new Set(['Figure', 'figure']),
-      doc.context
-    );
-    if (figures.length === 0) return null;
-
-    let pageRef: PDFRef;
     try {
-      pageRef = doc.getPage(targetPage - 1).ref;
+      const structTreeRoot = this.getStructTreeRoot(doc);
+      if (!structTreeRoot) return null;
+
+      const match = imageId.match(/img_p(\d+)_(\d+)/);
+      const targetPage = match ? parseInt(match[1], 10) : 1;
+
+      const figures = precomputedFigures ?? this.findStructureElementsByType(
+        structTreeRoot,
+        new Set(['Figure', 'figure']),
+        doc.context
+      );
+      if (figures.length === 0) return null;
+
+      let pageRef: PDFRef;
+      try {
+        pageRef = doc.getPage(targetPage - 1).ref;
+      } catch {
+        return null;
+      }
+      const figuresOnPage = figures.filter(fig => {
+        const pg = this.resolveElementPageRef(fig, doc);
+        if (pg) return pg.toString() === pageRef.toString();
+        return this.resolvesToPageViaMcid(fig, doc, targetPage);
+      });
+
+      const xObjectName = imageId.match(/^img_p\d+_\d+_(.+)$/)?.[1];
+      if (!xObjectName) return null;
+
+      return (
+        this.findFigureByImageMcid(doc, figuresOnPage, targetPage, xObjectName) ??
+        this.findFigureByObjr(doc, figuresOnPage, targetPage, xObjectName)
+      );
     } catch {
       return null;
     }
-    const figuresOnPage = figures.filter(fig => {
-      const pg = this.resolveElementPageRef(fig, doc);
-      if (pg) return pg.toString() === pageRef.toString();
-      return this.resolvesToPageViaMcid(fig, doc, targetPage);
-    });
-
-    const xObjectName = imageId.match(/^img_p\d+_\d+_(.+)$/)?.[1];
-    if (!xObjectName) return null;
-
-    return this.findFigureByImageMcid(doc, figuresOnPage, targetPage, xObjectName);
   }
 
   /**
@@ -818,6 +856,66 @@ export class PdfModifierService {
     const mcid = this.mcidForXObject(doc, targetPage, xObjectName);
     if (mcid === null) return null;
     return figuresOnPage.find((fig) => this.structElemHasMcid(fig, mcid)) ?? null;
+  }
+
+  /**
+   * Find a Figure whose /K contains an /OBJR pointing directly at the named
+   * XObject on the target page -- the direct-object-reference tagging form,
+   * checked as a fallback alongside (never instead of) findFigureByImageMcid
+   * above. A Figure is tagged one way or the other, not both, so trying this
+   * only after an MCID match misses is safe and exact -- no ambiguity, no
+   * guessing, same discipline as the MCID path.
+   */
+  private findFigureByObjr(
+    doc: PDFDocument,
+    figuresOnPage: PDFDict[],
+    targetPage: number,
+    xObjectName: string,
+  ): PDFDict | null {
+    const xObjectRef = this.resolveXObjectRef(doc, targetPage, xObjectName);
+    if (!xObjectRef) return null;
+    return figuresOnPage.find((fig) => this.structElemHasObjrTo(fig, doc, xObjectRef)) ?? null;
+  }
+
+  /** The PDFRef of a named XObject in a page's /Resources /XObject dict, if any (undefined/direct entries return null -- an XObject resource is always stored indirectly in practice, and an OBJR's /Obj is always a PDFRef, so only an indirect entry can ever match). */
+  private resolveXObjectRef(doc: PDFDocument, targetPage: number, xObjectName: string): PDFRef | null {
+    let page;
+    try {
+      page = doc.getPage(targetPage - 1);
+    } catch {
+      return null;
+    }
+    const resourcesRaw = page.node.get(PDFName.of('Resources'));
+    const resources = resourcesRaw instanceof PDFRef ? doc.context.lookup(resourcesRaw) : resourcesRaw;
+    if (!(resources instanceof PDFDict)) return null;
+    const xObjectsRaw = resources.get(PDFName.of('XObject'));
+    const xObjects = xObjectsRaw instanceof PDFRef ? doc.context.lookup(xObjectsRaw) : xObjectsRaw;
+    if (!(xObjects instanceof PDFDict)) return null;
+    const entry = xObjects.get(PDFName.of(xObjectName));
+    return entry instanceof PDFRef ? entry : null;
+  }
+
+  /** True if a StructElem's /K contains (directly, or nested in arrays) an /OBJR whose /Obj is exactly xObjectRef. */
+  private structElemHasObjrTo(elem: PDFDict, doc: PDFDocument, xObjectRef: PDFRef): boolean {
+    return this.kContainsObjrTo(elem.get(PDFName.of('K')), doc, xObjectRef);
+  }
+
+  private kContainsObjrTo(k: unknown, doc: PDFDocument, xObjectRef: PDFRef): boolean {
+    const resolved = k instanceof PDFRef ? doc.context.lookup(k) : k;
+    if (resolved instanceof PDFDict) {
+      const type = resolved.get(PDFName.of('Type'));
+      if (type instanceof PDFName && type.asString().replace(/^\//, '') === 'OBJR') {
+        const obj = resolved.get(PDFName.of('Obj'));
+        return obj instanceof PDFRef && obj.toString() === xObjectRef.toString();
+      }
+      return false;
+    }
+    if (resolved instanceof PDFArray) {
+      for (let i = 0; i < resolved.size(); i++) {
+        if (this.kContainsObjrTo(resolved.get(i), doc, xObjectRef)) return true;
+      }
+    }
+    return false;
   }
 
   /** MCID of the marked-content sequence enclosing `/xObjectName Do` on the page. */

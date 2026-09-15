@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { PDFContext, PDFDict, PDFName, PDFString, PDFDocument, PDFArray, PDFRef } from 'pdf-lib';
+import { PDFContext, PDFDict, PDFName, PDFString, PDFDocument, PDFArray, PDFRef, PDFNumber } from 'pdf-lib';
 import { imageExtractorService } from '../../../../src/services/pdf/image-extractor.service';
 import { pdfParserService } from '../../../../src/services/pdf/pdf-parser.service';
 import type { ParsedPDF } from '../../../../src/services/pdf/pdf-parser.service';
@@ -112,6 +112,63 @@ describe('extractImages — Figure/image correlation (regression: no cross-image
       const tagged = images.find(i => i.position.x >= 150);
       expect(untagged?.altText).toBeUndefined();
       expect(tagged?.altText).toBe('A red apple on a table');
+    } finally {
+      await pdfParserService.close(parsedPdf);
+    }
+  });
+
+  /**
+   * Regression for a CodeRabbit-caught finding on PR #557: the removed
+   * resolveXObjectFromK/findXObjectNameByRef pair handled Figures tagged via
+   * a direct /OBJR object reference in /K (instead of an MCID-wrapped
+   * marked-content sequence) -- a real, spec-valid, distinct tagging form.
+   * resolveFigureForImage's first version (MCID-only) silently dropped this
+   * case entirely: such a Figure would resolve to nothing, its real alt text
+   * would be reported as missing, and ensureFigureForImages could go on to
+   * build a duplicate Figure for an image that was already correctly tagged.
+   * findFigureByObjr fixes this as a fallback tried after the MCID path.
+   */
+  it('resolves a Figure tagged via a direct /OBJR reference (no MCID at all)', async () => {
+    const src = await PDFDocument.create();
+    const srcPage = src.addPage([400, 600]);
+    const img = await src.embedPng(PNG);
+    srcPage.drawImage(img, { x: 50, y: 400, width: 100, height: 100 });
+    const doc = await PDFDocument.load(await src.save());
+
+    const page = doc.getPages()[0];
+    const resources = doc.context.lookup(page.node.get(PDFName.of('Resources'))) as PDFDict;
+    const xObjects = doc.context.lookup(resources.get(PDFName.of('XObject'))) as PDFDict;
+    const [, xObjectRef] = xObjects.entries()[0] as [unknown, PDFRef];
+    expect(xObjectRef).toBeInstanceOf(PDFRef);
+
+    // Build a minimal StructTreeRoot -> Document -> Figure tree by hand,
+    // with /K = an /OBJR dict pointing directly at the image XObject --
+    // deliberately NOT using buildStructTreeFromZones (which only produces
+    // MCID-wrapped content), since this test exists specifically to cover
+    // the OBJR form that helper doesn't exercise.
+    const objr = doc.context.obj({ Type: 'OBJR', Pg: page.ref, Obj: xObjectRef });
+    const objrRef = doc.context.register(objr);
+    const figure = doc.context.obj({ Type: 'StructElem', S: 'Figure', Pg: page.ref, K: objrRef, Alt: PDFString.of('An OBJR-tagged figure') });
+    const figureRef = doc.context.register(figure);
+    const docElem = doc.context.obj({ Type: 'StructElem', S: 'Document', K: [figureRef] });
+    const docElemRef = doc.context.register(docElem);
+    const structTreeRoot = doc.context.obj({ Type: 'StructTreeRoot', K: docElemRef });
+    const structTreeRootRef = doc.context.register(structTreeRoot);
+    doc.catalog.set(PDFName.of('StructTreeRoot'), structTreeRootRef);
+
+    // /StructParents on the page is required for a page to be considered
+    // "tagged" by some downstream consumers, but resolveFigureForImage
+    // itself only needs /Pg on the Figure -- set for realism, not because
+    // this test depends on it.
+    page.node.set(PDFName.of('StructParents'), PDFNumber.of(0));
+
+    const bytes = await doc.save();
+    const parsedPdf = await pdfParserService.parseBuffer(Buffer.from(bytes));
+    try {
+      const result = await imageExtractorService.extractImages(parsedPdf, { minWidth: 1, minHeight: 1 });
+      const images = result.pages.flatMap(p => p.images);
+      expect(images.length).toBe(1);
+      expect(images[0].altText).toBe('An OBJR-tagged figure');
     } finally {
       await pdfParserService.close(parsedPdf);
     }
