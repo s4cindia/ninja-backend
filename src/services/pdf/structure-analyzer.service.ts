@@ -173,6 +173,106 @@ export interface TableInfo {
   isGenuinelyTabularDespiteTrivialMatch?: boolean;
 }
 
+/**
+ * Suggestion-time confidence gate mirroring fixSimpleTableHeaders' own
+ * apply-time row-finding logic (pdf-structure-writer.service.ts) -- "would
+ * that writer actually find a real header row for this table?" Uses
+ * `TableInfo.cells`/`columnCount` (the layout/pdfjs-derived data available
+ * at suggestion time) rather than struct-tree cell counts (only available
+ * at apply time), but asks the identical question: does one of the first
+ * `maxRowsToSkip` rows have exactly `columnCount` populated cells?
+ *
+ * Exists because row 0 is NOT reliably the real header row on real data --
+ * confirmed on Math_Kim: many tables have one or more LEADING rows that are
+ * a running page header or a table caption/title merged into a single
+ * spanning cell (e.g. "Table 3.1.1. Math Navigation Chart for Equivalent
+ * Fractions", occupying only one column bucket), pushing the genuine header
+ * row (e.g. "Steps" | "New Problem") down to index 1, 2, or 3. Confirmed via
+ * direct measurement: 65/101 (64%) of Math_Kim's real MATTERHORN-15-002
+ * tables have a fully-populated row within the first 4 (row-index
+ * distribution: 56 at index 1, 5 at index 2, 4 at index 3) -- a table whose
+ * row 0 already happens to be the real header (columnCount is unusually
+ * simple/caption-free) is naturally included too, at index 0.
+ *
+ * Only used to decide WHETHER to offer the apply-to-pdf suggestion, not
+ * WHICH row to promote -- the writer re-derives that independently from the
+ * real struct tree at apply time (its own mode-based cell-count check),
+ * deliberately not threaded through from here, to avoid the same class of
+ * suggestion-time/apply-time positional drift this codebase has hit before
+ * (e.g. the cross-batch drift bug fixed in Slice 2f).
+ */
+export function findRegularHeaderRowIndex(table: TableInfo, maxRowsToSkip = 4): number | null {
+  if (table.pageReassigned) return null;
+  for (let r = 0; r < Math.min(table.rowCount, maxRowsToSkip); r++) {
+    const cellsInRow = table.cells.filter(c => c.row === r).length;
+    if (cellsInRow === table.columnCount) return r;
+  }
+  return null;
+}
+
+/**
+ * Classifies whether a structure-matched table's real header signal lives in
+ * the first COLUMN (the classic key-value/label-value shape), using the same
+ * real pdfjs font-weight data (`cell.sourceItems[].font.isBold`)
+ * `detectTabularContent`'s own untagged-PDF heuristic already uses for
+ * exactly this purpose (see its `hasHeaderColumn` derivation) -- applied
+ * here to structure-MATCHED tables, which currently have NO equivalent
+ * signal at all (checkTableHeaders/checkRowForHeaders only ever derive
+ * `hasHeaderRow` from a real `/TH`, and never derive `hasHeaderColumn`
+ * structurally).
+ *
+ * Row-orientation is handled separately by findRegularHeaderRowIndex above
+ * (a general structural check, no typographic evidence needed) -- this
+ * function is now used ONLY as the column-oriented fallback when that check
+ * finds no regular row. Confirmed empirically that Math_Kim itself has zero
+ * cells anywhere with real bold-formatted text (0/1719 table cells,
+ * generic/subset font names with no "-Bold" suffix and no bold descriptor
+ * flag), so this specific check adds no measured value on Math_Kim's own
+ * data -- kept because it's a real, distinct table shape (genuine column
+ * headers) that OTHER documents with real bold-styled headers can still
+ * benefit from, and because it's independently tested and correct.
+ *
+ * A header COLUMN needs EVERY cell in column 0 bold across more than one
+ * row (`.every`, a strong bar appropriate for a less common orientation
+ * that must not be guessed at). Excludes the corner cell (row 0, column 0)
+ * from ever counting as row-header evidence on its own, since it's a member
+ * of both groups.
+ *
+ * Deliberately returns null for `pageReassigned` tables without inspecting
+ * cells at all: their `cells`/`sourceItems` describe a DIFFERENT page's
+ * content (see `TableInfo.pageReassigned`'s own doc comment), so a bold
+ * signal read from them is not evidence about this table's real headers --
+ * unlike fixSimpleTableHeaders' own mechanical TD->TH rename (safe for
+ * pageReassigned since it only retags existing struct elements, never reads
+ * cell content), a WRONG orientation decision here would produce a
+ * confidently-wrong accessibility tag, not just a missed opportunity.
+ */
+export function classifyTableHeaderOrientation(table: TableInfo): 'row' | 'column' | null {
+  if (table.pageReassigned) return null;
+
+  const isCellBold = (cell: TableCell): boolean =>
+    !!cell.sourceItems?.some(item => item.font.isBold);
+
+  const row0Cells = table.cells.filter(c => c.row === 0);
+  const col0Cells = table.cells.filter(c => c.column === 0);
+
+  // The corner cell (row 0, column 0) belongs to both row0Cells and
+  // col0Cells -- if it alone is bold, that's real evidence FOR a column
+  // header (the label above the label column), not evidence that the whole
+  // first row is a header. Excluding it from the row-signal check avoids
+  // a genuine column-headered table falsely also triggering the row signal
+  // through nothing but corner-cell bleed-through (caught by this
+  // function's own test suite: a 2-column key-value table with only its
+  // first column bold otherwise resolved to null -- both signals firing --
+  // instead of the correct 'column').
+  const rowHeaderSignal = row0Cells.filter(c => c.column !== 0).some(isCellBold);
+  const columnHeaderSignal = col0Cells.length > 1 && col0Cells.every(isCellBold);
+
+  if (rowHeaderSignal && !columnHeaderSignal) return 'row';
+  if (columnHeaderSignal && !rowHeaderSignal) return 'column';
+  return null;
+}
+
 export interface ListInfo {
   id: string;
   pageNumber: number;

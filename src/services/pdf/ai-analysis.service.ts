@@ -31,7 +31,7 @@ import { imageExtractorService, ImageInfo } from './image-extractor.service';
 import { pdfParserService } from './pdf-parser.service';
 import { AuditIssue } from '../audit/base-audit.service';
 import type { PdfParseResult, PdfPage } from './pdf-comprehensive-parser.service';
-import type { TableInfo } from './structure-analyzer.service';
+import { classifyTableHeaderOrientation, findRegularHeaderRowIndex, type TableInfo } from './structure-analyzer.service';
 import { TABLE_LIKELY_FORMULA_CODE } from './validators/pdf-table.validator';
 import type { ParsedPDF } from './pdf-parser.service';
 import { decodePageContent } from './pdf-content-stream-io';
@@ -720,32 +720,60 @@ class AiAnalysisService {
     if (TABLE_HEADERS_CODES.has(code) || TABLE_SCOPE_CODES.has(code)) {
       const table = (issue.element ? tableById.get(issue.element) : undefined) ?? page?.tables[0];
       if (!table) return null;
-      // Simple tables (≤SIMPLE_TABLE_MAX_COLUMNS columns) in tagged PDFs can have first-row TDs
-      // promoted to TH -- but only when the first row is actually regular. There's no real
-      // rowSpan/colSpan detection anywhere in this codebase (TableCell's are always hardcoded
-      // to 1, even from tagged-structure enhancement), so columnCount alone can't rule out a
-      // merged header cell. buildTableCells (structure-analyzer.service.ts) already gives a
-      // free, real signal for this though: it skips emitting a cell for any column bucket with
-      // no text in a given row, so a header row with a merged/spanning cell shows up here with
-      // fewer cells than columnCount. Requiring an exact match is a cheap, always-available
-      // proxy for "this specific row -- the only one fixSimpleTableHeaders touches -- looks
-      // structurally regular", without needing to parse PDF/UA span attributes to get it.
-      const headerRowCellCount = table.cells.filter(c => c.row === 0).length;
-      const headerRowLooksRegular = headerRowCellCount === table.columnCount;
+      // Simple tables (≤SIMPLE_TABLE_MAX_COLUMNS columns) in tagged PDFs can have TD
+      // cells mechanically promoted to TH. Two independent checks, tried in order --
+      // COLUMN before ROW, deliberately: a fully-populated table (every row has
+      // exactly columnCount cells, the common case) ALWAYS satisfies the row check
+      // below regardless of whether it's really row- or column-oriented, so the row
+      // check alone can't distinguish the two shapes for such a table -- only the
+      // column check's real bold-formatting evidence can. Checking column first
+      // means a genuine key-value table with real bold labels is never
+      // shadowed by the weaker, more common row-regularity signal.
+      //
+      // 1. classifyTableHeaderOrientation (column case only): bold-formatting
+      //    evidence for a genuine key-value (label|value) table, where the
+      //    real header is the LEFT COLUMN, not any row. Adds no measured
+      //    value on Math_Kim itself (zero bold text anywhere in its table
+      //    cells) but is a real, distinct, independently-tested shape other
+      //    documents with real bold-styled headers can still benefit from.
+      // 2. findRegularHeaderRowIndex: does SOME row within the first few (not
+      //    necessarily row 0) have exactly columnCount cells? Real Math_Kim
+      //    data confirmed row 0 is often a running page header or a table
+      //    caption merged into one spanning cell, pushing the genuine header
+      //    row down to index 1-3 -- the OLD row-0-only regularity check never
+      //    passed on any of 101 real MATTERHORN-15-002 tables; this one
+      //    passes on 65/101 (64%). Only decides ELIGIBILITY here -- the
+      //    writer (fixSimpleTableHeaders) re-derives the actual row index
+      //    itself from the real struct tree at apply time, deliberately not
+      //    threaded through from here (avoids suggestion/apply-time drift).
+      //
+      // There's still no real rowSpan/colSpan detection anywhere in this
+      // codebase (a known, pre-existing, unaddressed limitation).
       if (
         parsed.isTagged &&
         TABLE_HEADER_AUTO_FIX_CODES.has(code) &&
-        table.columnCount <= SIMPLE_TABLE_MAX_COLUMNS &&
-        headerRowLooksRegular
+        table.columnCount <= SIMPLE_TABLE_MAX_COLUMNS
       ) {
-        return {
-          suggestionType: 'table-header-fix',
-          guidance: `First-row cells will be promoted to TH with scope="Column" in the PDF structure tree.`,
-          confidence: 0.88,
-          rationale: `PDF is tagged — simple table (${table.columnCount} columns) first-row cells can be renamed TD→TH algorithmically`,
-          model: 'rule-based',
-          applyMode: 'apply-to-pdf',
-        };
+        if (classifyTableHeaderOrientation(table) === 'column') {
+          return {
+            suggestionType: 'table-header-fix-column',
+            guidance: `First-column cells will be promoted to TH with scope="Row" in the PDF structure tree.`,
+            confidence: 0.88,
+            rationale: `PDF is tagged — bold formatting confirms column 0 as the real header (key-value table shape); simple table (${table.columnCount} columns) first-column cells can be renamed TD→TH algorithmically`,
+            model: 'rule-based',
+            applyMode: 'apply-to-pdf',
+          };
+        }
+        if (findRegularHeaderRowIndex(table) !== null) {
+          return {
+            suggestionType: 'table-header-fix',
+            guidance: `A header row will be promoted to TH with scope="Column" in the PDF structure tree.`,
+            confidence: 0.85,
+            rationale: `PDF is tagged — simple table (${table.columnCount} columns) has a regular-shaped row that can be renamed TD→TH algorithmically`,
+            model: 'rule-based',
+            applyMode: 'apply-to-pdf',
+          };
+        }
       }
       return this.analyzeTableHeaders(issue, table);
     }
@@ -2319,7 +2347,7 @@ class AiAnalysisService {
       }
     }
 
-    const STRUCTURE_WRITER_TYPES = new Set(['heading-fix', 'list-fix', 'table-header-fix', 'table-artifact-fix', 'table-from-layout-fix', 'bookmark-generate', 'heading-multiple-h1-fix', 'pdfua-identifier', 'color-contrast-fix', 'alt-text-decorative']);
+    const STRUCTURE_WRITER_TYPES = new Set(['heading-fix', 'list-fix', 'table-header-fix', 'table-header-fix-column', 'table-artifact-fix', 'table-from-layout-fix', 'bookmark-generate', 'heading-multiple-h1-fix', 'pdfua-identifier', 'color-contrast-fix', 'alt-text-decorative']);
 
     let applied = 0;
     let failed = 0;
@@ -2349,6 +2377,10 @@ class AiAnalysisService {
           modification = { success: r.success, description: r.after, error: r.error };
         } else if (suggestionType === 'table-header-fix') {
           const results = pdfStructureWriterService.fixSimpleTableHeaders(doc, [originalIssue]);
+          const r = results[0];
+          modification = { success: r.success, description: r.after, error: r.error };
+        } else if (suggestionType === 'table-header-fix-column') {
+          const results = pdfStructureWriterService.fixSimpleTableColumnHeaders(doc, [originalIssue]);
           const r = results[0];
           modification = { success: r.success, description: r.after, error: r.error };
         } else if (suggestionType === 'table-artifact-fix') {
