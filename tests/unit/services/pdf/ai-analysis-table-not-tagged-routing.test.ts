@@ -85,6 +85,39 @@ describe('dispatchIssue: MATTERHORN-15-001 routes to a deterministic apply-to-pd
     expect(res.guidance).toContain('decorative');
   });
 
+  /**
+   * Regression for a real CodeRabbit finding on PR #554: analyzeTableNotTagged
+   * unconditionally returned applyMode: 'apply-to-pdf', ignoring
+   * config.tableFixMode entirely -- a tenant/request configured for
+   * guidance-only table fixes would still get this new structural-retagging
+   * suggestion auto-applied. Mirrors the same wouldAutoApply check
+   * analyzeTableSummary's own call site already uses.
+   */
+  it('falls back to guidance-only when tableFixMode is guidance-only, still routing to table-from-layout-fix', async () => {
+    const table = buildTable();
+    const tableById = new Map([['table_p1_0', table]]);
+    const parsed = { isTagged: true, pages: [] } as unknown as PdfParseResult;
+    const guidanceOnlyConfig: AiRemediationConfig = { ...CONFIG, tableFixMode: 'guidance-only' };
+
+    const res = await svc.dispatchIssue(ISSUE, parsed, guidanceOnlyConfig, new Map(), tableById, new Map());
+
+    expect(res).not.toBeNull();
+    expect(res.suggestionType).toBe('table-from-layout-fix');
+    expect(res.applyMode).toBe('guidance-only');
+  });
+
+  it('treats summaries-to-pdf-headers-as-guidance the same as apply-to-pdf, matching the established tableFixMode convention', async () => {
+    const table = buildTable();
+    const tableById = new Map([['table_p1_0', table]]);
+    const parsed = { isTagged: true, pages: [] } as unknown as PdfParseResult;
+    const summariesConfig: AiRemediationConfig = { ...CONFIG, tableFixMode: 'summaries-to-pdf-headers-as-guidance' };
+
+    const res = await svc.dispatchIssue(ISSUE, parsed, summariesConfig, new Map(), tableById, new Map());
+
+    expect(res).not.toBeNull();
+    expect(res.applyMode).toBe('apply-to-pdf');
+  });
+
   it('returns null when the referenced table cannot be found', async () => {
     const parsed = { isTagged: true, pages: [] } as unknown as PdfParseResult;
     const res = await svc.dispatchIssue(ISSUE, parsed, CONFIG, new Map(), new Map(), new Map());

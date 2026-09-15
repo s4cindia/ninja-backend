@@ -1264,8 +1264,25 @@ export class PdfStructureWriterService {
    *   which doubles as both the TableInfo's own id and the id
    *   findTargetTable resolves to the spuriously-paired trivial box, per
    *   PR #546/#547's established pairing)
+   * @param preResolvedTargets - optional, keyed by issue.id. See
+   *   resolveTableTargets's own doc comment: when a caller (
+   *   ai-analysis.service.ts's applyApprovedSuggestions) runs this in the
+   *   same approval batch as markTableAsArtifact, both writers' targets
+   *   must be resolved from the SAME still-unmutated tree upfront, since
+   *   both independently rename some /Table element to /Artifact as part
+   *   of their own operation -- whichever writer runs second would
+   *   otherwise see a tree already shifted by the first (CodeRabbit/Codex
+   *   finding on PR #554, confirmed real; reordering the two batches does
+   *   NOT fix this, both directions have the identical symmetric risk).
+   *   Falls back to the normal internal resolution for any issue missing
+   *   from the map, so existing callers that never pass this see no
+   *   behavior change.
    */
-  buildTableFromLayout(doc: PDFDocument, entries: Array<{ issue: AuditIssue; table: TableInfo }>): FixResult[] {
+  buildTableFromLayout(
+    doc: PDFDocument,
+    entries: Array<{ issue: AuditIssue; table: TableInfo }>,
+    preResolvedTargets?: Map<string, { dict: PDFDict; ref: PDFRef }>
+  ): FixResult[] {
     const structRoot = this.getStructTreeRoot(doc);
     if (!structRoot) {
       return entries.map(e => ({
@@ -1334,7 +1351,7 @@ export class PdfStructureWriterService {
       type ValidEntry = { entryIndex: number; e: { issue: AuditIssue; table: TableInfo }; targetRef: PDFRef; parentRaw: PDFRef };
       const validEntries: ValidEntry[] = [];
       pageEntries.forEach((e, entryIndex) => {
-        const target = this.findTargetTable(doc, structRoot, e.issue.element);
+        const target = preResolvedTargets?.get(e.issue.id) ?? this.findTargetTable(doc, structRoot, e.issue.element);
         if (!target) {
           results.push({ issueId: e.issue.id, success: false, before: 'unknown', after: 'unknown', error: `No positioning anchor found matching "${e.issue.element}"` });
           return;
@@ -1585,6 +1602,50 @@ export class PdfStructureWriterService {
   }
 
   /**
+   * Resolves each issue's target /Table struct element via findTargetTable,
+   * all in ONE pass against the tree as it currently stands -- for a caller
+   * that needs to run MULTIPLE DIFFERENT writer methods against the same
+   * batch of table_p{page}_{index}-style ids (ai-analysis.service.ts's
+   * applyApprovedSuggestions, batching both markTableAsArtifact and
+   * buildTableFromLayout in one approval run).
+   *
+   * Why this exists: both markTableAsArtifact and buildTableFromLayout
+   * independently rename some /Table element to /Artifact as part of their
+   * own operation (markTableAsArtifact always; buildTableFromLayout for the
+   * spuriously-paired trivial box behind each entry it successfully
+   * processes). findTargetTable's positional "Nth /Table on this page"
+   * indexing depends on the tree staying stable relative to when
+   * table_p{page}_{index} ids were originally computed (at analysis time,
+   * against the fully-unmodified tree) -- if one writer runs first and
+   * renames a table away, the SECOND writer's own internal findTargetTable
+   * resolution would see a shifted tree on any page where both suggestion
+   * types coexist, corrupting whichever runs second (CodeRabbit/Codex
+   * finding on PR #554, confirmed real). Reordering the two batches does
+   * NOT fix this -- both directions have the identical symmetric risk,
+   * since both writers eventually rename something. Calling this ONCE,
+   * upfront, for every issue across BOTH suggestion types, before either
+   * writer mutates anything, keeps every target anchored to the tree as it
+   * stood when the ids were computed -- then pass the resulting map to both
+   * markTableAsArtifact and buildTableFromLayout's own preResolvedTargets
+   * parameter.
+   *
+   * Returns an empty map (not a per-issue failure) when there's no
+   * structure tree at all -- callers already handle that case via their
+   * own "no structure tree root found" FixResult path when an issue they
+   * expected an entry for isn't in this map.
+   */
+  resolveTableTargets(doc: PDFDocument, issues: AuditIssue[]): Map<string, { dict: PDFDict; ref: PDFRef }> {
+    const result = new Map<string, { dict: PDFDict; ref: PDFRef }>();
+    const structRoot = this.getStructTreeRoot(doc);
+    if (!structRoot) return result;
+    for (const issue of issues) {
+      const target = this.findTargetTable(doc, structRoot, issue.element);
+      if (target) result.set(issue.id, target);
+    }
+    return result;
+  }
+
+  /**
    * Marks the specific /Table struct element each issue's id refers to as
    * /Artifact instead (MATTERHORN-15-005). Targets via findTargetTable,
    * same as fixSimpleTableHeaders -- deliberately NOT a whole-document
@@ -1647,8 +1708,21 @@ export class PdfStructureWriterService {
    *
    * @param issues - MATTERHORN-15-005 AuditIssues for a confirmed-decorative
    *   trivial-struct-match table (see ai-analysis.service.ts's dispatch gate)
+   * @param preResolvedTargets - optional, keyed by issue.id. When a caller
+   *   needs to run markTableAsArtifact and buildTableFromLayout in the same
+   *   approval batch, see resolveTableTargets's own doc comment for why
+   *   both must have their targets resolved from the SAME still-unmutated
+   *   tree, upfront, rather than each independently re-deriving via its own
+   *   internal findTargetTable call (CodeRabbit/Codex finding on PR #554,
+   *   confirmed real). Falls back to the normal internal resolution for any
+   *   issue missing from the map, so existing callers that never pass this
+   *   see no behavior change.
    */
-  markTableAsArtifact(doc: PDFDocument, issues: AuditIssue[]): FixResult[] {
+  markTableAsArtifact(
+    doc: PDFDocument,
+    issues: AuditIssue[],
+    preResolvedTargets?: Map<string, { dict: PDFDict; ref: PDFRef }>
+  ): FixResult[] {
     const structRoot = this.getStructTreeRoot(doc);
     if (!structRoot) {
       return issues.map(i => ({
@@ -1660,7 +1734,7 @@ export class PdfStructureWriterService {
 
     const targets = issues.map(issue => ({
       issue,
-      target: this.findTargetTable(doc, structRoot, issue.element),
+      target: preResolvedTargets?.get(issue.id) ?? this.findTargetTable(doc, structRoot, issue.element),
     }));
 
     const anyTarget = targets.some(t => t.target);

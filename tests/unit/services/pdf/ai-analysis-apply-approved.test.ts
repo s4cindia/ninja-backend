@@ -190,12 +190,18 @@ describe('aiAnalysisService.applyApprovedSuggestions', () => {
     const result = await aiAnalysisService.applyApprovedSuggestions('job-1', 1, 'user-1', 'apply_all');
 
     expect(pdfStructureWriterService.markTableAsArtifact).toHaveBeenCalledTimes(1);
+    // resolveTableTargets isn't mocked with an explicit return value in this
+    // test (it's not what this test is about -- see the mixed-same-page
+    // test below for that), so the auto-mock returns undefined; asserted
+    // explicitly here so this test still documents the real 3-argument call
+    // shape rather than silently passing on an unchecked extra argument.
     expect(pdfStructureWriterService.markTableAsArtifact).toHaveBeenCalledWith(
       {},
       expect.arrayContaining([
         expect.objectContaining({ id: 'table-artifact-1' }),
         expect.objectContaining({ id: 'table-artifact-2' }),
-      ])
+      ]),
+      undefined
     );
     expect(result.applied).toBe(2);
     expect(result.failed).toBe(0);
@@ -250,13 +256,102 @@ describe('aiAnalysisService.applyApprovedSuggestions', () => {
     const result = await aiAnalysisService.applyApprovedSuggestions('job-1', 1, 'user-1', 'apply_all');
 
     expect(pdfStructureWriterService.buildTableFromLayout).toHaveBeenCalledTimes(1);
+    // See the mixed-same-page test below for the actual preResolvedTargets
+    // behavior -- this test isn't about that, so resolveTableTargets is left
+    // on its auto-mock default (undefined), asserted explicitly rather than
+    // silently passing on an unchecked extra argument.
     expect(pdfStructureWriterService.buildTableFromLayout).toHaveBeenCalledWith(
       {},
       expect.arrayContaining([
         expect.objectContaining({ issue: expect.objectContaining({ id: 'table-layout-1' }), table: table1 }),
         expect.objectContaining({ issue: expect.objectContaining({ id: 'table-layout-2' }), table: table2 }),
+      ]),
+      undefined
+    );
+    expect(result.applied).toBe(2);
+    expect(result.failed).toBe(0);
+  });
+
+  /**
+   * Regression for a real cross-batch finding on PR #554: markTableAsArtifact
+   * and buildTableFromLayout each independently rename some /Table element to
+   * /Artifact as part of their own operation. Both batches used to resolve
+   * their own targets via their own internal findTargetTable call, at
+   * whatever moment each batch ran -- so a page with BOTH suggestion types
+   * would have its table-from-layout-fix entries resolved against a tree
+   * table-artifact-fix's own batch had already shifted (or vice versa, since
+   * both writers eventually rename something -- reordering doesn't fix it).
+   * Fixed by resolving both batches' targets together, in ONE
+   * resolveTableTargets call, before either writer runs, then passing that
+   * SAME resolved map into both.
+   */
+  it('resolves table-artifact-fix and table-from-layout-fix targets together, from the same pre-mutation tree, before either writer runs', async () => {
+    const jobWithIssues = {
+      id: 'job-1',
+      output: {
+        fileName: 'doc.pdf',
+        auditReport: {
+          issues: [
+            { id: 'table-artifact-1', code: 'MATTERHORN-15-005', element: 'table_p1_0' },
+            { id: 'table-layout-1', code: 'MATTERHORN-15-001', element: 'table_p1_1' },
+          ],
+        },
+      },
+    };
+    vi.mocked(prisma.job.findUnique).mockResolvedValue(jobWithIssues as any);
+    vi.mocked(prisma.aiAnalysis.findMany).mockResolvedValue([
+      { issueId: 'table-artifact-1', suggestionType: 'table-artifact-fix' },
+      { issueId: 'table-layout-1', suggestionType: 'table-from-layout-fix' },
+    ] as any);
+    vi.mocked(fileStorageService.getRemediatedFile).mockResolvedValue(Buffer.from('pdf'));
+    vi.mocked(pdfModifierService.loadPDF).mockResolvedValue({} as any);
+    vi.mocked(pdfModifierService.savePDF).mockResolvedValue(Buffer.from('modified-pdf'));
+    vi.mocked(fileStorageService.saveRemediatedFile).mockResolvedValue('s3://remediated/doc.pdf');
+
+    const { pdfStructureWriterService } = await import('../../../../src/services/pdf/pdf-structure-writer.service');
+    const { pdfComprehensiveParserService } = await import('../../../../src/services/pdf/pdf-comprehensive-parser.service');
+    const table1 = { id: 'table_p1_1', pageNumber: 1, cells: [] } as any;
+    vi.mocked(pdfComprehensiveParserService.parseBuffer).mockResolvedValue({
+      pages: [{ tables: [table1] }],
+      parsedPdf: undefined,
+    } as any);
+
+    const preResolved = new Map([
+      ['table-artifact-1', { dict: 'artifact-target-dict', ref: 'artifact-target-ref' }],
+      ['table-layout-1', { dict: 'layout-target-dict', ref: 'layout-target-ref' }],
+    ]) as any;
+    vi.mocked(pdfStructureWriterService.resolveTableTargets).mockReturnValue(preResolved);
+    vi.mocked(pdfStructureWriterService.markTableAsArtifact).mockReturnValue([
+      { issueId: 'table-artifact-1', success: true, before: 'Table', after: 'Retagged as Artifact' },
+    ]);
+    vi.mocked(pdfStructureWriterService.buildTableFromLayout).mockReturnValue([
+      { issueId: 'table-layout-1', success: true, before: 'Untagged', after: 'Built Table' },
+    ]);
+
+    const result = await aiAnalysisService.applyApprovedSuggestions('job-1', 1, 'user-1', 'apply_all');
+
+    // resolveTableTargets got BOTH issues, combined, in one call.
+    expect(pdfStructureWriterService.resolveTableTargets).toHaveBeenCalledTimes(1);
+    expect(pdfStructureWriterService.resolveTableTargets).toHaveBeenCalledWith(
+      {},
+      expect.arrayContaining([
+        expect.objectContaining({ id: 'table-artifact-1' }),
+        expect.objectContaining({ id: 'table-layout-1' }),
       ])
     );
+
+    // Both writers received the SAME pre-resolved map as their third arg.
+    expect(pdfStructureWriterService.markTableAsArtifact).toHaveBeenCalledWith(
+      {},
+      expect.arrayContaining([expect.objectContaining({ id: 'table-artifact-1' })]),
+      preResolved
+    );
+    expect(pdfStructureWriterService.buildTableFromLayout).toHaveBeenCalledWith(
+      {},
+      expect.arrayContaining([expect.objectContaining({ issue: expect.objectContaining({ id: 'table-layout-1' }) })]),
+      preResolved
+    );
+
     expect(result.applied).toBe(2);
     expect(result.failed).toBe(0);
   });

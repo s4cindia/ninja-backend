@@ -784,7 +784,7 @@ class AiAnalysisService {
     if (TABLE_NOT_TAGGED_CODES.has(code)) {
       const table = issue.element ? tableById.get(issue.element) : undefined;
       if (!table) return null;
-      return this.analyzeTableNotTagged(table);
+      return this.analyzeTableNotTagged(table, config.tableFixMode);
     }
 
     if (LIST_CODES.has(code)) {
@@ -1326,8 +1326,16 @@ class AiAnalysisService {
    * retagger, PR #552) shipped a real one -- see TABLE_NOT_TAGGED_CODES'
    * own doc comment for the live-validation numbers and the accepted
    * residual apply-time failure rate.
+   *
+   * Gated on tableFixMode (CodeRabbit finding on PR #554, confirmed real):
+   * a tenant/request configured for guidance-only table fixes must not get
+   * this new structural-retagging suggestion auto-applied, mirroring the
+   * same wouldAutoApply check analyzeTableSummary's own call site already
+   * uses for its apply-to-pdf decision.
    */
-  private analyzeTableNotTagged(table: TableInfo): AiSuggestionResult {
+  private analyzeTableNotTagged(table: TableInfo, tableFixMode: AiRemediationConfig['tableFixMode']): AiSuggestionResult {
+    const wouldAutoApply =
+      tableFixMode === 'apply-to-pdf' || tableFixMode === 'summaries-to-pdf-headers-as-guidance';
     return {
       suggestionType: 'table-from-layout-fix',
       guidance:
@@ -1338,7 +1346,7 @@ class AiAnalysisService {
       confidence: 0.85,
       rationale: 'Matched /Table struct element has <=1 row and <=1 cell, but the layout-detected content passes the genuinely-tabular content check -- buildTableFromLayout builds a real skeleton for this shape',
       model: 'rule-based',
-      applyMode: 'apply-to-pdf',
+      applyMode: wouldAutoApply ? 'apply-to-pdf' : 'guidance-only',
     };
   }
 
@@ -2128,6 +2136,41 @@ class AiAnalysisService {
     const elementById = new Map(auditIssues.map(i => [i.id, i.element ?? i.id]));
     const issueById = new Map(auditIssues.map(i => [i.id, i]));
 
+    // Both table-artifact-fix and table-from-layout-fix issues get batched
+    // into ONE call each (below) -- but first, resolve BOTH batches' target
+    // /Table struct elements from the SAME still-fully-unmutated tree, in
+    // ONE combined pass, before EITHER writer mutates anything.
+    //
+    // Why: markTableAsArtifact and buildTableFromLayout each independently
+    // rename some /Table element to /Artifact as part of their own
+    // operation (markTableAsArtifact always; buildTableFromLayout for the
+    // spuriously-paired trivial box behind each entry it processes).
+    // findTargetTable's positional "Nth /Table on this page" indexing
+    // depends on the tree staying stable relative to when table_p{page}_
+    // {index} ids were originally computed (at analysis time, against the
+    // fully-unmodified tree) -- if one writer's batch call runs first and
+    // renames a same-page table away, the SECOND writer's own internal
+    // findTargetTable resolution would see a shifted tree on any page where
+    // both suggestion types coexist, corrupting whichever runs second
+    // (CodeRabbit/Codex finding on PR #554, confirmed real). Reordering the
+    // two batches does NOT fix this -- both directions have the identical
+    // symmetric risk, since both writers eventually rename something. See
+    // pdfStructureWriterService.resolveTableTargets's own doc comment for
+    // the full reasoning; its result is passed to both writer calls below
+    // via their own preResolvedTargets parameter.
+    const tableArtifactIssues = approved
+      .filter(a => a.suggestionType === 'table-artifact-fix')
+      .map(a => issueById.get(a.issueId))
+      .filter((i): i is AuditIssue => !!i);
+    const tableFromLayoutIssues = approved
+      .filter(a => a.suggestionType === 'table-from-layout-fix')
+      .map(a => issueById.get(a.issueId))
+      .filter((i): i is AuditIssue => !!i);
+    const preResolvedTableTargets =
+      tableArtifactIssues.length > 0 || tableFromLayoutIssues.length > 0
+        ? pdfStructureWriterService.resolveTableTargets(doc, [...tableArtifactIssues, ...tableFromLayoutIssues])
+        : undefined;
+
     // Batch every table-artifact-fix suggestion in THIS approval run into a
     // single markTableAsArtifact call, before the main per-suggestion loop
     // below touches anything -- that method renames the /Table struct
@@ -2139,13 +2182,9 @@ class AiAnalysisService {
     // live against Math_Kim (6 of 49 real cases failed this way). See
     // markTableAsArtifact's own doc comment for why a whole-document sweep
     // isn't the fix instead (it would also touch MATTERHORN-15-001's boxes).
-    const tableArtifactIssues = approved
-      .filter(a => a.suggestionType === 'table-artifact-fix')
-      .map(a => issueById.get(a.issueId))
-      .filter((i): i is AuditIssue => !!i);
     const tableArtifactResultById = new Map(
       tableArtifactIssues.length > 0
-        ? pdfStructureWriterService.markTableAsArtifact(doc, tableArtifactIssues).map(r => [r.issueId, r] as const)
+        ? pdfStructureWriterService.markTableAsArtifact(doc, tableArtifactIssues, preResolvedTableTargets).map(r => [r.issueId, r] as const)
         : []
     );
 
@@ -2174,11 +2213,6 @@ class AiAnalysisService {
     // (mirrors table-artifact-fix's own "only when there's something to
     // batch" guard) -- this is a real, comparable-cost parse (the same one
     // analysis time pays for the whole document), not a cheap lookup.
-    const tableFromLayoutIssues = approved
-      .filter(a => a.suggestionType === 'table-from-layout-fix')
-      .map(a => issueById.get(a.issueId))
-      .filter((i): i is AuditIssue => !!i);
-
     let tableFromLayoutResultById = new Map<string, FixResult>();
     if (tableFromLayoutIssues.length > 0) {
       let parsedForTables: PdfParseResult | null = null;
@@ -2195,7 +2229,7 @@ class AiAnalysisService {
           .filter((e): e is { issue: AuditIssue; table: TableInfo } => !!e.table);
         if (entries.length > 0) {
           tableFromLayoutResultById = new Map(
-            pdfStructureWriterService.buildTableFromLayout(doc, entries).map(r => [r.issueId, r] as const)
+            pdfStructureWriterService.buildTableFromLayout(doc, entries, preResolvedTableTargets).map(r => [r.issueId, r] as const)
           );
         }
       } finally {
