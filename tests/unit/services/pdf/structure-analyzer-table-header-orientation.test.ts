@@ -103,6 +103,27 @@ describe('classifyTableHeaderOrientation', () => {
     expect(classifyTableHeaderOrientation(table)).toBe('column');
   });
 
+  it('does NOT return "column" for a sparse table where column 0 is bold but missing from some rows', () => {
+    // CodeRabbit finding on PR #560, confirmed real: a table with 5 real
+    // rows where only 2 have a column-0 cell (the other 3 rows' real first
+    // cell sits in column 1, e.g. because column 0 is empty for them) must
+    // NOT qualify just because the 2 that exist happen to be bold --
+    // fixSimpleTableColumnHeaders promotes whichever cell is first in
+    // EVERY row, so this would otherwise wrongly promote a real column-1
+    // value cell to TH on the 3 rows with no column-0 cell.
+    const table = baseTable({
+      columnCount: 2, rowCount: 5,
+      cells: [
+        cell(0, 0, true), cell(0, 1, false),
+        cell(1, 1, false), // no column-0 cell on this row
+        cell(2, 0, true), cell(2, 1, false),
+        cell(3, 1, false), // no column-0 cell on this row
+        cell(4, 1, false), // no column-0 cell on this row
+      ],
+    });
+    expect(classifyTableHeaderOrientation(table)).toBeNull();
+  });
+
   it('returns null when neither row nor column shows a bold signal (genuinely ambiguous)', () => {
     const table = baseTable({
       columnCount: 2, rowCount: 3,
@@ -115,7 +136,13 @@ describe('classifyTableHeaderOrientation', () => {
     expect(classifyTableHeaderOrientation(table)).toBeNull();
   });
 
-  it('returns null when both a real row header and a real column header signal are present (genuine corner-header table)', () => {
+  it('returns "ambiguous" (not null, not a guess) when both a real row header and a real column header signal are present (genuine corner-header table)', () => {
+    // Distinct from null -- this is real evidence for BOTH orientations at
+    // once, not "no evidence either way". The caller (ai-analysis.service.ts)
+    // must bail entirely rather than falling through to
+    // findRegularHeaderRowIndex, which has no bold requirement and would
+    // otherwise confidently apply a row-only fix to a table that also needs
+    // its column tagged (CodeRabbit finding on PR #560, confirmed real).
     const table = baseTable({
       columnCount: 3, rowCount: 3,
       cells: [
@@ -124,7 +151,7 @@ describe('classifyTableHeaderOrientation', () => {
         cell(2, 0, true), cell(2, 1, false), cell(2, 2, false),
       ],
     });
-    expect(classifyTableHeaderOrientation(table)).toBeNull();
+    expect(classifyTableHeaderOrientation(table)).toBe('ambiguous');
   });
 
   it('requires more than one row for a column-header signal (a single row is insufficient evidence)', () => {

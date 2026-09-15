@@ -154,6 +154,54 @@ describe('dispatchIssue: table-header-fix rule-based column-count gate', () => {
     expect(res.applyMode).toBe('apply-to-pdf');
   });
 
+  it('falls through to AI review for a genuine corner-header table (both row AND column bold signals) instead of applying a row-only fix', async () => {
+    // CodeRabbit finding on PR #560, confirmed real: classifyTableHeaderOrientation
+    // returns 'ambiguous' (not null) when both signals fire -- the dispatch
+    // gate must bail entirely here rather than falling through to
+    // findRegularHeaderRowIndex, which has no bold requirement and would
+    // otherwise confidently apply a row-only fix to a table that also needs
+    // its column tagged.
+    const cells: TableCell[] = [
+      { row: 0, column: 0, text: 'h0', isHeader: false, rowSpan: 1, colSpan: 1, sourceItems: [boldItem('h0')] },
+      { row: 0, column: 1, text: 'h1', isHeader: false, rowSpan: 1, colSpan: 1, sourceItems: [boldItem('h1')] },
+      { row: 1, column: 0, text: 'r1', isHeader: false, rowSpan: 1, colSpan: 1, sourceItems: [boldItem('r1')] },
+      { row: 1, column: 1, text: 'v1', isHeader: false, rowSpan: 1, colSpan: 1 },
+      { row: 2, column: 0, text: 'r2', isHeader: false, rowSpan: 1, colSpan: 1, sourceItems: [boldItem('r2')] },
+      { row: 2, column: 1, text: 'v2', isHeader: false, rowSpan: 1, colSpan: 1 },
+    ];
+    const table: TableInfo = {
+      id: 'table_p1_0', pageNumber: 1, position: { x: 0, y: 0, width: 100, height: 100 },
+      rowCount: 3, columnCount: 2, hasHeaderRow: false, hasHeaderColumn: false, hasSummary: false,
+      cells, issues: [], isAccessible: false,
+    };
+    const tableById = new Map([['table_p1_0', table]]);
+    const parsed = { isTagged: true, pages: [] } as unknown as PdfParseResult;
+    const analyzeSpy = vi.spyOn(svc, 'analyzeTableHeaders').mockResolvedValue(null);
+
+    const res = await svc.dispatchIssue(ISSUE, parsed, CONFIG, new Map(), tableById, new Map());
+
+    expect(analyzeSpy).toHaveBeenCalled();
+    expect(res).toBeNull();
+  });
+
+  it('downgrades both header suggestion types to guidance-only when tableFixMode is guidance-only', async () => {
+    // CodeRabbit finding on PR #560, confirmed real: both branches used to
+    // hardcode applyMode: 'apply-to-pdf' regardless of config, so an
+    // operator who configured guidance-only headers could still have one
+    // silently applied on approval.
+    const guidanceConfig: AiRemediationConfig = { ...CONFIG, tableFixMode: 'guidance-only' };
+
+    const rowTableById = new Map([['table_p1_0', buildRowHeaderedTable(6)]]);
+    const rowRes = await svc.dispatchIssue(ISSUE, { isTagged: true, pages: [] }, guidanceConfig, new Map(), rowTableById, new Map());
+    expect(rowRes.suggestionType).toBe('table-header-fix');
+    expect(rowRes.applyMode).toBe('guidance-only');
+
+    const columnTableById = new Map([['table_p1_0', buildColumnHeaderedTable(5)]]);
+    const columnRes = await svc.dispatchIssue(ISSUE, { isTagged: true, pages: [] }, guidanceConfig, new Map(), columnTableById, new Map());
+    expect(columnRes.suggestionType).toBe('table-header-fix-column');
+    expect(columnRes.applyMode).toBe('guidance-only');
+  });
+
   it('applies the row-oriented fix for a regular row-0 table with NO bold signal at all -- findRegularHeaderRowIndex needs no typographic evidence', async () => {
     // This is the key behavioral difference from the bold-only design: a
     // table whose row 0 is already fully-populated (matching columnCount)

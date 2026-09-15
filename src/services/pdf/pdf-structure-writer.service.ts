@@ -252,23 +252,69 @@ export class PdfStructureWriterService {
   }
 
   /**
-   * The most common value in a list of numbers (first-seen wins on a tie).
+   * The most common value in a list of numbers, or null if the highest
+   * frequency is tied between two or more distinct values -- CodeRabbit
+   * finding on PR #560, confirmed real: the first version of this picked
+   * the first-seen value on a tie (e.g. [1,1,3,3] -> 1), which for a table
+   * with an equal number of caption-shaped and header-shaped rows could
+   * pick the WRONG one with no real basis to prefer either. A genuine
+   * tie means this proxy has no real answer -- callers must fail rather
+   * than guess, same "bail rather than guess" discipline as everywhere
+   * else in this class.
+   *
    * Used by fixSimpleTableHeaders as a self-contained, struct-tree-only
    * proxy for "how many columns does this table actually have" -- most
    * rows in a real table are genuine data rows sharing the same real cell
    * count, so their mode is a robust stand-in for columnCount without
    * needing any layout/pdfjs data at apply time.
    */
-  private modeOf(values: number[]): number {
+  private modeOf(values: number[]): number | null {
     const counts = new Map<number, number>();
-    let best = values[0] ?? 0;
+    let best: number | null = null;
     let bestCount = 0;
+    let tied = false;
     for (const v of values) {
       const c = (counts.get(v) ?? 0) + 1;
       counts.set(v, c);
-      if (c > bestCount) { bestCount = c; best = v; }
+      if (c > bestCount) {
+        bestCount = c;
+        best = v;
+        tied = false;
+      } else if (c === bestCount && v !== best) {
+        tied = true;
+      }
     }
-    return best;
+    return tied ? null : best;
+  }
+
+  /**
+   * Every real TR under a table, in true document order -- a single
+   * traversal of the table's own `/K` array, recursing into THead/TBody/
+   * TFoot children exactly where they appear rather than grouping all rows
+   * of one wrapper type before another. CodeRabbit finding on PR #560,
+   * confirmed real: the first version concatenated
+   * `[...direct TRs, ...all TBody rows, ...all THead rows, ...all TFoot
+   * rows]` -- for the common `Table -> [THead, TBody]` shape this put every
+   * body row BEFORE the real header rows in the search order, so
+   * fixSimpleTableHeaders' mode-based row-skip could promote a body row
+   * instead of the genuine header sitting inside THead.
+   */
+  private collectAllRows(doc: PDFDocument, table: PDFDict): Array<{ dict: PDFDict; ref: PDFRef }> {
+    const rows: Array<{ dict: PDFDict; ref: PDFRef }> = [];
+    const k = table.get(PDFName.of('K'));
+    const children = k instanceof PDFArray ? k.asArray() : k ? [k as PDFObject] : [];
+    for (const child of children) {
+      if (!(child instanceof PDFRef)) continue;
+      const resolved = doc.context.lookup(child);
+      if (!(resolved instanceof PDFDict)) continue;
+      const tag = resolved.get(PDFName.of('S'))?.toString().replace(/^\//, '');
+      if (tag === 'TR') {
+        rows.push({ dict: resolved, ref: child });
+      } else if (tag === 'THead' || tag === 'TBody' || tag === 'TFoot') {
+        rows.push(...this.findAllChildren(doc, resolved, 'TR'));
+      }
+    }
+    return rows;
   }
 
   /** Find all direct children of parent with the given tag type. */
@@ -1247,8 +1293,21 @@ export class PdfStructureWriterService {
    * actual MATTERHORN-15-002 tables (was 0/101 when hardcoded to row 0).
    *
    * @param issues - MATTERHORN-15-002 AuditIssues (simple tables only)
+   * @param preResolvedTargets - see resolveTableTargets's own doc comment:
+   *   when a caller batches this together with another writer that also
+   *   renames same-page /Table elements in the same approval run (e.g.
+   *   table-artifact-fix, table-from-layout-fix, table-header-fix-column),
+   *   findTargetTable's positional "Nth /Table on this page" indexing can
+   *   drift mid-batch -- CodeRabbit finding on PR #560, confirmed real,
+   *   same class of bug already fixed for the artifact/layout pair on PR
+   *   #554. Pass the whole batch's issues through resolveTableTargets
+   *   ONCE, upfront, and thread the result to every writer in play.
    */
-  fixSimpleTableHeaders(doc: PDFDocument, issues: AuditIssue[]): FixResult[] {
+  fixSimpleTableHeaders(
+    doc: PDFDocument,
+    issues: AuditIssue[],
+    preResolvedTargets?: Map<string, { dict: PDFDict; ref: PDFRef }>,
+  ): FixResult[] {
     const structRoot = this.getStructTreeRoot(doc);
     if (!structRoot) {
       return issues.map(i => ({
@@ -1263,7 +1322,7 @@ export class PdfStructureWriterService {
 
     for (const issue of issues) {
       try {
-        const target = this.findTargetTable(doc, structRoot, issue.element);
+        const target = preResolvedTargets?.get(issue.id) ?? this.findTargetTable(doc, structRoot, issue.element);
         if (!target) {
           results.push({
             issueId: issue.id, success: false,
@@ -1274,12 +1333,7 @@ export class PdfStructureWriterService {
         }
         const table = target.dict;
 
-        const rows = [
-          ...this.findAllChildren(doc, table, 'TR'),
-          ...this.findAllChildren(doc, table, 'TBody').flatMap(b => this.findAllChildren(doc, b.dict, 'TR')),
-          ...this.findAllChildren(doc, table, 'THead').flatMap(h => this.findAllChildren(doc, h.dict, 'TR')),
-          ...this.findAllChildren(doc, table, 'TFoot').flatMap(f => this.findAllChildren(doc, f.dict, 'TR')),
-        ];
+        const rows = this.collectAllRows(doc, table);
         if (rows.length === 0) {
           results.push({
             issueId: issue.id, success: false,
@@ -1293,6 +1347,14 @@ export class PdfStructureWriterService {
           this.findAllChildren(doc, row.dict, 'TD').length + this.findAllChildren(doc, row.dict, 'TH').length
         );
         const mode = this.modeOf(cellCounts.filter(c => c > 0));
+        if (mode === null) {
+          results.push({
+            issueId: issue.id, success: false,
+            before: 'unknown', after: 'unknown',
+            error: 'No single typical row shape -- row cell counts are evenly split, refusing to guess',
+          });
+          continue;
+        }
 
         let headerRowIndex = -1;
         for (let i = 0; i < Math.min(rows.length, MAX_LEADING_ROWS_TO_SKIP); i++) {
@@ -1323,6 +1385,14 @@ export class PdfStructureWriterService {
         }
 
         if (tds.length === 0) {
+          // Already TH, but don't just trust that -- CodeRabbit finding on
+          // PR #560, confirmed real (originally raised against
+          // fixSimpleTableColumnHeaders below, same gap exists here):
+          // an existing TH could have no /Scope at all, or a conflicting
+          // one, and this used to report false "success" without ever
+          // checking. writeScopeAttribute is idempotent (creates or
+          // replaces), safe to call unconditionally.
+          for (const th of ths) this.writeScopeAttribute(doc, th.ref, 'Column');
           results.push({
             issueId: issue.id,
             success: true,
@@ -1379,8 +1449,14 @@ export class PdfStructureWriterService {
    * table can have some rows already correct and others not.
    *
    * @param issues - MATTERHORN-15-002 AuditIssues already classified 'column'
+   * @param preResolvedTargets - see fixSimpleTableHeaders' own doc comment
+   *   on this same parameter; identical cross-batch drift risk applies here.
    */
-  fixSimpleTableColumnHeaders(doc: PDFDocument, issues: AuditIssue[]): FixResult[] {
+  fixSimpleTableColumnHeaders(
+    doc: PDFDocument,
+    issues: AuditIssue[],
+    preResolvedTargets?: Map<string, { dict: PDFDict; ref: PDFRef }>,
+  ): FixResult[] {
     const structRoot = this.getStructTreeRoot(doc);
     if (!structRoot) {
       return issues.map(i => ({
@@ -1394,7 +1470,7 @@ export class PdfStructureWriterService {
 
     for (const issue of issues) {
       try {
-        const target = this.findTargetTable(doc, structRoot, issue.element);
+        const target = preResolvedTargets?.get(issue.id) ?? this.findTargetTable(doc, structRoot, issue.element);
         if (!target) {
           results.push({
             issueId: issue.id, success: false,
@@ -1405,12 +1481,7 @@ export class PdfStructureWriterService {
         }
         const table = target.dict;
 
-        const rows = [
-          ...this.findAllChildren(doc, table, 'TR'),
-          ...this.findAllChildren(doc, table, 'TBody').flatMap(b => this.findAllChildren(doc, b.dict, 'TR')),
-          ...this.findAllChildren(doc, table, 'THead').flatMap(h => this.findAllChildren(doc, h.dict, 'TR')),
-          ...this.findAllChildren(doc, table, 'TFoot').flatMap(f => this.findAllChildren(doc, f.dict, 'TR')),
-        ];
+        const rows = this.collectAllRows(doc, table);
 
         if (rows.length === 0) {
           results.push({
@@ -1438,6 +1509,12 @@ export class PdfStructureWriterService {
             this.writeScopeAttribute(doc, firstCell.ref, 'Row');
             fixedCellCount++;
           } else if (tag === 'TH') {
+            // Already TH, but don't just trust that -- CodeRabbit finding on
+            // PR #560, confirmed real: an existing TH could have no /Scope
+            // at all, or a conflicting one, and this used to count it as
+            // "complete" without ever checking. writeScopeAttribute is
+            // idempotent (creates or replaces), safe to call unconditionally.
+            this.writeScopeAttribute(doc, firstCell.ref, 'Row');
             alreadyHeaderCount++;
           }
         }

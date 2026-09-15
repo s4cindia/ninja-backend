@@ -249,4 +249,62 @@ describe('PdfStructureWriterService.fixSimpleTableHeaders mode-based row skip', 
     expect(results[0].success).toBe(false);
     expect(results[0].error).toMatch(/typical/);
   });
+
+  it('fails cleanly rather than guessing when two row-cell-counts are tied for most common (modeOf ambiguity)', async () => {
+    // CodeRabbit finding on PR #560, confirmed real: [1,1,3,3] used to
+    // resolve the tie in favor of the FIRST-seen count (1), which for this
+    // shape means promoting the leading caption/short row instead of the
+    // equally-likely-real 3-cell row that appears just as often.
+    const { doc } = await buildDocWithRows([1, 1, 3, 3]);
+
+    const results = pdfStructureWriterService.fixSimpleTableHeaders(doc, [issueFor('table_p1_0')]);
+
+    expect(results[0].success).toBe(false);
+    expect(results[0].error).toMatch(/typical/);
+  });
+
+  it('preserves true document order for a Table -> [THead, TBody] shape, finding the header inside THead rather than a TBody row', async () => {
+    // CodeRabbit finding on PR #560, confirmed real: the first version
+    // concatenated [...direct TRs, ...ALL TBody rows, ...ALL THead rows,
+    // ...ALL TFoot rows] -- for this exact shape (THead BEFORE TBody in the
+    // real struct tree), that wrongly put every body row ahead of the real
+    // header row in the search order.
+    const doc = await PDFDocument.create();
+    doc.addPage([400, 600]);
+    const [pageRef] = doc.getPages().map(p => p.ref);
+
+    const headerRowRef = buildRow(doc, [buildCell(doc, 'TD', pageRef), buildCell(doc, 'TD', pageRef)]);
+    const theadRef = doc.context.register(doc.context.obj({ S: PDFName.of('THead'), K: [headerRowRef] }));
+    const bodyRow1Ref = buildRow(doc, [buildCell(doc, 'TD', pageRef), buildCell(doc, 'TD', pageRef)]);
+    const bodyRow2Ref = buildRow(doc, [buildCell(doc, 'TD', pageRef), buildCell(doc, 'TD', pageRef)]);
+    const tbodyRef = doc.context.register(doc.context.obj({ S: PDFName.of('TBody'), K: [bodyRow1Ref, bodyRow2Ref] }));
+    const tableRef = doc.context.register(doc.context.obj({ S: PDFName.of('Table'), K: [theadRef, tbodyRef] }));
+    const documentRef = doc.context.register(doc.context.obj({ S: PDFName.of('Document'), K: [tableRef] }));
+    const structTreeRootRef = doc.context.register(doc.context.obj({ Type: PDFName.of('StructTreeRoot'), K: [documentRef] }));
+    doc.catalog.set(PDFName.of('StructTreeRoot'), structTreeRootRef);
+
+    const results = pdfStructureWriterService.fixSimpleTableHeaders(doc, [issueFor('table_p1_0')]);
+
+    expect(results[0].success).toBe(true);
+    expect(results[0].after).toContain('at row 0');
+    const headerRow = doc.context.lookup(headerRowRef);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const headerCellRefs = (headerRow as any).get(PDFName.of('K')) as PDFArray;
+    for (const ref of headerCellRefs.asArray()) {
+      const cell = doc.context.lookup(ref as PDFRef);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      expect((cell as any).get(PDFName.of('S')).toString()).toBe('/TH');
+    }
+    // The body rows must NOT have been touched.
+    for (const bodyRowRef of [bodyRow1Ref, bodyRow2Ref]) {
+      const bodyRow = doc.context.lookup(bodyRowRef);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const cellRefs = (bodyRow as any).get(PDFName.of('K')) as PDFArray;
+      for (const ref of cellRefs.asArray()) {
+        const cell = doc.context.lookup(ref as PDFRef);
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        expect((cell as any).get(PDFName.of('S')).toString()).toBe('/TD');
+      }
+    }
+  });
 });
