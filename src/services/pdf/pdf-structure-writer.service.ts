@@ -29,7 +29,7 @@ import {
 } from 'pdf-lib';
 import { AuditIssue } from '../audit/base-audit.service';
 import { logger } from '../../lib/logger';
-import { pageContentMcids, decodePageContent } from './pdf-content-stream-io';
+import { pageContentMcids, decodePageContent, writePageContent } from './pdf-content-stream-io';
 import {
   matchCellRanges,
   insertMarkedContentSpans,
@@ -38,6 +38,8 @@ import {
   type CellCoverageResult,
 } from './table-content-tagger';
 import type { TableCell, TableInfo } from './structure-analyzer.service';
+import { locateXObjectInvocation, findNearestMcidForPosition } from './figure-content-tagger';
+import type { ParsedPDF } from './pdf-parser.service';
 
 // ─── Public Types ─────────────────────────────────────────────────────────────
 
@@ -784,6 +786,390 @@ export class PdfStructureWriterService {
     });
 
     return tablesOnPage[targetIndex] ?? null;
+  }
+
+  /**
+   * True if a StructElem's /K references the given MCID (bare number, array,
+   * or MCR dict) -- mirrors pdf-modifier.service.ts's own structElemHasMcid
+   * (that copy has the same indirect-reference gap this one just fixed;
+   * left as-is there, out of scope for this file's own PR).
+   *
+   * Resolves /K itself, and each array entry, through doc.context.lookup
+   * before matching -- this pdf-lib version (^1.17.1) does not auto-resolve
+   * PDFRefs on .get(), and an indirect /K or indirect array entry is a
+   * real, valid PDF shape (CodeRabbit finding on PR #555, confirmed real:
+   * the direct-only version silently missed any struct element using one,
+   * causing findStructElementByMcid to fail to find a real anchor that DID
+   * reference the target MCID).
+   */
+  private structElemHasMcid(doc: PDFDocument, node: PDFDict, mcid: number): boolean {
+    const kRaw = node.get(PDFName.of('K'));
+    const k = kRaw instanceof PDFRef ? doc.context.lookup(kRaw) : kRaw;
+    if (k instanceof PDFNumber) return k.asNumber() === mcid;
+    if (k instanceof PDFArray) {
+      for (let i = 0; i < k.size(); i++) {
+        const itemRaw = k.get(i);
+        const item = itemRaw instanceof PDFRef ? doc.context.lookup(itemRaw) : itemRaw;
+        if (item instanceof PDFNumber && item.asNumber() === mcid) return true;
+        if (item instanceof PDFDict) {
+          const mRaw = item.get(PDFName.of('MCID'));
+          const m = mRaw instanceof PDFRef ? doc.context.lookup(mRaw) : mRaw;
+          if (m instanceof PDFNumber && m.asNumber() === mcid) return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  /**
+   * Finds the struct element on `pageNumber` whose /K references `mcid` --
+   * resolves a "nearest tagged content" MCID (from figure-content-tagger.ts's
+   * findNearestMcidForPosition) back to the real struct element to anchor a
+   * new /Figure's placement near, via insertIntoKidsAfter. Page-filtered the
+   * same way findTargetTable already is (confident /Pg first, MCID-verified
+   * fallback for a /Pg-less subtree) -- reuses the same helpers, not a new
+   * pattern.
+   */
+  private findStructElementByMcid(doc: PDFDocument, structRoot: PDFDict, pageNumber: number, mcid: number): { dict: PDFDict; ref: PDFRef } | null {
+    let pageRef: PDFRef;
+    try {
+      pageRef = doc.getPage(pageNumber - 1).ref;
+    } catch {
+      return null;
+    }
+    let found: { dict: PDFDict; ref: PDFRef } | null = null;
+    this.traverseStructTree(doc, structRoot, (node, ref) => {
+      if (!ref || !this.structElemHasMcid(doc, node, mcid)) return;
+      const pg = this.resolveElementPageRef(doc, node);
+      const onPage = pg ? pg.toString() === pageRef.toString() : this.resolvesToPageViaMcid(doc, node, pageNumber);
+      if (onPage) {
+        found = { dict: node, ref };
+        return true;
+      }
+    });
+    return found;
+  }
+
+  /**
+   * Builds a real /Figure struct element + MCID + /ParentTree wiring for a
+   * genuinely-untagged image (the "no /Figure anywhere on the page" half of
+   * the alt-text Figure-indexing investigation -- see figure-content-tagger.ts's
+   * own doc comment and the session's plan file for the full reasoning).
+   * Once this exists, pdf-modifier.service.ts's own setAltText already
+   * correctly resolves and writes /Alt to it -- this method's only job is
+   * making the Figure exist and correctly resolve, not writing alt text
+   * itself.
+   *
+   * Placement: a genuinely-untagged image has no existing struct element
+   * "about" it to anchor near the way buildTableFromLayout's MATTERHORN-15-001
+   * case had (the spuriously-paired trivial box, PR #552) -- reconnaissance
+   * (this session) confirmed the same flat-/Document landmine Slice 2d hit
+   * (2278 direct children) makes raw geometric proximity unsafe to insert by
+   * directly, but that insertIntoKidsAfter (anchor-relative insertion,
+   * already built and battle-tested) is still the right tool once a real
+   * anchor is found: locate the EXISTING tagged content nearest the image's
+   * own position (findNearestMcidForPosition), resolve that back to its
+   * owning struct element (findStructElementByMcid), and insert the new
+   * Figure immediately after that element's own tree position. No distance
+   * cutoff -- a distant anchor only costs reading-order quality, not
+   * structural correctness (unlike Slice 2d's FIFO-shift bug, which
+   * corrupted a DIFFERENT element's own classification; nothing analogous
+   * is at stake here since no other element's role changes).
+   *
+   * Structurally simpler than buildTableFromLayout: a Figure is one leaf
+   * element (its own /K holds the new MCID directly), no TR/TD/Span nesting
+   * -- an image is one marked-content sequence, not a grid of cells.
+   *
+   * Same preflight-before-mutation discipline the Tables effort's later fix
+   * rounds established (PR #552): resolve every entry's attach point AND
+   * validate the page's /ParentTree shape BEFORE any content-stream
+   * mutation; buffer results and only commit success once the final
+   * per-page /ParentTree commit actually succeeds. On a late commit
+   * failure, the newly-created (never-yet-reachable-from-anywhere-else)
+   * Figure element is fully deleted via the existing deleteElement
+   * primitive -- a cleaner mitigation than buildTableFromLayout's own
+   * retag-to-Artifact trick, which had to repurpose an EXISTING element;
+   * here there's nothing pre-existing to preserve, so full removal is safe
+   * and leaves nothing misleading behind.
+   *
+   * @param images - each a real, position-known image (imageId in
+   *   img_p{page}_{index}_{xObjectName} form, matching image-extractor.service.ts's
+   *   own ImageInfo.id/position) confirmed to have NO resolvable /Figure
+   *   today (e.g. via pdfModifierService.setAltText failing for it).
+   */
+  async buildFigureFromImage(
+    doc: PDFDocument,
+    parsedPdf: ParsedPDF,
+    images: Array<{ imageId: string; pageNumber: number; position: { x: number; y: number; width: number; height: number } }>
+  ): Promise<FixResult[]> {
+    const structRoot = this.getStructTreeRoot(doc);
+    if (!structRoot) {
+      return images.map(img => ({
+        issueId: img.imageId, success: false, before: 'unknown', after: 'unknown',
+        error: 'No structure tree root found',
+      }));
+    }
+
+    const byPage = new Map<number, typeof images>();
+    for (const img of images) {
+      const list = byPage.get(img.pageNumber) ?? [];
+      list.push(img);
+      byPage.set(img.pageNumber, list);
+    }
+
+    const results: FixResult[] = [];
+
+    for (const [pageNumber, pageImages] of byPage) {
+      let pageContent: string | null;
+      try {
+        pageContent = decodePageContent(doc, pageNumber);
+      } catch (err) {
+        for (const img of pageImages) {
+          results.push({ issueId: img.imageId, success: false, before: 'unknown', after: 'unknown', error: err instanceof Error ? err.message : String(err) });
+        }
+        continue;
+      }
+      if (pageContent === null) {
+        for (const img of pageImages) {
+          results.push({ issueId: img.imageId, success: false, before: 'unknown', after: 'unknown', error: `No readable content stream for page ${pageNumber}` });
+        }
+        continue;
+      }
+
+      let pageRef: PDFRef;
+      try {
+        pageRef = doc.getPage(pageNumber - 1).ref;
+      } catch (err) {
+        for (const img of pageImages) {
+          results.push({ issueId: img.imageId, success: false, before: 'unknown', after: 'unknown', error: err instanceof Error ? err.message : String(err) });
+        }
+        continue;
+      }
+
+      // Resolve EVERY entry's Do-invocation range AND attach point BEFORE
+      // any mutation happens -- same "resolve everything first" discipline
+      // that closed real bugs in buildTableFromLayout (PR #552): content-
+      // stream mutation ahead of full validation risks orphan MCIDs for an
+      // entry that can't complete.
+      type ValidEntry = {
+        img: (typeof images)[number];
+        range: { start: number; end: number };
+        anchorRef: PDFRef;
+        parentRef: PDFRef;
+      };
+      const validEntries: ValidEntry[] = [];
+      for (const img of pageImages) {
+        const xObjectName = img.imageId.match(/^img_p\d+_\d+_(.+)$/)?.[1];
+        if (!xObjectName) {
+          results.push({ issueId: img.imageId, success: false, before: 'unknown', after: 'unknown', error: `Could not parse XObject name from imageId "${img.imageId}"` });
+          continue;
+        }
+        const range = locateXObjectInvocation(pageContent, xObjectName);
+        if (!range) {
+          results.push({ issueId: img.imageId, success: false, before: 'unknown', after: 'unknown', error: `No unambiguous "/${xObjectName} Do" invocation found on page ${pageNumber}` });
+          continue;
+        }
+        const nearest = await findNearestMcidForPosition(parsedPdf, pageNumber, img.position);
+        if (!nearest) {
+          results.push({ issueId: img.imageId, success: false, before: 'unknown', after: 'unknown', error: `No existing tagged content found on page ${pageNumber} to anchor placement near` });
+          continue;
+        }
+        const anchor = this.findStructElementByMcid(doc, structRoot, pageNumber, nearest.mcid);
+        if (!anchor) {
+          results.push({ issueId: img.imageId, success: false, before: 'unknown', after: 'unknown', error: `Nearest MCID ${nearest.mcid} did not resolve to a real struct element` });
+          continue;
+        }
+        const parentRaw = anchor.dict.get(PDFName.of('P'));
+        if (!(parentRaw instanceof PDFRef)) {
+          results.push({ issueId: img.imageId, success: false, before: 'unknown', after: 'unknown', error: 'Anchor struct element has no /P (parent) entry' });
+          continue;
+        }
+        // Preflight what insertIntoKidsAfter itself would need to succeed --
+        // a property of the document as it already stands (nothing mutates
+        // this parent's /K between here and the actual insertion below),
+        // fully knowable up front. A single-child struct element legitimately
+        // has a SCALAR /K per spec (not wrapped in an array) -- insertIntoKidsAfter
+        // throws on that shape, and previously did so only AFTER the content
+        // stream had already been rewritten (Codex finding on PR #555,
+        // confirmed real).
+        const parentDict = doc.context.lookup(parentRaw);
+        if (!(parentDict instanceof PDFDict)) {
+          results.push({ issueId: img.imageId, success: false, before: 'unknown', after: 'unknown', error: 'Anchor parent does not resolve to a dictionary' });
+          continue;
+        }
+        const parentK = parentDict.get(PDFName.of('K'));
+        if (!(parentK instanceof PDFArray)) {
+          results.push({ issueId: img.imageId, success: false, before: 'unknown', after: 'unknown', error: 'Anchor parent /K is not an array -- cannot position relative to a sibling' });
+          continue;
+        }
+        const anchorInArray = parentK.asArray().some(item => item instanceof PDFRef && item.objectNumber === anchor.ref.objectNumber);
+        if (!anchorInArray) {
+          results.push({ issueId: img.imageId, success: false, before: 'unknown', after: 'unknown', error: 'Anchor not found in its own parent /K array' });
+          continue;
+        }
+        validEntries.push({ img, range, anchorRef: anchor.ref, parentRef: parentRaw });
+      }
+
+      if (validEntries.length === 0) continue;
+
+      // Content-range order, not input order (Codex/CodeRabbit finding on
+      // PR #555, confirmed real): insertMarkedContentSpans itself assigns
+      // MCIDs in byte-offset order regardless of what order requests are
+      // built in, and -- more importantly -- when two images share the same
+      // nearest anchor, chaining each subsequent Figure after the
+      // PREVIOUSLY inserted one (see the per-entry loop below) only
+      // produces correct reading order if entries are processed in the same
+      // order their content actually appears on the page.
+      validEntries.sort((a, b) => a.range.start - b.range.start);
+
+      // Preflight the page's /ParentTree shape BEFORE the content-stream
+      // mutation below -- same reasoning as buildTableFromLayout's own
+      // preflight (PR #552, CodeRabbit pushback): every failure mode
+      // resolveParentTreeNumsArray checks is a property of the document as
+      // it already stands, knowable up front.
+      try {
+        this.resolveParentTreeNumsArray(doc, pageNumber);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        for (const ve of validEntries) {
+          results.push({ issueId: ve.img.imageId, success: false, before: 'unknown', after: 'unknown', error: message });
+        }
+        continue;
+      }
+
+      // Only NOW does the content stream get rewritten -- every entry
+      // reaching this point already has a confirmed Do-invocation range and
+      // a resolvable attach point. Tagged /Figure, matching real-world PDF/UA
+      // convention (the marked-content tag matches the struct role) rather
+      // than reusing the generic /Span default.
+      const requests: RangeInsertionRequest[] = validEntries.map((ve, i) => ({ range: ve.range, id: String(i) }));
+      let inserted: InsertedSpan[];
+      try {
+        inserted = insertMarkedContentSpans(doc, pageNumber, requests, 'Figure');
+      } catch (err) {
+        for (const ve of validEntries) {
+          results.push({ issueId: ve.img.imageId, success: false, before: 'unknown', after: 'unknown', error: err instanceof Error ? err.message : String(err) });
+        }
+        continue;
+      }
+      const mcidById = new Map(inserted.map(s => [s.id!, s.mcid]));
+
+      const pageParentTreeEntries: Array<{ mcid: number; structElementRef: PDFRef }> = [];
+      // Buffered rather than pushed straight into `results` -- same reason
+      // as buildTableFromLayout's own pageResults: the /ParentTree commit
+      // for the whole page hasn't happened yet when each Figure is built.
+      const pageResults: FixResult[] = [];
+      const figureRefsByIndex = new Map<number, PDFRef>();
+      // Group A fix (Codex/CodeRabbit finding on PR #555, confirmed real):
+      // when two images resolve to the SAME nearest anchor, chain each
+      // subsequent Figure after the PREVIOUSLY inserted one for that
+      // anchor, not the original anchor every time -- otherwise every
+      // insertion targets the same fixed point and later entries land
+      // BEFORE earlier ones (content order [A,B] -> structure order
+      // [anchor,B,A]), reversing reading order for screen readers. Keyed by
+      // object number since PDFRef doesn't have a canonical string key this
+      // file already uses elsewhere.
+      const lastInsertedByAnchor = new Map<number, PDFRef>();
+
+      // A single unhandled per-entry failure invalidates the WHOLE page's
+      // batch, not just that entry (Codex/CodeRabbit finding on PR #555,
+      // confirmed real) -- every failure mode insertIntoKidsAfter itself can
+      // hit is now preflighted above, so reaching this catch means something
+      // genuinely unexpected happened; treat it exactly like a failed final
+      // /ParentTree commit below (full rollback), for the same reason: an
+      // entry already built here shares the SAME page content-stream
+      // mutation as every sibling entry on this page, so a partial, silently
+      // inconsistent result would be worse than failing the whole page.
+      let pageFailureMessage: string | null = null;
+
+      for (let i = 0; i < validEntries.length; i++) {
+        const ve = validEntries[i];
+        try {
+          const mcid = mcidById.get(String(i));
+          if (mcid === undefined) {
+            pageResults.push({ issueId: ve.img.imageId, success: false, before: 'unknown', after: 'unknown', error: 'MCID missing from insertMarkedContentSpans result' });
+            continue;
+          }
+          const figureObj = doc.context.obj({
+            Type: PDFName.of('StructElem'),
+            S: PDFName.of('Figure'),
+            P: ve.parentRef,
+            Pg: pageRef,
+            K: PDFNumber.of(mcid),
+          });
+          const figureRef = doc.context.register(figureObj as PDFDict);
+          figureRefsByIndex.set(i, figureRef);
+
+          const anchorKey = ve.anchorRef.objectNumber;
+          const insertAfter = lastInsertedByAnchor.get(anchorKey) ?? ve.anchorRef;
+          this.insertIntoKidsAfter(doc, ve.parentRef, insertAfter, figureRef);
+          lastInsertedByAnchor.set(anchorKey, figureRef);
+
+          pageParentTreeEntries.push({ mcid, structElementRef: figureRef });
+          pageResults.push({
+            issueId: ve.img.imageId,
+            success: true,
+            before: 'Untagged image (no /Figure)',
+            after: `Built Figure element, MCID ${mcid}`,
+          });
+        } catch (err) {
+          pageFailureMessage = err instanceof Error ? err.message : String(err);
+          break;
+        }
+      }
+
+      if (pageFailureMessage !== null) {
+        // Full rollback (Codex/CodeRabbit finding on PR #555, confirmed
+        // real and, unlike buildTableFromLayout's analogous residual risk
+        // -- issue #553 -- genuinely achievable here): this page has exactly
+        // ONE content-stream rewrite for its whole batch (the single
+        // insertMarkedContentSpans call above), so restoring the captured
+        // pre-mutation pageContent undoes ALL of this page's Figure
+        // insertions at once, not just the struct-tree side deleteElement
+        // already cleans up.
+        writePageContent(doc, pageNumber, pageContent);
+        for (const figureRef of figureRefsByIndex.values()) {
+          this.deleteElement(doc, figureRef);
+        }
+        for (const ve of validEntries) {
+          results.push({ issueId: ve.img.imageId, success: false, before: 'unknown', after: 'unknown', error: pageFailureMessage });
+        }
+        continue;
+      }
+
+      // The one combined per-page ParentTree commit -- same reasoning as
+      // buildTableFromLayout's own: insertMarkedContentSpans assigns MCIDs
+      // in content-stream byte-offset order across the whole page's batch,
+      // not grouped by entry, so extendParentTree must be called once with
+      // everything sorted by MCID, not once per entry.
+      if (pageParentTreeEntries.length > 0) {
+        pageParentTreeEntries.sort((a, b) => a.mcid - b.mcid);
+        try {
+          this.extendParentTree(doc, pageNumber, pageParentTreeEntries);
+          results.push(...pageResults);
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          // Full rollback here too, not just struct-tree cleanup (Codex/
+          // CodeRabbit finding on PR #555, confirmed real): deleteElement
+          // alone leaves this page's BDC/EMC + MCID marks sitting in the
+          // content stream with no owning struct element -- restore the
+          // ORIGINAL content first, matching the per-entry rollback above.
+          writePageContent(doc, pageNumber, pageContent);
+          pageResults.forEach((r, i) => {
+            if (!r.success) return;
+            const figureRef = figureRefsByIndex.get(i);
+            if (figureRef) this.deleteElement(doc, figureRef);
+          });
+          for (const r of pageResults) {
+            results.push(r.success ? { ...r, success: false, error: message } : r);
+          }
+        }
+      } else {
+        results.push(...pageResults);
+      }
+    }
+
+    return results;
   }
 
   /**
