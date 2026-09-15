@@ -532,4 +532,80 @@ describe('PdfStructureWriterService.buildTableFromLayout', () => {
     expect(results[0].after).toContain('2 tagged MCID span(s)');
     expect(results[1].after).toContain('2 tagged MCID span(s)');
   });
+
+  /**
+   * Regression for CodeRabbit's pushback on PR #552 (comment 4011591766):
+   * the first round of preflighting covered findTargetTable/parent
+   * resolution but not the page's /ParentTree shape, so a document using a
+   * hierarchical /Kids number tree (unsupported, extendParentTree's own
+   * documented rejection) still surfaced its failure only AFTER real MCIDs
+   * and struct elements already existed with nowhere to wire them. This
+   * confirms the shape is now caught before any content-stream mutation.
+   */
+  it('preflights the /ParentTree shape and leaves the content stream untouched when it uses an unsupported hierarchical /Kids number tree', async () => {
+    const { doc } = await buildDocWithTrivialBoxAndSiblings([{ text: 'X', x: 50, y: 500 }]);
+    const before = decodePageContent(doc, 1);
+
+    const structRootRef = doc.catalog.get(PDFName.of('StructTreeRoot')) as PDFRef;
+    const structRoot = doc.context.lookup(structRootRef) as PDFDict;
+    const kidRef = doc.context.register(doc.context.obj({ Nums: doc.context.obj([]) }));
+    const hierarchicalParentTreeRef = doc.context.register(doc.context.obj({ Kids: doc.context.obj([kidRef]) }));
+    structRoot.set(PDFName.of('ParentTree'), hierarchicalParentTreeRef);
+
+    const cells: TableCell[] = [cell(0, 0, [buildItem(50, 500, 'X')])];
+    const table = tableInfo({ id: 'table_p1_0', pageNumber: 1, cells, rowCount: 1, columnCount: 1 });
+    const results = pdfStructureWriterService.buildTableFromLayout(doc, [{ issue: issueFor('table_p1_0'), table }]);
+
+    expect(results[0].success).toBe(false);
+    expect(results[0].error).toMatch(/hierarchical.*Kids/i);
+
+    const after = decodePageContent(doc, 1);
+    expect(after).toBe(before);
+    expect(pageContentMcids(doc, 1)?.size ?? 0).toBe(0);
+  });
+
+  /**
+   * Regression for a second finding from the same round: the previous
+   * version's final per-page extendParentTree call sat OUTSIDE any
+   * try/catch and every entry that reached struct-tree building was
+   * already pushed into `results` as success:true BEFORE that call ran --
+   * so if it threw (e.g. a contiguity mismatch the shape-only preflight
+   * above can't catch, since it depends on the actual MCIDs assigned),
+   * buildTableFromLayout crashed with an UNCAUGHT exception instead of
+   * returning a FixResult[], and any already-reported "success" was a lie
+   * regardless. This constructs exactly that gap: a document whose
+   * /ParentTree is a valid (non-Kids) array shape -- passing the shape
+   * preflight -- but whose existing per-page array already has entries
+   * that don't line up with the fresh MCIDs insertMarkedContentSpans is
+   * about to allocate (starting at 0, since the content stream itself has
+   * no existing MCIDs), forcing extendParentTree's own contiguity check to
+   * reject the final commit.
+   */
+  it('never throws uncaught, and flips an already-reported success back to failure, when the final ParentTree commit rejects a contiguity mismatch the shape preflight cannot see', async () => {
+    const { doc } = await buildDocWithTrivialBoxAndSiblings([{ text: 'X', x: 50, y: 500 }]);
+
+    const structRootRef = doc.catalog.get(PDFName.of('StructTreeRoot')) as PDFRef;
+    const structRoot = doc.context.lookup(structRootRef) as PDFDict;
+    // A valid array-shaped /ParentTree (passes resolveParentTreeNumsArray's
+    // preflight) whose page-0 entry already has 2 entries -- but the
+    // content stream itself has no <<MCID n>> markers at all, so
+    // insertMarkedContentSpans will allocate starting at MCID 0, not 2,
+    // guaranteeing extendParentTree's contiguity check rejects the commit.
+    const staleEntryArray = doc.context.obj([doc.context.register(doc.context.obj({ S: PDFName.of('Span') }))]);
+    const numsArr = doc.context.obj([PDFNumber.of(0), staleEntryArray]);
+    const parentTreeRef = doc.context.register(doc.context.obj({ Nums: numsArr }));
+    structRoot.set(PDFName.of('ParentTree'), parentTreeRef);
+
+    const cells: TableCell[] = [cell(0, 0, [buildItem(50, 500, 'X')])];
+    const table = tableInfo({ id: 'table_p1_0', pageNumber: 1, cells, rowCount: 1, columnCount: 1 });
+
+    let results: ReturnType<typeof pdfStructureWriterService.buildTableFromLayout> | undefined;
+    expect(() => {
+      results = pdfStructureWriterService.buildTableFromLayout(doc, [{ issue: issueFor('table_p1_0'), table }]);
+    }).not.toThrow();
+
+    expect(results).toBeDefined();
+    expect(results![0].success).toBe(false);
+    expect(results![0].error).toMatch(/contiguously/i);
+  });
 });

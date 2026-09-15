@@ -995,9 +995,25 @@ export class PdfStructureWriterService {
    * root (this codebase doesn't currently produce or need to read one;
    * walking /Kids to the correct leaf is real, separate work).
    */
-  extendParentTree(doc: PDFDocument, pageNumber: number, entries: Array<{ mcid: number; structElementRef: PDFRef }>): void {
-    if (entries.length === 0) return;
-
+  /**
+   * Resolves (creating if wholly absent) the page's /StructParents key and
+   * /StructTreeRoot /ParentTree /Nums array, validating every document-shape
+   * assumption extendParentTree depends on -- WITHOUT touching any specific
+   * entries. Split out from extendParentTree so a caller (buildTableFromLayout)
+   * can preflight "would this page's ParentTree even accept new entries" BEFORE
+   * committing to a content-stream mutation, rather than discovering a shape
+   * problem only after inserting real MCIDs with nowhere to wire them
+   * (CodeRabbit finding on PR #552, confirmed real: the previous preflight only
+   * covered findTargetTable/parent resolution, not ParentTree shape).
+   *
+   * Every failure mode here is a property of the DOCUMENT as it already
+   * stands -- knowable before any entries are considered, unlike the
+   * contiguity checks in extendParentTree itself, which depend on what's
+   * being requested and can only be evaluated once real MCIDs exist (see
+   * extendParentTree's own doc comment for why that residual case is
+   * accepted, not preflighted).
+   */
+  private resolveParentTreeNumsArray(doc: PDFDocument, pageNumber: number): { numsArr: PDFArray; pageKey: number } {
     const page = doc.getPage(pageNumber - 1);
     const structParentsRaw = page.node.get(PDFName.of('StructParents'));
     const structParents = structParentsRaw instanceof PDFRef ? doc.context.lookup(structParentsRaw) : structParentsRaw;
@@ -1054,6 +1070,15 @@ export class PdfStructureWriterService {
       numsArr = doc.context.obj([]) as unknown as PDFArray;
       parentTreeDict.set(PDFName.of('Nums'), numsArr);
     }
+
+    return { numsArr, pageKey };
+  }
+
+  extendParentTree(doc: PDFDocument, pageNumber: number, entries: Array<{ mcid: number; structElementRef: PDFRef }>): void {
+    if (entries.length === 0) return;
+
+    const { numsArr, pageKey } = this.resolveParentTreeNumsArray(doc, pageNumber);
+    const structRoot = this.getStructTreeRoot(doc)!;
 
     const sorted = [...entries].sort((a, b) => a.mcid - b.mcid);
     const raw = numsArr.asArray();
@@ -1184,11 +1209,31 @@ export class PdfStructureWriterService {
    * entirely, never attempted then reported failed afterward. Content-stream
    * mutation ahead of full validation previously meant a failed entry could
    * leave orphan MCIDs with no owning struct element or /ParentTree mapping
-   * (CodeRabbit/Codex finding on PR #552, confirmed real). Full
-   * transactional rollback of a content-stream splice is real, separate work
-   * not worth building here -- preventing the mutation from starting for an
-   * entry that can't complete is simpler and just as correct. Every valid
-   * entry's TH cells also get a /Scope attribute derived independently from
+   * (CodeRabbit/Codex finding on PR #552, confirmed real).
+   *
+   * The page's /ParentTree shape (resolveParentTreeNumsArray) is ALSO
+   * preflighted before the content-stream mutation, for the same reason --
+   * CodeRabbit correctly pushed back that the first round of validation
+   * covered findTargetTable/parent resolution but not this, so a malformed
+   * /ParentTree or an unsupported hierarchical /Kids number tree still
+   * surfaced only after real MCIDs and struct elements already existed with
+   * nowhere to wire them. Every one of those is a property of the document
+   * as it already stands, knowable up front. What ISN'T preflighted, and is
+   * an explicitly accepted residual risk rather than a silently-ignored one:
+   * extendParentTree's own MCID-contiguity checks depend on the ACTUAL MCIDs
+   * assigned by insertMarkedContentSpans, which only exist after that call
+   * runs -- if a later entry on a multi-entry page throws partway through
+   * struct-tree building (e.g. an unexpected createElement failure) AFTER
+   * this page's ONE combined content-stream mutation has already committed,
+   * that entry's MCIDs can be left without a /ParentTree mapping. Closing
+   * this fully would mean either transactional rollback of a content-stream
+   * splice, or wrapping this whole page's struct-tree-building phase so any
+   * entry's failure discards every other entry's already-built structure too
+   * -- both real, disproportionate undertakings for a failure mode this
+   * codebase's existing primitives (createElement, renameElement, etc.) make
+   * very unlikely in practice, not attempted here.
+   *
+   * Every valid entry's TH cells also get a /Scope attribute derived independently from
    * `hasHeaderRow`/`hasHeaderColumn` and the cell's own row/column (not from
    * `isHeader` alone, which can't distinguish which case applies) -- per
    * Matterhorn 07-002, PAC 2024 checks /Scope independently of the TH tag
@@ -1291,6 +1336,33 @@ export class PdfStructureWriterService {
 
       if (validEntries.length === 0) continue;
 
+      // Preflight the page's /ParentTree shape BEFORE the content-stream
+      // mutation below -- closes the deterministic half of a CodeRabbit
+      // pushback on PR #552: extendParentTree previously only ran AFTER
+      // insertMarkedContentSpans and struct-tree creation, so a document-
+      // shape problem (no /StructParents, no struct tree root, a malformed
+      // /ParentTree, or an unsupported hierarchical /Kids number tree --
+      // see resolveParentTreeNumsArray's own doc comment) surfaced only
+      // once real MCIDs and struct elements already existed with nowhere
+      // to wire them. Every one of those conditions is a property of the
+      // document as it already stands, knowable before any entries are
+      // considered -- unlike extendParentTree's own contiguity checks,
+      // which depend on the actual MCIDs assigned below and can't be
+      // known until insertMarkedContentSpans has already run (an entry
+      // that throws mid-struct-tree-build on a multi-entry page, after
+      // this page's ONE combined content-stream mutation has committed,
+      // remains a narrower accepted residual risk -- see this method's own
+      // top-level doc comment).
+      try {
+        this.resolveParentTreeNumsArray(doc, pageNumber);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        for (const ve of validEntries) {
+          results.push({ issueId: ve.e.issue.id, success: false, before: 'unknown', after: 'unknown', error: message });
+        }
+        continue;
+      }
+
       type CellPlan = { entryIndex: number; cellIndex: number; cell: TableCell; coverage: CellCoverageResult };
       const cellPlans: CellPlan[] = [];
       const requests: RangeInsertionRequest[] = [];
@@ -1333,6 +1405,13 @@ export class PdfStructureWriterService {
       // page's MCID sequence is internally consistent (CodeRabbit finding on
       // PR #552, confirmed real).
       const pageParentTreeEntries: Array<{ mcid: number; structElementRef: PDFRef }> = [];
+      // Buffered rather than pushed straight into `results`: an entry's
+      // struct-tree build can succeed here while the ParentTree commit for
+      // the WHOLE page still hasn't happened yet (that's one combined call
+      // below, after this loop). Pushing "success: true" immediately would
+      // be a lie if that later call throws -- these are only provisional
+      // until the commit actually lands.
+      const pageResults: FixResult[] = [];
 
       for (const ve of validEntries) {
         const { entryIndex, e, targetRef, parentRaw } = ve;
@@ -1418,20 +1497,41 @@ export class PdfStructureWriterService {
             }
           }
 
-          results.push({
+          pageResults.push({
             issueId: e.issue.id,
             success: true,
             before: `Untagged layout table (${e.table.rowCount}x${e.table.columnCount}, ${e.table.cells.length} cells)`,
             after: `Built Table/${byRow.size} TR/${cellCount} cells, ${leafCount} tagged MCID span(s)`,
           });
         } catch (err) {
-          results.push({ issueId: e.issue.id, success: false, before: 'unknown', after: 'unknown', error: err instanceof Error ? err.message : String(err) });
+          pageResults.push({ issueId: e.issue.id, success: false, before: 'unknown', after: 'unknown', error: err instanceof Error ? err.message : String(err) });
         }
       }
 
+      // The one combined per-page ParentTree commit -- see this method's own
+      // doc comment for why a per-entry call would be wrong. If THIS throws
+      // (the accepted residual risk: an earlier entry's mid-build exception
+      // left a genuine MCID gap, or some other contiguity/shape surprise
+      // resolveParentTreeNumsArray's preflight didn't catch), every entry
+      // provisionally marked successful above never actually got its
+      // ParentTree wiring -- flip them to failed rather than reporting a
+      // success that isn't real. This also means buildTableFromLayout never
+      // throws uncaught: every other writer method in this file returns a
+      // FixResult[] even on failure, and this call previously sat outside
+      // any try/catch entirely.
       if (pageParentTreeEntries.length > 0) {
         pageParentTreeEntries.sort((a, b) => a.mcid - b.mcid);
-        this.extendParentTree(doc, pageNumber, pageParentTreeEntries);
+        try {
+          this.extendParentTree(doc, pageNumber, pageParentTreeEntries);
+          results.push(...pageResults);
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          for (const r of pageResults) {
+            results.push(r.success ? { ...r, success: false, error: message } : r);
+          }
+        }
+      } else {
+        results.push(...pageResults);
       }
     }
 
