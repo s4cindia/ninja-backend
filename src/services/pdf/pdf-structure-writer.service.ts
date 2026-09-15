@@ -29,7 +29,7 @@ import {
 } from 'pdf-lib';
 import { AuditIssue } from '../audit/base-audit.service';
 import { logger } from '../../lib/logger';
-import { pageContentMcids, decodePageContent } from './pdf-content-stream-io';
+import { pageContentMcids, decodePageContent, writePageContent } from './pdf-content-stream-io';
 import {
   matchCellRanges,
   insertMarkedContentSpans,
@@ -788,16 +788,32 @@ export class PdfStructureWriterService {
     return tablesOnPage[targetIndex] ?? null;
   }
 
-  /** True if a StructElem's /K references the given MCID (bare number, array, or MCR dict) -- mirrors pdf-modifier.service.ts's own structElemHasMcid. */
-  private structElemHasMcid(node: PDFDict, mcid: number): boolean {
-    const k = node.get(PDFName.of('K'));
+  /**
+   * True if a StructElem's /K references the given MCID (bare number, array,
+   * or MCR dict) -- mirrors pdf-modifier.service.ts's own structElemHasMcid
+   * (that copy has the same indirect-reference gap this one just fixed;
+   * left as-is there, out of scope for this file's own PR).
+   *
+   * Resolves /K itself, and each array entry, through doc.context.lookup
+   * before matching -- this pdf-lib version (^1.17.1) does not auto-resolve
+   * PDFRefs on .get(), and an indirect /K or indirect array entry is a
+   * real, valid PDF shape (CodeRabbit finding on PR #555, confirmed real:
+   * the direct-only version silently missed any struct element using one,
+   * causing findStructElementByMcid to fail to find a real anchor that DID
+   * reference the target MCID).
+   */
+  private structElemHasMcid(doc: PDFDocument, node: PDFDict, mcid: number): boolean {
+    const kRaw = node.get(PDFName.of('K'));
+    const k = kRaw instanceof PDFRef ? doc.context.lookup(kRaw) : kRaw;
     if (k instanceof PDFNumber) return k.asNumber() === mcid;
     if (k instanceof PDFArray) {
       for (let i = 0; i < k.size(); i++) {
-        const item = k.get(i);
+        const itemRaw = k.get(i);
+        const item = itemRaw instanceof PDFRef ? doc.context.lookup(itemRaw) : itemRaw;
         if (item instanceof PDFNumber && item.asNumber() === mcid) return true;
         if (item instanceof PDFDict) {
-          const m = item.get(PDFName.of('MCID'));
+          const mRaw = item.get(PDFName.of('MCID'));
+          const m = mRaw instanceof PDFRef ? doc.context.lookup(mRaw) : mRaw;
           if (m instanceof PDFNumber && m.asNumber() === mcid) return true;
         }
       }
@@ -823,7 +839,7 @@ export class PdfStructureWriterService {
     }
     let found: { dict: PDFDict; ref: PDFRef } | null = null;
     this.traverseStructTree(doc, structRoot, (node, ref) => {
-      if (!ref || !this.structElemHasMcid(node, mcid)) return;
+      if (!ref || !this.structElemHasMcid(doc, node, mcid)) return;
       const pg = this.resolveElementPageRef(doc, node);
       const onPage = pg ? pg.toString() === pageRef.toString() : this.resolvesToPageViaMcid(doc, node, pageNumber);
       if (onPage) {
@@ -968,10 +984,43 @@ export class PdfStructureWriterService {
           results.push({ issueId: img.imageId, success: false, before: 'unknown', after: 'unknown', error: 'Anchor struct element has no /P (parent) entry' });
           continue;
         }
+        // Preflight what insertIntoKidsAfter itself would need to succeed --
+        // a property of the document as it already stands (nothing mutates
+        // this parent's /K between here and the actual insertion below),
+        // fully knowable up front. A single-child struct element legitimately
+        // has a SCALAR /K per spec (not wrapped in an array) -- insertIntoKidsAfter
+        // throws on that shape, and previously did so only AFTER the content
+        // stream had already been rewritten (Codex finding on PR #555,
+        // confirmed real).
+        const parentDict = doc.context.lookup(parentRaw);
+        if (!(parentDict instanceof PDFDict)) {
+          results.push({ issueId: img.imageId, success: false, before: 'unknown', after: 'unknown', error: 'Anchor parent does not resolve to a dictionary' });
+          continue;
+        }
+        const parentK = parentDict.get(PDFName.of('K'));
+        if (!(parentK instanceof PDFArray)) {
+          results.push({ issueId: img.imageId, success: false, before: 'unknown', after: 'unknown', error: 'Anchor parent /K is not an array -- cannot position relative to a sibling' });
+          continue;
+        }
+        const anchorInArray = parentK.asArray().some(item => item instanceof PDFRef && item.objectNumber === anchor.ref.objectNumber);
+        if (!anchorInArray) {
+          results.push({ issueId: img.imageId, success: false, before: 'unknown', after: 'unknown', error: 'Anchor not found in its own parent /K array' });
+          continue;
+        }
         validEntries.push({ img, range, anchorRef: anchor.ref, parentRef: parentRaw });
       }
 
       if (validEntries.length === 0) continue;
+
+      // Content-range order, not input order (Codex/CodeRabbit finding on
+      // PR #555, confirmed real): insertMarkedContentSpans itself assigns
+      // MCIDs in byte-offset order regardless of what order requests are
+      // built in, and -- more importantly -- when two images share the same
+      // nearest anchor, chaining each subsequent Figure after the
+      // PREVIOUSLY inserted one (see the per-entry loop below) only
+      // produces correct reading order if entries are processed in the same
+      // order their content actually appears on the page.
+      validEntries.sort((a, b) => a.range.start - b.range.start);
 
       // Preflight the page's /ParentTree shape BEFORE the content-stream
       // mutation below -- same reasoning as buildTableFromLayout's own
@@ -1011,13 +1060,35 @@ export class PdfStructureWriterService {
       // for the whole page hasn't happened yet when each Figure is built.
       const pageResults: FixResult[] = [];
       const figureRefsByIndex = new Map<number, PDFRef>();
+      // Group A fix (Codex/CodeRabbit finding on PR #555, confirmed real):
+      // when two images resolve to the SAME nearest anchor, chain each
+      // subsequent Figure after the PREVIOUSLY inserted one for that
+      // anchor, not the original anchor every time -- otherwise every
+      // insertion targets the same fixed point and later entries land
+      // BEFORE earlier ones (content order [A,B] -> structure order
+      // [anchor,B,A]), reversing reading order for screen readers. Keyed by
+      // object number since PDFRef doesn't have a canonical string key this
+      // file already uses elsewhere.
+      const lastInsertedByAnchor = new Map<number, PDFRef>();
 
-      validEntries.forEach((ve, i) => {
+      // A single unhandled per-entry failure invalidates the WHOLE page's
+      // batch, not just that entry (Codex/CodeRabbit finding on PR #555,
+      // confirmed real) -- every failure mode insertIntoKidsAfter itself can
+      // hit is now preflighted above, so reaching this catch means something
+      // genuinely unexpected happened; treat it exactly like a failed final
+      // /ParentTree commit below (full rollback), for the same reason: an
+      // entry already built here shares the SAME page content-stream
+      // mutation as every sibling entry on this page, so a partial, silently
+      // inconsistent result would be worse than failing the whole page.
+      let pageFailureMessage: string | null = null;
+
+      for (let i = 0; i < validEntries.length; i++) {
+        const ve = validEntries[i];
         try {
           const mcid = mcidById.get(String(i));
           if (mcid === undefined) {
             pageResults.push({ issueId: ve.img.imageId, success: false, before: 'unknown', after: 'unknown', error: 'MCID missing from insertMarkedContentSpans result' });
-            return;
+            continue;
           }
           const figureObj = doc.context.obj({
             Type: PDFName.of('StructElem'),
@@ -1028,7 +1099,11 @@ export class PdfStructureWriterService {
           });
           const figureRef = doc.context.register(figureObj as PDFDict);
           figureRefsByIndex.set(i, figureRef);
-          this.insertIntoKidsAfter(doc, ve.parentRef, ve.anchorRef, figureRef);
+
+          const anchorKey = ve.anchorRef.objectNumber;
+          const insertAfter = lastInsertedByAnchor.get(anchorKey) ?? ve.anchorRef;
+          this.insertIntoKidsAfter(doc, ve.parentRef, insertAfter, figureRef);
+          lastInsertedByAnchor.set(anchorKey, figureRef);
 
           pageParentTreeEntries.push({ mcid, structElementRef: figureRef });
           pageResults.push({
@@ -1038,9 +1113,29 @@ export class PdfStructureWriterService {
             after: `Built Figure element, MCID ${mcid}`,
           });
         } catch (err) {
-          pageResults.push({ issueId: ve.img.imageId, success: false, before: 'unknown', after: 'unknown', error: err instanceof Error ? err.message : String(err) });
+          pageFailureMessage = err instanceof Error ? err.message : String(err);
+          break;
         }
-      });
+      }
+
+      if (pageFailureMessage !== null) {
+        // Full rollback (Codex/CodeRabbit finding on PR #555, confirmed
+        // real and, unlike buildTableFromLayout's analogous residual risk
+        // -- issue #553 -- genuinely achievable here): this page has exactly
+        // ONE content-stream rewrite for its whole batch (the single
+        // insertMarkedContentSpans call above), so restoring the captured
+        // pre-mutation pageContent undoes ALL of this page's Figure
+        // insertions at once, not just the struct-tree side deleteElement
+        // already cleans up.
+        writePageContent(doc, pageNumber, pageContent);
+        for (const figureRef of figureRefsByIndex.values()) {
+          this.deleteElement(doc, figureRef);
+        }
+        for (const ve of validEntries) {
+          results.push({ issueId: ve.img.imageId, success: false, before: 'unknown', after: 'unknown', error: pageFailureMessage });
+        }
+        continue;
+      }
 
       // The one combined per-page ParentTree commit -- same reasoning as
       // buildTableFromLayout's own: insertMarkedContentSpans assigns MCIDs
@@ -1054,13 +1149,12 @@ export class PdfStructureWriterService {
           results.push(...pageResults);
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
-          // Unlike buildTableFromLayout's retag-to-Artifact mitigation
-          // (which had to repurpose an EXISTING element, the spuriously-
-          // paired trivial box), a newly-built Figure here was never
-          // reachable from anywhere else -- deleteElement fully removes it
-          // (detaches from parent, clears its own /K/P) rather than leaving
-          // a structurally-complete-looking-but-orphaned Figure behind.
-          // Cleaner than the Tables case, not just an equivalent mitigation.
+          // Full rollback here too, not just struct-tree cleanup (Codex/
+          // CodeRabbit finding on PR #555, confirmed real): deleteElement
+          // alone leaves this page's BDC/EMC + MCID marks sitting in the
+          // content stream with no owning struct element -- restore the
+          // ORIGINAL content first, matching the per-entry rollback above.
+          writePageContent(doc, pageNumber, pageContent);
           pageResults.forEach((r, i) => {
             if (!r.success) return;
             const figureRef = figureRefsByIndex.get(i);
