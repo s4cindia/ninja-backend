@@ -93,6 +93,13 @@ class ImageExtractorService {
     const startPage = pageRange?.start || 1;
     const endPage = pageRange?.end || parsedPdf.structure.pageCount;
 
+    // Computed ONCE for the whole read-only extraction pass and reused by
+    // every resolveFigureForImage call below -- see that method's own doc
+    // comment on precomputedFigures for why this matters (a real ~18.5s cost
+    // on Math_Kim's 1313 real sub-images, confirmed via direct timing, from
+    // re-walking the entire struct tree once per image instead of once here).
+    const precomputedFigures = pdfModifierService.getAllFigureElements(parsedPdf.pdfLibDoc);
+
     // Process pages in parallel batches (smaller batch — images are memory-intensive)
     const IMAGE_BATCH_SIZE = 5;
     for (let i = startPage; i <= endPage; i += IMAGE_BATCH_SIZE) {
@@ -106,6 +113,7 @@ class ImageExtractorService {
             formats,
             minWidth,
             minHeight,
+            precomputedFigures,
           })
         )
       );
@@ -149,6 +157,7 @@ class ImageExtractorService {
       formats?: ('jpeg' | 'png' | 'jbig2' | 'jpx')[];
       minWidth: number;
       minHeight: number;
+      precomputedFigures?: PDFDict[];
     }
   ): Promise<PageImages> {
     const images: ImageInfo[] = [];
@@ -197,7 +206,11 @@ class ImageExtractorService {
                   // -- see resolveFigureForImage's own doc comment for why this must be
                   // the single shared resolution used by both detection and writing.
                   const imageId = `img_p${pageNumber}_${index}_${xObjectName}`;
-                  const figureDict = pdfModifierService.resolveFigureForImage(parsedPdf.pdfLibDoc, imageId);
+                  const figureDict = pdfModifierService.resolveFigureForImage(
+                    parsedPdf.pdfLibDoc,
+                    imageId,
+                    options.precomputedFigures
+                  );
                   const structInfo: FigureAltInfo | undefined = figureDict
                     ? this.extractFigureInfo(figureDict)
                     : undefined;
