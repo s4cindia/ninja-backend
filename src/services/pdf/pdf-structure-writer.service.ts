@@ -29,7 +29,15 @@ import {
 } from 'pdf-lib';
 import { AuditIssue } from '../audit/base-audit.service';
 import { logger } from '../../lib/logger';
-import { pageContentMcids } from './pdf-content-stream-io';
+import { pageContentMcids, decodePageContent } from './pdf-content-stream-io';
+import {
+  matchCellRanges,
+  insertMarkedContentSpans,
+  type RangeInsertionRequest,
+  type InsertedSpan,
+  type CellCoverageResult,
+} from './table-content-tagger';
+import type { TableCell, TableInfo } from './structure-analyzer.service';
 
 // ─── Public Types ─────────────────────────────────────────────────────────────
 
@@ -145,6 +153,37 @@ export class PdfStructureWriterService {
     } else {
       parent.set(PDFName.of('K'), doc.context.obj([childRef]));
     }
+  }
+
+  /**
+   * Insert newRef into parentRef's /K array immediately after afterRef.
+   * Unlike appendToKids (which always appends at the very end), this
+   * preserves reading-order proximity to a specific existing sibling --
+   * needed when a document's whole body sits under one flat root container
+   * rather than nested per-page/per-section containers (Slice 2d finding,
+   * confirmed live: Math_Kim's /Document node has 2000+ direct children
+   * spanning the entire book; appendToKids there would place new content
+   * at the very end of the WHOLE DOCUMENT's reading order regardless of
+   * which page it's actually on). Throws rather than guessing when afterRef
+   * isn't found in parentRef's /K array, or /K isn't an array at all (a
+   * lone-child parent has no meaningful "position" for this to preserve) --
+   * matches this file's established "bail rather than guess" convention.
+   */
+  private insertIntoKidsAfter(doc: PDFDocument, parentRef: PDFRef, afterRef: PDFRef, newRef: PDFRef): void {
+    const parent = doc.context.lookup(parentRef);
+    if (!(parent instanceof PDFDict)) {
+      throw new Error('insertIntoKidsAfter: parent does not resolve to a dictionary');
+    }
+    const k = parent.get(PDFName.of('K'));
+    if (!(k instanceof PDFArray)) {
+      throw new Error('insertIntoKidsAfter: parent /K is not an array -- cannot position relative to a sibling');
+    }
+    const arr = k.asArray();
+    const idx = arr.findIndex(item => item instanceof PDFRef && item.objectNumber === afterRef.objectNumber);
+    if (idx === -1) {
+      throw new Error('insertIntoKidsAfter: afterRef not found in parent /K array');
+    }
+    k.insert(idx + 1, newRef);
   }
 
   /** Remove targetRef from the /K array of the element at parentRef. */
@@ -1093,6 +1132,194 @@ export class PdfStructureWriterService {
         structRoot.set(PDFName.of('ParentTreeNextKey'), PDFNumber.of(pageKey + 1));
       }
     }
+  }
+
+  /**
+   * Builds a real Table/TR/TH/TD struct-tree skeleton for MATTERHORN-15-001
+   * cases -- genuinely tabular LAYOUT content with no existing tagging of
+   * its own (structure-analyzer.service.ts's TableInfo/TableCell, carrying
+   * `anchor`/`sourceItems` per PR #549/#550). Unlike every other method in
+   * this file, this INSERTS new content-stream marked content and
+   * struct-tree elements rather than renaming/reparenting/deleting existing
+   * ones -- Slice 2d of the plan, wiring table-content-tagger.ts's
+   * matchCellRanges/insertMarkedContentSpans (Slice 2b) together with
+   * extendParentTree (Slice 2c).
+   *
+   * Per-cell resolution: matchCellRanges finds every source TextItem's real
+   * content-stream location; a cell needing multiple ranges (content split
+   * across several runs -- confirmed common, Slice 2a's diagnostic found
+   * only 45.7% of cells resolve to a single run) gets one fresh /Span leaf
+   * PER RANGE, each with its own MCID. Cells that only partially resolve
+   * are tagged for the resolved subset only (honest but incomplete, per
+   * CellCoverageResult's own documented tradeoff) -- whether that's
+   * acceptable, or whether such a cell needs some other fallback treatment,
+   * is left to a caller/future decision, not this method.
+   *
+   * Table placement (open question in the plan, resolved empirically here,
+   * Slice 2d finding): naively appending to the trivial decorative box's
+   * own parent (the box findTargetTable resolves the issue's element id
+   * to) is WRONG for a document whose whole body sits under one flat root
+   * container -- confirmed live against Math_Kim: the trivial box's parent
+   * is /Document with 2000+ direct children spanning the ENTIRE book, and
+   * appendToKids always appends at the very END of that array. Blindly
+   * appending there would place the new Table at the end of the WHOLE
+   * DOCUMENT's reading order, nowhere near the page it's actually on.
+   * Fixed via insertIntoKidsAfter: the new Table is spliced immediately
+   * AFTER the trivial box's own position in its parent's /K array,
+   * preserving at least rough reading-order proximity to where the real
+   * table actually sits. This is a heuristic, not a proven-optimal
+   * position (the trivial box's position was never meant to indicate
+   * anything about the real table's layout, only found usable for
+   * cross-referencing) -- worth a real placement-quality check before this
+   * graduates beyond one validated case.
+   *
+   * Groups entries by page and calls insertMarkedContentSpans ONCE per page
+   * (not per table, not per cell) -- required by that function's own
+   * same-page batching contract. This slice validates exactly one table
+   * per page; broader multi-table-per-page batching is Slice 2e's job.
+   *
+   * @param entries - MATTERHORN-15-001 AuditIssues paired with the
+   *   corresponding LAYOUT-detected TableInfo (looked up via issue.element,
+   *   which doubles as both the TableInfo's own id and the id
+   *   findTargetTable resolves to the spuriously-paired trivial box, per
+   *   PR #546/#547's established pairing)
+   */
+  buildTableFromLayout(doc: PDFDocument, entries: Array<{ issue: AuditIssue; table: TableInfo }>): FixResult[] {
+    const structRoot = this.getStructTreeRoot(doc);
+    if (!structRoot) {
+      return entries.map(e => ({
+        issueId: e.issue.id, success: false, before: 'unknown', after: 'unknown',
+        error: 'No structure tree root found',
+      }));
+    }
+
+    const byPage = new Map<number, Array<{ issue: AuditIssue; table: TableInfo }>>();
+    for (const e of entries) {
+      const list = byPage.get(e.table.pageNumber) ?? [];
+      list.push(e);
+      byPage.set(e.table.pageNumber, list);
+    }
+
+    const results: FixResult[] = [];
+
+    for (const [pageNumber, pageEntries] of byPage) {
+      let pageContent: string | null;
+      try {
+        pageContent = decodePageContent(doc, pageNumber);
+      } catch (err) {
+        for (const e of pageEntries) {
+          results.push({ issueId: e.issue.id, success: false, before: 'unknown', after: 'unknown', error: err instanceof Error ? err.message : String(err) });
+        }
+        continue;
+      }
+      if (pageContent === null) {
+        for (const e of pageEntries) {
+          results.push({ issueId: e.issue.id, success: false, before: 'unknown', after: 'unknown', error: `No readable content stream for page ${pageNumber}` });
+        }
+        continue;
+      }
+
+      type CellPlan = { entryIndex: number; cellIndex: number; cell: TableCell; coverage: CellCoverageResult };
+      const cellPlans: CellPlan[] = [];
+      const requests: RangeInsertionRequest[] = [];
+
+      pageEntries.forEach((e, entryIndex) => {
+        e.table.cells.forEach((cell, cellIndex) => {
+          const coverage = matchCellRanges(pageContent!, cell);
+          cellPlans.push({ entryIndex, cellIndex, cell, coverage });
+          coverage.ranges.forEach((range, rangeIndex) => {
+            requests.push({ range, id: `${entryIndex}:${cellIndex}:${rangeIndex}` });
+          });
+        });
+      });
+
+      let inserted: InsertedSpan[];
+      try {
+        inserted = insertMarkedContentSpans(doc, pageNumber, requests);
+      } catch (err) {
+        for (const e of pageEntries) {
+          results.push({ issueId: e.issue.id, success: false, before: 'unknown', after: 'unknown', error: err instanceof Error ? err.message : String(err) });
+        }
+        continue;
+      }
+      const mcidById = new Map(inserted.map(s => [s.id!, s.mcid]));
+
+      let pageRef: PDFRef;
+      try {
+        pageRef = doc.getPage(pageNumber - 1).ref;
+      } catch (err) {
+        for (const e of pageEntries) {
+          results.push({ issueId: e.issue.id, success: false, before: 'unknown', after: 'unknown', error: err instanceof Error ? err.message : String(err) });
+        }
+        continue;
+      }
+
+      pageEntries.forEach((e, entryIndex) => {
+        try {
+          const target = this.findTargetTable(doc, structRoot, e.issue.element);
+          if (!target) {
+            results.push({ issueId: e.issue.id, success: false, before: 'unknown', after: 'unknown', error: `No positioning anchor found matching "${e.issue.element}"` });
+            return;
+          }
+          const parentRaw = target.dict.get(PDFName.of('P'));
+          if (!(parentRaw instanceof PDFRef)) {
+            results.push({ issueId: e.issue.id, success: false, before: 'unknown', after: 'unknown', error: 'Positioning anchor has no /P (parent) entry' });
+            return;
+          }
+
+          const tableObj = doc.context.obj({ Type: PDFName.of('StructElem'), S: PDFName.of('Table'), P: parentRaw, Pg: pageRef });
+          const tableRef = doc.context.register(tableObj as PDFDict);
+          this.insertIntoKidsAfter(doc, parentRaw, target.ref, tableRef);
+
+          const myCells = cellPlans.filter(cp => cp.entryIndex === entryIndex);
+          const byRow = new Map<number, CellPlan[]>();
+          for (const cp of myCells) {
+            const list = byRow.get(cp.cell.row) ?? [];
+            list.push(cp);
+            byRow.set(cp.cell.row, list);
+          }
+
+          const parentTreeEntries: Array<{ mcid: number; structElementRef: PDFRef }> = [];
+          let cellCount = 0;
+          let leafCount = 0;
+
+          for (const rowIdx of [...byRow.keys()].sort((a, b) => a - b)) {
+            const trRef = this.createElement(doc, 'TR', tableRef, pageRef);
+            const rowCells = byRow.get(rowIdx)!.sort((a, b) => a.cell.column - b.cell.column);
+            for (const cp of rowCells) {
+              const cellTag = cp.cell.isHeader ? 'TH' : 'TD';
+              const cellRef = this.createElement(doc, cellTag, trRef, pageRef);
+              cellCount++;
+              cp.coverage.ranges.forEach((_, rangeIndex) => {
+                const id = `${entryIndex}:${cp.cellIndex}:${rangeIndex}`;
+                const mcid = mcidById.get(id);
+                if (mcid === undefined) return;
+                const spanRef = this.createElement(doc, 'Span', cellRef, pageRef);
+                const spanDict = doc.context.lookup(spanRef);
+                if (spanDict instanceof PDFDict) spanDict.set(PDFName.of('K'), PDFNumber.of(mcid));
+                parentTreeEntries.push({ mcid, structElementRef: spanRef });
+                leafCount++;
+              });
+            }
+          }
+
+          if (parentTreeEntries.length > 0) {
+            this.extendParentTree(doc, pageNumber, parentTreeEntries);
+          }
+
+          results.push({
+            issueId: e.issue.id,
+            success: true,
+            before: `Untagged layout table (${e.table.rowCount}x${e.table.columnCount}, ${e.table.cells.length} cells)`,
+            after: `Built Table/${byRow.size} TR/${cellCount} cells, ${leafCount} tagged MCID span(s)`,
+          });
+        } catch (err) {
+          results.push({ issueId: e.issue.id, success: false, before: 'unknown', after: 'unknown', error: err instanceof Error ? err.message : String(err) });
+        }
+      });
+    }
+
+    return results;
   }
 
   /**
