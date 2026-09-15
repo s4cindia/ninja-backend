@@ -582,7 +582,7 @@ describe('PdfStructureWriterService.buildTableFromLayout', () => {
    * reject the final commit.
    */
   it('never throws uncaught, and flips an already-reported success back to failure, when the final ParentTree commit rejects a contiguity mismatch the shape preflight cannot see', async () => {
-    const { doc } = await buildDocWithTrivialBoxAndSiblings([{ text: 'X', x: 50, y: 500 }]);
+    const { doc, parentRef } = await buildDocWithTrivialBoxAndSiblings([{ text: 'X', x: 50, y: 500 }]);
 
     const structRootRef = doc.catalog.get(PDFName.of('StructTreeRoot')) as PDFRef;
     const structRoot = doc.context.lookup(structRootRef) as PDFDict;
@@ -607,5 +607,14 @@ describe('PdfStructureWriterService.buildTableFromLayout', () => {
     expect(results).toBeDefined();
     expect(results![0].success).toBe(false);
     expect(results![0].error).toMatch(/contiguously/i);
+
+    // Partial mitigation for the residual risk this test forces (CodeRabbit
+    // finding on PR #552: no full transactional rollback): the newly-built
+    // Table this call can no longer honestly wire into /ParentTree must not
+    // be left looking like a complete, valid table -- it's retagged to
+    // /Artifact in place, same as the trivial box already is. Both slots
+    // read /Artifact; neither reads /Table. (Default siblingCountBefore/
+    // After from buildDocWithTrivialBoxAndSiblings is 3 each.)
+    expect(getKidsTags(doc, parentRef)).toEqual(['P', 'P', 'P', 'Artifact', 'Artifact', 'P', 'P', 'P']);
   });
 });
