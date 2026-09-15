@@ -21,7 +21,7 @@ import { getModelPricing } from '../../config/pricing.config';
 import { aiConfig } from '../../config/ai.config';
 import { fileStorageService } from '../storage/file-storage.service';
 import { pdfModifierService } from './pdf-modifier.service';
-import { pdfStructureWriterService } from './pdf-structure-writer.service';
+import { pdfStructureWriterService, type FixResult } from './pdf-structure-writer.service';
 import { pdfContrastWriterService } from './pdf-contrast-writer.service';
 import { remediationCycleHistoryService } from './remediation-cycle-history.service';
 import { AppError } from '../../utils/app-error';
@@ -147,12 +147,22 @@ const TABLE_LAYOUT_CODES = new Set(['MATTERHORN-15-005', 'TABLE-LAYOUT-UNTAGGED'
 // pdf-table.validator.ts's buildTrivialMatchNotTaggedIssue: genuinely tabular
 // LAYOUT-detected content whose matched /Table struct element turned out
 // trivial (a decorative box mistakenly paired with it, not a real column
-// grid). No mechanical fix is possible here -- there's no existing table
-// skeleton to promote TD->TH within, unlike TABLE_HEADER_AUTO_FIX_CODES'
-// eligible case -- a human needs to build real Table/TR/TH/TD tagging
-// around the actual grid from scratch. Fully deterministic (the exact
-// cause is already known from the struct-tree walk), so this is answered
-// with a rule-based guidance-only suggestion, no AI call needed.
+// grid). pdfStructureWriterService.buildTableFromLayout (Slice 2d of the
+// MATTERHORN-15-001 from-scratch retagger, PR #552) now builds a real
+// Table/TR/TH/TD/Span skeleton around the actual grid content and wires it
+// into /ParentTree -- live-validated at 94.8% real success (110/116 real
+// Math_Kim cases, Slice 2e's broad-sample validation), zero corruption
+// across 29 multi-table pages. Fully deterministic dispatch: the exact
+// cause is already known from the struct-tree walk (ground truth
+// established by PR #546), so every issue here gets a rule-based
+// apply-to-pdf suggestion, no AI call needed -- unlike TABLE_LAYOUT_CODES'
+// split, there's no fuzzier fallback case to route elsewhere. The ~5% that
+// fail at actual apply time (locateTextRun ambiguity on duplicate/repeated
+// short text within matching tolerance -- a real, narrow content-stream-
+// correlation limit, not a struct-tree-writer bug; see
+// buildTableFromLayout's own doc comment) surface through the same
+// FixResult error-reporting path every other apply-to-pdf suggestion here
+// already uses when it can fail at apply time.
 const TABLE_NOT_TAGGED_CODES = new Set(['MATTERHORN-15-001']);
 const LIST_CODES = new Set(['LIST-NOT-TAGGED', 'LIST-IMPROPER-MARKUP']);
 const READING_ORDER_CODES = new Set(['MATTERHORN-09-004', 'READING-ORDER-SUSPECT', 'READING-ORDER-COLUMN', 'READING-ORDER-RTOL']);
@@ -774,7 +784,7 @@ class AiAnalysisService {
     if (TABLE_NOT_TAGGED_CODES.has(code)) {
       const table = issue.element ? tableById.get(issue.element) : undefined;
       if (!table) return null;
-      return this.analyzeTableNotTagged(table);
+      return this.analyzeTableNotTagged(table, config.tableFixMode);
     }
 
     if (LIST_CODES.has(code)) {
@@ -1308,25 +1318,35 @@ class AiAnalysisService {
    * detected content whose matched /Table struct element is trivial (a
    * decorative box, not a real column grid) -- see pdf-table.validator.ts's
    * buildTrivialMatchNotTaggedIssue. No AI call needed: the exact cause is
-   * already fully known from the struct-tree walk, and no mechanical fix is
-   * possible either -- unlike TABLE_HEADER_AUTO_FIX_CODES' TD->TH promotion,
-   * there's no existing table skeleton to promote within here at all, so
-   * this always stays guidance-only for a human to build real Table/TR/TH/TD
-   * tagging around the actual grid.
+   * already fully known from the struct-tree walk. Was permanently
+   * guidance-only (no mechanical fix existed -- unlike
+   * TABLE_HEADER_AUTO_FIX_CODES' TD->TH promotion, there was no existing
+   * table skeleton to promote within) until pdfStructureWriterService.
+   * buildTableFromLayout (Slice 2d of the MATTERHORN-15-001 from-scratch
+   * retagger, PR #552) shipped a real one -- see TABLE_NOT_TAGGED_CODES'
+   * own doc comment for the live-validation numbers and the accepted
+   * residual apply-time failure rate.
+   *
+   * Gated on tableFixMode (CodeRabbit finding on PR #554, confirmed real):
+   * a tenant/request configured for guidance-only table fixes must not get
+   * this new structural-retagging suggestion auto-applied, mirroring the
+   * same wouldAutoApply check analyzeTableSummary's own call site already
+   * uses for its apply-to-pdf decision.
    */
-  private analyzeTableNotTagged(table: TableInfo): AiSuggestionResult {
+  private analyzeTableNotTagged(table: TableInfo, tableFixMode: AiRemediationConfig['tableFixMode']): AiSuggestionResult {
+    const wouldAutoApply =
+      tableFixMode === 'apply-to-pdf' || tableFixMode === 'summaries-to-pdf-headers-as-guidance';
     return {
-      suggestionType: 'table-not-tagged',
+      suggestionType: 'table-from-layout-fix',
       guidance:
         `This ${table.rowCount}×${table.columnCount} region looks like real tabular data, but its matched ` +
         `/Table structure element is a trivial single-cell box unrelated to this grid — most likely a decorative ` +
-        `caption or label box that structure analysis mistakenly paired with it. A human needs to add proper ` +
-        `Table/TR/TH/TD tagging around the actual grid content; this can't be done by promoting existing tags ` +
-        `since no real table skeleton exists to promote within.`,
+        `caption or label box that structure analysis mistakenly paired with it. A real Table/TR/TH/TD structure ` +
+        `will be built around the actual grid content and wired into the document's tagging.`,
       confidence: 0.85,
-      rationale: 'Matched /Table struct element has <=1 row and <=1 cell, but the layout-detected content passes the genuinely-tabular content check',
+      rationale: 'Matched /Table struct element has <=1 row and <=1 cell, but the layout-detected content passes the genuinely-tabular content check -- buildTableFromLayout builds a real skeleton for this shape',
       model: 'rule-based',
-      applyMode: 'guidance-only',
+      applyMode: wouldAutoApply ? 'apply-to-pdf' : 'guidance-only',
     };
   }
 
@@ -2116,6 +2136,41 @@ class AiAnalysisService {
     const elementById = new Map(auditIssues.map(i => [i.id, i.element ?? i.id]));
     const issueById = new Map(auditIssues.map(i => [i.id, i]));
 
+    // Both table-artifact-fix and table-from-layout-fix issues get batched
+    // into ONE call each (below) -- but first, resolve BOTH batches' target
+    // /Table struct elements from the SAME still-fully-unmutated tree, in
+    // ONE combined pass, before EITHER writer mutates anything.
+    //
+    // Why: markTableAsArtifact and buildTableFromLayout each independently
+    // rename some /Table element to /Artifact as part of their own
+    // operation (markTableAsArtifact always; buildTableFromLayout for the
+    // spuriously-paired trivial box behind each entry it processes).
+    // findTargetTable's positional "Nth /Table on this page" indexing
+    // depends on the tree staying stable relative to when table_p{page}_
+    // {index} ids were originally computed (at analysis time, against the
+    // fully-unmodified tree) -- if one writer's batch call runs first and
+    // renames a same-page table away, the SECOND writer's own internal
+    // findTargetTable resolution would see a shifted tree on any page where
+    // both suggestion types coexist, corrupting whichever runs second
+    // (CodeRabbit/Codex finding on PR #554, confirmed real). Reordering the
+    // two batches does NOT fix this -- both directions have the identical
+    // symmetric risk, since both writers eventually rename something. See
+    // pdfStructureWriterService.resolveTableTargets's own doc comment for
+    // the full reasoning; its result is passed to both writer calls below
+    // via their own preResolvedTargets parameter.
+    const tableArtifactIssues = approved
+      .filter(a => a.suggestionType === 'table-artifact-fix')
+      .map(a => issueById.get(a.issueId))
+      .filter((i): i is AuditIssue => !!i);
+    const tableFromLayoutIssues = approved
+      .filter(a => a.suggestionType === 'table-from-layout-fix')
+      .map(a => issueById.get(a.issueId))
+      .filter((i): i is AuditIssue => !!i);
+    const preResolvedTableTargets =
+      tableArtifactIssues.length > 0 || tableFromLayoutIssues.length > 0
+        ? pdfStructureWriterService.resolveTableTargets(doc, [...tableArtifactIssues, ...tableFromLayoutIssues])
+        : undefined;
+
     // Batch every table-artifact-fix suggestion in THIS approval run into a
     // single markTableAsArtifact call, before the main per-suggestion loop
     // below touches anything -- that method renames the /Table struct
@@ -2127,17 +2182,64 @@ class AiAnalysisService {
     // live against Math_Kim (6 of 49 real cases failed this way). See
     // markTableAsArtifact's own doc comment for why a whole-document sweep
     // isn't the fix instead (it would also touch MATTERHORN-15-001's boxes).
-    const tableArtifactIssues = approved
-      .filter(a => a.suggestionType === 'table-artifact-fix')
-      .map(a => issueById.get(a.issueId))
-      .filter((i): i is AuditIssue => !!i);
     const tableArtifactResultById = new Map(
       tableArtifactIssues.length > 0
-        ? pdfStructureWriterService.markTableAsArtifact(doc, tableArtifactIssues).map(r => [r.issueId, r] as const)
+        ? pdfStructureWriterService.markTableAsArtifact(doc, tableArtifactIssues, preResolvedTableTargets).map(r => [r.issueId, r] as const)
         : []
     );
 
-    const STRUCTURE_WRITER_TYPES = new Set(['heading-fix', 'list-fix', 'table-header-fix', 'table-artifact-fix', 'bookmark-generate', 'heading-multiple-h1-fix', 'pdfua-identifier', 'color-contrast-fix', 'alt-text-decorative']);
+    // Batch every table-from-layout-fix suggestion in THIS approval run into
+    // a single buildTableFromLayout call, before the main per-suggestion
+    // loop touches anything -- same reasoning as table-artifact-fix's own
+    // batching above (findTargetTable's positional indexing must stay
+    // stable across a whole same-page batch), and buildTableFromLayout's
+    // own doc comment additionally requires every one of a page's fixes to
+    // land in ONE call for its single combined /ParentTree commit to be
+    // correct (Slice 2d, PR #552) -- calling it once per issue would not
+    // just risk index drift, it would actively violate that method's own
+    // documented contract.
+    //
+    // Unlike table-artifact-fix, buildTableFromLayout needs each issue's
+    // real TableInfo (cells/sourceItems/anchor), not just the AuditIssue --
+    // markTableAsArtifact only ever needed issue.element, resolved directly
+    // against the struct tree via findTargetTable. That TableInfo isn't
+    // already available here (this method only loads AuditIssues from the
+    // stored audit report) -- re-derived fresh via the SAME
+    // pdfComprehensiveParserService.parseBuffer call dispatchIssue's own
+    // analysis-time tableById construction uses, against the identical
+    // pdfBuffer being mutated below, then matched by table.id ===
+    // issue.element (the same lookup dispatchIssue itself performs). Only
+    // parsed when at least one table-from-layout-fix suggestion needs it
+    // (mirrors table-artifact-fix's own "only when there's something to
+    // batch" guard) -- this is a real, comparable-cost parse (the same one
+    // analysis time pays for the whole document), not a cheap lookup.
+    let tableFromLayoutResultById = new Map<string, FixResult>();
+    if (tableFromLayoutIssues.length > 0) {
+      let parsedForTables: PdfParseResult | null = null;
+      try {
+        parsedForTables = await pdfComprehensiveParserService.parseBuffer(pdfBuffer, fileName);
+        const tableById = new Map<string, TableInfo>();
+        for (const page of parsedForTables.pages) {
+          for (const table of page.tables) {
+            tableById.set(table.id, table);
+          }
+        }
+        const entries = tableFromLayoutIssues
+          .map(issue => ({ issue, table: issue.element ? tableById.get(issue.element) : undefined }))
+          .filter((e): e is { issue: AuditIssue; table: TableInfo } => !!e.table);
+        if (entries.length > 0) {
+          tableFromLayoutResultById = new Map(
+            pdfStructureWriterService.buildTableFromLayout(doc, entries, preResolvedTableTargets).map(r => [r.issueId, r] as const)
+          );
+        }
+      } finally {
+        if (parsedForTables?.parsedPdf) {
+          await pdfParserService.close(parsedForTables.parsedPdf).catch(() => {});
+        }
+      }
+    }
+
+    const STRUCTURE_WRITER_TYPES = new Set(['heading-fix', 'list-fix', 'table-header-fix', 'table-artifact-fix', 'table-from-layout-fix', 'bookmark-generate', 'heading-multiple-h1-fix', 'pdfua-identifier', 'color-contrast-fix', 'alt-text-decorative']);
 
     let applied = 0;
     let failed = 0;
@@ -2178,6 +2280,20 @@ class AiAnalysisService {
           modification = r
             ? { success: r.success, description: r.after, error: r.error }
             : { success: false, error: 'table-artifact-fix result missing from batch' };
+        } else if (suggestionType === 'table-from-layout-fix') {
+          // Already applied above, batched with every other
+          // table-from-layout-fix suggestion in this same approval run --
+          // see that batching's own comment for why (findTargetTable index
+          // stability plus buildTableFromLayout's own single-combined-
+          // ParentTree-commit contract). Missing from the batch here means
+          // either its TableInfo couldn't be resolved (issue.element had no
+          // matching real table in the fresh parse) or nothing needed
+          // batching at all -- both real, reportable failures, not silently
+          // skipped.
+          const r = tableFromLayoutResultById.get(issueId);
+          modification = r
+            ? { success: r.success, description: r.after, error: r.error }
+            : { success: false, error: 'table-from-layout-fix result missing from batch (no matching TableInfo resolved)' };
         } else if (suggestionType === 'bookmark-generate') {
           const result = pdfStructureWriterService.generateBookmarksFromHeadings(doc);
           modification = {
