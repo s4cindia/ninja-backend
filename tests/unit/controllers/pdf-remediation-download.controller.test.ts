@@ -125,4 +125,51 @@ describe('PdfRemediationController.downloadRemediatedPdf', () => {
 
     expect(res.status).toHaveBeenCalledWith(404);
   });
+
+  /**
+   * CodeRabbit-caught regression (PR #559 review): the first version of this
+   * fix collapsed EVERY storage rejection into 404, including real
+   * operational failures (S3 AccessDenied/network errors, local EACCES/EIO)
+   * -- misreporting an outage as "file doesn't exist" instead of surfacing
+   * it as a real error. Only a recognized not-found signature ("File not
+   * found in S3: ..." or ENOENT) may become 404; everything else must reach
+   * the outer 500 handler.
+   */
+  it('returns 500 (not 404) when downloadFile rejects with a real operational error, not a not-found signature', async () => {
+    vi.mocked(prisma.job.findFirst).mockResolvedValue({
+      id: 'job-1',
+      type: 'PDF_ACCESSIBILITY',
+      input: { fileName: 'math_kim.pdf' },
+      output: { remediatedFileUrl: 'job-storage/job-1/remediated/math_kim.pdf' },
+    } as any);
+    const accessDenied = new Error('Access Denied');
+    (accessDenied as any).name = 'AccessDenied';
+    vi.mocked(fileStorageService.downloadFile).mockRejectedValue(accessDenied);
+
+    const req = makeReq();
+    const res = makeRes();
+    await pdfRemediationController.downloadRemediatedPdf(req, res);
+
+    expect(res.status).toHaveBeenCalledWith(500);
+    expect(res.status).not.toHaveBeenCalledWith(404);
+  });
+
+  it('returns 500 (not 404) when getRemediatedFile rejects with a real local I/O error, not ENOENT', async () => {
+    vi.mocked(prisma.job.findFirst).mockResolvedValue({
+      id: 'job-1',
+      type: 'PDF_ACCESSIBILITY',
+      input: { fileName: 'legacy.pdf' },
+      output: {},
+    } as any);
+    const eio = new Error('EIO: i/o error');
+    (eio as any).code = 'EIO';
+    vi.mocked(fileStorageService.getRemediatedFile).mockRejectedValue(eio);
+
+    const req = makeReq();
+    const res = makeRes();
+    await pdfRemediationController.downloadRemediatedPdf(req, res);
+
+    expect(res.status).toHaveBeenCalledWith(500);
+    expect(res.status).not.toHaveBeenCalledWith(404);
+  });
 });

@@ -28,6 +28,22 @@ import { remediationCycleHistoryService } from '../services/pdf/remediation-cycl
 
 const comparisonService = new ComparisonService(prisma);
 
+/**
+ * True only for a RECOGNIZED "the remediated file genuinely doesn't exist"
+ * signature -- fileStorageService.downloadFile's own custom "File not found
+ * in S3: ..." message (thrown when s3GetBuffer resolves null after an S3
+ * NoSuchKey/NotFound), or a local ENOENT (from its own fs.readFile fallback,
+ * or from getRemediatedFile rethrowing anything that isn't ENOENT already).
+ * Anything else -- an S3 AccessDenied/network error, a local EACCES/EIO, a
+ * path-traversal rejection -- is a real operational failure, not a missing
+ * file, and must be treated as one by the caller (reach the outer 500
+ * handler), not silently reported to the user as 404.
+ */
+function isRemediatedFileNotFoundError(error: unknown): boolean {
+  if (error instanceof Error && error.message.startsWith('File not found in S3:')) return true;
+  return !!error && typeof error === 'object' && (error as NodeJS.ErrnoException).code === 'ENOENT';
+}
+
 export class PdfRemediationController {
   /**
    * Create a remediation plan from audit results
@@ -1024,6 +1040,15 @@ export class PdfRemediationController {
           fileBuffer = await fileStorageService.getRemediatedFile(jobId, fileName);
         }
       } catch (downloadError) {
+        // Only a RECOGNIZED not-found signature becomes a 404 -- an S3
+        // AccessDenied/network error, or a local EACCES/EIO, must reach the
+        // outer catch as a 500 instead. Collapsing every storage failure
+        // into 404 (the original version of this fix) would misreport a
+        // real operational outage as "file doesn't exist" (CodeRabbit
+        // finding on PR #559, confirmed real).
+        if (!isRemediatedFileNotFoundError(downloadError)) {
+          throw downloadError;
+        }
         logger.info('Remediated PDF not found', {
           jobId,
           error: downloadError instanceof Error ? downloadError.message : String(downloadError),
