@@ -991,16 +991,6 @@ export class PdfRemediationController {
         return;
       }
 
-      // Define canonical base directory for security
-      // MUST match file-storage.service.ts exactly: EPUB_STORAGE_PATH || '/tmp/epub-storage'
-      const baseDir = path.resolve(process.env.EPUB_STORAGE_PATH || '/tmp/epub-storage');
-      logger.info('[PDF Download] Base directory resolved', {
-        baseDir,
-        jobId,
-        epubStoragePath: process.env.EPUB_STORAGE_PATH,
-        usingDefault: !process.env.EPUB_STORAGE_PATH
-      });
-
       const output = job.output as Record<string, unknown>;
       logger.info('[PDF Download] Job output', {
         jobId,
@@ -1009,101 +999,58 @@ export class PdfRemediationController {
         remediatedFileUrl: output?.remediatedFileUrl
       });
 
-      let remediatedFilePath: string;
-
-      // Get remediated file path with path traversal protection
-      if (output?.remediatedFileUrl && typeof output.remediatedFileUrl === 'string') {
-        const requestedPath = output.remediatedFileUrl;
-        const isAbsolute = path.isAbsolute(requestedPath);
-
-        // Resolve and normalize the path
-        if (isAbsolute) {
-          remediatedFilePath = path.normalize(requestedPath);
-        } else {
-          remediatedFilePath = path.resolve(baseDir, requestedPath);
-        }
-
-        // Use path.relative to check if the file is within baseDir
-        // If relative path starts with '..', the file is outside baseDir
-        const normalizedBaseDir = path.normalize(baseDir);
-        const normalizedFilePath = path.normalize(remediatedFilePath);
-        const relative = path.relative(normalizedBaseDir, normalizedFilePath);
-
-        logger.info('[PDF Download] Path validation check', {
-          jobId,
-          requestedPath,
-          isAbsolute,
-          normalizedBaseDir,
-          normalizedFilePath,
-          relativePath: relative,
-          pathSep: path.sep,
-        });
-
-        // Check if path escapes baseDir
-        const isOutsideBaseDir = relative !== '' &&
-          (relative.split(path.sep)[0] === '..' || relative.startsWith('..' + path.sep));
-
-        logger.info('[PDF Download] Path containment result', {
-          jobId,
-          isOutsideBaseDir,
-          firstSegment: relative.split(path.sep)[0],
-          startsWithDotDot: relative.startsWith('..' + path.sep),
-        });
-
-        if (isOutsideBaseDir) {
-          logger.warn('[PDF Download] Path traversal attempt detected', {
-            jobId,
-            requestedPath,
-            resolvedPath: normalizedFilePath,
-            baseDir: normalizedBaseDir,
-            relativePath: relative,
-          });
-          res.status(400).json({
-            success: false,
-            error: {
-              code: 'INVALID_PATH',
-              message: 'Invalid file path',
-            },
-          });
-          return;
-        }
-      } else {
-        // Fallback: construct path from job data
-        const input = job.input as { fileName?: string };
-        const fileName = input?.fileName || 'document.pdf';
-        const remediatedFileName = fileName.replace('.pdf', '_remediated.pdf');
-        remediatedFilePath = path.join(
-          baseDir,
-          jobId,
-          'remediated',
-          remediatedFileName
-        );
-      }
-
-      // Check if file exists before attempting to read
-      const fs = await import('fs/promises');
-      try {
-        await fs.stat(remediatedFilePath);
-      } catch (statError) {
-        if ((statError as NodeJS.ErrnoException).code === 'ENOENT') {
-          logger.info('Remediated PDF not found', { jobId, path: remediatedFilePath });
-          res.status(404).json({
-            success: false,
-            error: {
-              code: 'NOT_FOUND',
-              message: 'Remediated PDF not found',
-            },
-          });
-          return;
-        }
-        throw statError;
-      }
-
-      // Read file and send as response
-      const fileBuffer = await fs.readFile(remediatedFilePath);
-
       const input = job.input as { fileName?: string };
-      const downloadFileName = (input?.fileName || 'document.pdf').replace('.pdf', '_remediated.pdf');
+      const fileName = input?.fileName || 'document.pdf';
+
+      // Route through fileStorageService, the same abstraction
+      // saveRemediatedFile used to write this file -- it already knows
+      // whether the stored reference is an S3 key or a local path, and
+      // already has its own path-traversal protection for the local-fallback
+      // case. Reading raw local disk directly here (the old code) silently
+      // broke every download once S3 storage was configured (PR #482):
+      // saveRemediatedFile returns an S3 key like
+      // "job-storage/{jobId}/remediated/{fileName}", which this method used
+      // to misinterpret as a path relative to local EPUB_STORAGE_PATH,
+      // always missing (ENOENT) since S3 mode never writes there.
+      let fileBuffer: Buffer | null;
+      try {
+        if (output?.remediatedFileUrl && typeof output.remediatedFileUrl === 'string') {
+          fileBuffer = await fileStorageService.downloadFile(output.remediatedFileUrl);
+        } else {
+          // Fallback for older jobs whose output never recorded
+          // remediatedFileUrl -- getRemediatedFile already tries both the
+          // plain-filename and _remediated-suffix naming conventions, across
+          // whichever backend (S3 or local) is currently configured.
+          fileBuffer = await fileStorageService.getRemediatedFile(jobId, fileName);
+        }
+      } catch (downloadError) {
+        logger.info('Remediated PDF not found', {
+          jobId,
+          error: downloadError instanceof Error ? downloadError.message : String(downloadError),
+        });
+        res.status(404).json({
+          success: false,
+          error: {
+            code: 'NOT_FOUND',
+            message: 'Remediated PDF not found',
+          },
+        });
+        return;
+      }
+
+      if (!fileBuffer) {
+        logger.info('Remediated PDF not found', { jobId });
+        res.status(404).json({
+          success: false,
+          error: {
+            code: 'NOT_FOUND',
+            message: 'Remediated PDF not found',
+          },
+        });
+        return;
+      }
+
+      const downloadFileName = fileName.replace('.pdf', '_remediated.pdf');
 
       res.setHeader('Content-Type', 'application/pdf');
       res.setHeader('Content-Disposition', `attachment; filename="${downloadFileName}"`);
