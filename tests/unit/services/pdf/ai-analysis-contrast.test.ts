@@ -1,12 +1,15 @@
 import { describe, it, expect } from 'vitest';
-import { PDFDocument, StandardFonts } from 'pdf-lib';
+import { PDFDocument, StandardFonts, degrees } from 'pdf-lib';
 import { aiAnalysisService, buildSuggestionCacheKey } from '../../../../src/services/pdf/ai-analysis.service';
+import { resolveColorContrastTargets } from '../../../../src/services/pdf/pdf-contrast-writer.service';
 import type { AuditIssue } from '../../../../src/services/audit/base-audit.service';
-import type { PdfParseResult } from '../../../../src/services/pdf/pdf-comprehensive-parser.service';
+import type { TextRunMatch } from '../../../../src/services/pdf/contrast-content-stream';
 
 // analyzeColorContrast is private; exercise via cast.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const svc = aiAnalysisService as any;
+
+const EMPTY_MATCHES = new Map<string, TextRunMatch | null>();
 
 const BASE_ISSUE: AuditIssue = {
   id: 'contrast-1',
@@ -30,7 +33,7 @@ describe('analyzeColorContrast', () => {
       },
     };
 
-    const res = svc.analyzeColorContrast(issue, {} as PdfParseResult, 'guidance-only');
+    const res = svc.analyzeColorContrast(issue, EMPTY_MATCHES, 'guidance-only');
 
     expect(res).toBeTruthy();
     expect(res.suggestionType).toBe('color-contrast');
@@ -55,29 +58,25 @@ describe('analyzeColorContrast', () => {
       },
     };
 
-    const res = svc.analyzeColorContrast(issue, {} as PdfParseResult, 'guidance-only');
+    const res = svc.analyzeColorContrast(issue, EMPTY_MATCHES, 'guidance-only');
     expect(res.guidance).toContain('3:1');
     expect(res.guidance).toContain('large text');
   });
 
   it('returns null when the issue has no contrastData (never calls Gemini)', () => {
-    const res = svc.analyzeColorContrast(BASE_ISSUE, {} as PdfParseResult, 'guidance-only');
+    const res = svc.analyzeColorContrast(BASE_ISSUE, EMPTY_MATCHES, 'guidance-only');
     expect(res).toBeNull();
   });
 });
 
 describe('analyzeColorContrast — apply-to-pdf eligibility (Phase B3)', () => {
-  async function buildParsed(x: number, y: number, size: number): Promise<PdfParseResult> {
+  async function buildDoc(x: number, y: number, size: number, rotate = 0): Promise<PDFDocument> {
     const src = await PDFDocument.create();
     const page = src.addPage([400, 600]);
+    if (rotate) page.setRotation(degrees(rotate));
     const font = await src.embedFont(StandardFonts.Helvetica);
     page.drawText('Low contrast text', { x, y, size, font });
-    const pdfLibDoc = await PDFDocument.load(await src.save());
-    return {
-      metadata: {} as PdfParseResult['metadata'],
-      pages: [{ pageNumber: 1, rotation: 0 } as PdfParseResult['pages'][0]],
-      parsedPdf: { pdfLibDoc } as PdfParseResult['parsedPdf'],
-    } as unknown as PdfParseResult;
+    return PDFDocument.load(await src.save());
   }
 
   function contrastIssue(overrides: Partial<AuditIssue> = {}): AuditIssue {
@@ -97,8 +96,11 @@ describe('analyzeColorContrast — apply-to-pdf eligibility (Phase B3)', () => {
   }
 
   it('emits a color-contrast-fix suggestion when the text run is confidently located', async () => {
-    const parsed = await buildParsed(100, 450, 14);
-    const res = svc.analyzeColorContrast(contrastIssue(), parsed, 'apply-to-pdf');
+    const doc = await buildDoc(100, 450, 14);
+    const issue = contrastIssue();
+    const matches = resolveColorContrastTargets(doc, [issue]);
+
+    const res = svc.analyzeColorContrast(issue, matches, 'apply-to-pdf');
 
     expect(res.suggestionType).toBe('color-contrast-fix');
     expect(res.applyMode).toBe('apply-to-pdf');
@@ -110,28 +112,33 @@ describe('analyzeColorContrast — apply-to-pdf eligibility (Phase B3)', () => {
   });
 
   it('falls back to guidance-only when no text is near the flagged position', async () => {
-    const parsed = await buildParsed(100, 450, 14);
+    const doc = await buildDoc(100, 450, 14);
     const issue = contrastIssue({
       boundingBox: { x: 300, y: 600 - 50, width: 100, height: 14, pageWidth: 400, pageHeight: 600 },
     });
+    const matches = resolveColorContrastTargets(doc, [issue]);
 
-    const res = svc.analyzeColorContrast(issue, parsed, 'apply-to-pdf');
+    const res = svc.analyzeColorContrast(issue, matches, 'apply-to-pdf');
     expect(res.suggestionType).toBe('color-contrast');
     expect(res.applyMode).toBe('guidance-only');
   });
 
   it('falls back to guidance-only on a rotated page', async () => {
-    const parsed = await buildParsed(100, 450, 14);
-    parsed.pages[0].rotation = 90;
+    const doc = await buildDoc(100, 450, 14, 90);
+    const issue = contrastIssue();
+    const matches = resolveColorContrastTargets(doc, [issue]);
 
-    const res = svc.analyzeColorContrast(contrastIssue(), parsed, 'apply-to-pdf');
+    const res = svc.analyzeColorContrast(issue, matches, 'apply-to-pdf');
     expect(res.suggestionType).toBe('color-contrast');
     expect(res.applyMode).toBe('guidance-only');
   });
 
   it('stays guidance-only when mode is guidance-only, even if the text would be locatable', async () => {
-    const parsed = await buildParsed(100, 450, 14);
-    const res = svc.analyzeColorContrast(contrastIssue(), parsed, 'guidance-only');
+    const doc = await buildDoc(100, 450, 14);
+    const issue = contrastIssue();
+    const matches = resolveColorContrastTargets(doc, [issue]);
+
+    const res = svc.analyzeColorContrast(issue, matches, 'guidance-only');
     expect(res.suggestionType).toBe('color-contrast');
     expect(res.applyMode).toBe('guidance-only');
   });

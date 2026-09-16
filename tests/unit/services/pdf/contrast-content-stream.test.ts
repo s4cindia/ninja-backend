@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { locateTextRun, locateEnclosingTextObject } from '../../../../src/services/pdf/contrast-content-stream';
+import { locateTextRun, locateTextRunsForPage, locateEnclosingTextObject } from '../../../../src/services/pdf/contrast-content-stream';
 
 // Same shape as content-stream.test.ts's twoLineStream (verified pdf-lib output
 // shape: q BT … Tm … Tj … ET Q). Line 1 anchor (50,150), line 2 anchor (50,120).
@@ -431,6 +431,177 @@ ET
       // would mean the old `|| 1` fallback treated the offset as unscaled.
       expect(locateTextRun(stream, { x: 70, baselineY: 700 })).toBeNull();
     });
+  });
+});
+
+describe('locateTextRunsForPage', () => {
+  // Built to fix a real gap: locateTextRun correctly REFUSES a run that
+  // changes its own fill color more than once internally (mixedColor ->
+  // confidence 0) since it has no way to tell which color belongs to which
+  // target. Confirmed live on Math_Kim's real remaining COLOR-CONTRAST
+  // issues: this is exactly the shape of a colored word embedded in
+  // otherwise plain-colored text (e.g. "The answer is <red>one</red>.").
+  // locateTextRunsForPage resolves this WITHOUT font metrics by relying on
+  // a structural fact instead of a position estimate: PDF text within one
+  // run renders in byte order (= reading order), so when the number of
+  // issues mapped to a run's line EXACTLY matches its internal-color-
+  // delimited segment count, they can be paired ordinally with confidence.
+  const threeSegmentRun = `BT
+1 0 0 1 50 150 Tm
+(black text ) Tj
+1 0 0 rg
+(RED WORD) Tj
+0 0 0 rg
+(more black) Tj
+ET
+`;
+
+  it('pairs all 3 segments of a multi-color run ordinally when exactly 3 issues map to it', () => {
+    const targets = [
+      { id: 'seg0', x: 50, baselineY: 150 },
+      { id: 'seg1', x: 80, baselineY: 150 },
+      { id: 'seg2', x: 120, baselineY: 150 },
+    ];
+    const result = locateTextRunsForPage(threeSegmentRun, targets);
+
+    const seg0 = result.get('seg0');
+    const seg1 = result.get('seg1');
+    const seg2 = result.get('seg2');
+
+    expect(seg0).toBeTruthy();
+    expect(seg1).toBeTruthy();
+    expect(seg2).toBeTruthy();
+    expect(seg0!.ambiguous).toBe(false);
+    expect(seg1!.ambiguous).toBe(false);
+    expect(seg2!.ambiguous).toBe(false);
+
+    // Segment 0 (before the first internal op) has no op of its own to
+    // rewrite in place -- the writer must insert a new one at run.start,
+    // exactly like today's no-internal-op whole-run case.
+    expect(seg0!.internalFillColorOp).toBeUndefined();
+    // Segment 1 is governed by the FIRST internal op (the red one).
+    expect(threeSegmentRun.slice(seg1!.internalFillColorOp!.start, seg1!.internalFillColorOp!.end)).toBe('1 0 0 rg');
+    // Segment 2 (the run's own last segment) is governed by the LAST internal op.
+    expect(threeSegmentRun.slice(seg2!.internalFillColorOp!.start, seg2!.internalFillColorOp!.end)).toBe('0 0 0 rg');
+  });
+
+  it('gives every segment of that run the SAME restore-color-override -- the run\'s true final color, not each segment\'s own', () => {
+    const targets = [
+      { id: 'seg0', x: 50, baselineY: 150 },
+      { id: 'seg1', x: 80, baselineY: 150 },
+      { id: 'seg2', x: 120, baselineY: 150 },
+    ];
+    const result = locateTextRunsForPage(threeSegmentRun, targets);
+
+    // The run's LAST internal op is "0 0 0 rg" (black) -- fixing segment 1
+    // (currently red) must restore to BLACK after the run ends, not to
+    // red (segment 1's own original color): op 2 (untouched, already
+    // black) already handles segment 2's own color correctly, but nothing
+    // downstream of the run relies on segment 1's original color at all,
+    // and using it here would leave the wrong color active for whatever
+    // renders after this run.
+    expect(result.get('seg0')!.restoreColorOverride).toEqual([0, 0, 0]);
+    expect(result.get('seg1')!.restoreColorOverride).toEqual([0, 0, 0]);
+    expect(result.get('seg2')!.restoreColorOverride).toEqual([0, 0, 0]);
+  });
+
+  it('declines (no confident match) when the issue count does NOT match the run\'s segment count -- refuses to guess', () => {
+    // Only 2 targets for a 3-segment run -- a real structural mismatch.
+    const targets = [
+      { id: 'a', x: 50, baselineY: 150 },
+      { id: 'b', x: 80, baselineY: 150 },
+    ];
+    const result = locateTextRunsForPage(threeSegmentRun, targets);
+    expect(result.get('a')).toBeNull();
+    expect(result.get('b')).toBeNull();
+  });
+
+  it('resolves two separate single-color runs sitting close together via ordinal pairing, when each individually would be proximity-ambiguous', () => {
+    // 3pt apart -- well within locateTextRun's own 4pt AMBIGUITY_MARGIN, so
+    // targeting either run's own exact anchor individually would flag
+    // ambiguous under the plain single-target algorithm (confirmed by the
+    // plain locateTextRun assertions below).
+    const twoCloseRuns = `BT 1 0 0 1 50 150 Tm (A) Tj ET
+BT 1 0 0 1 53 150 Tm (B) Tj ET
+`;
+    expect(locateTextRun(twoCloseRuns, { x: 50, baselineY: 150 })!.ambiguous).toBe(true);
+    expect(locateTextRun(twoCloseRuns, { x: 53, baselineY: 150 })!.ambiguous).toBe(true);
+
+    const targets = [
+      { id: 'first', x: 50, baselineY: 150 },
+      { id: 'second', x: 53, baselineY: 150 },
+    ];
+    const result = locateTextRunsForPage(twoCloseRuns, targets);
+
+    const first = result.get('first');
+    const second = result.get('second');
+    expect(first).toBeTruthy();
+    expect(second).toBeTruthy();
+    expect(first!.ambiguous).toBe(false);
+    expect(second!.ambiguous).toBe(false);
+    expect(twoCloseRuns.slice(first!.start, first!.end)).toContain('(A) Tj');
+    expect(twoCloseRuns.slice(second!.start, second!.end)).toContain('(B) Tj');
+    // Neither run has its own internal color op -- no restore override needed.
+    expect(first!.restoreColorOverride).toBeUndefined();
+    expect(second!.restoreColorOverride).toBeUndefined();
+  });
+
+  it('declines when a THIRD nearby run makes the count exceed the number of targets in that line-band', () => {
+    const threeCloseRuns = `BT 1 0 0 1 50 150 Tm (A) Tj ET
+BT 1 0 0 1 53 150 Tm (B) Tj ET
+BT 1 0 0 1 56 150 Tm (C) Tj ET
+`;
+    const targets = [
+      { id: 'first', x: 50, baselineY: 150 },
+      { id: 'second', x: 53, baselineY: 150 },
+    ];
+    const result = locateTextRunsForPage(threeCloseRuns, targets);
+    expect(result.get('first')).toBeNull();
+    expect(result.get('second')).toBeNull();
+  });
+
+  it('declines a multi-color run whose last internal op is sc/scn -- cannot safely determine the restore color', () => {
+    const scnRun = `BT
+0 0 0 rg
+1 0 0 1 50 150 Tm
+(black ) Tj
+1 0 0 1 scn
+(red) Tj
+ET
+`;
+    const targets = [
+      { id: 'seg0', x: 50, baselineY: 150 },
+      { id: 'seg1', x: 80, baselineY: 150 },
+    ];
+    const result = locateTextRunsForPage(scnRun, targets);
+    expect(result.get('seg0')).toBeNull();
+    expect(result.get('seg1')).toBeNull();
+  });
+
+  it('leaves an already-confidently-resolved target completely untouched (zero behavior change for the cases that already worked)', () => {
+    const targets = [{ id: 'line1', x: 50, baselineY: 150 }];
+    const viaPage = locateTextRunsForPage(twoLineStream, targets).get('line1');
+    const viaPlain = locateTextRun(twoLineStream, { x: 50, baselineY: 150 });
+
+    expect(viaPage).toEqual(viaPlain);
+  });
+
+  it('does not cross-pair targets on genuinely different lines', () => {
+    // Two single-color runs, but far enough apart in Y that they must never
+    // be treated as the same line-band even though there are exactly 2 of
+    // them and exactly 2 targets overall.
+    const twoDifferentLines = `BT 1 0 0 1 50 150 Tm (A) Tj ET
+BT 1 0 0 1 50 400 Tm (B) Tj ET
+`;
+    // Individually ambiguous-free and unmatched -- pick positions that miss
+    // the plain 12pt tolerance so both fall through to page-level pairing.
+    const targets = [
+      { id: 'near-a', x: 65, baselineY: 150 },
+      { id: 'near-b', x: 65, baselineY: 400 },
+    ];
+    const result = locateTextRunsForPage(twoDifferentLines, targets, 20);
+    expect(twoDifferentLines.slice(result.get('near-a')!.start, result.get('near-a')!.end)).toContain('(A) Tj');
+    expect(twoDifferentLines.slice(result.get('near-b')!.start, result.get('near-b')!.end)).toContain('(B) Tj');
   });
 });
 

@@ -58,7 +58,7 @@ import { PDFDocument } from 'pdf-lib';
 import { AuditIssue } from '../audit/base-audit.service';
 import { logger } from '../../lib/logger';
 import { decodePageContent, writePageContent } from './pdf-content-stream-io';
-import { locateTextRun, locateEnclosingTextObject } from './contrast-content-stream';
+import { locateTextRun, locateTextRunsForPage, locateEnclosingTextObject, type TextRunMatch, type PageContrastTarget } from './contrast-content-stream';
 import { computeCompliantColor } from './color-contrast-correction';
 import { verifyContrastInRegion } from './color-contrast-verification';
 import { computeBackplateRect, spliceBackplate } from './pdf-contrast-backplate';
@@ -140,6 +140,58 @@ export function spliceColorFix(
   return out;
 }
 
+/**
+ * Resolves color-contrast-fix correlation for a WHOLE batch of issues at
+ * once, grouped by page, using locateTextRunsForPage instead of one
+ * independent locateTextRun call per issue. This is what actually unlocks
+ * the two harder real patterns locateTextRunsForPage handles (a single run
+ * with a colored word embedded in otherwise plain text; several separate
+ * single-color runs sitting close together) -- both require seeing every
+ * issue on a page TOGETHER to structurally confirm an ordinal pairing, so
+ * calling fixColorContrast one issue at a time (as applyApprovedSuggestions
+ * used to) can never engage that mechanism at all.
+ *
+ * Skips (leaves absent from the returned map, matching fixColorContrast's
+ * own existing per-issue gates so its fallback path re-derives the exact
+ * same "unknown"/rotated-page/no-content error) any issue missing
+ * pageNumber/boundingBox/contrastData, or on a page whose content stream
+ * can't be decoded or that's rotated (locateTextRunsForPage's axis-aligned
+ * assumption).
+ */
+export function resolveColorContrastTargets(doc: PDFDocument, issues: AuditIssue[]): Map<string, TextRunMatch | null> {
+  const result = new Map<string, TextRunMatch | null>();
+  const byPage = new Map<number, AuditIssue[]>();
+  for (const issue of issues) {
+    if (!issue.contrastData || !issue.pageNumber || !issue.boundingBox) continue;
+    const list = byPage.get(issue.pageNumber) ?? [];
+    list.push(issue);
+    byPage.set(issue.pageNumber, list);
+  }
+
+  for (const [pageNumber, pageIssues] of byPage) {
+    let rotation = 0;
+    try {
+      rotation = doc.getPage(pageNumber - 1).getRotation().angle;
+    } catch {
+      continue;
+    }
+    if (rotation !== 0) continue;
+
+    const content = decodePageContent(doc, pageNumber);
+    if (content === null) continue;
+
+    const targets: PageContrastTarget[] = pageIssues.map(issue => ({
+      id: issue.id,
+      x: issue.boundingBox!.x,
+      baselineY: issue.boundingBox!.pageHeight - issue.boundingBox!.y,
+    }));
+    const pageResult = locateTextRunsForPage(content, targets);
+    for (const [id, match] of pageResult) result.set(id, match);
+  }
+
+  return result;
+}
+
 export class PdfContrastWriterService {
   /**
    * Rewrites the flagged text's fill color in the PDF content stream so it
@@ -149,8 +201,20 @@ export class PdfContrastWriterService {
    * fresh against `doc` (doesn't trust byte offsets computed at analysis
    * time against a possibly-different buffer) — cheap, and safer to reason
    * about.
+   *
+   * @param preResolvedMatches - see resolveColorContrastTargets's own doc
+   *   comment: when a caller batches this across multiple color-contrast
+   *   issues (applyApprovedSuggestions always does), the page-level
+   *   ordinal-pairing mechanism can only engage when every issue on a page
+   *   is resolved TOGETHER, not one at a time. Falls back to the original
+   *   single-issue locateTextRun call when omitted (single-suggestion
+   *   apply endpoint, no batch to precompute from).
    */
-  async fixColorContrast(doc: PDFDocument, issue: AuditIssue): Promise<FixResult> {
+  async fixColorContrast(
+    doc: PDFDocument,
+    issue: AuditIssue,
+    preResolvedMatches?: Map<string, TextRunMatch | null>,
+  ): Promise<FixResult> {
     const cd = issue.contrastData;
     if (!cd) {
       return { issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error: 'Issue has no contrastData (deterministic measurement missing)' };
@@ -179,7 +243,9 @@ export class PdfContrastWriterService {
     }
 
     const target = { x: boundingBox.x, baselineY: boundingBox.pageHeight - boundingBox.y };
-    const match = locateTextRun(content, target);
+    const match = preResolvedMatches
+      ? (preResolvedMatches.get(issue.id) ?? null)
+      : locateTextRun(content, target);
 
     if (!match || match.ambiguous || match.confidence < MIN_APPLY_CONFIDENCE) {
       const reason = match
@@ -194,7 +260,7 @@ export class PdfContrastWriterService {
       };
     }
 
-    const originalRgb = hexToUnitRgb(cd.foreground);
+    const originalRgb = match.restoreColorOverride ?? hexToUnitRgb(cd.foreground);
     const applyColor = (hex: string): void => {
       const rewritten = spliceColorFix(content, match, match.internalFillColorOp, hexToUnitRgb(hex), originalRgb);
       writePageContent(doc, pageNumber, rewritten);

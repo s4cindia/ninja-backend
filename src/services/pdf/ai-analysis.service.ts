@@ -23,7 +23,7 @@ import { fileStorageService } from '../storage/file-storage.service';
 import type { PDFDocument } from 'pdf-lib';
 import { pdfModifierService } from './pdf-modifier.service';
 import { pdfStructureWriterService, type FixResult } from './pdf-structure-writer.service';
-import { pdfContrastWriterService } from './pdf-contrast-writer.service';
+import { pdfContrastWriterService, resolveColorContrastTargets } from './pdf-contrast-writer.service';
 import { remediationCycleHistoryService } from './remediation-cycle-history.service';
 import { AppError } from '../../utils/app-error';
 import { pdfComprehensiveParserService } from './pdf-comprehensive-parser.service';
@@ -34,8 +34,7 @@ import type { PdfParseResult, PdfPage } from './pdf-comprehensive-parser.service
 import { classifyTableHeaderOrientation, findRegularHeaderRowIndex, type TableInfo } from './structure-analyzer.service';
 import { TABLE_LIKELY_FORMULA_CODE } from './validators/pdf-table.validator';
 import type { ParsedPDF } from './pdf-parser.service';
-import { decodePageContent } from './pdf-content-stream-io';
-import { locateTextRun } from './contrast-content-stream';
+import type { TextRunMatch } from './contrast-content-stream';
 import { computeCompliantColor } from './color-contrast-correction';
 
 // ─── Config Types ──────────────────────────────────────────────────────────────
@@ -169,7 +168,11 @@ const LIST_CODES = new Set(['LIST-NOT-TAGGED', 'LIST-IMPROPER-MARKUP']);
 const READING_ORDER_CODES = new Set(['MATTERHORN-09-004', 'READING-ORDER-SUSPECT', 'READING-ORDER-COLUMN', 'READING-ORDER-RTOL']);
 const HEADING_CODES = new Set(['HEADING-SKIP', 'HEADING-MULTIPLE-H1', 'HEADING-NESTING', 'MATTERHORN-06-001']);
 const LANGUAGE_CODES = new Set(['MATTERHORN-11-001', 'LANGUAGE-MISSING']);
-const CONTRAST_CODES = new Set(['COLOR-CONTRAST', 'CONTRAST-RATIO']);
+// Exported for pdf-ai-analysis.controller.ts's single-suggestion apply
+// endpoint, which needs the SAME sibling-issue set this file's own
+// applyApprovedSuggestions uses to correctly batch resolveColorContrastTargets
+// (see that call site's own doc comment -- CodeRabbit finding on PR #563).
+export const CONTRAST_CODES = new Set(['COLOR-CONTRAST', 'CONTRAST-RATIO']);
 const LINK_CODES = new Set(['LINK-NOT-DESCRIPTIVE', 'LINK-URL-AS-TEXT', 'LINK-GENERIC-TEXT']);
 const FORM_CODES = new Set(['FORM-FIELD-NO-LABEL', 'FORM-FIELD-MISSING-TOOLTIP']);
 const BOOKMARK_CODES = new Set(['BOOKMARK-MISSING', 'BOOKMARK-INSUFFICIENT', 'BOOKMARK-GENERIC-TEXT']);
@@ -435,6 +438,18 @@ class AiAnalysisService {
       // Page render cache — stores Promises to avoid duplicate renders under concurrency
       const pageRenderCache = new Map<number, Promise<string | null>>();
 
+      // Precomputed ONCE, upfront, across every color-contrast issue on the
+      // job -- see resolveColorContrastTargets/locateTextRunsForPage's own
+      // doc comments for why: the ordinal-pairing mechanism that resolves a
+      // colored word embedded in otherwise plain-colored text, or several
+      // separate single-color runs clustered together, can only engage when
+      // every issue on a page is seen TOGETHER, never one at a time inside
+      // this per-issue dispatch loop.
+      const contrastIssuesForBatch = issues.filter(i => CONTRAST_CODES.has(i.code));
+      const contrastMatchByIssueId = parsed.parsedPdf
+        ? resolveColorContrastTargets(parsed.parsedPdf.pdfLibDoc, contrastIssuesForBatch)
+        : new Map<string, TextRunMatch | null>();
+
       // Suggestion cache — see buildSuggestionCacheKey for the keying rules.
       const suggestionCache = new Map<string, Promise<AiSuggestionResult | null>>();
 
@@ -463,7 +478,8 @@ class AiAnalysisService {
               config,
               imageById,
               tableById,
-              pageRenderCache
+              pageRenderCache,
+              contrastMatchByIssueId
             );
             suggestionCache.set(cacheKey, suggestionPromise);
           }
@@ -693,7 +709,8 @@ class AiAnalysisService {
     config: AiRemediationConfig,
     imageById: Map<string, ImageInfo>,
     tableById: Map<string, TableInfo>,
-    pageRenderCache: Map<number, Promise<string | null>>
+    pageRenderCache: Map<number, Promise<string | null>>,
+    contrastMatchByIssueId: Map<string, TextRunMatch | null>
   ): Promise<AiSuggestionResult | null> {
     const code = issue.code;
     const page = issue.pageNumber ? parsed.pages[issue.pageNumber - 1] : undefined;
@@ -915,7 +932,7 @@ class AiAnalysisService {
 
     if (CONTRAST_CODES.has(code)) {
       if (config.colorContrastMode === 'disabled') return null;
-      return this.analyzeColorContrast(issue, parsed, config.colorContrastMode);
+      return this.analyzeColorContrast(issue, contrastMatchByIssueId, config.colorContrastMode);
     }
 
     if (LINK_CODES.has(code)) {
@@ -1658,7 +1675,7 @@ class AiAnalysisService {
    */
   private analyzeColorContrast(
     issue: AuditIssue,
-    parsed: PdfParseResult,
+    contrastMatchByIssueId: Map<string, TextRunMatch | null>,
     mode: 'guidance-only' | 'apply-to-pdf'
   ): AiSuggestionResult | null {
     const cd = issue.contrastData;
@@ -1669,7 +1686,7 @@ class AiAnalysisService {
       `${cd.foreground} on ${cd.background} = ${cd.ratio}:1, required ${cd.requiredRatio}:1.`;
 
     if (mode === 'apply-to-pdf') {
-      const fixConfidence = this.locateColorContrastFix(issue, parsed);
+      const fixConfidence = this.locateColorContrastFix(issue, contrastMatchByIssueId);
       if (fixConfidence !== null) {
         const corrected = computeCompliantColor(cd.foreground, cd.background, cd.requiredRatio);
         return {
@@ -1700,24 +1717,20 @@ class AiAnalysisService {
   }
 
   /**
-   * Dry-run correlation for color-contrast-fix eligibility — same steps
-   * pdf-contrast-writer.service.ts performs at apply time, without writing
-   * anything. Returns the correlation confidence when eligible, else null.
+   * Dry-run correlation for color-contrast-fix eligibility — same
+   * page-batched correlation pdf-contrast-writer.service.ts's
+   * resolveColorContrastTargets/fixColorContrast perform at apply time,
+   * without writing anything. Returns the correlation confidence when
+   * eligible, else null. Reads from a precomputed page-batched map
+   * (contrastMatchByIssueId, built once in analyzeJob via
+   * resolveColorContrastTargets) rather than correlating this one issue in
+   * isolation -- the ordinal-pairing mechanism for a multi-color run or a
+   * cluster of nearby single-color runs (see locateTextRunsForPage's own
+   * doc comment) can only engage when every contrast issue on a page is
+   * resolved TOGETHER.
    */
-  private locateColorContrastFix(issue: AuditIssue, parsed: PdfParseResult): number | null {
-    if (!issue.pageNumber || !issue.boundingBox) return null;
-
-    const page = parsed.pages[issue.pageNumber - 1];
-    if (!page || page.rotation !== 0) return null;
-
-    const pdfLibDoc = parsed.parsedPdf?.pdfLibDoc;
-    if (!pdfLibDoc) return null;
-
-    const content = decodePageContent(pdfLibDoc, issue.pageNumber);
-    if (content === null) return null;
-
-    const target = { x: issue.boundingBox.x, baselineY: issue.boundingBox.pageHeight - issue.boundingBox.y };
-    const match = locateTextRun(content, target);
+  private locateColorContrastFix(issue: AuditIssue, contrastMatchByIssueId: Map<string, TextRunMatch | null>): number | null {
+    const match = contrastMatchByIssueId.get(issue.id);
     if (!match || match.ambiguous || match.confidence < AiAnalysisService.MIN_CONTRAST_FIX_CONFIDENCE) return null;
 
     return match.confidence;
@@ -2401,6 +2414,36 @@ class AiAnalysisService {
       }
     }
 
+    // Precomputed ONCE, upfront, across every color-contrast-fix suggestion
+    // in THIS approval run -- see resolveColorContrastTargets/
+    // locateTextRunsForPage's own doc comments for why: calling
+    // fixColorContrast one issue at a time (as this loop otherwise would)
+    // can never let the ordinal-pairing mechanism see more than one issue
+    // at once, so it could never engage at all.
+    // ALL sibling contrast issues from the audit report, not just the ones
+    // approved in THIS run -- CodeRabbit finding on PR #563, confirmed real:
+    // the ordinal-pairing mechanism (locateTextRunsForPage) requires seeing
+    // every issue that maps to a shared run/line-cluster to reconstruct the
+    // SAME structural count the suggestion-time pass used. Rebuilding the
+    // batch from only the approved subset means approving just one of a
+    // two-issue cluster leaves the resolver seeing 1 target against 2 real
+    // slots -- a genuine count mismatch that silently fails an approval the
+    // suggestion step already confirmed was eligible.
+    const colorContrastIssues = auditIssues.filter(i => CONTRAST_CODES.has(i.code));
+    let preResolvedContrastMatches =
+      colorContrastIssues.length > 0 ? resolveColorContrastTargets(doc, colorContrastIssues) : undefined;
+    // Byte offsets in preResolvedContrastMatches are only valid against the
+    // CURRENT page content -- CodeRabbit finding on PR #563, confirmed real:
+    // a successful fix rewrites the page's content stream (spliceColorFix
+    // inserts/replaces bytes, commonly changing length when the new color
+    // string isn't the same length as the old one), silently invalidating
+    // every OTHER same-page match's stored start/end/lastShowEnd/
+    // internalFillColorOp offsets for the rest of this loop. Re-resolve the
+    // WHOLE batch fresh (same sibling set, current doc state) the first time
+    // a page that's already had a successful fix comes up again, rather than
+    // splicing against stale positions and corrupting an unrelated operator.
+    const contrastFixedPages = new Set<number>();
+
     const STRUCTURE_WRITER_TYPES = new Set(['heading-fix', 'list-fix', 'table-header-fix', 'table-header-fix-column', 'table-artifact-fix', 'table-from-layout-fix', 'bookmark-generate', 'heading-multiple-h1-fix', 'pdfua-identifier', 'color-contrast-fix', 'alt-text-decorative']);
 
     let applied = 0;
@@ -2473,8 +2516,14 @@ class AiAnalysisService {
         } else if (suggestionType === 'pdfua-identifier') {
           modification = await pdfModifierService.writePdfUaIdentifier(doc);
         } else if (suggestionType === 'color-contrast-fix') {
-          const result = await pdfContrastWriterService.fixColorContrast(doc, originalIssue);
+          if (originalIssue.pageNumber !== undefined && contrastFixedPages.has(originalIssue.pageNumber)) {
+            preResolvedContrastMatches = resolveColorContrastTargets(doc, colorContrastIssues);
+          }
+          const result = await pdfContrastWriterService.fixColorContrast(doc, originalIssue, preResolvedContrastMatches);
           modification = { success: result.success, description: result.after, error: result.error };
+          if (result.success && originalIssue.pageNumber !== undefined) {
+            contrastFixedPages.add(originalIssue.pageNumber);
+          }
         } else if (suggestionType === 'alt-text-decorative') {
           // Hardcoded '' rather than the stored value -- matches applyAll/applySuggestion.
           modification = await pdfModifierService.setAltText(doc, elementId, '');

@@ -438,6 +438,95 @@ describe('aiAnalysisService.applyApprovedSuggestions', () => {
     expect(result.failed).toBe(0);
   });
 
+  // CodeRabbit finding on PR #563, confirmed real: resolveColorContrastTargets's
+  // ordinal-pairing mechanism needs to see every issue mapped to a shared
+  // run/line-cluster, not just the ones a user happened to approve in this
+  // run -- rebuilding the batch from only "approved" issues means approving
+  // one half of a two-issue cluster leaves the resolver seeing 1 target
+  // against 2 real slots, a genuine count mismatch that silently fails an
+  // approval the suggestion step already confirmed was eligible.
+  it('resolves color-contrast-fix using ALL sibling contrast issues from the audit report, not just the approved subset', async () => {
+    const jobWithIssues = {
+      id: 'job-1',
+      output: {
+        fileName: 'doc.pdf',
+        auditReport: {
+          issues: [
+            { id: 'contrast-1', code: 'COLOR-CONTRAST', pageNumber: 1, contrastData: { foreground: '#ff0000', background: '#ffffff', ratio: 3.7, requiredRatio: 4.5, isLargeText: false } },
+            { id: 'contrast-2', code: 'COLOR-CONTRAST', pageNumber: 1, contrastData: { foreground: '#000000', background: '#ffffff', ratio: 2.1, requiredRatio: 4.5, isLargeText: false } },
+          ],
+        },
+      },
+    };
+    vi.mocked(prisma.job.findUnique).mockResolvedValue(jobWithIssues as any);
+    // Only contrast-1 is approved -- contrast-2 is its sibling on the same
+    // page/cluster but was never approved in this run.
+    vi.mocked(prisma.aiAnalysis.findMany).mockResolvedValue([
+      { issueId: 'contrast-1', suggestionType: 'color-contrast-fix', value: '#cc0000' },
+    ] as any);
+    vi.mocked(fileStorageService.getRemediatedFile).mockResolvedValue(Buffer.from('pdf'));
+    vi.mocked(pdfModifierService.loadPDF).mockResolvedValue({} as any);
+    vi.mocked(pdfModifierService.savePDF).mockResolvedValue(Buffer.from('modified-pdf'));
+    vi.mocked(fileStorageService.saveRemediatedFile).mockResolvedValue('s3://remediated/doc.pdf');
+
+    const { pdfContrastWriterService, resolveColorContrastTargets } = await import('../../../../src/services/pdf/pdf-contrast-writer.service');
+    vi.mocked(resolveColorContrastTargets).mockReturnValue(new Map());
+    vi.mocked(pdfContrastWriterService.fixColorContrast).mockResolvedValue({ issueId: 'contrast-1', success: true, before: 'a', after: 'b' });
+
+    await aiAnalysisService.applyApprovedSuggestions('job-1', 1, 'user-1', 'apply_all');
+
+    expect(resolveColorContrastTargets).toHaveBeenCalledWith(
+      {},
+      expect.arrayContaining([
+        expect.objectContaining({ id: 'contrast-1' }),
+        expect.objectContaining({ id: 'contrast-2' }),
+      ])
+    );
+  });
+
+  // CodeRabbit finding on PR #563, confirmed real: a successful contrast fix
+  // rewrites the page's content stream (spliceColorFix inserts/replaces
+  // bytes, commonly changing length), silently invalidating every OTHER
+  // same-page match's precomputed byte offsets for the rest of the batch.
+  it('re-resolves color-contrast matches after a successful same-page fix, instead of reusing stale offsets for the next one', async () => {
+    const jobWithIssues = {
+      id: 'job-1',
+      output: {
+        fileName: 'doc.pdf',
+        auditReport: {
+          issues: [
+            { id: 'contrast-1', code: 'COLOR-CONTRAST', pageNumber: 1, contrastData: { foreground: '#ff0000', background: '#ffffff', ratio: 3.7, requiredRatio: 4.5, isLargeText: false } },
+            { id: 'contrast-2', code: 'COLOR-CONTRAST', pageNumber: 1, contrastData: { foreground: '#000000', background: '#ffffff', ratio: 2.1, requiredRatio: 4.5, isLargeText: false } },
+          ],
+        },
+      },
+    };
+    vi.mocked(prisma.job.findUnique).mockResolvedValue(jobWithIssues as any);
+    vi.mocked(prisma.aiAnalysis.findMany).mockResolvedValue([
+      { issueId: 'contrast-1', suggestionType: 'color-contrast-fix', value: '#cc0000' },
+      { issueId: 'contrast-2', suggestionType: 'color-contrast-fix', value: '#111111' },
+    ] as any);
+    vi.mocked(fileStorageService.getRemediatedFile).mockResolvedValue(Buffer.from('pdf'));
+    vi.mocked(pdfModifierService.loadPDF).mockResolvedValue({} as any);
+    vi.mocked(pdfModifierService.savePDF).mockResolvedValue(Buffer.from('modified-pdf'));
+    vi.mocked(fileStorageService.saveRemediatedFile).mockResolvedValue('s3://remediated/doc.pdf');
+
+    const { pdfContrastWriterService, resolveColorContrastTargets } = await import('../../../../src/services/pdf/pdf-contrast-writer.service');
+    vi.mocked(resolveColorContrastTargets).mockReturnValue(new Map());
+    vi.mocked(pdfContrastWriterService.fixColorContrast)
+      .mockResolvedValueOnce({ issueId: 'contrast-1', success: true, before: 'a', after: 'b' })
+      .mockResolvedValueOnce({ issueId: 'contrast-2', success: true, before: 'c', after: 'd' });
+
+    const result = await aiAnalysisService.applyApprovedSuggestions('job-1', 1, 'user-1', 'apply_all');
+
+    // Once upfront, then again before the SECOND same-page fix (which comes
+    // after the first one already succeeded) -- never reusing offsets
+    // computed against a page that's since been rewritten.
+    expect(resolveColorContrastTargets).toHaveBeenCalledTimes(2);
+    expect(result.applied).toBe(2);
+    expect(result.failed).toBe(0);
+  });
+
   it('does not call pdfComprehensiveParserService when no table-from-layout-fix suggestions are in the batch', async () => {
     vi.mocked(prisma.aiAnalysis.findMany).mockResolvedValue([
       { issueId: 'issue-1', suggestionType: 'alt-text', value: 'A red apple' },

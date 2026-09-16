@@ -1,8 +1,8 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { PDFDocument, StandardFonts, degrees, rgb } from 'pdf-lib';
-import { spliceColorFix, pdfContrastWriterService } from '../../../../src/services/pdf/pdf-contrast-writer.service';
+import { spliceColorFix, pdfContrastWriterService, resolveColorContrastTargets } from '../../../../src/services/pdf/pdf-contrast-writer.service';
 import { locateTextRun } from '../../../../src/services/pdf/contrast-content-stream';
-import { decodePageContent } from '../../../../src/services/pdf/pdf-content-stream-io';
+import { decodePageContent, writePageContent } from '../../../../src/services/pdf/pdf-content-stream-io';
 import { pdfAuditService } from '../../../../src/services/pdf/pdf-audit.service';
 import { verifyContrastInRegion } from '../../../../src/services/pdf/color-contrast-verification';
 import { BUSY_VARIANCE_THRESHOLD } from '../../../../src/services/pdf/validators/pdf-contrast.validator';
@@ -397,5 +397,92 @@ describe('PdfContrastWriterService.fixColorContrast', () => {
     const doc = await realPdfWithText(100, 450, 14);
     const result = await pdfContrastWriterService.fixColorContrast(doc, contrastIssue({ pageNumber: 99 }));
     expect(result.success).toBe(false);
+  });
+});
+
+describe('resolveColorContrastTargets + multi-segment restore-color correctness', () => {
+  afterEach(() => {
+    vi.mocked(verifyContrastInRegion).mockClear();
+  });
+
+  // A single run with a colored word embedded in otherwise plain text --
+  // confirmed live on Math_Kim's real remaining COLOR-CONTRAST issues to be
+  // the dominant real-world pattern locateTextRun alone correctly refuses
+  // (mixedColor -> confidence 0). Three issues map to this run's three
+  // color-delimited segments: "black text " (inherits color, no internal
+  // op), "RED WORD" (governed by the first internal op), "more black"
+  // (governed by the second/last internal op).
+  async function buildMultiSegmentRunDoc(): Promise<PDFDocument> {
+    const src = await PDFDocument.create();
+    src.addPage([500, 700]);
+    const doc = await PDFDocument.load(await src.save());
+    const content = `BT
+1 0 0 1 50 150 Tm
+(black text ) Tj
+1 0 0 rg
+(RED WORD) Tj
+0 0 0 rg
+(more black) Tj
+ET
+`;
+    writePageContent(doc, 1, content);
+    return doc;
+  }
+
+  function segmentIssue(id: string, x: number, foreground: string): AuditIssue {
+    return {
+      id,
+      source: 'contrast-validator',
+      severity: 'serious',
+      code: 'COLOR-CONTRAST',
+      message: 'Text has contrast ratio 2.10:1 (minimum 4.5:1 required for normal text)',
+      pageNumber: 1,
+      boundingBox: { x, y: 700 - 150, width: 60, height: 14, pageWidth: 500, pageHeight: 700 },
+      contrastData: { foreground, background: '#ffffff', ratio: 2.1, requiredRatio: 4.5, isLargeText: false },
+    };
+  }
+
+  it('fixes the MIDDLE segment of a multi-color run and restores the run\'s TRUE final color afterward -- not the fixed segment\'s own original color', async () => {
+    vi.mocked(verifyContrastInRegion).mockResolvedValue({ ratio: 15, passes: true, foreground: '#000000', background: '#ffffff', uncertain: false });
+
+    const doc = await buildMultiSegmentRunDoc();
+    const seg0 = segmentIssue('seg0', 50, '#000000');
+    const seg1 = segmentIssue('seg1', 80, '#ff0000'); // the RED WORD -- being fixed
+    const seg2 = segmentIssue('seg2', 120, '#000000');
+
+    const matches = resolveColorContrastTargets(doc, [seg0, seg1, seg2]);
+    expect(matches.get('seg1')).toBeTruthy();
+    expect(matches.get('seg1')!.restoreColorOverride).toEqual([0, 0, 0]); // the run's real final color (black), not red
+
+    const result = await pdfContrastWriterService.fixColorContrast(doc, seg1, matches);
+    expect(result.success).toBe(true);
+
+    const finalContent = decodePageContent(doc, 1)!;
+    // The restore-after-run op must set BLACK (the run's true trailing
+    // color, from its own last internal op), not red (seg1's own original
+    // foreground) -- using red here would leave the wrong color active for
+    // whatever renders after this run, a new contrast defect this fix must
+    // never introduce.
+    const afterLastShow = finalContent.slice(finalContent.lastIndexOf('(more black) Tj') + '(more black) Tj'.length);
+    expect(afterLastShow).toContain('0 0 0 rg');
+    expect(afterLastShow).not.toMatch(/^\s*1 0 0 rg/);
+  });
+
+  it('leaves the run\'s OWN last segment fix using the normal single-op restore path (unchanged behavior)', async () => {
+    vi.mocked(verifyContrastInRegion).mockResolvedValue({ ratio: 15, passes: true, foreground: '#000000', background: '#ffffff', uncertain: false });
+
+    const doc = await buildMultiSegmentRunDoc();
+    const seg0 = segmentIssue('seg0', 50, '#000000');
+    const seg1 = segmentIssue('seg1', 80, '#ff0000');
+    const seg2 = segmentIssue('seg2', 120, '#000000');
+
+    const matches = resolveColorContrastTargets(doc, [seg0, seg1, seg2]);
+    // seg2 IS the run's last segment -- its restoreColorOverride still
+    // equals the run's final color, which by construction is also its own
+    // original color, so this remains correct without any special-casing.
+    expect(matches.get('seg2')!.restoreColorOverride).toEqual([0, 0, 0]);
+
+    const result = await pdfContrastWriterService.fixColorContrast(doc, seg2, matches);
+    expect(result.success).toBe(true);
   });
 });
