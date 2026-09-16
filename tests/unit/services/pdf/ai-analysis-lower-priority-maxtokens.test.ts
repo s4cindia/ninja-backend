@@ -131,6 +131,19 @@ describe('analyzeList', () => {
     expect(res.guidance).toContain('<L>, <LI>');
   });
 
+  // CodeRabbit review finding on this PR: an out-of-range confidence (e.g. 2)
+  // would satisfy analyzeList's own `confidence >= 0.85` auto-resolve check
+  // without ever being flagged as malformed. Every confidence field in this
+  // file is now clamped to [0,1]; exercises the REAL schema to prove a
+  // response with confidence: 2 is rejected rather than silently accepted.
+  it('rejects an out-of-range confidence via the real schema, exhausting retries to null', async () => {
+    vi.spyOn(geminiService, 'generateText').mockResolvedValue({
+      text: JSON.stringify({ classification: 'decorative', confidence: 2, guidance: 'bogus' }),
+    } as never);
+
+    await expect(svc.analyzeList(issue(), buildPage(), 'auto-resolve-decorative')).resolves.toBeNull();
+  });
+
   it('returns null (not a rejected promise) when the model exhausts retries', async () => {
     vi.spyOn(geminiService, 'generateWithSchema').mockRejectedValue(new Error('Exhausted 3 attempt(s): MAX_TOKENS'));
     await expect(svc.analyzeList(issue(), buildPage(), 'guidance-only')).resolves.toBeNull();
@@ -183,6 +196,19 @@ describe('analyzeReadingOrder', () => {
     expect(res.guidance).toBe('Reorder top-to-bottom.');
   });
 
+  // CodeRabbit review finding on this PR: suggestedOrder: [''] (one blank
+  // entry) satisfied the earlier .refine()'s "array is non-empty" check
+  // even though the entry carries no real content. Each entry now requires
+  // trimmed, non-empty text; exercises the REAL schema to prove a
+  // blank-only array is rejected rather than treated as actionable.
+  it('rejects a real response with only blank suggestedOrder entries via the real schema, exhausting retries to null', async () => {
+    vi.spyOn(geminiService, 'generateText').mockResolvedValue({
+      text: JSON.stringify({ suggestedOrder: ['', '  '], confidence: 0.4 }),
+    } as never);
+
+    await expect(svc.analyzeReadingOrder(issue(), buildPage())).resolves.toBeNull();
+  });
+
   it('returns null (not a rejected promise) when the model exhausts retries', async () => {
     vi.spyOn(geminiService, 'generateWithSchema').mockRejectedValue(new Error('Exhausted 3 attempt(s): MAX_TOKENS'));
     await expect(svc.analyzeReadingOrder(issue(), buildPage())).resolves.toBeNull();
@@ -227,6 +253,21 @@ describe('analyzeHeading', () => {
   it('rejects a real response that omits both guidance and correctedHeadings via the real schema, exhausting retries to null', async () => {
     vi.spyOn(geminiService, 'generateText').mockResolvedValue({
       text: JSON.stringify({ confidence: 0.5, rationale: 'no clear fix' }),
+    } as never);
+
+    await expect(svc.analyzeHeading(issue(), buildParsed())).resolves.toBeNull();
+  });
+
+  // Same CodeRabbit finding as ReadingOrderResult's equivalent test -- a
+  // correctedHeadings entry with blank text must not satisfy the
+  // "array is non-empty" refine check.
+  it('rejects a real response with a blank-text correctedHeadings entry via the real schema, exhausting retries to null', async () => {
+    vi.spyOn(geminiService, 'generateText').mockResolvedValue({
+      text: JSON.stringify({
+        correctedHeadings: [{ text: '  ', currentLevel: 3, suggestedLevel: 2 }],
+        confidence: 0.5,
+        rationale: 'r',
+      }),
     } as never);
 
     await expect(svc.analyzeHeading(issue(), buildParsed())).resolves.toBeNull();
@@ -441,6 +482,23 @@ describe('analyzeBookmark (missing bookmarks from headings)', () => {
   it('rejects a real response that omits both guidance and suggestedBookmarks via the real schema, exhausting retries to null', async () => {
     vi.spyOn(geminiService, 'generateText').mockResolvedValue({
       text: JSON.stringify({ confidence: 0.5, rationale: 'r' }),
+    } as never);
+
+    await expect(
+      svc.analyzeBookmark(issue({ code: 'BOOKMARK-MISSING' }), parsedWithHeadings(), 'guidance-only')
+    ).resolves.toBeNull();
+  });
+
+  // Same CodeRabbit finding as ReadingOrderResult/HeadingCorrectionResult's
+  // equivalent tests -- a suggestedBookmarks entry with a blank title must
+  // not satisfy the "array is non-empty" refine check.
+  it('rejects a real response with a blank-title suggestedBookmarks entry via the real schema, exhausting retries to null', async () => {
+    vi.spyOn(geminiService, 'generateText').mockResolvedValue({
+      text: JSON.stringify({
+        suggestedBookmarks: [{ pageNumber: 3, title: '   ', level: 1 }],
+        confidence: 0.5,
+        rationale: 'r',
+      }),
     } as never);
 
     await expect(

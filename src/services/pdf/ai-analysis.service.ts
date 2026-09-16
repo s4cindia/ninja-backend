@@ -328,7 +328,7 @@ const TABLE_SUMMARY_SCHEMA: Schema = {
 };
 const TableSummaryResult = z.object({
   summary: z.string().trim().min(1).max(150),
-  confidence: z.number().optional(),
+  confidence: z.number().min(0).max(1).optional(),
   rationale: z.string().optional(),
 });
 
@@ -369,7 +369,7 @@ const ALT_TEXT_SCHEMA: Schema = {
 const AltTextResult = z.object({
   isDecorative: z.boolean(),
   altText: z.string().trim().max(125).optional(),
-  confidence: z.number(),
+  confidence: z.number().min(0).max(1),
   rationale: z.string(),
 }).refine(data => data.isDecorative || !!data.altText, {
   message: 'altText is required when isDecorative is false',
@@ -407,7 +407,7 @@ const TableHeadersResult = z.object({
   headerRow: z.array(z.string()).optional(),
   headerColumn: z.array(z.string()).optional(),
   guidance: z.string().trim().min(1).optional(),
-  confidence: z.number(),
+  confidence: z.number().min(0).max(1),
   rationale: z.string(),
 });
 
@@ -429,7 +429,7 @@ const TABLE_LAYOUT_SCHEMA: Schema = {
 // isLayout when the model omits it.
 const TableLayoutResult = z.object({
   isLayout: z.boolean(),
-  confidence: z.number(),
+  confidence: z.number().min(0).max(1),
   reasoning: z.string(),
   guidance: z.string().trim().min(1).optional(),
 });
@@ -445,7 +445,7 @@ const ALT_TEXT_IMPROVEMENT_SCHEMA: Schema = {
 };
 const AltTextImprovementResult = z.object({
   improvedAltText: z.string().trim().min(1).max(125),
-  confidence: z.number(),
+  confidence: z.number().min(0).max(1),
   rationale: z.string(),
 });
 
@@ -463,7 +463,13 @@ const AltTextImprovementResult = z.object({
 // (a real Codex finding on the table-headers/layout PR). Fields whose prompt
 // states an explicit character cap get a matching Zod .max() the same way
 // TABLE_SUMMARY_SCHEMA/ALT_TEXT_SCHEMA do, to catch a model that ignores the
-// prompt's own instruction rather than trusting the wording alone.
+// prompt's own instruction rather than trusting the wording alone. Every
+// confidence field across this whole file (including the schemas above this
+// one, from earlier PRs) is clamped to .min(0).max(1) -- a CodeRabbit finding
+// on this PR: an unconstrained confidence lets a malformed value like 2 slip
+// through unnoticed into stored suggestions and confidence-gated dispatch
+// logic (e.g. analyzeList's own `confidence >= 0.85` auto-resolve check)
+// without ever tripping it up as suspicious.
 const LIST_CLASSIFICATION_SCHEMA: Schema = {
   type: SchemaType.OBJECT,
   properties: {
@@ -475,7 +481,7 @@ const LIST_CLASSIFICATION_SCHEMA: Schema = {
 };
 const ListClassificationResult = z.object({
   classification: z.enum(['decorative', 'navigation', 'semantic']),
-  confidence: z.number(),
+  confidence: z.number().min(0).max(1),
   guidance: z.string().trim().min(1).optional(),
 });
 
@@ -493,11 +499,15 @@ const READING_ORDER_SCHEMA: Schema = {
 // analyzeReadingOrder persists the meaningless "Suggested order: " (an empty
 // preview string) as if it were real guidance. Requiring guidance to be
 // non-empty WHENEVER suggestedOrder is empty/absent closes that gap while
-// still allowing either one alone to satisfy the response.
+// still allowing either one alone to satisfy the response. A second,
+// related CodeRabbit finding on the same commit: the .refine() below only
+// checked the ARRAY was non-empty, so `suggestedOrder: ['']` (one blank
+// entry) still passed -- each entry now requires real trimmed content too,
+// so a blank-only array fails validation exactly like a missing one.
 const ReadingOrderResult = z
   .object({
-    suggestedOrder: z.array(z.string()).optional(),
-    confidence: z.number(),
+    suggestedOrder: z.array(z.string().trim().min(1)).optional(),
+    confidence: z.number().min(0).max(1),
     guidance: z.string().trim().min(1).optional(),
   })
   .refine(data => (data.suggestedOrder && data.suggestedOrder.length > 0) || !!data.guidance, {
@@ -533,14 +543,14 @@ const HeadingCorrectionResult = z
     correctedHeadings: z
       .array(
         z.object({
-          text: z.string(),
+          text: z.string().trim().min(1),
           currentLevel: z.number(),
           suggestedLevel: z.number(),
         })
       )
       .optional(),
     guidance: z.string().trim().min(1).optional(),
-    confidence: z.number(),
+    confidence: z.number().min(0).max(1),
     rationale: z.string(),
   })
   .refine(data => (data.correctedHeadings && data.correctedHeadings.length > 0) || !!data.guidance, {
@@ -558,7 +568,7 @@ const LANGUAGE_DETECTION_SCHEMA: Schema = {
 };
 const LanguageDetectionResult = z.object({
   languageCode: z.string().trim().min(1),
-  confidence: z.number(),
+  confidence: z.number().min(0).max(1),
   rationale: z.string(),
 });
 
@@ -578,7 +588,7 @@ const LINK_TEXT_SCHEMA: Schema = {
 };
 const LinkTextResult = z.object({
   suggestedText: z.string().trim().min(1).max(60),
-  confidence: z.number(),
+  confidence: z.number().min(0).max(1),
   rationale: z.string(),
 });
 
@@ -593,7 +603,7 @@ const FORM_FIELD_LABEL_SCHEMA: Schema = {
 };
 const FormFieldLabelResult = z.object({
   suggestedLabel: z.string().trim().min(1).max(50),
-  confidence: z.number(),
+  confidence: z.number().min(0).max(1),
   rationale: z.string(),
 });
 
@@ -608,7 +618,7 @@ const BOOKMARK_TITLE_SCHEMA: Schema = {
 };
 const BookmarkTitleResult = z.object({
   suggestedTitle: z.string().trim().min(1).max(60),
-  confidence: z.number(),
+  confidence: z.number().min(0).max(1),
   rationale: z.string(),
 });
 
@@ -643,13 +653,13 @@ const BookmarkSuggestionsResult = z
       .array(
         z.object({
           pageNumber: z.number(),
-          title: z.string(),
+          title: z.string().trim().min(1),
           level: z.number(),
         })
       )
       .optional(),
     guidance: z.string().trim().min(1).optional(),
-    confidence: z.number(),
+    confidence: z.number().min(0).max(1),
     rationale: z.string(),
   })
   .refine(data => (data.suggestedBookmarks && data.suggestedBookmarks.length > 0) || !!data.guidance, {
