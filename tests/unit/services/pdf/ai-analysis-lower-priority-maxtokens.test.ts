@@ -159,15 +159,28 @@ describe('analyzeReadingOrder', () => {
     expect(res.guidance).toBe('Suggested order: 1. A; 2. B');
   });
 
-  it('accepts a real response that omits both guidance and suggestedOrder via the real schema', async () => {
+  // Codex review finding on this PR: an earlier draft accepted a response
+  // that omits BOTH suggestedOrder and guidance, persisting the meaningless
+  // "Suggested order: " as if it were real guidance. The real schema's
+  // .refine() now rejects that combination, exhausting retries to null
+  // instead. Exercises the REAL schema (not a mocked generateWithSchema).
+  it('rejects a real response that omits both guidance and suggestedOrder via the real schema, exhausting retries to null', async () => {
     vi.spyOn(geminiService, 'generateText').mockResolvedValue({
       text: JSON.stringify({ confidence: 0.4 }),
+    } as never);
+
+    await expect(svc.analyzeReadingOrder(issue(), buildPage())).resolves.toBeNull();
+  });
+
+  it('accepts a real response that has guidance but omits suggestedOrder via the real schema', async () => {
+    vi.spyOn(geminiService, 'generateText').mockResolvedValue({
+      text: JSON.stringify({ confidence: 0.4, guidance: 'Reorder top-to-bottom.' }),
     } as never);
 
     const res = await svc.analyzeReadingOrder(issue(), buildPage());
 
     expect(res).toBeTruthy();
-    expect(res.guidance).toBe('Suggested order: ');
+    expect(res.guidance).toBe('Reorder top-to-bottom.');
   });
 
   it('returns null (not a rejected promise) when the model exhausts retries', async () => {
@@ -207,15 +220,27 @@ describe('analyzeHeading', () => {
     expect(res.guidance).toContain('H3→H2');
   });
 
-  it('accepts a real response that omits both guidance and correctedHeadings via the real schema', async () => {
+  // Codex review finding on this PR: an earlier draft accepted a response
+  // that omits BOTH correctedHeadings and guidance, persisting an empty
+  // guidance string. The real schema's .refine() now rejects that
+  // combination, exhausting retries to null instead.
+  it('rejects a real response that omits both guidance and correctedHeadings via the real schema, exhausting retries to null', async () => {
     vi.spyOn(geminiService, 'generateText').mockResolvedValue({
       text: JSON.stringify({ confidence: 0.5, rationale: 'no clear fix' }),
+    } as never);
+
+    await expect(svc.analyzeHeading(issue(), buildParsed())).resolves.toBeNull();
+  });
+
+  it('accepts a real response that has guidance but omits correctedHeadings via the real schema', async () => {
+    vi.spyOn(geminiService, 'generateText').mockResolvedValue({
+      text: JSON.stringify({ confidence: 0.5, rationale: 'r', guidance: 'No clear fix available.' }),
     } as never);
 
     const res = await svc.analyzeHeading(issue(), buildParsed());
 
     expect(res).toBeTruthy();
-    expect(res.guidance).toBe('');
+    expect(res.guidance).toBe('No clear fix available.');
   });
 
   it('returns null (not a rejected promise) when the model exhausts retries', async () => {
@@ -409,15 +434,29 @@ describe('analyzeBookmark (missing bookmarks from headings)', () => {
     expect(res.guidance).toContain('Add bookmarks: "Chapter 3: Fractions" (p.3)');
   });
 
-  it('accepts a real response that omits both guidance and suggestedBookmarks via the real schema', async () => {
+  // Codex review finding on this PR: an earlier draft accepted a response
+  // that omits BOTH suggestedBookmarks and guidance, persisting "Add
+  // bookmarks: " as if it were real guidance. The real schema's .refine()
+  // now rejects that combination, exhausting retries to null instead.
+  it('rejects a real response that omits both guidance and suggestedBookmarks via the real schema, exhausting retries to null', async () => {
     vi.spyOn(geminiService, 'generateText').mockResolvedValue({
       text: JSON.stringify({ confidence: 0.5, rationale: 'r' }),
+    } as never);
+
+    await expect(
+      svc.analyzeBookmark(issue({ code: 'BOOKMARK-MISSING' }), parsedWithHeadings(), 'guidance-only')
+    ).resolves.toBeNull();
+  });
+
+  it('accepts a real response that has guidance but omits suggestedBookmarks via the real schema', async () => {
+    vi.spyOn(geminiService, 'generateText').mockResolvedValue({
+      text: JSON.stringify({ confidence: 0.5, rationale: 'r', guidance: 'No clear bookmarks to suggest.' }),
     } as never);
 
     const res = await svc.analyzeBookmark(issue({ code: 'BOOKMARK-MISSING' }), parsedWithHeadings(), 'guidance-only');
 
     expect(res).toBeTruthy();
-    expect(res.guidance).toBe('Add bookmarks: ');
+    expect(res.guidance).toBe('No clear bookmarks to suggest.');
   });
 
   it('returns null (not a rejected promise) when the model exhausts retries', async () => {

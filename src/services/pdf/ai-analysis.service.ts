@@ -488,11 +488,21 @@ const READING_ORDER_SCHEMA: Schema = {
   },
   required: ['confidence'],
 };
-const ReadingOrderResult = z.object({
-  suggestedOrder: z.array(z.string()).optional(),
-  confidence: z.number(),
-  guidance: z.string().trim().min(1).optional(),
-});
+// Codex review finding on this PR: with BOTH suggestedOrder and guidance
+// optional, a response that omits both passes validation and
+// analyzeReadingOrder persists the meaningless "Suggested order: " (an empty
+// preview string) as if it were real guidance. Requiring guidance to be
+// non-empty WHENEVER suggestedOrder is empty/absent closes that gap while
+// still allowing either one alone to satisfy the response.
+const ReadingOrderResult = z
+  .object({
+    suggestedOrder: z.array(z.string()).optional(),
+    confidence: z.number(),
+    guidance: z.string().trim().min(1).optional(),
+  })
+  .refine(data => (data.suggestedOrder && data.suggestedOrder.length > 0) || !!data.guidance, {
+    message: 'Either a non-empty suggestedOrder or a non-empty guidance is required',
+  });
 
 const HEADING_CORRECTION_SCHEMA: Schema = {
   type: SchemaType.OBJECT,
@@ -515,20 +525,27 @@ const HEADING_CORRECTION_SCHEMA: Schema = {
   },
   required: ['confidence', 'rationale'],
 };
-const HeadingCorrectionResult = z.object({
-  correctedHeadings: z
-    .array(
-      z.object({
-        text: z.string(),
-        currentLevel: z.number(),
-        suggestedLevel: z.number(),
-      })
-    )
-    .optional(),
-  guidance: z.string().trim().min(1).optional(),
-  confidence: z.number(),
-  rationale: z.string(),
-});
+// Same Codex finding as ReadingOrderResult -- omitting both correctedHeadings
+// and guidance must not pass validation, since analyzeHeading's own fallback
+// (`data.guidance || corrections`) would otherwise persist an empty string.
+const HeadingCorrectionResult = z
+  .object({
+    correctedHeadings: z
+      .array(
+        z.object({
+          text: z.string(),
+          currentLevel: z.number(),
+          suggestedLevel: z.number(),
+        })
+      )
+      .optional(),
+    guidance: z.string().trim().min(1).optional(),
+    confidence: z.number(),
+    rationale: z.string(),
+  })
+  .refine(data => (data.correctedHeadings && data.correctedHeadings.length > 0) || !!data.guidance, {
+    message: 'Either a non-empty correctedHeadings or a non-empty guidance is required',
+  });
 
 const LANGUAGE_DETECTION_SCHEMA: Schema = {
   type: SchemaType.OBJECT,
@@ -616,20 +633,28 @@ const BOOKMARK_SUGGESTIONS_SCHEMA: Schema = {
   },
   required: ['confidence', 'rationale'],
 };
-const BookmarkSuggestionsResult = z.object({
-  suggestedBookmarks: z
-    .array(
-      z.object({
-        pageNumber: z.number(),
-        title: z.string(),
-        level: z.number(),
-      })
-    )
-    .optional(),
-  guidance: z.string().trim().min(1).optional(),
-  confidence: z.number(),
-  rationale: z.string(),
-});
+// Same Codex finding as ReadingOrderResult/HeadingCorrectionResult -- omitting
+// both suggestedBookmarks and guidance must not pass validation, since
+// analyzeBookmark's own fallback (`data.guidance || \`Add bookmarks: ${preview}\``)
+// would otherwise persist "Add bookmarks: " as if it were real guidance.
+const BookmarkSuggestionsResult = z
+  .object({
+    suggestedBookmarks: z
+      .array(
+        z.object({
+          pageNumber: z.number(),
+          title: z.string(),
+          level: z.number(),
+        })
+      )
+      .optional(),
+    guidance: z.string().trim().min(1).optional(),
+    confidence: z.number(),
+    rationale: z.string(),
+  })
+  .refine(data => (data.suggestedBookmarks && data.suggestedBookmarks.length > 0) || !!data.guidance, {
+    message: 'Either a non-empty suggestedBookmarks or a non-empty guidance is required',
+  });
 
 // ─── Service ─────────────────────────────────────────────────────────────────
 
