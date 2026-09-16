@@ -115,6 +115,24 @@ describe('analyzeTableHeaders', () => {
 
     await expect(svc.analyzeTableHeaders({ id: 'i1' }, buildTable())).resolves.toBeNull();
   });
+
+  // Codex review finding on this PR: an earlier draft required a non-empty
+  // `guidance` field on the schema itself, which would reject any real
+  // response that omits it (relying instead on the headerRow-derived
+  // fallback below) and burn retries rather than falling through -- making
+  // that fallback effectively dead code. Exercises the REAL schema (not a
+  // mocked generateWithSchema) via the underlying generateText call, so this
+  // actually proves an omitted guidance is accepted and the fallback fires.
+  it('accepts a real response that omits guidance via the real schema, using the headerRow fallback', async () => {
+    vi.spyOn(geminiService, 'generateText').mockResolvedValue({
+      text: JSON.stringify({ headerRow: ['A', 'B'], confidence: 0.6, rationale: 'r' }),
+    } as never);
+
+    const res = await svc.analyzeTableHeaders({ id: 'i1' }, buildTable());
+
+    expect(res).toBeTruthy();
+    expect(res.guidance).toBe('Header row: A, B');
+  });
 });
 
 describe('analyzeTableLayout', () => {
@@ -154,5 +172,19 @@ describe('analyzeTableLayout', () => {
     vi.spyOn(geminiService, 'generateWithSchema').mockRejectedValue(new Error('Exhausted 3 attempt(s): MAX_TOKENS'));
 
     await expect(svc.analyzeTableLayout({ id: 'i1' }, buildTable())).resolves.toBeNull();
+  });
+
+  // Same Codex finding as analyzeTableHeaders' equivalent test -- guidance
+  // must be optional on the real schema so an omitted guidance falls through
+  // to the isLayout-derived default instead of failing validation.
+  it('accepts a real response that omits guidance via the real schema, using the isLayout-derived default', async () => {
+    vi.spyOn(geminiService, 'generateText').mockResolvedValue({
+      text: JSON.stringify({ isLayout: true, confidence: 0.5, reasoning: 'r' }),
+    } as never);
+
+    const res = await svc.analyzeTableLayout({ id: 'i1' }, buildTable());
+
+    expect(res).toBeTruthy();
+    expect(res.guidance).toContain('Role: Artifact');
   });
 });

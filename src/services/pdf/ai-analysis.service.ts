@@ -396,12 +396,17 @@ const TABLE_HEADERS_SCHEMA: Schema = {
     confidence: { type: SchemaType.NUMBER },
     rationale: { type: SchemaType.STRING },
   },
-  required: ['guidance', 'confidence', 'rationale'],
+  required: ['confidence', 'rationale'],
 };
+// guidance is intentionally NOT required: analyzeTableHeaders derives its own
+// fallback guidance text from headerRow when the model omits it (see its own
+// `data.guidance || ...` below). Requiring a non-empty guidance here would
+// make that fallback path unreachable -- an omitted/empty guidance would
+// fail schema validation and burn retries instead of falling through to it.
 const TableHeadersResult = z.object({
   headerRow: z.array(z.string()).optional(),
   headerColumn: z.array(z.string()).optional(),
-  guidance: z.string().trim().min(1),
+  guidance: z.string().trim().min(1).optional(),
   confidence: z.number(),
   rationale: z.string(),
 });
@@ -417,13 +422,16 @@ const TABLE_LAYOUT_SCHEMA: Schema = {
     reasoning: { type: SchemaType.STRING },
     guidance: { type: SchemaType.STRING },
   },
-  required: ['isLayout', 'confidence', 'reasoning', 'guidance'],
+  required: ['isLayout', 'confidence', 'reasoning'],
 };
+// guidance intentionally optional -- same reasoning as TableHeadersResult:
+// analyzeTableLayout falls back to a default guidance string keyed off
+// isLayout when the model omits it.
 const TableLayoutResult = z.object({
   isLayout: z.boolean(),
   confidence: z.number(),
   reasoning: z.string(),
-  guidance: z.string().trim().min(1),
+  guidance: z.string().trim().min(1).optional(),
 });
 
 const ALT_TEXT_IMPROVEMENT_SCHEMA: Schema = {
