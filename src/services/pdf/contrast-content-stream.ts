@@ -60,6 +60,21 @@ export interface TextRunMatch {
    * that op and silently override its color instead of restoring this run's.
    */
   lastShowEnd: number;
+  /**
+   * The run's TRUE final rendered color (parsed from its LAST internal fill
+   * op), present whenever the run has one or more internal fill ops at all
+   * -- set by locateTextRunsForPage's multi-segment matching, always
+   * undefined from plain locateTextRun. Overrides the caller-supplied
+   * `cd.foreground` for the restore-after-run splice: fixing a NON-last
+   * colored segment of a multi-color run (e.g. segment 1 of "black RED
+   * black") must restore to the run's real trailing color (black, from the
+   * last internal op) after the run ends, not to the FIXED segment's own
+   * original color (red) -- using the wrong value here would silently
+   * leave the graphics state on the wrong color for whatever renders next,
+   * a new contrast defect this module must never introduce. See
+   * locateTextRunsForPage's own doc comment for the full reasoning.
+   */
+  restoreColorOverride?: [number, number, number];
 }
 
 interface TextUnit {
@@ -422,19 +437,16 @@ export function locateEnclosingTextObject(content: string, runStart: number): En
 }
 
 /**
- * Finds the text run whose anchor is closest to `target`, within
- * `tolerancePt`. Returns null if nothing is close enough. Flags `ambiguous`
- * (and reduces confidence) when a near-equally-close runner-up run exists,
- * or the matched run sets its fill color more than once internally.
+ * Core of locateTextRun, operating on already-tokenized/already-walked
+ * state so locateTextRunsForPage can reuse one tokenize()+findTextUnits()
+ * pass across every target on a page instead of repeating both per issue.
  */
-export function locateTextRun(
-  content: string,
+function locateTextRunFromUnits(
+  tokens: Token[],
+  units: TextUnit[],
   target: { x: number; baselineY: number },
-  tolerancePt = 12
+  tolerancePt: number
 ): TextRunMatch | null {
-  const tokens = tokenize(content);
-  const units = findTextUnits(tokens);
-
   const candidates = units
     .filter((u): u is TextUnit & { anchorX: number; anchorY: number } => u.anchorX !== null && u.anchorY !== null)
     .map(u => ({ ...u, dist: Math.hypot(u.anchorX - target.x, u.anchorY - target.baselineY) }))
@@ -476,4 +488,214 @@ export function locateTextRun(
     internalFillColorOp: fillOps.length === 1 ? fillOps[0] : undefined,
     lastShowEnd: best.lastShowEnd!,
   };
+}
+
+/**
+ * Finds the text run whose anchor is closest to `target`, within
+ * `tolerancePt`. Returns null if nothing is close enough. Flags `ambiguous`
+ * (and reduces confidence) when a near-equally-close runner-up run exists,
+ * or the matched run sets its fill color more than once internally.
+ */
+export function locateTextRun(
+  content: string,
+  target: { x: number; baselineY: number },
+  tolerancePt = 12
+): TextRunMatch | null {
+  const tokens = tokenize(content);
+  const units = findTextUnits(tokens);
+  return locateTextRunFromUnits(tokens, units, target, tolerancePt);
+}
+
+/**
+ * Parses a single fill-color op's raw operand text (as located by
+ * findFillColorOps -- operands through the operator keyword) into unit
+ * (0-1) RGB. Returns null for `sc`/`scn`, whose operand count and meaning
+ * depend on the current (untracked-by-this-module) /ColorSpace -- declining
+ * rather than guessing a wrong color, same "bail rather than guess"
+ * discipline as everywhere else in this file.
+ */
+function parseFillColorOpToRgb(content: string, op: { start: number; end: number }): [number, number, number] | null {
+  const parts = content.slice(op.start, op.end).trim().split(/\s+/);
+  const opName = parts[parts.length - 1];
+  const nums = parts.slice(0, -1).map(Number);
+  if (nums.some(n => Number.isNaN(n))) return null;
+  switch (opName) {
+    case 'g': return nums.length === 1 ? [nums[0], nums[0], nums[0]] : null;
+    case 'rg': return nums.length === 3 ? [nums[0], nums[1], nums[2]] : null;
+    case 'k': {
+      if (nums.length !== 4) return null;
+      const [c, m, y, k] = nums;
+      return [(1 - c) * (1 - k), (1 - m) * (1 - k), (1 - y) * (1 - k)];
+    }
+    default: return null;
+  }
+}
+
+export interface PageContrastTarget {
+  id: string;
+  x: number;
+  baselineY: number;
+}
+
+// Structurally-confirmed ordinal pairing (reading-order correspondence
+// within a tight same-line Y-band, gated on an exact count match -- see
+// locateTextRunsForPage) is a real fact, not a distance estimate, but it's
+// a newer, less-proven mechanism than the direct single-target anchor
+// match -- kept at the existing MIN_APPLY_CONFIDENCE/MIN_CONTRAST_FIX_
+// CONFIDENCE floor (0.80) with a small margin rather than the 0.95 tier
+// reserved for a near-exact single-anchor match.
+const ORDINAL_PAIRING_CONFIDENCE = 0.85;
+
+// Two device-space anchors within this many points are treated as "the
+// same line" for clustering purposes -- much tighter than locateTextRun's
+// own 12pt anchor-match tolerance (which exists to absorb pdfjs-vs-content-
+// stream position discrepancies for a SINGLE target/run pair) since here
+// the question is "are these genuinely the same baseline", and real
+// distinct lines are normally separated by a full line-height (10pt+).
+const SAME_LINE_Y_TOLERANCE = 2;
+
+/**
+ * Locates every target's text run for ALL of a page's color-contrast issues
+ * at once, extending plain locateTextRun to handle two real patterns it
+ * can't: (a) a single text run that changes its own fill color more than
+ * once internally (e.g. plain black text with one colored word embedded --
+ * "The answer is <red>one</red>."), which locateTextRun correctly refuses
+ * (mixedColor -> confidence 0) since it has no way to tell which of the
+ * run's several colors corresponds to the target; (b) several separate,
+ * single-color runs sitting close enough together that locateTextRun's own
+ * proximity-ambiguity check correctly refuses to pick one.
+ *
+ * Confirmed live against Math_Kim's real remaining COLOR-CONTRAST issues:
+ * both patterns are common (colored math answers/blanks embedded in
+ * otherwise-black instructional text; small custom-font marker glyphs
+ * clustered together) and account for the large majority of the issues
+ * plain locateTextRun can't confidently resolve on its own.
+ *
+ * The fix does NOT estimate an exact device-space position for a run's
+ * later internal segments (that needs real font-metrics-based advance-width
+ * tracking, a substantial undertaking this module doesn't have) --
+ * instead, it relies on a structural fact that needs no font metrics at
+ * all: PDF text within one run renders in byte order (= reading order), and
+ * separate runs on the same visual line are ordered left-to-right by their
+ * own anchors. So: within a tight same-line Y-band, if the number of
+ * "colorable positions" available (one per run with no internal color
+ * changes, or one per internally-color-delimited segment for a run that
+ * has some) EXACTLY equals the number of unresolved target issues in that
+ * band, sort both by X and pair them ordinally. This only ever proceeds on
+ * a genuine structural count-match -- never a distance estimate -- and
+ * falls back to "no match" (exactly locateTextRun's own existing failure
+ * mode) whenever the counts disagree, rather than guessing.
+ *
+ * Every target that plain locateTextRun already resolves confidently
+ * (matched, not ambiguous, confidence >= the existing 0.80 floor) is left
+ * completely untouched by this extension -- zero behavior change for the
+ * cases that already worked.
+ */
+export function locateTextRunsForPage(
+  content: string,
+  targets: PageContrastTarget[],
+  tolerancePt = 12
+): Map<string, TextRunMatch | null> {
+  const tokens = tokenize(content);
+  const units = findTextUnits(tokens);
+  const anchoredUnits = units.filter((u): u is TextUnit & { anchorX: number; anchorY: number } => u.anchorX !== null && u.anchorY !== null);
+
+  const result = new Map<string, TextRunMatch | null>();
+  const unresolved: PageContrastTarget[] = [];
+
+  for (const target of targets) {
+    const m = locateTextRunFromUnits(tokens, units, target, tolerancePt);
+    if (m && !m.ambiguous && m.confidence >= 0.80) {
+      result.set(target.id, m);
+    } else {
+      unresolved.push(target);
+    }
+  }
+
+  if (unresolved.length === 0) return result;
+
+  // One "slot" per colorable position on the page: a run with zero internal
+  // fill-color changes contributes exactly one slot (its own full span);
+  // a run with K internal changes contributes K+1 slots, one per color-
+  // delimited segment, ordered by byte position (= reading order within
+  // that run). segmentOrder breaks ties between same-run slots, which
+  // necessarily share the run's own single tracked anchor (findTextUnits
+  // has no notion of a segment's own position -- see this function's doc
+  // comment for why that's fine here).
+  interface Slot {
+    run: TextUnit & { anchorX: number; anchorY: number };
+    internalOp?: { start: number; end: number };
+    segmentOrder: number;
+    restoreColorOverride?: [number, number, number];
+  }
+  const slots: Slot[] = [];
+  for (const run of anchoredUnits) {
+    const ops = findFillColorOps(tokens, run.start, run.lastShowEnd!);
+    if (ops.length === 0) {
+      slots.push({ run, internalOp: undefined, segmentOrder: 0 });
+      continue;
+    }
+    // The run's TRUE final color -- needed to correctly restore state after
+    // fixing ANY of this run's segments, not just its last one (see
+    // TextRunMatch.restoreColorOverride's own doc comment). Declining the
+    // whole run (not just the affected segment) when this can't be parsed
+    // matches this module's "bail rather than guess" discipline: fixing a
+    // segment without a trustworthy restore value risks leaving the
+    // graphics state on the wrong color for whatever renders after this
+    // run, a new defect this module must never introduce.
+    const finalColor = parseFillColorOpToRgb(content, ops[ops.length - 1]);
+    if (finalColor === null) continue;
+    for (let i = 0; i <= ops.length; i++) {
+      slots.push({
+        run,
+        internalOp: i === 0 ? undefined : ops[i - 1],
+        segmentOrder: i,
+        restoreColorOverride: finalColor,
+      });
+    }
+  }
+
+  // Greedy same-line clustering: sort unresolved targets by Y, then group
+  // consecutive ones within SAME_LINE_Y_TOLERANCE of the cluster's first
+  // member. Real distinct lines are separated by a full line-height
+  // (comfortably over this tolerance), so this doesn't merge genuinely
+  // different lines even on a densely-set page.
+  const sortedTargets = [...unresolved].sort((a, b) => a.baselineY - b.baselineY);
+  const clusters: PageContrastTarget[][] = [];
+  for (const t of sortedTargets) {
+    const last = clusters[clusters.length - 1];
+    if (last && Math.abs(t.baselineY - last[0].baselineY) <= SAME_LINE_Y_TOLERANCE) {
+      last.push(t);
+    } else {
+      clusters.push([t]);
+    }
+  }
+
+  for (const cluster of clusters) {
+    const clusterY = cluster[0].baselineY;
+    const candidateSlots = slots.filter(s => Math.abs(s.run.anchorY - clusterY) <= SAME_LINE_Y_TOLERANCE);
+    if (candidateSlots.length !== cluster.length) continue; // not a confident structural match -- leave unresolved (null)
+
+    const sortedClusterTargets = [...cluster].sort((a, b) => a.x - b.x);
+    const sortedSlots = [...candidateSlots].sort((a, b) => a.run.anchorX - b.run.anchorX || a.segmentOrder - b.segmentOrder);
+
+    for (let i = 0; i < sortedClusterTargets.length; i++) {
+      const slot = sortedSlots[i];
+      result.set(sortedClusterTargets[i].id, {
+        start: slot.run.start,
+        end: slot.run.end,
+        lastShowEnd: slot.run.lastShowEnd!,
+        confidence: ORDINAL_PAIRING_CONFIDENCE,
+        ambiguous: false,
+        internalFillColorOp: slot.internalOp,
+        restoreColorOverride: slot.restoreColorOverride,
+      });
+    }
+  }
+
+  for (const target of unresolved) {
+    if (!result.has(target.id)) result.set(target.id, null);
+  }
+
+  return result;
 }
