@@ -307,6 +307,28 @@ const FormulaActualTextResult = z.object({
   actualText: z.string(),
 });
 
+// Same MAX_TOKENS-truncation trap as FORMULA_ACTUALTEXT_SCHEMA above, confirmed
+// live against Math_Kim's real remaining TABLE-MISSING-SUMMARY tables:
+// analyzeTableSummary's freeform-JSON prompt (no responseSchema, 512-token
+// budget) hit finishReason MAX_TOKENS on the model's markdown-fenced preamble
+// on 8/8 real sampled calls, every time completionTokens was ~18-21 but
+// totalTokens was ~600-700 -- the visible answer never got a token budget of
+// its own. Schema-constrained decoding + a bigger budget fixes it the same way.
+const TABLE_SUMMARY_SCHEMA: Schema = {
+  type: SchemaType.OBJECT,
+  properties: {
+    summary: { type: SchemaType.STRING },
+    confidence: { type: SchemaType.NUMBER },
+    rationale: { type: SchemaType.STRING },
+  },
+  required: ['summary'],
+};
+const TableSummaryResult = z.object({
+  summary: z.string(),
+  confidence: z.number().optional(),
+  rationale: z.string().optional(),
+});
+
 // ─── Service ─────────────────────────────────────────────────────────────────
 
 class AiAnalysisService {
@@ -1172,24 +1194,24 @@ class AiAnalysisService {
     const prompt =
       'You are an accessibility expert. Write a 1-2 sentence summary (max 150 characters) ' +
       'for this table describing what it contains and its purpose.\n\n' +
-      tableText +
-      '\n\nRespond ONLY with JSON:\n{"summary":"string","confidence":0.0-1.0,"rationale":"brief"}';
+      tableText;
 
     try {
-      const response = await geminiService.generateText(prompt, { model: 'flash', maxOutputTokens: 512 });
-      const data = this.parseAiJson<{ summary: string; confidence: number; rationale: string }>(
-        response.text
-      );
-      if (!data?.summary) return null;
+      const { data, usage } = await geminiService.generateWithSchema(prompt, TableSummaryResult, {
+        model: 'flash',
+        maxOutputTokens: 2048,
+        responseSchema: TABLE_SUMMARY_SCHEMA,
+      });
+      if (!data.summary) return null;
 
       return {
         suggestionType: 'table-summary',
         value: data.summary,
         guidance:
           mode === 'guidance-only' ? `Add table summary: "${data.summary}"` : undefined,
-        confidence: data.confidence,
-        rationale: data.rationale,
-        usage: response.usage ? { promptTokens: response.usage.promptTokens, completionTokens: response.usage.completionTokens } : undefined,
+        confidence: data.confidence ?? 0.7,
+        rationale: data.rationale ?? 'Generated from parsed table content',
+        usage: usage ? { promptTokens: usage.promptTokens, completionTokens: usage.completionTokens } : undefined,
         model: 'gemini-flash',
         applyMode: mode,
       };
@@ -1235,16 +1257,17 @@ class AiAnalysisService {
     const prompt =
       'This image is a full page from a PDF document. It contains a data table that is missing ' +
       'an accessibility summary. Identify the most prominent complex data table on this page and ' +
-      'write a 1-2 sentence summary (max 150 characters) describing what it contains and its purpose.\n\n' +
-      'Respond ONLY with JSON:\n{"summary":"string","confidence":0.0-1.0,"rationale":"brief"}';
+      'write a 1-2 sentence summary (max 150 characters) describing what it contains and its purpose.';
 
     try {
-      const response = await geminiService.analyzeImage(pageBase64, 'image/png', prompt, {
-        model: 'flash',
-        maxOutputTokens: 512,
-      });
-      const data = this.parseAiJson<{ summary: string; confidence?: number; rationale?: string }>(response.text);
-      if (!data?.summary) return null;
+      const { data, usage } = await geminiService.analyzeImageWithSchema(
+        pageBase64,
+        'image/png',
+        prompt,
+        TableSummaryResult,
+        { model: 'flash', maxOutputTokens: 2048, responseSchema: TABLE_SUMMARY_SCHEMA }
+      );
+      if (!data.summary) return null;
 
       // The model can omit confidence/rationale even when it returns a
       // usable summary -- both AiSuggestionResult fields are required
@@ -1272,7 +1295,7 @@ class AiAnalysisService {
         guidance: `Add table summary: "${data.summary}"`,
         confidence: typeof data.confidence === 'number' ? data.confidence : 0.5,
         rationale: modelRationale ? `${modelRationale} ${renderCaveat}` : renderCaveat,
-        usage: response.usage ? { promptTokens: response.usage.promptTokens, completionTokens: response.usage.completionTokens } : undefined,
+        usage: usage ? { promptTokens: usage.promptTokens, completionTokens: usage.completionTokens } : undefined,
         model: 'gemini-flash',
         applyMode,
       };
