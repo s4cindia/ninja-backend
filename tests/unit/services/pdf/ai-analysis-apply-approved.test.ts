@@ -361,6 +361,83 @@ describe('aiAnalysisService.applyApprovedSuggestions', () => {
     expect(result.failed).toBe(0);
   });
 
+  it('includes table-header-fix and table-header-fix-column issues in the SAME pre-resolution pass as table-artifact-fix/table-from-layout-fix', async () => {
+    // CodeRabbit finding on PR #560, confirmed real: the two new
+    // suggestion types this PR adds also resolve their target /Table
+    // positionally (findTargetTable), so they're exposed to the identical
+    // cross-batch drift risk PR #554 already fixed for the artifact/layout
+    // pair -- they must be resolved from the SAME pre-mutation tree too.
+    const jobWithIssues = {
+      id: 'job-1',
+      output: {
+        fileName: 'doc.pdf',
+        auditReport: {
+          issues: [
+            { id: 'table-artifact-1', code: 'MATTERHORN-15-005', element: 'table_p1_0' },
+            { id: 'table-header-1', code: 'MATTERHORN-15-002', element: 'table_p1_1' },
+            { id: 'table-header-col-1', code: 'MATTERHORN-15-002', element: 'table_p1_2' },
+          ],
+        },
+      },
+    };
+    vi.mocked(prisma.job.findUnique).mockResolvedValue(jobWithIssues as any);
+    vi.mocked(prisma.aiAnalysis.findMany).mockResolvedValue([
+      { issueId: 'table-artifact-1', suggestionType: 'table-artifact-fix' },
+      { issueId: 'table-header-1', suggestionType: 'table-header-fix' },
+      { issueId: 'table-header-col-1', suggestionType: 'table-header-fix-column' },
+    ] as any);
+    vi.mocked(fileStorageService.getRemediatedFile).mockResolvedValue(Buffer.from('pdf'));
+    vi.mocked(pdfModifierService.loadPDF).mockResolvedValue({} as any);
+    vi.mocked(pdfModifierService.savePDF).mockResolvedValue(Buffer.from('modified-pdf'));
+    vi.mocked(fileStorageService.saveRemediatedFile).mockResolvedValue('s3://remediated/doc.pdf');
+
+    const { pdfStructureWriterService } = await import('../../../../src/services/pdf/pdf-structure-writer.service');
+
+    const preResolved = new Map([
+      ['table-artifact-1', { dict: 'artifact-target-dict', ref: 'artifact-target-ref' }],
+      ['table-header-1', { dict: 'header-target-dict', ref: 'header-target-ref' }],
+      ['table-header-col-1', { dict: 'header-col-target-dict', ref: 'header-col-target-ref' }],
+    ]) as any;
+    vi.mocked(pdfStructureWriterService.resolveTableTargets).mockReturnValue(preResolved);
+    vi.mocked(pdfStructureWriterService.markTableAsArtifact).mockReturnValue([
+      { issueId: 'table-artifact-1', success: true, before: 'Table', after: 'Retagged as Artifact' },
+    ]);
+    vi.mocked(pdfStructureWriterService.fixSimpleTableHeaders).mockReturnValue([
+      { issueId: 'table-header-1', success: true, before: 'TD', after: 'Promoted to TH' },
+    ]);
+    vi.mocked(pdfStructureWriterService.fixSimpleTableColumnHeaders).mockReturnValue([
+      { issueId: 'table-header-col-1', success: true, before: 'TD', after: 'Promoted to TH' },
+    ]);
+
+    const result = await aiAnalysisService.applyApprovedSuggestions('job-1', 1, 'user-1', 'apply_all');
+
+    // resolveTableTargets got ALL THREE issues, combined, in one call.
+    expect(pdfStructureWriterService.resolveTableTargets).toHaveBeenCalledTimes(1);
+    expect(pdfStructureWriterService.resolveTableTargets).toHaveBeenCalledWith(
+      {},
+      expect.arrayContaining([
+        expect.objectContaining({ id: 'table-artifact-1' }),
+        expect.objectContaining({ id: 'table-header-1' }),
+        expect.objectContaining({ id: 'table-header-col-1' }),
+      ])
+    );
+
+    // Both new writers received the SAME pre-resolved map as their third arg.
+    expect(pdfStructureWriterService.fixSimpleTableHeaders).toHaveBeenCalledWith(
+      {},
+      expect.arrayContaining([expect.objectContaining({ id: 'table-header-1' })]),
+      preResolved
+    );
+    expect(pdfStructureWriterService.fixSimpleTableColumnHeaders).toHaveBeenCalledWith(
+      {},
+      expect.arrayContaining([expect.objectContaining({ id: 'table-header-col-1' })]),
+      preResolved
+    );
+
+    expect(result.applied).toBe(3);
+    expect(result.failed).toBe(0);
+  });
+
   it('does not call pdfComprehensiveParserService when no table-from-layout-fix suggestions are in the batch', async () => {
     vi.mocked(prisma.aiAnalysis.findMany).mockResolvedValue([
       { issueId: 'issue-1', suggestionType: 'alt-text', value: 'A red apple' },
