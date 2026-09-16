@@ -375,6 +375,65 @@ const AltTextResult = z.object({
   message: 'altText is required when isDecorative is false',
 });
 
+// Same MAX_TOKENS-truncation trap as the schemas above, confirmed live
+// against Math_Kim's real remaining MATTERHORN-15-002/TABLE-ACCESSIBILITY
+// tables that fall through PR #560's rule-based orientation fix (ambiguous
+// orientation, no regular header row in the first few rows, or >6 columns):
+// analyzeTableHeaders' freeform-JSON prompt (no responseSchema, 512-token
+// budget) hit finishReason MAX_TOKENS on 15/15 real sampled fallback tables,
+// completionTokens ~19-21 against totalTokens ~607-618 every time. Schema-
+// constrained decoding + a bigger budget fixes it the same way as
+// TABLE_SUMMARY_SCHEMA. Note this function's return is hardcoded
+// applyMode: 'guidance-only' (never apply-to-pdf) -- fixing this improves the
+// quality of human-reviewable guidance for these fallback cases, not
+// auto-resolved issue counts.
+const TABLE_HEADERS_SCHEMA: Schema = {
+  type: SchemaType.OBJECT,
+  properties: {
+    headerRow: { type: SchemaType.ARRAY, items: { type: SchemaType.STRING } },
+    headerColumn: { type: SchemaType.ARRAY, items: { type: SchemaType.STRING } },
+    guidance: { type: SchemaType.STRING },
+    confidence: { type: SchemaType.NUMBER },
+    rationale: { type: SchemaType.STRING },
+  },
+  required: ['confidence', 'rationale'],
+};
+// guidance is intentionally NOT required: analyzeTableHeaders derives its own
+// fallback guidance text from headerRow when the model omits it (see its own
+// `data.guidance || ...` below). Requiring a non-empty guidance here would
+// make that fallback path unreachable -- an omitted/empty guidance would
+// fail schema validation and burn retries instead of falling through to it.
+const TableHeadersResult = z.object({
+  headerRow: z.array(z.string()).optional(),
+  headerColumn: z.array(z.string()).optional(),
+  guidance: z.string().trim().min(1).optional(),
+  confidence: z.number(),
+  rationale: z.string(),
+});
+
+// Same trap as TABLE_HEADERS_SCHEMA, immediately adjacent call site with the
+// identical freeform-prompt/512-token shape -- fixed alongside it rather than
+// left as a known-remaining instance of the same bug in the same file.
+const TABLE_LAYOUT_SCHEMA: Schema = {
+  type: SchemaType.OBJECT,
+  properties: {
+    isLayout: { type: SchemaType.BOOLEAN },
+    confidence: { type: SchemaType.NUMBER },
+    reasoning: { type: SchemaType.STRING },
+    guidance: { type: SchemaType.STRING },
+  },
+  required: ['isLayout', 'confidence', 'reasoning'],
+};
+// guidance intentionally optional -- same reasoning as TableHeadersResult:
+// analyzeTableLayout falls back to a default guidance string keyed off
+// isLayout when the model omits it.
+const TableLayoutResult = z.object({
+  isLayout: z.boolean(),
+  confidence: z.number(),
+  reasoning: z.string(),
+  guidance: z.string().trim().min(1).optional(),
+});
+
 const ALT_TEXT_IMPROVEMENT_SCHEMA: Schema = {
   type: SchemaType.OBJECT,
   properties: {
@@ -1387,28 +1446,25 @@ class AiAnalysisService {
       '"guidance":"step-by-step fix instruction","confidence":0.0-1.0,"rationale":"brief"}';
 
     try {
-      const response = await geminiService.generateText(prompt, { model: 'flash', maxOutputTokens: 512 });
-      const data = this.parseAiJson<{
-        headerRow: string[];
-        headerColumn: string[];
-        guidance: string;
-        confidence: number;
-        rationale: string;
-      }>(response.text);
-      if (!data) return null;
+      const { data, usage } = await geminiService.generateWithSchema(prompt, TableHeadersResult, {
+        model: 'flash',
+        maxOutputTokens: 2048,
+        responseSchema: TABLE_HEADERS_SCHEMA,
+      });
 
+      const headerRow = data.headerRow ?? [];
       return {
         suggestionType: 'table-headers',
         guidance:
           data.guidance ||
-          (data.headerRow.length > 0
-            ? `Header row: ${data.headerRow.slice(0, 5).join(', ')}`
+          (headerRow.length > 0
+            ? `Header row: ${headerRow.slice(0, 5).join(', ')}`
             : 'No clear header row detected'),
         confidence: data.confidence,
         rationale: data.rationale,
         model: 'gemini-flash',
         applyMode: 'guidance-only',
-        usage: response.usage ? { promptTokens: response.usage.promptTokens, completionTokens: response.usage.completionTokens } : undefined,
+        usage: usage ? { promptTokens: usage.promptTokens, completionTokens: usage.completionTokens } : undefined,
       };
     } catch (err) {
       logger.warn(`[AiAnalysis] analyzeTableHeaders failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -1430,14 +1486,11 @@ class AiAnalysisService {
       '{"isLayout":boolean,"confidence":0.0-1.0,"reasoning":"brief","guidance":"fix instruction"}';
 
     try {
-      const response = await geminiService.generateText(prompt, { model: 'flash', maxOutputTokens: 512 });
-      const data = this.parseAiJson<{
-        isLayout: boolean;
-        confidence: number;
-        reasoning: string;
-        guidance: string;
-      }>(response.text);
-      if (!data) return null;
+      const { data, usage } = await geminiService.generateWithSchema(prompt, TableLayoutResult, {
+        model: 'flash',
+        maxOutputTokens: 2048,
+        responseSchema: TABLE_LAYOUT_SCHEMA,
+      });
 
       return {
         suggestionType: 'table-layout',
@@ -1450,7 +1503,7 @@ class AiAnalysisService {
         rationale: data.reasoning,
         model: 'gemini-flash',
         applyMode: 'guidance-only',
-        usage: response.usage ? { promptTokens: response.usage.promptTokens, completionTokens: response.usage.completionTokens } : undefined,
+        usage: usage ? { promptTokens: usage.promptTokens, completionTokens: usage.completionTokens } : undefined,
       };
     } catch (err) {
       logger.warn(`[AiAnalysis] analyzeTableLayout failed: ${err instanceof Error ? err.message : String(err)}`);
