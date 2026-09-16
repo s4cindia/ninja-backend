@@ -328,7 +328,7 @@ const TABLE_SUMMARY_SCHEMA: Schema = {
 };
 const TableSummaryResult = z.object({
   summary: z.string().trim().min(1).max(150),
-  confidence: z.number().optional(),
+  confidence: z.number().min(0).max(1).optional(),
   rationale: z.string().optional(),
 });
 
@@ -369,7 +369,7 @@ const ALT_TEXT_SCHEMA: Schema = {
 const AltTextResult = z.object({
   isDecorative: z.boolean(),
   altText: z.string().trim().max(125).optional(),
-  confidence: z.number(),
+  confidence: z.number().min(0).max(1),
   rationale: z.string(),
 }).refine(data => data.isDecorative || !!data.altText, {
   message: 'altText is required when isDecorative is false',
@@ -407,7 +407,7 @@ const TableHeadersResult = z.object({
   headerRow: z.array(z.string()).optional(),
   headerColumn: z.array(z.string()).optional(),
   guidance: z.string().trim().min(1).optional(),
-  confidence: z.number(),
+  confidence: z.number().min(0).max(1),
   rationale: z.string(),
 });
 
@@ -429,7 +429,7 @@ const TABLE_LAYOUT_SCHEMA: Schema = {
 // isLayout when the model omits it.
 const TableLayoutResult = z.object({
   isLayout: z.boolean(),
-  confidence: z.number(),
+  confidence: z.number().min(0).max(1),
   reasoning: z.string(),
   guidance: z.string().trim().min(1).optional(),
 });
@@ -445,9 +445,226 @@ const ALT_TEXT_IMPROVEMENT_SCHEMA: Schema = {
 };
 const AltTextImprovementResult = z.object({
   improvedAltText: z.string().trim().min(1).max(125),
-  confidence: z.number(),
+  confidence: z.number().min(0).max(1),
   rationale: z.string(),
 });
+
+// Same MAX_TOKENS-truncation trap as the schemas above -- the remaining 7
+// lower-priority functions identified via grep after fixing TABLE_HEADERS_SCHEMA/
+// TABLE_LAYOUT_SCHEMA (see that pair's doc comment): all used a freeform-JSON
+// prompt (geminiService.generateText, no responseSchema, 256-1024-token
+// budget). Not live-measured individually (most have zero or near-zero real
+// issue volume in Math_Kim, unlike the table-header/layout fix), but fixed
+// proactively via the same proven pattern rather than left as known-remaining
+// instances of a bug already confirmed 5 times this session. Every field with
+// its own app-level fallback (a `data.x || ...` in the calling function) is
+// deliberately left OPTIONAL here rather than required -- see TABLE_HEADERS_SCHEMA's
+// own doc comment for why requiring it would make that fallback unreachable
+// (a real Codex finding on the table-headers/layout PR). Fields whose prompt
+// states an explicit character cap get a matching Zod .max() the same way
+// TABLE_SUMMARY_SCHEMA/ALT_TEXT_SCHEMA do, to catch a model that ignores the
+// prompt's own instruction rather than trusting the wording alone. Every
+// confidence field across this whole file (including the schemas above this
+// one, from earlier PRs) is clamped to .min(0).max(1) -- a CodeRabbit finding
+// on this PR: an unconstrained confidence lets a malformed value like 2 slip
+// through unnoticed into stored suggestions and confidence-gated dispatch
+// logic (e.g. analyzeList's own `confidence >= 0.85` auto-resolve check)
+// without ever tripping it up as suspicious.
+const LIST_CLASSIFICATION_SCHEMA: Schema = {
+  type: SchemaType.OBJECT,
+  properties: {
+    classification: { type: SchemaType.STRING, format: 'enum', enum: ['decorative', 'navigation', 'semantic'] },
+    confidence: { type: SchemaType.NUMBER },
+    guidance: { type: SchemaType.STRING },
+  },
+  required: ['classification', 'confidence'],
+};
+const ListClassificationResult = z.object({
+  classification: z.enum(['decorative', 'navigation', 'semantic']),
+  confidence: z.number().min(0).max(1),
+  guidance: z.string().trim().min(1).optional(),
+});
+
+const READING_ORDER_SCHEMA: Schema = {
+  type: SchemaType.OBJECT,
+  properties: {
+    suggestedOrder: { type: SchemaType.ARRAY, items: { type: SchemaType.STRING } },
+    confidence: { type: SchemaType.NUMBER },
+    guidance: { type: SchemaType.STRING },
+  },
+  required: ['confidence'],
+};
+// Codex review finding on this PR: with BOTH suggestedOrder and guidance
+// optional, a response that omits both passes validation and
+// analyzeReadingOrder persists the meaningless "Suggested order: " (an empty
+// preview string) as if it were real guidance. Requiring guidance to be
+// non-empty WHENEVER suggestedOrder is empty/absent closes that gap while
+// still allowing either one alone to satisfy the response. A second,
+// related CodeRabbit finding on the same commit: the .refine() below only
+// checked the ARRAY was non-empty, so `suggestedOrder: ['']` (one blank
+// entry) still passed -- each entry now requires real trimmed content too,
+// so a blank-only array fails validation exactly like a missing one.
+const ReadingOrderResult = z
+  .object({
+    suggestedOrder: z.array(z.string().trim().min(1)).optional(),
+    confidence: z.number().min(0).max(1),
+    guidance: z.string().trim().min(1).optional(),
+  })
+  .refine(data => (data.suggestedOrder && data.suggestedOrder.length > 0) || !!data.guidance, {
+    message: 'Either a non-empty suggestedOrder or a non-empty guidance is required',
+  });
+
+const HEADING_CORRECTION_SCHEMA: Schema = {
+  type: SchemaType.OBJECT,
+  properties: {
+    correctedHeadings: {
+      type: SchemaType.ARRAY,
+      items: {
+        type: SchemaType.OBJECT,
+        properties: {
+          text: { type: SchemaType.STRING },
+          currentLevel: { type: SchemaType.NUMBER },
+          suggestedLevel: { type: SchemaType.NUMBER },
+        },
+        required: ['text', 'currentLevel', 'suggestedLevel'],
+      },
+    },
+    guidance: { type: SchemaType.STRING },
+    confidence: { type: SchemaType.NUMBER },
+    rationale: { type: SchemaType.STRING },
+  },
+  required: ['confidence', 'rationale'],
+};
+// Same Codex finding as ReadingOrderResult -- omitting both correctedHeadings
+// and guidance must not pass validation, since analyzeHeading's own fallback
+// (`data.guidance || corrections`) would otherwise persist an empty string.
+const HeadingCorrectionResult = z
+  .object({
+    correctedHeadings: z
+      .array(
+        z.object({
+          text: z.string().trim().min(1),
+          currentLevel: z.number(),
+          suggestedLevel: z.number(),
+        })
+      )
+      .optional(),
+    guidance: z.string().trim().min(1).optional(),
+    confidence: z.number().min(0).max(1),
+    rationale: z.string(),
+  })
+  .refine(data => (data.correctedHeadings && data.correctedHeadings.length > 0) || !!data.guidance, {
+    message: 'Either a non-empty correctedHeadings or a non-empty guidance is required',
+  });
+
+const LANGUAGE_DETECTION_SCHEMA: Schema = {
+  type: SchemaType.OBJECT,
+  properties: {
+    languageCode: { type: SchemaType.STRING },
+    confidence: { type: SchemaType.NUMBER },
+    rationale: { type: SchemaType.STRING },
+  },
+  required: ['languageCode', 'confidence', 'rationale'],
+};
+const LanguageDetectionResult = z.object({
+  languageCode: z.string().trim().min(1),
+  confidence: z.number().min(0).max(1),
+  rationale: z.string(),
+});
+
+// analyzeLinkText/analyzeFormField/analyzeBookmark's generic-title branch all
+// ask the model for a single short suggested string plus confidence +
+// rationale, none with any app-level fallback for any of the three fields
+// (all read directly, so all stay required) -- only the field name and the
+// max-length cap (matching each prompt's own stated character limit) differ.
+const LINK_TEXT_SCHEMA: Schema = {
+  type: SchemaType.OBJECT,
+  properties: {
+    suggestedText: { type: SchemaType.STRING },
+    confidence: { type: SchemaType.NUMBER },
+    rationale: { type: SchemaType.STRING },
+  },
+  required: ['suggestedText', 'confidence', 'rationale'],
+};
+const LinkTextResult = z.object({
+  suggestedText: z.string().trim().min(1).max(60),
+  confidence: z.number().min(0).max(1),
+  rationale: z.string(),
+});
+
+const FORM_FIELD_LABEL_SCHEMA: Schema = {
+  type: SchemaType.OBJECT,
+  properties: {
+    suggestedLabel: { type: SchemaType.STRING },
+    confidence: { type: SchemaType.NUMBER },
+    rationale: { type: SchemaType.STRING },
+  },
+  required: ['suggestedLabel', 'confidence', 'rationale'],
+};
+const FormFieldLabelResult = z.object({
+  suggestedLabel: z.string().trim().min(1).max(50),
+  confidence: z.number().min(0).max(1),
+  rationale: z.string(),
+});
+
+const BOOKMARK_TITLE_SCHEMA: Schema = {
+  type: SchemaType.OBJECT,
+  properties: {
+    suggestedTitle: { type: SchemaType.STRING },
+    confidence: { type: SchemaType.NUMBER },
+    rationale: { type: SchemaType.STRING },
+  },
+  required: ['suggestedTitle', 'confidence', 'rationale'],
+};
+const BookmarkTitleResult = z.object({
+  suggestedTitle: z.string().trim().min(1).max(60),
+  confidence: z.number().min(0).max(1),
+  rationale: z.string(),
+});
+
+const BOOKMARK_SUGGESTIONS_SCHEMA: Schema = {
+  type: SchemaType.OBJECT,
+  properties: {
+    suggestedBookmarks: {
+      type: SchemaType.ARRAY,
+      items: {
+        type: SchemaType.OBJECT,
+        properties: {
+          pageNumber: { type: SchemaType.NUMBER },
+          title: { type: SchemaType.STRING },
+          level: { type: SchemaType.NUMBER },
+        },
+        required: ['pageNumber', 'title', 'level'],
+      },
+    },
+    guidance: { type: SchemaType.STRING },
+    confidence: { type: SchemaType.NUMBER },
+    rationale: { type: SchemaType.STRING },
+  },
+  required: ['confidence', 'rationale'],
+};
+// Same Codex finding as ReadingOrderResult/HeadingCorrectionResult -- omitting
+// both suggestedBookmarks and guidance must not pass validation, since
+// analyzeBookmark's own fallback (`data.guidance || \`Add bookmarks: ${preview}\``)
+// would otherwise persist "Add bookmarks: " as if it were real guidance.
+const BookmarkSuggestionsResult = z
+  .object({
+    suggestedBookmarks: z
+      .array(
+        z.object({
+          pageNumber: z.number(),
+          title: z.string().trim().min(1),
+          level: z.number(),
+        })
+      )
+      .optional(),
+    guidance: z.string().trim().min(1).optional(),
+    confidence: z.number().min(0).max(1),
+    rationale: z.string(),
+  })
+  .refine(data => (data.suggestedBookmarks && data.suggestedBookmarks.length > 0) || !!data.guidance, {
+    message: 'Either a non-empty suggestedBookmarks or a non-empty guidance is required',
+  });
 
 // ─── Service ─────────────────────────────────────────────────────────────────
 
@@ -1571,15 +1788,19 @@ class AiAnalysisService {
       '{"classification":"decorative"|"navigation"|"semantic","confidence":0.0-1.0,"guidance":"fix instruction"}';
 
     try {
-      const response = await geminiService.generateText(prompt, { model: 'flash', maxOutputTokens: 512 });
-      const data = this.parseAiJson<{
-        classification: string;
-        confidence: number;
-        guidance: string;
-      }>(response.text);
-      if (!data) return null;
+      const { data, usage } = await geminiService.generateWithSchema(prompt, ListClassificationResult, {
+        model: 'flash',
+        maxOutputTokens: 2048,
+        responseSchema: LIST_CLASSIFICATION_SCHEMA,
+      });
 
-      const listUsage = response.usage ? { promptTokens: response.usage.promptTokens, completionTokens: response.usage.completionTokens } : undefined;
+      const listUsage = usage ? { promptTokens: usage.promptTokens, completionTokens: usage.completionTokens } : undefined;
+      const guidanceOrDefault =
+        data.guidance ||
+        (data.classification === 'navigation'
+          ? 'Use <TOC>/<TOCI> tags instead of <L>/<LI> tags for navigation lists.'
+          : 'Add proper <L>, <LI>, <Lbl>, <LBody> tags in your authoring tool.');
+      const rationale = data.guidance ?? 'AI-classified based on list item content';
 
       if (
         data.classification === 'decorative' &&
@@ -1591,7 +1812,7 @@ class AiAnalysisService {
           value: 'decorative',
           guidance: 'These list items appear decorative and have been auto-resolved.',
           confidence: data.confidence,
-          rationale: data.guidance,
+          rationale,
           model: 'gemini-flash',
           applyMode: 'auto-resolve',
           usage: listUsage,
@@ -1600,13 +1821,9 @@ class AiAnalysisService {
 
       return {
         suggestionType: 'list-classify',
-        guidance:
-          data.guidance ||
-          (data.classification === 'navigation'
-            ? 'Use <TOC>/<TOCI> tags instead of <L>/<LI> tags for navigation lists.'
-            : 'Add proper <L>, <LI>, <Lbl>, <LBody> tags in your authoring tool.'),
+        guidance: guidanceOrDefault,
         confidence: data.confidence,
-        rationale: data.guidance,
+        rationale,
         model: 'gemini-flash',
         applyMode: 'guidance-only',
         usage: listUsage,
@@ -1634,15 +1851,13 @@ class AiAnalysisService {
       '{"suggestedOrder":["text item 1","text item 2"],"confidence":0.0-1.0,"guidance":"fix instruction"}';
 
     try {
-      const response = await geminiService.generateText(prompt, { model: 'flash', maxOutputTokens: 1024 });
-      const data = this.parseAiJson<{
-        suggestedOrder: string[];
-        confidence: number;
-        guidance: string;
-      }>(response.text);
-      if (!data) return null;
+      const { data, usage } = await geminiService.generateWithSchema(prompt, ReadingOrderResult, {
+        model: 'flash',
+        maxOutputTokens: 2048,
+        responseSchema: READING_ORDER_SCHEMA,
+      });
 
-      const orderPreview = data.suggestedOrder
+      const orderPreview = (data.suggestedOrder ?? [])
         .slice(0, 5)
         .map((t, i) => `${i + 1}. ${t}`)
         .join('; ');
@@ -1654,7 +1869,7 @@ class AiAnalysisService {
         rationale: `Analyzed ${page.content.length} text items on page ${issue.pageNumber}`,
         model: 'gemini-flash',
         applyMode: 'guidance-only',
-        usage: response.usage ? { promptTokens: response.usage.promptTokens, completionTokens: response.usage.completionTokens } : undefined,
+        usage: usage ? { promptTokens: usage.promptTokens, completionTokens: usage.completionTokens } : undefined,
       };
     } catch (err) {
       logger.warn(`[AiAnalysis] analyzeReadingOrder failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -1681,16 +1896,13 @@ class AiAnalysisService {
       '"guidance":"fix instruction","confidence":0.0-1.0,"rationale":"brief"}';
 
     try {
-      const response = await geminiService.generateText(prompt, { model: 'flash', maxOutputTokens: 1024 });
-      const data = this.parseAiJson<{
-        correctedHeadings: Array<{ text: string; currentLevel: number; suggestedLevel: number }>;
-        guidance: string;
-        confidence: number;
-        rationale: string;
-      }>(response.text);
-      if (!data) return null;
+      const { data, usage } = await geminiService.generateWithSchema(prompt, HeadingCorrectionResult, {
+        model: 'flash',
+        maxOutputTokens: 2048,
+        responseSchema: HEADING_CORRECTION_SCHEMA,
+      });
 
-      const corrections = data.correctedHeadings
+      const corrections = (data.correctedHeadings ?? [])
         .slice(0, 3)
         .map(h => `"${h.text.slice(0, 40)}": H${h.currentLevel}→H${h.suggestedLevel}`)
         .join('; ');
@@ -1702,7 +1914,7 @@ class AiAnalysisService {
         rationale: data.rationale,
         model: 'gemini-flash',
         applyMode: 'guidance-only',
-        usage: response.usage ? { promptTokens: response.usage.promptTokens, completionTokens: response.usage.completionTokens } : undefined,
+        usage: usage ? { promptTokens: usage.promptTokens, completionTokens: usage.completionTokens } : undefined,
       };
     } catch (err) {
       logger.warn(`[AiAnalysis] analyzeHeading failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -1730,13 +1942,11 @@ class AiAnalysisService {
       'Respond ONLY with JSON:\n{"languageCode":"string","confidence":0.0-1.0,"rationale":"brief"}';
 
     try {
-      const response = await geminiService.generateText(prompt, { model: 'flash', maxOutputTokens: 256 });
-      const data = this.parseAiJson<{
-        languageCode: string;
-        confidence: number;
-        rationale: string;
-      }>(response.text);
-      if (!data?.languageCode) return null;
+      const { data, usage } = await geminiService.generateWithSchema(prompt, LanguageDetectionResult, {
+        model: 'flash',
+        maxOutputTokens: 2048,
+        responseSchema: LANGUAGE_DETECTION_SCHEMA,
+      });
 
       return {
         suggestionType: 'language',
@@ -1749,7 +1959,7 @@ class AiAnalysisService {
         rationale: data.rationale,
         model: 'gemini-flash',
         applyMode: mode,
-        usage: response.usage ? { promptTokens: response.usage.promptTokens, completionTokens: response.usage.completionTokens } : undefined,
+        usage: usage ? { promptTokens: usage.promptTokens, completionTokens: usage.completionTokens } : undefined,
       };
     } catch (err) {
       logger.warn(`[AiAnalysis] analyzeLanguage failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -1863,13 +2073,11 @@ class AiAnalysisService {
       'Respond ONLY with JSON:\n{"suggestedText":"string","confidence":0.0-1.0,"rationale":"brief"}';
 
     try {
-      const response = await geminiService.generateText(prompt, { model: 'flash', maxOutputTokens: 256 });
-      const data = this.parseAiJson<{
-        suggestedText: string;
-        confidence: number;
-        rationale: string;
-      }>(response.text);
-      if (!data?.suggestedText) return null;
+      const { data, usage } = await geminiService.generateWithSchema(prompt, LinkTextResult, {
+        model: 'flash',
+        maxOutputTokens: 2048,
+        responseSchema: LINK_TEXT_SCHEMA,
+      });
 
       return {
         suggestionType: 'link-text',
@@ -1882,7 +2090,7 @@ class AiAnalysisService {
         rationale: data.rationale,
         model: 'gemini-flash',
         applyMode: mode,
-        usage: response.usage ? { promptTokens: response.usage.promptTokens, completionTokens: response.usage.completionTokens } : undefined,
+        usage: usage ? { promptTokens: usage.promptTokens, completionTokens: usage.completionTokens } : undefined,
       };
     } catch (err) {
       logger.warn(`[AiAnalysis] analyzeLinkText failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -1913,13 +2121,11 @@ class AiAnalysisService {
       'Respond ONLY with JSON:\n{"suggestedLabel":"string","confidence":0.0-1.0,"rationale":"brief"}';
 
     try {
-      const response = await geminiService.generateText(prompt, { model: 'flash', maxOutputTokens: 256 });
-      const data = this.parseAiJson<{
-        suggestedLabel: string;
-        confidence: number;
-        rationale: string;
-      }>(response.text);
-      if (!data?.suggestedLabel) return null;
+      const { data, usage } = await geminiService.generateWithSchema(prompt, FormFieldLabelResult, {
+        model: 'flash',
+        maxOutputTokens: 2048,
+        responseSchema: FORM_FIELD_LABEL_SCHEMA,
+      });
 
       return {
         suggestionType: 'form-field-label',
@@ -1932,7 +2138,7 @@ class AiAnalysisService {
         rationale: data.rationale,
         model: 'gemini-flash',
         applyMode: mode,
-        usage: response.usage ? { promptTokens: response.usage.promptTokens, completionTokens: response.usage.completionTokens } : undefined,
+        usage: usage ? { promptTokens: usage.promptTokens, completionTokens: usage.completionTokens } : undefined,
       };
     } catch (err) {
       logger.warn(`[AiAnalysis] analyzeFormField failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -1958,13 +2164,11 @@ class AiAnalysisService {
         'Respond ONLY with JSON:\n{"suggestedTitle":"string","confidence":0.0-1.0,"rationale":"brief"}';
 
       try {
-        const response = await geminiService.generateText(prompt, { model: 'flash', maxOutputTokens: 256 });
-        const data = this.parseAiJson<{
-          suggestedTitle: string;
-          confidence: number;
-          rationale: string;
-        }>(response.text);
-        if (!data?.suggestedTitle) return null;
+        const { data, usage } = await geminiService.generateWithSchema(prompt, BookmarkTitleResult, {
+          model: 'flash',
+          maxOutputTokens: 2048,
+          responseSchema: BOOKMARK_TITLE_SCHEMA,
+        });
 
         return {
           suggestionType: 'bookmark-title',
@@ -1977,7 +2181,7 @@ class AiAnalysisService {
           rationale: data.rationale,
           model: 'gemini-flash',
           applyMode: mode,
-          usage: response.usage ? { promptTokens: response.usage.promptTokens, completionTokens: response.usage.completionTokens } : undefined,
+          usage: usage ? { promptTokens: usage.promptTokens, completionTokens: usage.completionTokens } : undefined,
         };
       } catch (err) {
         logger.warn(`[AiAnalysis] analyzeBookmark (generic) failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -2014,20 +2218,18 @@ class AiAnalysisService {
       '"guidance":"how to add bookmarks","confidence":0.0-1.0,"rationale":"brief"}';
 
     try {
-      const response = await geminiService.generateText(prompt, { model: 'flash', maxOutputTokens: 1024 });
-      const data = this.parseAiJson<{
-        suggestedBookmarks: Array<{ pageNumber: number; title: string; level: number }>;
-        guidance: string;
-        confidence: number;
-        rationale: string;
-      }>(response.text);
-      if (!data) return null;
+      const { data, usage } = await geminiService.generateWithSchema(prompt, BookmarkSuggestionsResult, {
+        model: 'flash',
+        maxOutputTokens: 2048,
+        responseSchema: BOOKMARK_SUGGESTIONS_SCHEMA,
+      });
 
-      const preview = data.suggestedBookmarks
+      const suggestedBookmarks = data.suggestedBookmarks ?? [];
+      const preview = suggestedBookmarks
         .slice(0, 3)
         .map(b => `"${b.title}" (p.${b.pageNumber})`)
         .join(', ');
-      const more = data.suggestedBookmarks.length > 3 ? ` + ${data.suggestedBookmarks.length - 3} more` : '';
+      const more = suggestedBookmarks.length > 3 ? ` + ${suggestedBookmarks.length - 3} more` : '';
 
       return {
         suggestionType: 'bookmark-missing',
@@ -2036,7 +2238,7 @@ class AiAnalysisService {
         rationale: data.rationale,
         model: 'gemini-flash',
         applyMode: 'guidance-only',
-        usage: response.usage ? { promptTokens: response.usage.promptTokens, completionTokens: response.usage.completionTokens } : undefined,
+        usage: usage ? { promptTokens: usage.promptTokens, completionTokens: usage.completionTokens } : undefined,
       };
     } catch (err) {
       logger.warn(`[AiAnalysis] analyzeBookmark (missing) failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -2237,28 +2439,6 @@ class AiAnalysisService {
       return canvas.toBuffer('image/png').toString('base64');
     } catch (err) {
       logger.warn(`[AiAnalysis] Failed to render page ${pageNumber}: ${err instanceof Error ? err.message : String(err)}`);
-      return null;
-    }
-  }
-
-  private parseAiJson<T>(text: string): T | null {
-    try {
-      let jsonText = text.trim();
-      if (jsonText.startsWith('```json')) {
-        jsonText = jsonText.replace(/^```json\n?/, '').replace(/\n?```$/, '').trim();
-      } else if (jsonText.startsWith('```')) {
-        jsonText = jsonText.replace(/^```\n?/, '').replace(/\n?```$/, '').trim();
-      }
-      return JSON.parse(jsonText) as T;
-    } catch {
-      const match = text.match(/\{[\s\S]*\}/);
-      if (match) {
-        try {
-          return JSON.parse(match[0]) as T;
-        } catch {
-          return null;
-        }
-      }
       return null;
     }
   }
