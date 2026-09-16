@@ -8,22 +8,28 @@ import { pdfModifierService } from './pdf-modifier.service';
 /**
  * A resolved PDF /ColorSpace, reduced to exactly the shapes confirmed
  * real against live Math_Kim image data (a 1,313-image survey): direct
- * DeviceGray/RGB/CMYK, a single-colorant Separation/DeviceN (a common
- * prepress convention for simulating plain black ink via a spot color --
- * confirmed real: `/DeviceN [/Black] /DeviceCMYK ...`), and Indexed with
- * any of those as its base. ICCBased is accepted only when its /N
- * (component count) unambiguously maps to one of gray/rgb/cmyk -- treating
- * the ICC-managed data as if it were the plain device colorspace of the
- * same channel count is an approximation (no real ICC profile transform is
- * applied), acceptable here because the end use is a visual description
- * for an AI vision model, not color-accurate reproduction.
+ * DeviceGray/RGB/CMYK, a single /Black-colorant Separation/DeviceN (a
+ * common prepress convention for simulating plain black ink via a spot
+ * color -- confirmed real: `/DeviceN [/Black] /DeviceCMYK ...`), and
+ * Indexed with any of those as its base. ICCBased is accepted only when
+ * its /N (component count) unambiguously maps to one of gray/rgb/cmyk --
+ * treating the ICC-managed data as if it were the plain device colorspace
+ * of the same channel count is an approximation (no real ICC profile
+ * transform is applied), acceptable here because the end use is a visual
+ * description for an AI vision model, not color-accurate reproduction.
  *
- * Deliberately does NOT attempt Lab, CalRGB/CalGray, Pattern, or a
- * multi-colorant DeviceN/Separation -- none appeared in the real survey,
- * and each needs real, unverified-here machinery (Lab->RGB conversion, a
- * PDF Function evaluator for a genuine tint transform) to render correctly
- * rather than plausibly. resolveColorSpaceInfo returns null for these,
- * and callers decline (return null) rather than guess.
+ * Deliberately does NOT attempt Lab, CalRGB/CalGray, Pattern, a
+ * multi-colorant DeviceN/Separation, or a non-/Black single colorant (e.g.
+ * a real spot color like /PANTONE_186_C) -- none appeared in the real
+ * survey, and each needs real, unverified-here machinery (Lab->RGB
+ * conversion, a PDF Function evaluator for a genuine tint transform) to
+ * render correctly rather than plausibly -- convertSamplesToRgb's
+ * grayscale-inversion treatment for 'separation' is only correct for a
+ * colorant that actually renders as black (CodeRabbit finding on PR #564,
+ * confirmed real: an arbitrary spot color has its own real color via its
+ * alternate space + tint transform, which a black-tint assumption would
+ * silently paint wrong). resolveColorSpaceInfo returns null for all of
+ * these, and callers decline (return null) rather than guess.
  */
 export type ColorSpaceInfo =
   | { kind: 'gray' }
@@ -72,14 +78,27 @@ export function resolveColorSpaceInfo(context: PDFContext, csObj: unknown): Colo
       if (!base || !lookup) return null;
       return { kind: 'indexed', base, lookup };
     }
-    if (kind === '/Separation') return { kind: 'separation' };
+    // Separation/DeviceN's convertSamplesToRgb treatment (invert the tint
+    // value into a grayscale intensity) is only correct for a colorant that
+    // actually renders as black -- CodeRabbit finding on PR #564, confirmed
+    // real: an arbitrary spot color (e.g. /Separation /PANTONE_186_C, a
+    // red) has its own alternate-space + tint-transform mapping to a real
+    // color this module doesn't evaluate, and treating it as black-tint
+    // would silently paint the wrong color into the image sent to Gemini.
+    // Only the confirmed-real case (/Black, the standard prepress
+    // convention for simulating plain black ink through a spot channel) is
+    // accepted; every other colorant name declines rather than guesses.
+    if (kind === '/Separation') {
+      const name = arr[1]?.toString();
+      return name === '/Black' ? { kind: 'separation' } : null;
+    }
     if (kind === '/DeviceN') {
       const names = context.lookup(arr[1]);
-      const count = names instanceof PDFArray ? names.asArray().length : undefined;
-      // Only the single-colorant case is handled -- see this type's own
-      // doc comment for why a genuine multi-colorant tint transform isn't
-      // attempted.
-      return count === 1 ? { kind: 'separation' } : null;
+      const nameArr = names instanceof PDFArray ? names.asArray() : undefined;
+      // Only the single, confirmed-black-colorant case is handled -- see
+      // this type's own doc comment for why a genuine multi-colorant tint
+      // transform isn't attempted.
+      return nameArr?.length === 1 && nameArr[0]?.toString() === '/Black' ? { kind: 'separation' } : null;
     }
     return null; // CalRGB/CalGray/Lab/Pattern -- not observed in real data
   }
@@ -105,14 +124,107 @@ export function decodeStreamBytes(xObject: PDFRawStream | PDFStream): Uint8Array
   const filter = xObject.dict.get(PDFName.of('Filter'));
   if (filter === undefined) return raw;
   const filterName = filter.toString();
-  if (filterName === '/FlateDecode') {
-    try {
-      return zlib.inflateSync(Buffer.from(raw));
-    } catch {
-      return null;
-    }
+  if (filterName !== '/FlateDecode') return null;
+
+  let inflated: Uint8Array;
+  try {
+    inflated = zlib.inflateSync(Buffer.from(raw));
+  } catch {
+    return null;
   }
-  return null;
+
+  // A /Predictor > 1 in /DecodeParms is a SEPARATE encoding layer on top of
+  // Flate (TIFF-style horizontal differencing, or PNG-style per-row
+  // filtering) -- inflateSync only reverses the zlib compression, not this.
+  // CodeRabbit finding on PR #564, confirmed real: skipping this produced a
+  // structurally-valid but pixel-corrupted image (still "succeeds", never
+  // throws) that could feed a plausible-looking but WRONG description to
+  // Gemini -- worse than declining outright.
+  const decodeParmsRaw = xObject.dict.get(PDFName.of('DecodeParms'));
+  const decodeParmsObj = decodeParmsRaw !== undefined ? xObject.dict.context.lookup(decodeParmsRaw) : undefined;
+  const decodeParms = decodeParmsObj instanceof PDFDict ? decodeParmsObj : undefined;
+  const predictor = decodeParms?.get(PDFName.of('Predictor'));
+  const predictorNum = predictor instanceof PDFNumber ? predictor.asNumber() : 1;
+  if (predictorNum === 1) return inflated;
+
+  const colorsObj = decodeParms?.get(PDFName.of('Colors'));
+  const colors = colorsObj instanceof PDFNumber ? colorsObj.asNumber() : 1;
+  const columnsObj = decodeParms?.get(PDFName.of('Columns'));
+  const columns = columnsObj instanceof PDFNumber ? columnsObj.asNumber() : 1;
+  return reversePredictor(inflated, predictorNum, colors, columns);
+}
+
+/**
+ * Reverses PDF's two predictor encodings (PDF32000-1:2008 Table 8),
+ * assuming 8-bit samples throughout -- matches this module's own existing
+ * bitsPerComponent === 8 scope boundary (checked by convertToBase64's
+ * caller). Predictor 2 is TIFF-style horizontal differencing; 10-15 are
+ * the PNG predictors, each row individually tagged with its own filter
+ * type byte regardless of which specific value (10-15) was declared.
+ * Returns null for a genuinely malformed stream (byte count doesn't
+ * divide evenly into whole rows) or an unrecognized per-row tag, rather
+ * than guessing.
+ */
+function reversePredictor(data: Uint8Array, predictor: number, colors: number, columns: number): Uint8Array | null {
+  const bpp = Math.max(1, colors);
+  const rowBytes = colors * columns;
+  if (rowBytes <= 0) return null;
+
+  if (predictor === 2) {
+    if (data.length % rowBytes !== 0) return null;
+    const out = new Uint8Array(data.length);
+    const rows = data.length / rowBytes;
+    for (let r = 0; r < rows; r++) {
+      const rowStart = r * rowBytes;
+      for (let i = 0; i < rowBytes; i++) {
+        const left = i >= bpp ? out[rowStart + i - bpp] : 0;
+        out[rowStart + i] = (data[rowStart + i] + left) & 0xff;
+      }
+    }
+    return out;
+  }
+
+  if (predictor >= 10 && predictor <= 15) {
+    const stride = rowBytes + 1; // +1 for each row's own leading filter-type tag
+    if (data.length % stride !== 0) return null;
+    const rows = data.length / stride;
+    const out = new Uint8Array(rows * rowBytes);
+    let prevRow = new Uint8Array(rowBytes);
+    for (let r = 0; r < rows; r++) {
+      const tag = data[r * stride];
+      const rowIn = data.subarray(r * stride + 1, r * stride + 1 + rowBytes);
+      const rowOut = out.subarray(r * rowBytes, (r + 1) * rowBytes);
+      for (let i = 0; i < rowBytes; i++) {
+        const a = i >= bpp ? rowOut[i - bpp] : 0; // left (already-decoded)
+        const b = prevRow[i]; // up
+        const c = i >= bpp ? prevRow[i - bpp] : 0; // upper-left
+        let value: number;
+        switch (tag) {
+          case 0: value = rowIn[i]; break; // None
+          case 1: value = rowIn[i] + a; break; // Sub
+          case 2: value = rowIn[i] + b; break; // Up
+          case 3: value = rowIn[i] + Math.floor((a + b) / 2); break; // Average
+          case 4: value = rowIn[i] + paethPredictor(a, b, c); break; // Paeth
+          default: return null; // unrecognized tag -- decline rather than guess
+        }
+        rowOut[i] = value & 0xff;
+      }
+      prevRow = rowOut;
+    }
+    return out;
+  }
+
+  return null; // unrecognized predictor value
+}
+
+function paethPredictor(a: number, b: number, c: number): number {
+  const p = a + b - c;
+  const pa = Math.abs(p - a);
+  const pb = Math.abs(p - b);
+  const pc = Math.abs(p - c);
+  if (pa <= pb && pa <= pc) return a;
+  if (pb <= pc) return b;
+  return c;
 }
 
 /**

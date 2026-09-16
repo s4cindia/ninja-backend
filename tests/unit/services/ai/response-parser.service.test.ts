@@ -107,6 +107,30 @@ describe('response-parser.service', () => {
       expect(meta).not.toHaveProperty('excerptAroundErrorPosition');
     });
 
+    // CodeRabbit finding on PR #564, confirmed real: a correction-prompt
+    // retry re-asks the SAME model to fix its JSON, which cannot un-block
+    // content the safety/recitation/language filter already rejected -- a
+    // blocked image or prompt is guaranteed to be blocked identically on
+    // retry, so retrying here only multiplies latency and real API calls
+    // for zero chance of success.
+    it('stops after the FIRST blocked response instead of burning every retry attempt', async () => {
+      const callModel = vi
+        .fn()
+        .mockRejectedValue(new GeminiBlockedResponseError('Candidate was blocked due to SAFETY', 'SAFETY'));
+
+      await expect(
+        responseParserService.parseWithRetryUsing(callModel, 'prompt', ASSESSMENT_SCHEMA, { maxRetries: 2 })
+      ).rejects.toThrow('Candidate was blocked due to SAFETY');
+
+      expect(callModel).toHaveBeenCalledTimes(1);
+
+      // The log message must reflect what actually happened (1 real
+      // attempt), not the configured ceiling (3) -- a misleading "Exhausted
+      // 3 attempt(s)" log would overstate real API usage during debugging.
+      const [message] = vi.mocked(logger.error).mock.calls[0];
+      expect(message).toContain('Exhausted 1 attempt(s)');
+    });
+
     it('does not log when a retry eventually succeeds', async () => {
       const callModel = vi
         .fn()

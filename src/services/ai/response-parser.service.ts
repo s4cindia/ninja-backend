@@ -83,8 +83,10 @@ class ResponseParserService {
     let lastResponseText: string | undefined;
     let lastFinishReason: string | undefined;
     let totalUsage: GeminiResponse['usage'] | undefined;
+    let actualAttempts = 0;
 
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      actualAttempts = attempt + 1;
       // Cleared at the top of every attempt (not just on success) so a
       // later attempt's callModel() throwing before assignment -- e.g. a
       // transport/rate-limit error, distinct from the model actually
@@ -124,6 +126,15 @@ class ResponseParserService {
         // a finish reason for this attempt can come from.
         if (error instanceof GeminiBlockedResponseError) {
           lastFinishReason = error.finishReason;
+          // A correction prompt re-asks the SAME model to fix its JSON --
+          // it cannot un-block content the safety/recitation/language
+          // filter already rejected, so a retry here is guaranteed to hit
+          // the identical block again. CodeRabbit finding on PR #564,
+          // confirmed real: this used to burn all maxRetries+1 attempts
+          // (typically 3 real vision/text calls) on every blocked image
+          // before ever reaching the caller's own blocked-response
+          // fallback, needlessly multiplying latency and API cost.
+          break;
         }
       }
     }
@@ -164,7 +175,7 @@ class ResponseParserService {
       : undefined;
 
     logger.error(
-      `[ResponseParser] Exhausted ${maxRetries + 1} attempt(s) parsing AI response: ${lastError?.message}`,
+      `[ResponseParser] Exhausted ${actualAttempts} attempt(s) parsing AI response: ${lastError?.message}`,
       {
         ...(excerpt !== undefined ? { excerptAroundErrorPosition: excerpt } : {}),
         responseLength: lastResponseText?.length,

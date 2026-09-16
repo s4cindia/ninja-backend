@@ -97,9 +97,16 @@ describe('channelsFor', () => {
 });
 
 describe('decodeStreamBytes', () => {
-  async function buildRawStream(contents: Uint8Array, filter?: string): Promise<PDFRawStream> {
+  async function buildRawStream(
+    contents: Uint8Array,
+    filter?: string,
+    decodeParms?: { Predictor: number; Colors?: number; Columns?: number }
+  ): Promise<PDFRawStream> {
     const doc = await PDFDocument.create();
-    const dict = doc.context.obj(filter ? { Filter: PDFName.of(filter) } : {});
+    const dictObj: Record<string, unknown> = {};
+    if (filter) dictObj.Filter = PDFName.of(filter);
+    if (decodeParms) dictObj.DecodeParms = decodeParms;
+    const dict = doc.context.obj(dictObj);
     return PDFRawStream.of(dict, contents);
   }
 
@@ -125,6 +132,81 @@ describe('decodeStreamBytes', () => {
   it('declines malformed FlateDecode data rather than throwing', async () => {
     const stream = await buildRawStream(Uint8Array.from([0xff, 0xff, 0xff, 0xff]), 'FlateDecode');
     expect(decodeStreamBytes(stream)).toBeNull();
+  });
+
+  // CodeRabbit finding on PR #564, confirmed real: a /Predictor > 1 in
+  // /DecodeParms is a SEPARATE encoding layer on top of Flate --
+  // inflateSync only reverses the zlib compression, not this. Skipping it
+  // produces a structurally-valid but pixel-corrupted image (still
+  // "succeeds", never throws) that could feed a plausible-looking but
+  // WRONG description to Gemini -- worse than declining outright.
+  describe('predictor decoding (PDF32000-1:2008 Table 8)', () => {
+    it('reverses TIFF Predictor 2 (horizontal differencing)', async () => {
+      // 1 colorant, 2 columns, 2 rows. Original: [10,20, 30,40].
+      // TIFF-2 encoding: each byte (after the first per row) is the
+      // difference from the PREVIOUS byte in the same row.
+      const encoded = Uint8Array.from([10, 10, 30, 10]);
+      const compressed = zlib.deflateSync(Buffer.from(encoded));
+      const stream = await buildRawStream(compressed, 'FlateDecode', { Predictor: 2, Colors: 1, Columns: 2 });
+      const decoded = decodeStreamBytes(stream);
+      expect(Array.from(decoded!)).toEqual([10, 20, 30, 40]);
+    });
+
+    it('reverses PNG predictors using each row\'s own filter-type tag byte (None then Up)', async () => {
+      // Same original pixels as above. Row 0 tagged None (0): stored as-is.
+      // Row 1 tagged Up (2): each byte is the difference from the SAME
+      // column in the previous (already-decoded) row.
+      const encoded = Uint8Array.from([0, 10, 20, /* row 0: None */ 2, 20, 20 /* row 1: Up */]);
+      const compressed = zlib.deflateSync(Buffer.from(encoded));
+      const stream = await buildRawStream(compressed, 'FlateDecode', { Predictor: 15, Colors: 1, Columns: 2 });
+      const decoded = decodeStreamBytes(stream);
+      expect(Array.from(decoded!)).toEqual([10, 20, 30, 40]);
+    });
+
+    it('reverses the PNG Paeth predictor', async () => {
+      // Row 0 (None): [10, 20]. Row 1 (Paeth, tag 4), original [30, 40]:
+      // byte 0 -- a=0, b=10 (up), c=0 -> paeth predicts b=10 (pa=10 loses
+      // to pb=0) -> stored = 30-10 = 20.
+      // byte 1 -- a=30 (left, already decoded), b=20 (up), c=10
+      // (upper-left) -> p=30+20-10=40, pa=|40-30|=10 is the smallest
+      // (pa<=pb and pa<=pc) -> paeth predicts a=30 -> stored = 40-30 = 10.
+      // (Independently verified via a standalone reference implementation,
+      // not hand-arithmetic alone, before trusting this fixture.)
+      const encoded = Uint8Array.from([0, 10, 20, /* row 0: None */ 4, 20, 10 /* row 1: Paeth */]);
+      const compressed = zlib.deflateSync(Buffer.from(encoded));
+      const stream = await buildRawStream(compressed, 'FlateDecode', { Predictor: 15, Colors: 1, Columns: 2 });
+      const decoded = decodeStreamBytes(stream);
+      expect(Array.from(decoded!)).toEqual([10, 20, 30, 40]);
+    });
+
+    it('treats Predictor 1 (or absent) as a no-op, matching the plain FlateDecode behavior', async () => {
+      const original = Uint8Array.from([1, 2, 3, 4]);
+      const compressed = zlib.deflateSync(Buffer.from(original));
+      const stream = await buildRawStream(compressed, 'FlateDecode', { Predictor: 1 });
+      expect(Array.from(decodeStreamBytes(stream)!)).toEqual([1, 2, 3, 4]);
+    });
+
+    it('declines an unrecognized predictor value rather than guessing', async () => {
+      const compressed = zlib.deflateSync(Buffer.from([1, 2, 3, 4]));
+      const stream = await buildRawStream(compressed, 'FlateDecode', { Predictor: 99, Colors: 1, Columns: 2 });
+      expect(decodeStreamBytes(stream)).toBeNull();
+    });
+
+    it('declines predictor-encoded data whose length does not divide evenly into whole rows', async () => {
+      // 3 bytes can't form whole (Colors*Columns + 1) = 3-byte PNG rows... use a
+      // genuinely mismatched case instead: Colors*Columns=2, so a valid
+      // PNG-predictor stride is 3; 4 bytes isn't a multiple of 3.
+      const compressed = zlib.deflateSync(Buffer.from([0, 1, 2, 3]));
+      const stream = await buildRawStream(compressed, 'FlateDecode', { Predictor: 15, Colors: 1, Columns: 2 });
+      expect(decodeStreamBytes(stream)).toBeNull();
+    });
+
+    it('declines an unrecognized per-row PNG filter tag rather than guessing', async () => {
+      const encoded = Uint8Array.from([9, 10, 20]); // tag 9 is not a real PNG filter type
+      const compressed = zlib.deflateSync(Buffer.from(encoded));
+      const stream = await buildRawStream(compressed, 'FlateDecode', { Predictor: 15, Colors: 1, Columns: 2 });
+      expect(decodeStreamBytes(stream)).toBeNull();
+    });
   });
 });
 
@@ -190,6 +272,33 @@ describe('resolveColorSpaceInfo', () => {
     const names = PDFArray.withContext(doc.context);
     names.push(PDFName.of('Cyan'));
     names.push(PDFName.of('Magenta'));
+    const csArray = PDFArray.withContext(doc.context);
+    csArray.push(PDFName.of('DeviceN'));
+    csArray.push(names);
+    csArray.push(PDFName.of('DeviceCMYK'));
+    expect(resolveColorSpaceInfo(doc.context, csArray)).toBeNull();
+  });
+
+  // CodeRabbit finding on PR #564, confirmed real: convertSamplesToRgb's
+  // 'separation' treatment (invert tint into a grayscale intensity) is
+  // only correct for a colorant that actually renders as black -- a real
+  // spot color (e.g. a Pantone red) has its own alternate-space + tint-
+  // transform mapping to a genuinely different color this module doesn't
+  // evaluate, and a black-tint assumption would silently paint the wrong
+  // color into the image sent to Gemini.
+  it('declines a Separation whose colorant is NOT Black rather than assuming it renders as black ink', async () => {
+    const doc = await PDFDocument.create();
+    const csArray = PDFArray.withContext(doc.context);
+    csArray.push(PDFName.of('Separation'));
+    csArray.push(PDFName.of('PANTONE_186_C'));
+    csArray.push(PDFName.of('DeviceCMYK'));
+    expect(resolveColorSpaceInfo(doc.context, csArray)).toBeNull();
+  });
+
+  it('declines a single-colorant DeviceN whose colorant is NOT Black', async () => {
+    const doc = await PDFDocument.create();
+    const names = PDFArray.withContext(doc.context);
+    names.push(PDFName.of('Orange'));
     const csArray = PDFArray.withContext(doc.context);
     csArray.push(PDFName.of('DeviceN'));
     csArray.push(names);
