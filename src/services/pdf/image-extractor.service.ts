@@ -1,8 +1,297 @@
 import * as pdfjsLib from 'pdfjs-dist/legacy/build/pdf.mjs';
-import { PDFName, PDFDict, PDFStream, PDFRawStream, PDFArray, PDFString, PDFHexString } from 'pdf-lib';
+import zlib from 'zlib';
+import { PDFName, PDFDict, PDFStream, PDFRawStream, PDFArray, PDFString, PDFHexString, PDFRef, PDFNumber, PDFContext } from 'pdf-lib';
 import sharp from 'sharp';
 import { pdfParserService, ParsedPDF } from './pdf-parser.service';
 import { pdfModifierService } from './pdf-modifier.service';
+
+/**
+ * A resolved PDF /ColorSpace, reduced to exactly the shapes confirmed
+ * real against live Math_Kim image data (a 1,313-image survey): direct
+ * DeviceGray/RGB/CMYK, a single /Black-colorant Separation/DeviceN (a
+ * common prepress convention for simulating plain black ink via a spot
+ * color -- confirmed real: `/DeviceN [/Black] /DeviceCMYK ...`), and
+ * Indexed with any of those as its base. ICCBased is accepted only when
+ * its /N (component count) unambiguously maps to one of gray/rgb/cmyk --
+ * treating the ICC-managed data as if it were the plain device colorspace
+ * of the same channel count is an approximation (no real ICC profile
+ * transform is applied), acceptable here because the end use is a visual
+ * description for an AI vision model, not color-accurate reproduction.
+ *
+ * Deliberately does NOT attempt Lab, CalRGB/CalGray, Pattern, a
+ * multi-colorant DeviceN/Separation, or a non-/Black single colorant (e.g.
+ * a real spot color like /PANTONE_186_C) -- none appeared in the real
+ * survey, and each needs real, unverified-here machinery (Lab->RGB
+ * conversion, a PDF Function evaluator for a genuine tint transform) to
+ * render correctly rather than plausibly -- convertSamplesToRgb's
+ * grayscale-inversion treatment for 'separation' is only correct for a
+ * colorant that actually renders as black (CodeRabbit finding on PR #564,
+ * confirmed real: an arbitrary spot color has its own real color via its
+ * alternate space + tint transform, which a black-tint assumption would
+ * silently paint wrong). resolveColorSpaceInfo returns null for all of
+ * these, and callers decline (return null) rather than guess.
+ */
+export type ColorSpaceInfo =
+  | { kind: 'gray' }
+  | { kind: 'rgb' }
+  | { kind: 'cmyk' }
+  | { kind: 'separation' }
+  | { kind: 'indexed'; base: ColorSpaceInfo; lookup: Uint8Array };
+
+export function channelsFor(info: ColorSpaceInfo): number | null {
+  switch (info.kind) {
+    case 'gray': return 1;
+    case 'rgb': return 3;
+    case 'cmyk': return 4;
+    case 'separation': return 1;
+    case 'indexed': return 1; // one index byte per pixel, regardless of the base's own channel count
+    default: return null;
+  }
+}
+
+export function resolveColorSpaceInfo(context: PDFContext, csObj: unknown): ColorSpaceInfo | null {
+  if (csObj === undefined) return null;
+  const resolved = context.lookup(csObj as PDFRef);
+
+  if (resolved instanceof PDFArray) {
+    const arr = resolved.asArray();
+    const kind = arr[0]?.toString();
+
+    if (kind === '/ICCBased') {
+      const stream = context.lookup(arr[1]);
+      const n = stream instanceof PDFStream ? stream.dict.get(PDFName.of('N')) : undefined;
+      const nNum = n instanceof PDFNumber ? n.asNumber() : undefined;
+      if (nNum === 1) return { kind: 'gray' };
+      if (nNum === 3) return { kind: 'rgb' };
+      if (nNum === 4) return { kind: 'cmyk' };
+      return null;
+    }
+    if (kind === '/Indexed') {
+      const base = resolveColorSpaceInfo(context, arr[1]);
+      const lookupObj = context.lookup(arr[3]);
+      let lookup: Uint8Array | null = null;
+      if (lookupObj instanceof PDFString || lookupObj instanceof PDFHexString) {
+        lookup = Uint8Array.from(lookupObj.asBytes());
+      } else if (lookupObj instanceof PDFRawStream || lookupObj instanceof PDFStream) {
+        lookup = decodeStreamBytes(lookupObj);
+      }
+      if (!base || !lookup) return null;
+      return { kind: 'indexed', base, lookup };
+    }
+    // Separation/DeviceN's convertSamplesToRgb treatment (invert the tint
+    // value into a grayscale intensity) is only correct for a colorant that
+    // actually renders as black -- CodeRabbit finding on PR #564, confirmed
+    // real: an arbitrary spot color (e.g. /Separation /PANTONE_186_C, a
+    // red) has its own alternate-space + tint-transform mapping to a real
+    // color this module doesn't evaluate, and treating it as black-tint
+    // would silently paint the wrong color into the image sent to Gemini.
+    // Only the confirmed-real case (/Black, the standard prepress
+    // convention for simulating plain black ink through a spot channel) is
+    // accepted; every other colorant name declines rather than guesses.
+    if (kind === '/Separation') {
+      const name = arr[1]?.toString();
+      return name === '/Black' ? { kind: 'separation' } : null;
+    }
+    if (kind === '/DeviceN') {
+      const names = context.lookup(arr[1]);
+      const nameArr = names instanceof PDFArray ? names.asArray() : undefined;
+      // Only the single, confirmed-black-colorant case is handled -- see
+      // this type's own doc comment for why a genuine multi-colorant tint
+      // transform isn't attempted.
+      return nameArr?.length === 1 && nameArr[0]?.toString() === '/Black' ? { kind: 'separation' } : null;
+    }
+    return null; // CalRGB/CalGray/Lab/Pattern -- not observed in real data
+  }
+
+  switch (resolved?.toString()) {
+    case '/DeviceGray': return { kind: 'gray' };
+    case '/DeviceRGB': return { kind: 'rgb' };
+    case '/DeviceCMYK': return { kind: 'cmyk' };
+    default: return null;
+  }
+}
+
+/**
+ * Applies the stream's own /Filter, if any, to produce genuinely raw bytes
+ * -- PDFRawStream.contents/PDFStream.getContents() deliberately return the
+ * stream's stored (still-encoded) bytes, not decoded pixel data. Handles
+ * exactly the filters confirmed real in the same survey (none, or plain
+ * FlateDecode); declines (returns null) for anything else rather than
+ * guessing at an unimplemented decoder (e.g. LZWDecode, a filter array).
+ */
+export function decodeStreamBytes(xObject: PDFRawStream | PDFStream): Uint8Array | null {
+  const raw = xObject instanceof PDFRawStream ? xObject.contents : xObject.getContents();
+  const filter = xObject.dict.get(PDFName.of('Filter'));
+  if (filter === undefined) return raw;
+  const filterName = filter.toString();
+  if (filterName !== '/FlateDecode') return null;
+
+  let inflated: Uint8Array;
+  try {
+    inflated = zlib.inflateSync(Buffer.from(raw));
+  } catch {
+    return null;
+  }
+
+  // A /Predictor > 1 in /DecodeParms is a SEPARATE encoding layer on top of
+  // Flate (TIFF-style horizontal differencing, or PNG-style per-row
+  // filtering) -- inflateSync only reverses the zlib compression, not this.
+  // CodeRabbit finding on PR #564, confirmed real: skipping this produced a
+  // structurally-valid but pixel-corrupted image (still "succeeds", never
+  // throws) that could feed a plausible-looking but WRONG description to
+  // Gemini -- worse than declining outright.
+  const decodeParmsRaw = xObject.dict.get(PDFName.of('DecodeParms'));
+  const decodeParmsObj = decodeParmsRaw !== undefined ? xObject.dict.context.lookup(decodeParmsRaw) : undefined;
+  const decodeParms = decodeParmsObj instanceof PDFDict ? decodeParmsObj : undefined;
+  const predictor = decodeParms?.get(PDFName.of('Predictor'));
+  const predictorNum = predictor instanceof PDFNumber ? predictor.asNumber() : 1;
+  if (predictorNum === 1) return inflated;
+
+  const colorsObj = decodeParms?.get(PDFName.of('Colors'));
+  const colors = colorsObj instanceof PDFNumber ? colorsObj.asNumber() : 1;
+  const columnsObj = decodeParms?.get(PDFName.of('Columns'));
+  const columns = columnsObj instanceof PDFNumber ? columnsObj.asNumber() : 1;
+  return reversePredictor(inflated, predictorNum, colors, columns);
+}
+
+/**
+ * Reverses PDF's two predictor encodings (PDF32000-1:2008 Table 8),
+ * assuming 8-bit samples throughout -- matches this module's own existing
+ * bitsPerComponent === 8 scope boundary (checked by convertToBase64's
+ * caller). Predictor 2 is TIFF-style horizontal differencing; 10-15 are
+ * the PNG predictors, each row individually tagged with its own filter
+ * type byte regardless of which specific value (10-15) was declared.
+ * Returns null for a genuinely malformed stream (byte count doesn't
+ * divide evenly into whole rows) or an unrecognized per-row tag, rather
+ * than guessing.
+ */
+function reversePredictor(data: Uint8Array, predictor: number, colors: number, columns: number): Uint8Array | null {
+  const bpp = Math.max(1, colors);
+  const rowBytes = colors * columns;
+  if (rowBytes <= 0) return null;
+
+  if (predictor === 2) {
+    if (data.length % rowBytes !== 0) return null;
+    const out = new Uint8Array(data.length);
+    const rows = data.length / rowBytes;
+    for (let r = 0; r < rows; r++) {
+      const rowStart = r * rowBytes;
+      for (let i = 0; i < rowBytes; i++) {
+        const left = i >= bpp ? out[rowStart + i - bpp] : 0;
+        out[rowStart + i] = (data[rowStart + i] + left) & 0xff;
+      }
+    }
+    return out;
+  }
+
+  if (predictor >= 10 && predictor <= 15) {
+    const stride = rowBytes + 1; // +1 for each row's own leading filter-type tag
+    if (data.length % stride !== 0) return null;
+    const rows = data.length / stride;
+    const out = new Uint8Array(rows * rowBytes);
+    let prevRow = new Uint8Array(rowBytes);
+    for (let r = 0; r < rows; r++) {
+      const tag = data[r * stride];
+      const rowIn = data.subarray(r * stride + 1, r * stride + 1 + rowBytes);
+      const rowOut = out.subarray(r * rowBytes, (r + 1) * rowBytes);
+      for (let i = 0; i < rowBytes; i++) {
+        const a = i >= bpp ? rowOut[i - bpp] : 0; // left (already-decoded)
+        const b = prevRow[i]; // up
+        const c = i >= bpp ? prevRow[i - bpp] : 0; // upper-left
+        let value: number;
+        switch (tag) {
+          case 0: value = rowIn[i]; break; // None
+          case 1: value = rowIn[i] + a; break; // Sub
+          case 2: value = rowIn[i] + b; break; // Up
+          case 3: value = rowIn[i] + Math.floor((a + b) / 2); break; // Average
+          case 4: value = rowIn[i] + paethPredictor(a, b, c); break; // Paeth
+          default: return null; // unrecognized tag -- decline rather than guess
+        }
+        rowOut[i] = value & 0xff;
+      }
+      prevRow = rowOut;
+    }
+    return out;
+  }
+
+  return null; // unrecognized predictor value
+}
+
+function paethPredictor(a: number, b: number, c: number): number {
+  const p = a + b - c;
+  const pa = Math.abs(p - a);
+  const pb = Math.abs(p - b);
+  const pc = Math.abs(p - c);
+  if (pa <= pb && pa <= pc) return a;
+  if (pb <= pc) return b;
+  return c;
+}
+
+/**
+ * Converts genuinely-decoded pixel samples in ANY of resolveColorSpaceInfo's
+ * handled shapes into plain 3-channel RGB, so the caller can always hand
+ * sharp a uniform `channels: 3` raw buffer regardless of the image's real
+ * PDF colorspace -- sidesteps any ambiguity in how a raw-pixel decoder
+ * would otherwise need to interpret a 4-channel (CMYK vs RGBA?) or
+ * 1-channel buffer itself.
+ */
+export function convertSamplesToRgb(samples: Uint8Array, info: ColorSpaceInfo, pixelCount: number): Uint8Array | null {
+  switch (info.kind) {
+    case 'gray': {
+      if (samples.length < pixelCount) return null;
+      const rgb = new Uint8Array(pixelCount * 3);
+      for (let i = 0; i < pixelCount; i++) {
+        const g = samples[i];
+        rgb[i * 3] = g; rgb[i * 3 + 1] = g; rgb[i * 3 + 2] = g;
+      }
+      return rgb;
+    }
+    case 'rgb': {
+      if (samples.length < pixelCount * 3) return null;
+      return samples.slice(0, pixelCount * 3);
+    }
+    case 'cmyk': {
+      if (samples.length < pixelCount * 4) return null;
+      const rgb = new Uint8Array(pixelCount * 3);
+      for (let i = 0; i < pixelCount; i++) {
+        const c = samples[i * 4] / 255, m = samples[i * 4 + 1] / 255, y = samples[i * 4 + 2] / 255, k = samples[i * 4 + 3] / 255;
+        rgb[i * 3] = Math.round(255 * (1 - c) * (1 - k));
+        rgb[i * 3 + 1] = Math.round(255 * (1 - m) * (1 - k));
+        rgb[i * 3 + 2] = Math.round(255 * (1 - y) * (1 - k));
+      }
+      return rgb;
+    }
+    case 'separation': {
+      // A tint value of 0 means "no ink" (shows the page/background --
+      // treated as white); the maximum value means full-strength colorant.
+      // Confirmed real case is a /Black separation, so "full ink" ==
+      // black is the correct mapping, not an arbitrary guess -- this is
+      // the standard prepress convention for simulating plain black text/
+      // line art through a spot channel instead of DeviceGray.
+      if (samples.length < pixelCount) return null;
+      const rgb = new Uint8Array(pixelCount * 3);
+      for (let i = 0; i < pixelCount; i++) {
+        const gray = 255 - samples[i];
+        rgb[i * 3] = gray; rgb[i * 3 + 1] = gray; rgb[i * 3 + 2] = gray;
+      }
+      return rgb;
+    }
+    case 'indexed': {
+      const baseChannels = channelsFor(info.base);
+      if (baseChannels === null || samples.length < pixelCount) return null;
+      const baseSamples = new Uint8Array(pixelCount * baseChannels);
+      for (let i = 0; i < pixelCount; i++) {
+        const off = samples[i] * baseChannels;
+        for (let c = 0; c < baseChannels; c++) {
+          baseSamples[i * baseChannels + c] = info.lookup[off + c] ?? 0;
+        }
+      }
+      return convertSamplesToRgb(baseSamples, info.base, pixelCount);
+    }
+    default:
+      return null;
+  }
+}
 
 interface ImagePlacement {
   xObjectName: string;
@@ -409,14 +698,23 @@ class ImageExtractorService {
       const bitsPerComponent = dict.get(PDFName.of('BitsPerComponent'))?.toString() || '8';
       const colorSpace = dict.get(PDFName.of('ColorSpace'))?.toString() || '/DeviceRGB';
       const filter = dict.get(PDFName.of('Filter'))?.toString() || '';
-      
+
       let format: ImageInfo['format'] = 'unknown';
       let mimeType = 'image/unknown';
-      
+      // Whether this image's raw samples are ones convertSamplesToRgb can
+      // handle -- confirmed real cases only (see that function's own doc
+      // comment): no filter at all (samples are already raw), or plain
+      // FlateDecode (needs one zlib.inflateSync). LZWDecode was previously
+      // lumped in here as "png" alongside FlateDecode, but decodeStreamBytes
+      // has no LZW decoder -- treating it as rawSamplesFormat would always
+      // fail decodeStreamBytes and correctly decline, so no separate branch
+      // is needed for it here.
+      const isRawSamplesFilter = filter === '' || filter === '/FlateDecode';
+
       if (filter.includes('DCTDecode')) {
         format = 'jpeg';
         mimeType = 'image/jpeg';
-      } else if (filter.includes('FlateDecode') || filter.includes('LZWDecode')) {
+      } else if (isRawSamplesFilter) {
         format = 'png';
         mimeType = 'image/png';
       } else if (filter.includes('JBIG2Decode')) {
@@ -426,7 +724,7 @@ class ImageExtractorService {
         format = 'jpx';
         mimeType = 'image/jp2';
       }
-      
+
       // Only decompress image data when base64 output is needed.
       // For metadata-only audits, read the compressed length from the dict to avoid
       // decompressing potentially thousands of image streams (e.g. equation images).
@@ -445,10 +743,10 @@ class ImageExtractorService {
         const lengthObj = dict.get(PDFName.of('Length'));
         fileSizeBytes = lengthObj ? parseInt(lengthObj.toString(), 10) || 0 : 0;
       }
-      
+
       const sMask = dict.get(PDFName.of('SMask'));
       const hasAlpha = sMask !== undefined;
-      
+
       const imageInfo: ImageInfo = {
         id: `img_p${pageNumber}_${index}_${name}`,
         pageNumber,
@@ -472,17 +770,29 @@ class ImageExtractorService {
         altText,
         isDecorative,
       };
-      
+
       if (options.includeBase64 && imageData && (format === 'jpeg' || format === 'png')) {
         try {
+          // Real /ColorSpace + genuinely-decoded (not still-Filter-encoded)
+          // samples, only for the raw-samples case -- JPEG bytes are
+          // self-contained and decoded by sharp/the JPEG-SOI branch below
+          // regardless of the PDF's own stated colorspace metadata.
+          const colorSpaceInfo = format === 'png'
+            ? resolveColorSpaceInfo(dict.context, dict.get(PDFName.of('ColorSpace')))
+            : null;
+          const decodedSamples = format === 'png' ? decodeStreamBytes(xObject) : null;
+
           const base64 = await this.convertToBase64(
             imageData as Uint8Array,
             format,
             imageInfo.dimensions.width,
             imageInfo.dimensions.height,
-            options.maxImageSize
+            options.maxImageSize,
+            imageInfo.bitsPerComponent,
+            colorSpaceInfo,
+            decodedSamples
           );
-          
+
           if (base64) {
             imageInfo.base64 = base64;
           }
@@ -490,7 +800,7 @@ class ImageExtractorService {
           console.warn(`Failed to convert image to base64:`, err);
         }
       }
-      
+
       return imageInfo;
     } catch (err) {
       console.warn(`Failed to process image:`, err);
@@ -503,7 +813,10 @@ class ImageExtractorService {
     format: 'jpeg' | 'png',
     width: number,
     height: number,
-    maxSize: number
+    maxSize: number,
+    bitsPerComponent?: number,
+    colorSpaceInfo?: ColorSpaceInfo | null,
+    decodedSamples?: Uint8Array | null
   ): Promise<string | null> {
     try {
       if (format === 'jpeg') {
@@ -517,20 +830,33 @@ class ImageExtractorService {
           }
           return Buffer.from(data).toString('base64');
         }
+        return null;
       }
-      
+
+      // Real /ColorSpace resolution + genuine stream decompression --
+      // confirmed live against Math_Kim (1,313-image survey) that the old
+      // code here always assumed 3-channel RGB raw samples regardless of
+      // the image's real colorspace, AND fed still-Filter-encoded bytes
+      // (never decompressed) straight into sharp's raw-pixel decoder --
+      // silently failing (sharp throws on the size mismatch, caught below)
+      // for the 88% of real images that are actually DeviceCMYK (4ch),
+      // Indexed, or a single-colorant Separation/DeviceN (1ch), or that
+      // use FlateDecode (raw bytes still zlib-compressed). Declines (null)
+      // rather than guessing when colorspace/decompression/bit-depth isn't
+      // one of the confirmed-real, handled shapes -- see
+      // resolveColorSpaceInfo's and decodeStreamBytes's own doc comments.
+      if (bitsPerComponent !== 8 || !colorSpaceInfo || !decodedSamples) return null;
+      const rgbSamples = convertSamplesToRgb(decodedSamples, colorSpaceInfo, width * height);
+      if (!rgbSamples) return null;
+
       try {
-        const converted = await sharp(Buffer.from(data), {
-          raw: format !== 'jpeg' ? {
-            width,
-            height,
-            channels: 3,
-          } : undefined,
+        const converted = await sharp(Buffer.from(rgbSamples), {
+          raw: { width, height, channels: 3 },
         })
           .resize(maxSize, maxSize, { fit: 'inside' })
           .png()
           .toBuffer();
-        
+
         return converted.toString('base64');
       } catch {
         return null;

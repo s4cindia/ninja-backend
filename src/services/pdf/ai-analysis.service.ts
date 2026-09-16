@@ -332,6 +332,64 @@ const TableSummaryResult = z.object({
   rationale: z.string().optional(),
 });
 
+// Same MAX_TOKENS-truncation trap as the schemas above, confirmed live
+// against Math_Kim's real remaining alt-text issues: classifyImageType's
+// freeform-JSON prompt (no responseSchema, only 128 tokens -- smaller than
+// either alt-text schema below) and analyzeAltText/analyzeAltTextImprovement's
+// own freeform prompts (512 tokens) hit finishReason MAX_TOKENS on the
+// clear majority of real calls (4/5 sampled for analyzeAltTextImprovement),
+// every time with completionTokens in the tens but totalTokens in the
+// thousands -- the model's own reasoning consumed the whole visible-output
+// budget before the JSON payload. Schema-constrained decoding + a bigger
+// budget fixes it the same way as FORMULA_ACTUALTEXT_SCHEMA/
+// TABLE_SUMMARY_SCHEMA.
+const IMAGE_CLASSIFICATION_SCHEMA: Schema = {
+  type: SchemaType.OBJECT,
+  properties: {
+    type: { type: SchemaType.STRING },
+    complexity: { type: SchemaType.STRING },
+  },
+  required: ['type', 'complexity'],
+};
+const ImageClassificationResult = z.object({
+  type: z.enum(['bar-chart', 'line-chart', 'pie-chart', 'equation', 'circuit', 'diagram', 'photo', 'illustration', 'other']),
+  complexity: z.enum(['simple', 'complex']),
+});
+
+const ALT_TEXT_SCHEMA: Schema = {
+  type: SchemaType.OBJECT,
+  properties: {
+    isDecorative: { type: SchemaType.BOOLEAN },
+    altText: { type: SchemaType.STRING },
+    confidence: { type: SchemaType.NUMBER },
+    rationale: { type: SchemaType.STRING },
+  },
+  required: ['isDecorative', 'confidence', 'rationale'],
+};
+const AltTextResult = z.object({
+  isDecorative: z.boolean(),
+  altText: z.string().trim().max(125).optional(),
+  confidence: z.number(),
+  rationale: z.string(),
+}).refine(data => data.isDecorative || !!data.altText, {
+  message: 'altText is required when isDecorative is false',
+});
+
+const ALT_TEXT_IMPROVEMENT_SCHEMA: Schema = {
+  type: SchemaType.OBJECT,
+  properties: {
+    improvedAltText: { type: SchemaType.STRING },
+    confidence: { type: SchemaType.NUMBER },
+    rationale: { type: SchemaType.STRING },
+  },
+  required: ['improvedAltText', 'confidence', 'rationale'],
+};
+const AltTextImprovementResult = z.object({
+  improvedAltText: z.string().trim().min(1).max(125),
+  confidence: z.number(),
+  rationale: z.string(),
+});
+
 // ─── Service ─────────────────────────────────────────────────────────────────
 
 class AiAnalysisService {
@@ -982,21 +1040,21 @@ class AiAnalysisService {
     mimeType: string
   ): Promise<{ type: string; complexity: 'simple' | 'complex'; usage?: { promptTokens: number; completionTokens: number } } | null> {
     const prompt =
-      'Classify this image. Respond ONLY with JSON:\n' +
-      '{"type":"bar-chart"|"line-chart"|"pie-chart"|"equation"|"circuit"|"diagram"|"photo"|"illustration"|"other",' +
-      '"complexity":"simple"|"complex"}\n' +
-      'complexity=complex means: multi-series charts, compound diagrams, multi-variable equations, detailed circuit schematics.';
+      'Classify this image.\n' +
+      '"type" is one of: bar-chart, line-chart, pie-chart, equation, circuit, diagram, photo, illustration, other.\n' +
+      '"complexity" is simple or complex -- complex means: multi-series charts, compound diagrams, multi-variable equations, detailed circuit schematics.';
     try {
-      const response = await geminiService.analyzeImage(base64, mimeType, prompt, {
-        model: 'flash',
-        maxOutputTokens: 128,
-      });
-      const parsed = this.parseAiJson<{ type: string; complexity: 'simple' | 'complex' }>(response.text);
-      if (!parsed) return null;
+      const { data, usage: responseUsage } = await geminiService.analyzeImageWithSchema(
+        base64,
+        mimeType,
+        prompt,
+        ImageClassificationResult,
+        { model: 'flash', maxOutputTokens: 512, responseSchema: IMAGE_CLASSIFICATION_SCHEMA }
+      );
       return {
-        ...parsed,
-        usage: response.usage
-          ? { promptTokens: response.usage.promptTokens, completionTokens: response.usage.completionTokens }
+        ...data,
+        usage: responseUsage
+          ? { promptTokens: responseUsage.promptTokens, completionTokens: responseUsage.completionTokens }
           : undefined,
       };
     } catch {
@@ -1032,32 +1090,30 @@ class AiAnalysisService {
     const prompt =
       'You are an accessibility expert. Analyze this image and determine if it is decorative ' +
       '(purely visual, no informational content) or meaningful. If meaningful, write concise ' +
-      'alt text (max 125 characters). Respond ONLY with JSON:\n' +
-      '{"isDecorative":boolean,"altText":"string (if not decorative)","confidence":0.0-1.0,"rationale":"brief"}';
+      'alt text (max 125 characters).';
 
     try {
-      const response = await geminiService.analyzeImage(image.base64!, image.mimeType, prompt, {
-        model: 'flash',
-        maxOutputTokens: 512,
-      });
-      const data = this.parseAiJson<{
-        isDecorative: boolean;
-        altText?: string;
-        confidence: number;
-        rationale: string;
-      }>(response.text);
-      if (!data) return null;
+      const { data, usage: responseUsage } = await geminiService.analyzeImageWithSchema(
+        image.base64!,
+        image.mimeType,
+        prompt,
+        AltTextResult,
+        { model: 'flash', maxOutputTokens: 2048, responseSchema: ALT_TEXT_SCHEMA }
+      );
 
       // Accumulate tokens from classify call + alt text call
       const usage = {
-        promptTokens: (classification?.usage?.promptTokens ?? 0) + (response.usage?.promptTokens ?? 0),
-        completionTokens: (classification?.usage?.completionTokens ?? 0) + (response.usage?.completionTokens ?? 0),
+        promptTokens: (classification?.usage?.promptTokens ?? 0) + (responseUsage?.promptTokens ?? 0),
+        completionTokens: (classification?.usage?.completionTokens ?? 0) + (responseUsage?.completionTokens ?? 0),
       };
 
-      // Strict `=== true` — parseAiJson does a bare JSON.parse cast with no runtime
-      // validation, so a malformed response like `"isDecorative":"false"` (a string)
-      // would otherwise be truthy and clear real alt text on a meaningful image, now
-      // that the decorative path can reach apply-to-pdf instead of always guidance-only.
+      // Strict `=== true` — the schema's own boolean type already rejects a
+      // malformed non-boolean value (e.g. the string "false") during
+      // validation/retry, but this stays explicit for the same reason the
+      // original freeform-JSON version was: silently coercing a truthy
+      // non-true value here would clear real alt text on a meaningful
+      // image, now that the decorative path can reach apply-to-pdf instead
+      // of always guidance-only.
       if (data.isDecorative === true) {
         // No `value` — nothing to show in an editable box. Applying writes a
         // hardcoded empty string directly (see pdf-ai-analysis.controller.ts),
@@ -1147,25 +1203,20 @@ class AiAnalysisService {
 
     const prompt =
       `You are an accessibility expert. The current alt text for this image is: "${existingAlt}". ` +
-      'Evaluate it and write improved alt text (max 125 chars) if needed. ' +
-      'Respond ONLY with JSON:\n' +
-      '{"improvedAltText":"string","confidence":0.0-1.0,"rationale":"brief"}';
+      'Evaluate it and write improved alt text (max 125 chars) if needed.';
 
     try {
-      const response = await geminiService.analyzeImage(image.base64!, image.mimeType, prompt, {
-        model: 'flash',
-        maxOutputTokens: 512,
-      });
-      const data = this.parseAiJson<{
-        improvedAltText: string;
-        confidence: number;
-        rationale: string;
-      }>(response.text);
-      if (!data?.improvedAltText) return null;
+      const { data, usage: responseUsage } = await geminiService.analyzeImageWithSchema(
+        image.base64!,
+        image.mimeType,
+        prompt,
+        AltTextImprovementResult,
+        { model: 'flash', maxOutputTokens: 2048, responseSchema: ALT_TEXT_IMPROVEMENT_SCHEMA }
+      );
 
       const usage = {
-        promptTokens: (classification?.usage?.promptTokens ?? 0) + (response.usage?.promptTokens ?? 0),
-        completionTokens: (classification?.usage?.completionTokens ?? 0) + (response.usage?.completionTokens ?? 0),
+        promptTokens: (classification?.usage?.promptTokens ?? 0) + (responseUsage?.promptTokens ?? 0),
+        completionTokens: (classification?.usage?.completionTokens ?? 0) + (responseUsage?.completionTokens ?? 0),
       };
 
       return {
