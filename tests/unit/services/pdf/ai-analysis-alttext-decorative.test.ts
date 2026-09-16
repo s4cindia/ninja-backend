@@ -77,18 +77,25 @@ describe('analyzeAltText — decorative branch applyMode', () => {
     expect(res.applyMode).toBe('apply-to-pdf');
   });
 
-  it('does not treat a malformed string "false" as decorative (regression: parseAiJson has no runtime validation)', async () => {
+  // Was a regression test for parseAiJson's lack of runtime validation
+  // (a non-boolean isDecorative would otherwise be truthy and wrongly clear
+  // real alt text once this path could reach apply-to-pdf). Now that
+  // analyzeAltText validates against a real Zod schema (AltTextResult,
+  // z.boolean() for isDecorative), a non-boolean value is rejected by the
+  // schema itself -- exhausting generateWithSchema's retry-with-correction
+  // loop (the mock returns the same malformed body every attempt) and
+  // correctly declining (null) rather than silently coercing a malformed
+  // value into either branch. This is a stricter, safer guarantee than the
+  // original fix: the response is recognized as malformed at all, not
+  // coincidentally routed to the right branch by an early `=== true` check.
+  it('rejects a malformed non-boolean isDecorative via schema validation, exhausting retries to null', async () => {
     vi.spyOn(svc, 'classifyImageType').mockResolvedValue(null);
     vi.spyOn(geminiService, 'analyzeImage').mockResolvedValue({
-      // A non-boolean isDecorative would otherwise be truthy and wrongly
-      // clear real alt text once this path can reach apply-to-pdf.
       text: '{"isDecorative":"false","altText":"A red apple","confidence":0.9,"rationale":"Informative photo"}',
       usage: { promptTokens: 20, completionTokens: 10 },
     } as never);
 
-    const res = await svc.analyzeAltText(ISSUE, IMAGE, 'apply-to-pdf');
-    expect(res.suggestionType).toBe('alt-text');
-    expect(res.value).toBe('A red apple');
+    await expect(svc.analyzeAltText(ISSUE, IMAGE, 'apply-to-pdf')).resolves.toBeNull();
   });
 
   it('returns a guidance-only manual-review suggestion (not null) when Gemini blocks the alt-text request, preserving classification token usage', async () => {
