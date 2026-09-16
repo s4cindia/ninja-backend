@@ -324,7 +324,7 @@ const TABLE_SUMMARY_SCHEMA: Schema = {
   required: ['summary'],
 };
 const TableSummaryResult = z.object({
-  summary: z.string(),
+  summary: z.string().trim().min(1).max(150),
   confidence: z.number().optional(),
   rationale: z.string().optional(),
 });

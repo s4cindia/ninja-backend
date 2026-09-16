@@ -112,4 +112,21 @@ describe('analyzeTableSummary', () => {
 
     await expect(svc.analyzeTableSummary({ id: 'i1' }, buildTable(), 'apply-to-pdf')).resolves.toBeNull();
   });
+
+  // CodeRabbit review finding on this PR: both table-summary prompts tell
+  // the model to cap its answer at 150 characters, but nothing enforced
+  // that -- a response that ignored the instruction could still reach
+  // persistence and PDF application via setTableSummary. Exercises the REAL
+  // schema (not a mocked generateWithSchema) via the underlying
+  // generateText call, so this actually proves TableSummaryResult's own
+  // max(150) rejects an oversized response rather than trusting the prompt
+  // wording alone.
+  it('rejects a summary longer than 150 characters via the real schema, exhausting retries to null', async () => {
+    const overLong = 'A'.repeat(151);
+    vi.spyOn(geminiService, 'generateText').mockResolvedValue({
+      text: JSON.stringify({ summary: overLong, confidence: 0.8, rationale: 'r' }),
+    } as never);
+
+    await expect(svc.analyzeTableSummary({ id: 'i1' }, buildTable(), 'apply-to-pdf')).resolves.toBeNull();
+  });
 });
