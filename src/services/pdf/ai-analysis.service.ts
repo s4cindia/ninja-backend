@@ -168,7 +168,11 @@ const LIST_CODES = new Set(['LIST-NOT-TAGGED', 'LIST-IMPROPER-MARKUP']);
 const READING_ORDER_CODES = new Set(['MATTERHORN-09-004', 'READING-ORDER-SUSPECT', 'READING-ORDER-COLUMN', 'READING-ORDER-RTOL']);
 const HEADING_CODES = new Set(['HEADING-SKIP', 'HEADING-MULTIPLE-H1', 'HEADING-NESTING', 'MATTERHORN-06-001']);
 const LANGUAGE_CODES = new Set(['MATTERHORN-11-001', 'LANGUAGE-MISSING']);
-const CONTRAST_CODES = new Set(['COLOR-CONTRAST', 'CONTRAST-RATIO']);
+// Exported for pdf-ai-analysis.controller.ts's single-suggestion apply
+// endpoint, which needs the SAME sibling-issue set this file's own
+// applyApprovedSuggestions uses to correctly batch resolveColorContrastTargets
+// (see that call site's own doc comment -- CodeRabbit finding on PR #563).
+export const CONTRAST_CODES = new Set(['COLOR-CONTRAST', 'CONTRAST-RATIO']);
 const LINK_CODES = new Set(['LINK-NOT-DESCRIPTIVE', 'LINK-URL-AS-TEXT', 'LINK-GENERIC-TEXT']);
 const FORM_CODES = new Set(['FORM-FIELD-NO-LABEL', 'FORM-FIELD-MISSING-TOOLTIP']);
 const BOOKMARK_CODES = new Set(['BOOKMARK-MISSING', 'BOOKMARK-INSUFFICIENT', 'BOOKMARK-GENERIC-TEXT']);
@@ -2416,12 +2420,29 @@ class AiAnalysisService {
     // fixColorContrast one issue at a time (as this loop otherwise would)
     // can never let the ordinal-pairing mechanism see more than one issue
     // at once, so it could never engage at all.
-    const colorContrastIssues = approved
-      .filter(a => a.suggestionType === 'color-contrast-fix')
-      .map(a => issueById.get(a.issueId))
-      .filter((i): i is AuditIssue => !!i);
-    const preResolvedContrastMatches =
+    // ALL sibling contrast issues from the audit report, not just the ones
+    // approved in THIS run -- CodeRabbit finding on PR #563, confirmed real:
+    // the ordinal-pairing mechanism (locateTextRunsForPage) requires seeing
+    // every issue that maps to a shared run/line-cluster to reconstruct the
+    // SAME structural count the suggestion-time pass used. Rebuilding the
+    // batch from only the approved subset means approving just one of a
+    // two-issue cluster leaves the resolver seeing 1 target against 2 real
+    // slots -- a genuine count mismatch that silently fails an approval the
+    // suggestion step already confirmed was eligible.
+    const colorContrastIssues = auditIssues.filter(i => CONTRAST_CODES.has(i.code));
+    let preResolvedContrastMatches =
       colorContrastIssues.length > 0 ? resolveColorContrastTargets(doc, colorContrastIssues) : undefined;
+    // Byte offsets in preResolvedContrastMatches are only valid against the
+    // CURRENT page content -- CodeRabbit finding on PR #563, confirmed real:
+    // a successful fix rewrites the page's content stream (spliceColorFix
+    // inserts/replaces bytes, commonly changing length when the new color
+    // string isn't the same length as the old one), silently invalidating
+    // every OTHER same-page match's stored start/end/lastShowEnd/
+    // internalFillColorOp offsets for the rest of this loop. Re-resolve the
+    // WHOLE batch fresh (same sibling set, current doc state) the first time
+    // a page that's already had a successful fix comes up again, rather than
+    // splicing against stale positions and corrupting an unrelated operator.
+    const contrastFixedPages = new Set<number>();
 
     const STRUCTURE_WRITER_TYPES = new Set(['heading-fix', 'list-fix', 'table-header-fix', 'table-header-fix-column', 'table-artifact-fix', 'table-from-layout-fix', 'bookmark-generate', 'heading-multiple-h1-fix', 'pdfua-identifier', 'color-contrast-fix', 'alt-text-decorative']);
 
@@ -2495,8 +2516,14 @@ class AiAnalysisService {
         } else if (suggestionType === 'pdfua-identifier') {
           modification = await pdfModifierService.writePdfUaIdentifier(doc);
         } else if (suggestionType === 'color-contrast-fix') {
+          if (originalIssue.pageNumber !== undefined && contrastFixedPages.has(originalIssue.pageNumber)) {
+            preResolvedContrastMatches = resolveColorContrastTargets(doc, colorContrastIssues);
+          }
           const result = await pdfContrastWriterService.fixColorContrast(doc, originalIssue, preResolvedContrastMatches);
           modification = { success: result.success, description: result.after, error: result.error };
+          if (result.success && originalIssue.pageNumber !== undefined) {
+            contrastFixedPages.add(originalIssue.pageNumber);
+          }
         } else if (suggestionType === 'alt-text-decorative') {
           // Hardcoded '' rather than the stored value -- matches applyAll/applySuggestion.
           modification = await pdfModifierService.setAltText(doc, elementId, '');

@@ -11,12 +11,12 @@ import { Prisma } from '@prisma/client';
 import prisma from '../lib/prisma';
 import { logger } from '../lib/logger';
 import { AppError } from '../utils/app-error';
-import { aiAnalysisService, AiRemediationConfig } from '../services/pdf/ai-analysis.service';
+import { aiAnalysisService, AiRemediationConfig, CONTRAST_CODES } from '../services/pdf/ai-analysis.service';
 import { adobeAutoTagService } from '../services/pdf/adobe-autotag.service';
 import { fileStorageService } from '../services/storage/file-storage.service';
 import { pdfModifierService } from '../services/pdf/pdf-modifier.service';
 import { pdfStructureWriterService } from '../services/pdf/pdf-structure-writer.service';
-import { pdfContrastWriterService } from '../services/pdf/pdf-contrast-writer.service';
+import { pdfContrastWriterService, resolveColorContrastTargets } from '../services/pdf/pdf-contrast-writer.service';
 import { pdfReauditService } from '../services/pdf/pdf-reaudit.service';
 import { pdfComprehensiveParserService } from '../services/pdf/pdf-comprehensive-parser.service';
 import { pdfParserService } from '../services/pdf/pdf-parser.service';
@@ -524,7 +524,17 @@ export class PdfAiAnalysisController {
       } else if (suggestionType === 'pdfua-identifier') {
         modification = await pdfModifierService.writePdfUaIdentifier(doc);
       } else if (suggestionType === 'color-contrast-fix') {
-        const result = await pdfContrastWriterService.fixColorContrast(doc, originalIssue);
+        // Resolved from ALL sibling contrast issues on the audit report, not
+        // just this one -- CodeRabbit finding on PR #563, confirmed real:
+        // the ordinal-pairing mechanism (locateTextRunsForPage) can only
+        // reconstruct a same-page cluster's correct structural count when it
+        // sees every issue that maps to it, not a single issue in isolation.
+        // Omitting this (as before) silently fell back to the plain
+        // single-target locator, which can never resolve a suggestion the
+        // ordinal-pairing mechanism was the one that made eligible.
+        const contrastIssues = auditIssues.filter(i => CONTRAST_CODES.has(i.code));
+        const preResolvedContrastMatches = contrastIssues.length > 0 ? resolveColorContrastTargets(doc, contrastIssues) : undefined;
+        const result = await pdfContrastWriterService.fixColorContrast(doc, originalIssue, preResolvedContrastMatches);
         modification = { success: result.success, description: result.after, error: result.error };
       } else if (suggestionType === 'alt-text-decorative') {
         // Same prerequisite as the value-based alt-text branch below -- see
