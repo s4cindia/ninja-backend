@@ -387,41 +387,72 @@ async function processPdfAccessibility(
   // ── 3. Run accessibility audit [auditStartPct–88%] ──────────────────────────
   // Progress callback: maps page progress across the audit range.
   // First call stores totalPages in job.input for the frontend.
+  //
+  // Every call site that invokes this (pdf-comprehensive-parser.service.ts,
+  // fired once per page-batch -- dozens of times on a large document) does so
+  // as `onProgress?.(...)`, fire-and-forget, with no `await` and no `.catch`.
+  // Since this is an async function, TypeScript's `() => void` callback type
+  // hides the fact that it returns a Promise, so none of those call sites
+  // can be flagged for not handling it. If a Prisma/Redis call below ever
+  // rejects (a connection blip, pool exhaustion under load), that becomes a
+  // genuinely unhandled promise rejection -- and with no global
+  // unhandledRejection handler anywhere in this codebase, Node terminates
+  // the WHOLE process by default, taking down every other in-flight job and
+  // the API itself, not just this one page's progress update. Confirmed
+  // live: a 377-page document (proportionally far more onProgress/
+  // onValidatorComplete invocations than anything tested before) reliably
+  // reproduced a full container restart mid-audit, recorded as "Server
+  // restarted while job was processing" by the startup orphaned-job
+  // cleanup in src/workers/index.ts. The try/catch here (and on
+  // onValidatorComplete below) guarantees this callback can never reject,
+  // regardless of how many unawaited fire-and-forget call sites invoke it --
+  // a failed progress write becomes a non-fatal warning instead of a process
+  // crash.
   let totalPagesStored = false;
   const onProgress = async (currentPage: number, totalPages: number) => {
-    if (!totalPagesStored && totalPages > 0) {
-      totalPagesStored = true;
+    try {
+      if (!totalPagesStored && totalPages > 0) {
+        totalPagesStored = true;
+        const ej = await prisma.job.findUnique({ where: { id: dbJobId }, select: { input: true } });
+        const ei = ej?.input && typeof ej.input === 'object' && !Array.isArray(ej.input)
+          ? ej.input as Record<string, unknown> : {};
+        await prisma.job.update({
+          where: { id: dbJobId },
+          data: { input: { ...ei, totalPages } as Prisma.InputJsonObject },
+        });
+        logger.info(`[PDF Worker] Job ${dbJobId}: ${totalPages} pages to audit`);
+      }
+      if (totalPages > 0) {
+        const pct = auditStartPct + Math.round((currentPage / totalPages) * auditPctRange);
+        await job.updateProgress(pct);
+        await queueService.updateJobProgress(dbJobId, pct);
+      }
+    } catch (err) {
+      logger.warn(`[PDF Worker] onProgress callback failed for job ${dbJobId} (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
+    }
+  };
+
+  // Validator progress callback: advances 88–95%. Same unhandled-rejection
+  // risk and fix as onProgress above -- every one of its 16 call sites in
+  // pdf-audit.service.ts is also an unawaited `onValidatorComplete?.(...)`.
+  const validatorProgress: Array<{ label: string; issuesFound: number; startedAt: string; completedAt: string }> = [];
+  const onValidatorComplete = async (label: string, issuesFound: number, completed: number, total: number, startedAt: Date) => {
+    try {
+      validatorProgress.push({ label, issuesFound, startedAt: startedAt.toISOString(), completedAt: new Date().toISOString() });
+      logger.info(`[PDF Worker] Validator "${label}" done: ${issuesFound} issues (${completed}/${total})`);
+      const pct = 88 + Math.round((completed / total) * 7); // 88–95%
+      await job.updateProgress(pct);
+      await queueService.updateJobProgress(dbJobId, pct);
       const ej = await prisma.job.findUnique({ where: { id: dbJobId }, select: { input: true } });
       const ei = ej?.input && typeof ej.input === 'object' && !Array.isArray(ej.input)
         ? ej.input as Record<string, unknown> : {};
       await prisma.job.update({
         where: { id: dbJobId },
-        data: { input: { ...ei, totalPages } as Prisma.InputJsonObject },
+        data: { input: { ...ei, validatorProgress: [...validatorProgress] } as Prisma.InputJsonObject },
       });
-      logger.info(`[PDF Worker] Job ${dbJobId}: ${totalPages} pages to audit`);
+    } catch (err) {
+      logger.warn(`[PDF Worker] onValidatorComplete callback failed for job ${dbJobId}, validator "${label}" (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
     }
-    if (totalPages > 0) {
-      const pct = auditStartPct + Math.round((currentPage / totalPages) * auditPctRange);
-      await job.updateProgress(pct);
-      await queueService.updateJobProgress(dbJobId, pct);
-    }
-  };
-
-  // Validator progress callback: advances 88–95%
-  const validatorProgress: Array<{ label: string; issuesFound: number; startedAt: string; completedAt: string }> = [];
-  const onValidatorComplete = async (label: string, issuesFound: number, completed: number, total: number, startedAt: Date) => {
-    validatorProgress.push({ label, issuesFound, startedAt: startedAt.toISOString(), completedAt: new Date().toISOString() });
-    logger.info(`[PDF Worker] Validator "${label}" done: ${issuesFound} issues (${completed}/${total})`);
-    const pct = 88 + Math.round((completed / total) * 7); // 88–95%
-    await job.updateProgress(pct);
-    await queueService.updateJobProgress(dbJobId, pct);
-    const ej = await prisma.job.findUnique({ where: { id: dbJobId }, select: { input: true } });
-    const ei = ej?.input && typeof ej.input === 'object' && !Array.isArray(ej.input)
-      ? ej.input as Record<string, unknown> : {};
-    await prisma.job.update({
-      where: { id: dbJobId },
-      data: { input: { ...ei, validatorProgress: [...validatorProgress] } as Prisma.InputJsonObject },
-    });
   };
 
   logger.info(`[PDF Worker] Running audit for job ${dbJobId}, file: ${fileName}`);

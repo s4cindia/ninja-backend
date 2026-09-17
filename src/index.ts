@@ -183,4 +183,39 @@ const gracefulShutdown = async () => {
 process.on('SIGTERM', gracefulShutdown);
 process.on('SIGINT', gracefulShutdown);
 
+// Safety net: confirmed live that a rejected promise with no attached
+// .catch() anywhere in the call chain (e.g. a fire-and-forget progress
+// callback whose Prisma/Redis call fails transiently -- see
+// accessibility.processor.ts's onProgress/onValidatorComplete for the actual
+// bug this caught) crashes the ENTIRE process on Node 15+, taking down the
+// API and every other in-flight job, not just the one promise. That
+// crash-and-restart is exactly what src/workers/index.ts's
+// cleanupStaleActiveJobs() records as "Server restarted while job was
+// processing" on the next boot.
+//
+// unhandledRejection: log and keep running. A rejected promise doesn't
+// leave the process in a known-corrupted state the way a synchronous throw
+// can, so letting one bad promise take down unrelated concurrent work is
+// disproportionate -- this handler is the actual fix for that class of bug.
+// It's a safety net for whatever similar gap surfaces next, not a
+// replacement for catching promises properly at the source.
+//
+// uncaughtException: Node's own guidance is that resuming after a genuine
+// synchronous throw escaping every try/catch is unsafe -- some part of the
+// stack may be in an inconsistent state. Log it and exit deliberately so
+// ECS replaces the task with a clean one, instead of crashing silently with
+// no log line at all (which is what made the original incident hard to
+// diagnose).
+process.on('unhandledRejection', (reason, promise) => {
+  logger.error('Unhandled promise rejection (process continuing)', {
+    reason: reason instanceof Error ? reason.stack ?? reason.message : reason,
+    promise: String(promise),
+  });
+});
+
+process.on('uncaughtException', (err) => {
+  logger.error(`Uncaught exception — exiting for a clean restart: ${err.message}`, err);
+  process.exit(1);
+});
+
 export default app;
