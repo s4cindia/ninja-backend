@@ -19,13 +19,16 @@
  *    run's show op), replace that operator's value directly. Otherwise
  *    (color inherited from outside the run) insert a new fill-color op right
  *    before the run's start.
- * 2. **Restore** — insert a fill-color op for the run's *original* measured
- *    color (`contrastData.foreground` — already known, since that's what the
- *    validator sampled) right after the run's end. Fill-color state persists
- *    across positioning ops, so without this, any sibling run later in the
- *    same text object that inherits color from before ours would pick up
- *    our correction too. This restore undoes that leak regardless of where
- *    the color state actually originated.
+ * 2. **Restore** — insert a fill-color op right after the run's end for
+ *    whatever color was ACTUALLY active immediately before the fix point
+ *    (`findPrecedingColor`, scanning the whole stream) — NOT the run's own
+ *    original/measured color (`contrastData.foreground`), which a real
+ *    Math_Weir_PDF.pdf incident showed can be a local one-off unrelated
+ *    content never relied on. Fill-color state persists across positioning
+ *    ops, so without this, any sibling run later in the same text object
+ *    that inherits color from before ours would pick up our correction too.
+ *    This restore undoes that leak regardless of where the color state
+ *    actually originated.
  *
  * (Two or more internal fill ops within the run's own span is genuinely
  * ambiguous — Phase B1 already refuses to match in that case.)
@@ -58,7 +61,7 @@ import { PDFDocument } from 'pdf-lib';
 import { AuditIssue } from '../audit/base-audit.service';
 import { logger } from '../../lib/logger';
 import { decodePageContent, writePageContent } from './pdf-content-stream-io';
-import { locateTextRun, locateTextRunsForPage, locateEnclosingTextObject, type TextRunMatch, type PageContrastTarget } from './contrast-content-stream';
+import { locateTextRun, locateTextRunsForPage, locateEnclosingTextObject, findPrecedingColor, type TextRunMatch, type PageContrastTarget } from './contrast-content-stream';
 import { computeCompliantColor } from './color-contrast-correction';
 import { verifyContrastInRegion } from './color-contrast-verification';
 import { computeBackplateRect, spliceBackplate } from './pdf-contrast-backplate';
@@ -99,26 +102,22 @@ export function hexToUnitRgb(hex: string): [number, number, number] {
  * Pure string splice implementing the class doc comment's apply+restore
  * strategy for one run. `run` is the run's own [start,end) span;
  * `internalOp`, when present, is Phase B1's located fill-color op within
- * that span (undefined when the run has none of its own). Splices are
- * applied right-to-left (restore first, then apply) so the apply-side
- * offsets stay valid regardless of the restore insertion's length.
+ * that span (undefined when the run has none of its own). `originalColor`
+ * is the value to restore right after the run -- NOT necessarily the run's
+ * own original color; see fixColorContrast's call site and
+ * findPrecedingColor's doc comment for why. Splices are applied
+ * right-to-left (restore first, then apply) so the apply-side offsets stay
+ * valid regardless of the restore insertion's length.
  *
- * Brackets the fix in `q`/`Q` (PDF's own graphics-state save/restore)
- * instead of inserting an explicit restore-color `rg` op, which this
- * function used to do. Confirmed live on Math_Weir_PDF.pdf: `rg` isn't
- * scoped to BT/ET, so an explicit restore value only correctly protects
- * whatever comes after the run when that later content was relying on
- * THIS run's own original color -- which fails for a run whose original
- * color was a local one-off (e.g. a small annotation that was already
- * flagged as gray-on-white), not the shared ambient color the page's
- * OTHER, unrelated text actually needs. The fixed run's own gray "restore"
- * value then leaked forward and repainted several unrelated words in that
- * same gray, registering as brand-new contrast failures never reported for
- * the original document -- confirmed via a real 348→400+ issue count
- * increase in production before this fix. `Q` sidesteps the problem
- * entirely: it restores the graphics state to whatever was ACTUALLY active
- * before the matching `q`, correct by construction, with nothing to
- * compute or guess.
+ * `q`/`Q` bracketing was tried here and reverted (Codex + this file's own
+ * class doc comment both independently caught it): `q`/`Q` are not legal
+ * inside a `BT…ET` text object at all, whole-object or not (PDF32000-1:2008
+ * Annex A) -- pdfjs-dist tolerates it silently, which is exactly why a
+ * pdfjs-based re-audit didn't catch the spec violation, but a stricter
+ * reader or validator could reject or ignore the malformed stream. An
+ * explicit restore-color `rg` (this function's original, and current,
+ * design) is legal inside BT/ET; the REAL bug this was chasing was never
+ * the mechanism, it was the VALUE -- see findPrecedingColor.
  *
  * The restore lands at `run.lastShowEnd` (falling back to `run.end` when
  * absent, e.g. a hand-built `run` in a unit test with no trailing content
@@ -135,20 +134,22 @@ export function spliceColorFix(
   content: string,
   run: { start: number; end: number; lastShowEnd?: number },
   internalOp: { start: number; end: number } | undefined,
-  newColor: [number, number, number]
+  newColor: [number, number, number],
+  originalColor: [number, number, number]
 ): string {
   const [nr, ng, nb] = newColor;
+  const [or_, og, ob] = originalColor;
   const restoreAt = run.lastShowEnd ?? run.end;
 
   // Leading/trailing \n on every inserted snippet — unlike an operator-span
   // replacement (which reuses whitespace already surrounding the original
   // token), an insertion lands between two tokens that may not have any
   // separator of their own (e.g. right after `BT`), so it must bring both.
-  let out = content.slice(0, restoreAt) + `\nQ\n` + content.slice(restoreAt);
+  let out = content.slice(0, restoreAt) + `\n${or_} ${og} ${ob} rg\n` + content.slice(restoreAt);
 
   out = internalOp
-    ? out.slice(0, internalOp.start) + `q\n${nr} ${ng} ${nb} rg` + out.slice(internalOp.end)
-    : out.slice(0, run.start) + `\nq\n${nr} ${ng} ${nb} rg\n` + out.slice(run.start);
+    ? out.slice(0, internalOp.start) + `${nr} ${ng} ${nb} rg` + out.slice(internalOp.end)
+    : out.slice(0, run.start) + `\n${nr} ${ng} ${nb} rg\n` + out.slice(run.start);
 
   return out;
 }
@@ -273,8 +274,27 @@ export class PdfContrastWriterService {
       };
     }
 
+    // The color to restore after this fix is whatever was ACTUALLY active
+    // immediately before it -- not this run's own reported/measured color
+    // (cd.foreground) or even its own true final color
+    // (restoreColorOverride): a real incident on Math_Weir_PDF.pdf showed
+    // a run's own original color can be a local one-off that later,
+    // unrelated content was never relying on. See findPrecedingColor's own
+    // doc comment for the full reasoning.
+    const fixInsertionPoint = match.internalFillColorOp ? match.internalFillColorOp.start : match.start;
+    const originalRgb = findPrecedingColor(content, fixInsertionPoint);
+    if (!originalRgb) {
+      return {
+        issueId: issue.id,
+        success: false,
+        before,
+        after: 'unknown',
+        error: 'Could not determine the color to restore after this fix (nearest preceding color op has an untracked colorspace)',
+      };
+    }
+
     const applyColor = (hex: string): void => {
-      const rewritten = spliceColorFix(content, match, match.internalFillColorOp, hexToUnitRgb(hex));
+      const rewritten = spliceColorFix(content, match, match.internalFillColorOp, hexToUnitRgb(hex), originalRgb);
       writePageContent(doc, pageNumber, rewritten);
     };
     const verify = async (): Promise<{ ratio: number; passes: boolean; uncertain: boolean; variance: number } | null> => {

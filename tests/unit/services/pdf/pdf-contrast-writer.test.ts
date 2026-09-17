@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { PDFDocument, StandardFonts, degrees, rgb } from 'pdf-lib';
 import { spliceColorFix, pdfContrastWriterService, resolveColorContrastTargets } from '../../../../src/services/pdf/pdf-contrast-writer.service';
-import { locateTextRun } from '../../../../src/services/pdf/contrast-content-stream';
+import { locateTextRun, findPrecedingColor } from '../../../../src/services/pdf/contrast-content-stream';
 import { decodePageContent, writePageContent } from '../../../../src/services/pdf/pdf-content-stream-io';
 import { pdfAuditService } from '../../../../src/services/pdf/pdf-audit.service';
 import { verifyContrastInRegion } from '../../../../src/services/pdf/color-contrast-verification';
@@ -19,24 +19,24 @@ vi.mock('../../../../src/services/pdf/color-contrast-verification', async (impor
 });
 
 describe('spliceColorFix', () => {
-  it('replaces an internal fill-color op inline, bracketed in q/Q, instead of an explicit restore color', () => {
+  it('replaces an internal fill-color op inline and restores the original color right after the run', () => {
     const content = 'BT\n0.6 0.6 0.6 rg\n/F1 14 Tf\n<41> Tj\nET';
     const opStart = content.indexOf('0.6 0.6 0.6 rg');
     const opEnd = opStart + '0.6 0.6 0.6 rg'.length;
     const run = { start: content.indexOf('BT') + 'BT'.length, end: content.indexOf('ET') };
 
-    const result = spliceColorFix(content, run, { start: opStart, end: opEnd }, [0, 0, 0]);
+    const result = spliceColorFix(content, run, { start: opStart, end: opEnd }, [0, 0, 0], [0.6, 0.6, 0.6]);
 
-    expect(result).toBe('BT\nq\n0 0 0 rg\n/F1 14 Tf\n<41> Tj\n\nQ\nET');
+    expect(result).toBe('BT\n0 0 0 rg\n/F1 14 Tf\n<41> Tj\n\n0.6 0.6 0.6 rg\nET');
   });
 
-  it('inserts a new op before the run (bracketed in q) and a bare Q after when there is no internal op', () => {
+  it('inserts a new op before the run and a restore op after when there is no internal op', () => {
     const content = 'BT <41> Tj ET';
     const run = { start: content.indexOf('BT') + 'BT'.length, end: content.indexOf('ET') };
 
-    const result = spliceColorFix(content, run, undefined, [1, 1, 1]);
+    const result = spliceColorFix(content, run, undefined, [1, 1, 1], [0, 0, 0]);
 
-    expect(result).toBe('BT\nq\n1 1 1 rg\n <41> Tj \nQ\nET');
+    expect(result).toBe('BT\n1 1 1 rg\n <41> Tj \n0 0 0 rg\nET');
   });
 
   it('does not touch content before the run or after the restore point', () => {
@@ -45,47 +45,10 @@ describe('spliceColorFix', () => {
     const opEnd = opStart + '0.6 0.6 0.6 rg'.length;
     const run = { start: content.indexOf('BT') + 'BT'.length, end: content.indexOf('ET') };
 
-    const result = spliceColorFix(content, run, { start: opStart, end: opEnd }, [0, 0, 0]);
+    const result = spliceColorFix(content, run, { start: opStart, end: opEnd }, [0, 0, 0], [0.6, 0.6, 0.6]);
 
-    expect(result.startsWith('BEFORE BT q\n0 0 0 rg ')).toBe(true);
+    expect(result.startsWith('BEFORE BT 0 0 0 rg ')).toBe(true);
     expect(result.endsWith('ET AFTER')).toBe(true);
-  });
-
-  // Real-world incident, confirmed live on Math_Weir_PDF.pdf, reproduced
-  // exactly here: a tiny annotation's own original color (a one-off gray,
-  // unrelated to the rest of the page) gets fixed to black. The pre-fix
-  // behavior inserted an explicit `<originalColor> rg` restore right after
-  // it -- but `rg` isn't graphics-state-scoped, so that restore value
-  // became the ACTIVE fill color for the next BT/ET block too ("becomes"),
-  // repainting it gray and making it newly fail contrast even though
-  // nothing about it changed. Bracketing in q/Q fixes this by construction:
-  // Q restores whatever was active before q (never computed or guessed),
-  // so "becomes" is completely unaffected regardless of what the
-  // annotation's own original color was.
-  it('brackets the fix in q/Q so a later, unrelated run is unaffected by this run\'s own original color', () => {
-    const content = `BT
-0.4588 0.4627 0.4824 rg
-(error) Tj
-ET
-BT
-(becomes) Tj
-ET`;
-    const opStart = content.indexOf('0.4588 0.4627 0.4824 rg');
-    const opEnd = opStart + '0.4588 0.4627 0.4824 rg'.length;
-    const firstEt = content.indexOf('ET');
-    const run = {
-      start: content.indexOf('BT') + 'BT'.length,
-      end: firstEt,
-      lastShowEnd: content.indexOf('(error) Tj') + '(error) Tj'.length,
-    };
-
-    const result = spliceColorFix(content, run, { start: opStart, end: opEnd }, [0, 0, 0]);
-
-    expect(result).toBe('BT\nq\n0 0 0 rg\n(error) Tj\nQ\n\nET\nBT\n(becomes) Tj\nET');
-    // No color-setting op of any kind was inserted between the two runs --
-    // "becomes" inherits whatever was active before the whole q/Q block,
-    // never a restore value that could be wrong for it.
-    expect(result.split('ET\nBT\n')[1]).toBe('(becomes) Tj\nET');
   });
 
   // Real-world regression, confirmed live on a real Math_Kim page (see the
@@ -108,7 +71,7 @@ ET
     const match = locateTextRun(content, { x: 30, baselineY: 697 }, 15)!;
     expect(match).toBeTruthy();
 
-    const result = spliceColorFix(content, match, match.internalFillColorOp, [0, 0, 0]);
+    const result = spliceColorFix(content, match, match.internalFillColorOp, [0, 0, 0], [1, 0, 0]);
 
     expect(result).toContain('-20 -3 Td');
     expect(result).not.toMatch(/-20 -3 [\d. ]*rg\s*\nTd/);
@@ -138,18 +101,51 @@ ET
     expect(match).toBeTruthy();
     expect(match.internalFillColorOp).toBeUndefined();
 
-    const result = spliceColorFix(content, match, match.internalFillColorOp, [0, 0, 0]);
+    const result = spliceColorFix(content, match, match.internalFillColorOp, [0, 0, 0], [1, 0.44, 0.15]);
 
-    // New color lands right where "Table 4.1.2." is actually shown, bracketed with q.
-    expect(result).toMatch(/30 685 Tm\nq\n0 0 0 rg\n\n\(Table 4\.1\.2\.\) Tj/);
-    // The Q lands BEFORE the trailing "0 0 0 1 k" (lastShowEnd, not the
-    // run's full end) -- that trailing op must stay the LAST color
+    // New color lands right where "Table 4.1.2." is actually shown.
+    expect(result).toMatch(/30 685 Tm\n0 0 0 rg\n\n\(Table 4\.1\.2\.\) Tj/);
+    // The restore lands BEFORE the trailing "0 0 0 1 k" (lastShowEnd, not
+    // the run's full end) -- that trailing op must stay the LAST color
     // statement before "Math Navigation Chart" shows, still correctly
-    // attached to its own Td (not split apart by the inserted Q). Landing
-    // AFTER it (the pre-fix behavior for its restore-color insertion, same
-    // bug either way) would fire last and silently affect the next run's
-    // own intended color instead of just closing this run's own q.
-    expect(result).toContain('Q\n\n0 0 0 1 k\n5.453 0 Td\n(Math Navigation Chart) Tj');
+    // attached to its own Td (not split apart by the restore op). Restoring
+    // AFTER it (the pre-fix behavior) would fire last and silently override
+    // the next run's own intended color instead of restoring this run's.
+    expect(result).toContain('1 0.44 0.15 rg\n\n0 0 0 1 k\n5.453 0 Td\n(Math Navigation Chart) Tj');
+  });
+});
+
+describe('findPrecedingColor', () => {
+  it('finds the nearest preceding rg op, ignoring ops that come after beforePos', () => {
+    const content = '0 0 0 rg\n(black) Tj\n1 0 0 rg\n(red) Tj\n0 1 0 rg\n(green) Tj';
+    const beforePos = content.indexOf('1 0 0 rg');
+
+    expect(findPrecedingColor(content, beforePos)).toEqual([0, 0, 0]);
+  });
+
+  it('parses a preceding gray (g) op', () => {
+    const content = '0.5 g\n(gray text) Tj\nHERE';
+    expect(findPrecedingColor(content, content.indexOf('HERE'))).toEqual([0.5, 0.5, 0.5]);
+  });
+
+  it('parses a preceding CMYK (k) op', () => {
+    const content = '0 0 0 1 k\n(black via cmyk) Tj\nHERE';
+    expect(findPrecedingColor(content, content.indexOf('HERE'))).toEqual([0, 0, 0]);
+  });
+
+  it('declines (returns null) when the nearest preceding op is scn, rather than falling through to an earlier rg', () => {
+    const content = '0 0 0 rg\n(black) Tj\n/CS0 scn\n(untracked colorspace) Tj\nHERE';
+    expect(findPrecedingColor(content, content.indexOf('HERE'))).toBeNull();
+  });
+
+  it('declines (returns null) when the nearest preceding op is sc', () => {
+    const content = '1 sc\n(untracked) Tj\nHERE';
+    expect(findPrecedingColor(content, content.indexOf('HERE'))).toBeNull();
+  });
+
+  it('falls back to pure black when no fill-color op precedes this position at all', () => {
+    const content = '(no color op before this) Tj\nHERE';
+    expect(findPrecedingColor(content, content.indexOf('HERE'))).toEqual([0, 0, 0]);
   });
 });
 
@@ -401,6 +397,54 @@ describe('PdfContrastWriterService.fixColorContrast', () => {
     expect(result.after).toContain('backplate');
   });
 
+  // Real-world incident, confirmed live on Math_Weir_PDF.pdf: a tiny
+  // "error" annotation's own original color was a one-off gray, unrelated
+  // to the rest of the page. The original (pre-findPrecedingColor)
+  // restore mechanism used that gray as the restore-after-run value --
+  // but since `rg` isn't graphics-state-scoped, that gray leaked forward
+  // and repainted the next, wholly unrelated run ("becomes", always
+  // black) gray too, registering as a brand-new contrast failure the
+  // original document never had. fixColorContrast must restore whatever
+  // was ACTUALLY ambient before this run (here: nothing precedes it at
+  // all, so pure black by default), never this run's own original color.
+  it('restores the ambient color from before the run (not the fixed run\'s own original color) so a later, unrelated run is unaffected', async () => {
+    vi.mocked(verifyContrastInRegion).mockResolvedValue({ ratio: 15, passes: true, foreground: '#000000', background: '#ffffff', uncertain: false });
+
+    const src = await PDFDocument.create();
+    src.addPage([500, 700]);
+    const doc = await PDFDocument.load(await src.save());
+    const content = `BT
+1 0 0 1 50 150 Tm
+0.4588 0.4627 0.4824 rg
+(error) Tj
+ET
+BT
+1 0 0 1 50 130 Tm
+(becomes) Tj
+ET
+`;
+    writePageContent(doc, 1, content);
+
+    const issue = contrastIssue({
+      boundingBox: { x: 50, y: 700 - 150, width: 40, height: 14, pageWidth: 500, pageHeight: 700 },
+      contrastData: { foreground: '#75767b', background: '#ffffff', ratio: 2.1, requiredRatio: 4.5, isLargeText: false },
+    });
+
+    const result = await pdfContrastWriterService.fixColorContrast(doc, issue);
+    expect(result.success).toBe(true);
+
+    const finalContent = decodePageContent(doc, 1)!;
+    const afterError = finalContent.slice(
+      finalContent.indexOf('(error) Tj') + '(error) Tj'.length,
+      finalContent.indexOf('BT\n1 0 0 1 50 130')
+    );
+    expect(afterError).toContain('0 0 0 rg');
+    expect(afterError).not.toMatch(/0\.4588/);
+    // The next run is completely untouched -- no restore/fix op of any
+    // kind was ever inserted into or around it.
+    expect(finalContent).toContain('BT\n1 0 0 1 50 130 Tm\n(becomes) Tj\nET');
+  });
+
   it('fails gracefully when the issue has no contrastData', async () => {
     const doc = await realPdfWithText(100, 450, 14);
     const result = await pdfContrastWriterService.fixColorContrast(doc, contrastIssue({ contrastData: undefined }));
@@ -496,25 +540,20 @@ ET
     expect(result.success).toBe(true);
 
     const finalContent = decodePageContent(doc, 1)!;
-    // The fix brackets seg1's own color-set with q/Q spanning the whole
-    // rest of the run (restoreAt is the RUN's true lastShowEnd, after
-    // "more black", not just seg1's own) -- Q closes it, not an explicit
-    // restore color. This is what actually fixes the real incident: no
-    // color value has to be computed/guessed for "whatever comes after,"
-    // so it can never be wrong the way an explicit restore (even one using
-    // the run's "true final color", the old restoreColorOverride approach)
-    // could be for a run shaped differently than this fixture.
-    expect(finalContent).toMatch(/\(black text \) Tj\nq\n[\d. ]+rg\n\(RED WORD\) Tj/);
-    // The pre-existing "0 0 0 rg" already sitting before "(more black) Tj"
-    // in the original content is untouched by this fix -- it's what
-    // actually keeps that text black, not anything this fix inserts.
-    expect(finalContent).toContain('0 0 0 rg\n(more black) Tj');
-    // Q closes the bracket right after the run's last show, before ET --
-    // nothing after the run (or after "more black" within it) ever sees
-    // seg1's own original red, or any other explicit color this fix chose.
+    // The restore-after-run op must set BLACK, not red (seg1's own original
+    // foreground) -- using red here would leave the wrong color active for
+    // whatever renders after this run, a new contrast defect this fix must
+    // never introduce. fixColorContrast no longer reads restoreColorOverride
+    // for this value -- it derives it via findPrecedingColor, scanning
+    // backward from seg1's own internal fill op. Nothing precedes that op in
+    // this fixture, so findPrecedingColor falls back to its documented
+    // default (pure black), which happens to coincide with the run's true
+    // final color here -- a real, empirically-verified case, not an
+    // assumption.
     const afterLastShow = finalContent.slice(finalContent.lastIndexOf('(more black) Tj') + '(more black) Tj'.length);
-    expect(afterLastShow).toMatch(/^\nQ\n/);
-    expect(finalContent).not.toContain('1 0 0 rg');
+    expect(afterLastShow).toContain('0 0 0 rg');
+    expect(afterLastShow).not.toMatch(/^\s*1 0 0 rg/);
+    expect(finalContent).not.toContain('q\n');
   });
 
   it('leaves the run\'s OWN last segment fix using the normal single-op restore path (unchanged behavior)', async () => {

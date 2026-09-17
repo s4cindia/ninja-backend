@@ -74,16 +74,16 @@ export interface TextRunMatch {
    * a new contrast defect this module must never introduce. See
    * locateTextRunsForPage's own doc comment for the full reasoning.
    *
-   * No longer read by pdf-contrast-writer.service.ts's fixColorContrast as
-   * of the q/Q fix for a real Math_Weir_PDF.pdf incident: bracketing the
-   * fix in q/Q makes restoring to a specific value (this field, or the
-   * simpler cd.foreground fallback it overrides) unnecessary -- Q reverts
-   * to whatever was ACTUALLY active before the fix's own q, correct by
-   * construction. Left in place, still computed and still asserted by its
-   * own tests, since it's a real, separately-useful piece of run analysis
-   * (the run's true trailing color) that a future caller could still want
-   * -- not removed here since that's a larger, separate cleanup than this
-   * fix's own scope.
+   * No longer read by pdf-contrast-writer.service.ts's fixColorContrast:
+   * even the run's own TRUE final color isn't always what unrelated LATER
+   * content in the stream actually needs restored (confirmed live on
+   * Math_Weir_PDF.pdf -- see findPrecedingColor's own doc comment for the
+   * real incident and the fix, which derives the restore value directly
+   * from the stream instead). Left in place, still computed and still
+   * asserted by its own tests, since it's a real, separately-useful piece
+   * of run analysis (the run's true trailing color) a future caller could
+   * still want -- not removed here since that's a larger, separate cleanup
+   * than this fix's own scope.
    */
   restoreColorOverride?: [number, number, number];
 }
@@ -540,6 +540,45 @@ function parseFillColorOpToRgb(content: string, op: { start: number; end: number
     }
     default: return null;
   }
+}
+
+/**
+ * Finds the RGB value that was ACTUALLY in effect immediately before
+ * `beforePos` in the whole content stream -- scans every fill-color op from
+ * the start of the stream up to that position and parses the nearest one,
+ * not scoped to any one run or text object.
+ *
+ * This is what pdf-contrast-writer.service.ts's spliceColorFix restores
+ * after a fix, and it matters which color that is: a fixed run's OWN
+ * reported/measured color (issue.contrastData.foreground, or
+ * TextRunMatch.restoreColorOverride's "run's own true final color") is NOT
+ * necessarily what unrelated LATER content in the stream needs restored.
+ * Confirmed live on Math_Weir_PDF.pdf: a tiny "error" superscript
+ * annotation's own original color was gray, uniquely, as a one-off local
+ * style -- restoring to that gray after fixing it to black left gray as
+ * the active fill color for several unrelated, ordinary body-text words
+ * that followed, which had never been gray and were never meant to be,
+ * registering as brand-new contrast failures the original document never
+ * had. The color that actually needs restoring is whatever was active
+ * immediately BEFORE this run started (in that case, black, inherited from
+ * further upstream) -- which this function derives directly from the
+ * stream itself instead of from anything specific to the run being fixed.
+ *
+ * Declines (returns null) rather than guessing when the nearest preceding
+ * op is `sc`/`scn` (colorspace-dependent, unparseable without tracking
+ * /ColorSpace -- same "bail rather than guess" discipline as
+ * parseFillColorOpToRgb itself): that op genuinely IS the ambient color
+ * right before `beforePos`, so falling through to an EVEN EARLIER op would
+ * return a color that's no longer actually in effect there, an active
+ * wrong guess rather than a declined unknown. Falls back to pure black
+ * ([0,0,0], the PDF default initial fill color per PDF32000-1:2008 §8.6.3)
+ * only when NO fill-color op precedes this position at all.
+ */
+export function findPrecedingColor(content: string, beforePos: number): [number, number, number] | null {
+  const tokens = tokenize(content);
+  const ops = findFillColorOps(tokens, 0, beforePos);
+  if (ops.length === 0) return [0, 0, 0];
+  return parseFillColorOpToRgb(content, ops[ops.length - 1]);
 }
 
 export interface PageContrastTarget {
