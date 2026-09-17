@@ -99,11 +99,26 @@ export function hexToUnitRgb(hex: string): [number, number, number] {
  * Pure string splice implementing the class doc comment's apply+restore
  * strategy for one run. `run` is the run's own [start,end) span;
  * `internalOp`, when present, is Phase B1's located fill-color op within
- * that span (undefined when the run has none of its own). Always inserts a
- * restore op for `originalColor` right after the run — see class doc
- * comment for why. Splices are applied right-to-left (restore first, then
- * apply) so the apply-side offsets stay valid regardless of the restore
- * insertion's length.
+ * that span (undefined when the run has none of its own). Splices are
+ * applied right-to-left (restore first, then apply) so the apply-side
+ * offsets stay valid regardless of the restore insertion's length.
+ *
+ * Brackets the fix in `q`/`Q` (PDF's own graphics-state save/restore)
+ * instead of inserting an explicit restore-color `rg` op, which this
+ * function used to do. Confirmed live on Math_Weir_PDF.pdf: `rg` isn't
+ * scoped to BT/ET, so an explicit restore value only correctly protects
+ * whatever comes after the run when that later content was relying on
+ * THIS run's own original color -- which fails for a run whose original
+ * color was a local one-off (e.g. a small annotation that was already
+ * flagged as gray-on-white), not the shared ambient color the page's
+ * OTHER, unrelated text actually needs. The fixed run's own gray "restore"
+ * value then leaked forward and repainted several unrelated words in that
+ * same gray, registering as brand-new contrast failures never reported for
+ * the original document -- confirmed via a real 348→400+ issue count
+ * increase in production before this fix. `Q` sidesteps the problem
+ * entirely: it restores the graphics state to whatever was ACTUALLY active
+ * before the matching `q`, correct by construction, with nothing to
+ * compute or guess.
  *
  * The restore lands at `run.lastShowEnd` (falling back to `run.end` when
  * absent, e.g. a hand-built `run` in a unit test with no trailing content
@@ -120,22 +135,20 @@ export function spliceColorFix(
   content: string,
   run: { start: number; end: number; lastShowEnd?: number },
   internalOp: { start: number; end: number } | undefined,
-  newColor: [number, number, number],
-  originalColor: [number, number, number]
+  newColor: [number, number, number]
 ): string {
   const [nr, ng, nb] = newColor;
-  const [or_, og, ob] = originalColor;
   const restoreAt = run.lastShowEnd ?? run.end;
 
   // Leading/trailing \n on every inserted snippet — unlike an operator-span
   // replacement (which reuses whitespace already surrounding the original
   // token), an insertion lands between two tokens that may not have any
   // separator of their own (e.g. right after `BT`), so it must bring both.
-  let out = content.slice(0, restoreAt) + `\n${or_} ${og} ${ob} rg\n` + content.slice(restoreAt);
+  let out = content.slice(0, restoreAt) + `\nQ\n` + content.slice(restoreAt);
 
   out = internalOp
-    ? out.slice(0, internalOp.start) + `${nr} ${ng} ${nb} rg` + out.slice(internalOp.end)
-    : out.slice(0, run.start) + `\n${nr} ${ng} ${nb} rg\n` + out.slice(run.start);
+    ? out.slice(0, internalOp.start) + `q\n${nr} ${ng} ${nb} rg` + out.slice(internalOp.end)
+    : out.slice(0, run.start) + `\nq\n${nr} ${ng} ${nb} rg\n` + out.slice(run.start);
 
   return out;
 }
@@ -260,9 +273,8 @@ export class PdfContrastWriterService {
       };
     }
 
-    const originalRgb = match.restoreColorOverride ?? hexToUnitRgb(cd.foreground);
     const applyColor = (hex: string): void => {
-      const rewritten = spliceColorFix(content, match, match.internalFillColorOp, hexToUnitRgb(hex), originalRgb);
+      const rewritten = spliceColorFix(content, match, match.internalFillColorOp, hexToUnitRgb(hex));
       writePageContent(doc, pageNumber, rewritten);
     };
     const verify = async (): Promise<{ ratio: number; passes: boolean; uncertain: boolean; variance: number } | null> => {

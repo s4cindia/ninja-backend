@@ -73,6 +73,17 @@ export interface TextRunMatch {
    * leave the graphics state on the wrong color for whatever renders next,
    * a new contrast defect this module must never introduce. See
    * locateTextRunsForPage's own doc comment for the full reasoning.
+   *
+   * No longer read by pdf-contrast-writer.service.ts's fixColorContrast as
+   * of the q/Q fix for a real Math_Weir_PDF.pdf incident: bracketing the
+   * fix in q/Q makes restoring to a specific value (this field, or the
+   * simpler cd.foreground fallback it overrides) unnecessary -- Q reverts
+   * to whatever was ACTUALLY active before the fix's own q, correct by
+   * construction. Left in place, still computed and still asserted by its
+   * own tests, since it's a real, separately-useful piece of run analysis
+   * (the run's true trailing color) that a future caller could still want
+   * -- not removed here since that's a larger, separate cleanup than this
+   * fix's own scope.
    */
   restoreColorOverride?: [number, number, number];
 }
