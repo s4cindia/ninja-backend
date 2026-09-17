@@ -25,6 +25,17 @@ export const pdfConfig = {
   // validators, so this is the one cap worth having an explicit opt-in for
   // even in a shared environment if audit latency on very long documents
   // becomes a problem in practice.
+  //
+  // Confirmed live: a 377-page document (Math_Weir_PDF.pdf) OOM-killed the
+  // ECS task (exit 137, "OutOfMemoryError: container killed due to memory
+  // usage") during this exact per-page render loop, on a 4GB task -- fixed
+  // primarily by bumping the task to 8GB and adding pdfjsPage.cleanup() per
+  // page in pdf-contrast.validator.ts (releases pdfjs-dist's own internal
+  // per-page render caches instead of leaving that to GC timing). This cap
+  // is a further opt-in mitigation for anyone hitting the same wall on an
+  // even larger document or a smaller task size -- not changed to a default
+  // cap here, for the same reason maxAuditPages above isn't: a silent
+  // default cap is a worse failure mode than the one it prevents.
   maxContrastPages: parseInt(process.env.MAX_CONTRAST_PAGES || '0', 10),
   supportedVersions: ['1.0', '1.1', '1.2', '1.3', '1.4', '1.5', '1.6', '1.7', '2.0'],
   workerSrc: 'pdfjs-dist/build/pdf.worker.mjs',

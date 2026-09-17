@@ -311,6 +311,32 @@ export class PdfContrastValidator {
     page: PdfParseResult['pages'][0]
   ): Promise<AuditIssue[]> {
     const pdfjsPage = await pdfjsDoc.getPage(page.pageNumber);
+    try {
+      return await this.samplePageContrast(pdfjsPage, page);
+    } finally {
+      // Releases pdfjs-dist's own internal per-page caches (rendered
+      // operator list, etc.) immediately after this page is done, rather
+      // than leaving that to GC timing. Confirmed live: a 377-page document
+      // OOM-killed the ECS task (exit 137) during this exact per-page render
+      // loop -- see maxContrastPages' doc comment in pdf.config.ts for the
+      // full incident. Best-effort: a cleanup failure must never mask a real
+      // error from samplePageContrast above, or throw and break the
+      // per-page try/catch in validate()'s own loop.
+      try {
+        await pdfjsPage.cleanup();
+      } catch (cleanupErr) {
+        logger.debug(
+          `[PdfContrastValidator] Page ${page.pageNumber} cleanup failed (non-fatal): ` +
+          (cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr))
+        );
+      }
+    }
+  }
+
+  private async samplePageContrast(
+    pdfjsPage: pdfjsLib.PDFPageProxy,
+    page: PdfParseResult['pages'][0]
+  ): Promise<AuditIssue[]> {
     const viewport = pdfjsPage.getViewport({ scale: RENDER_SCALE });
 
     // Render page to an @napi-rs/canvas
