@@ -193,19 +193,27 @@ process.on('SIGINT', gracefulShutdown);
 // cleanupStaleActiveJobs() records as "Server restarted while job was
 // processing" on the next boot.
 //
-// unhandledRejection: log and keep running. A rejected promise doesn't
-// leave the process in a known-corrupted state the way a synchronous throw
-// can, so letting one bad promise take down unrelated concurrent work is
-// disproportionate -- this handler is the actual fix for that class of bug.
-// It's a safety net for whatever similar gap surfaces next, not a
-// replacement for catching promises properly at the source.
+// unhandledRejection: log and keep running -- deliberately, not an
+// oversight. CodeRabbit flagged this on the PR that introduced it, arguing
+// ECS could keep serving a process after an "uncontained failure" since
+// /health doesn't check worker state; the suggested fix was to exit(1) here
+// too. Not applied: a rejected promise doesn't leave the process in a
+// known-corrupted state the way a synchronous throw does (Node's own
+// unhandledException guidance doesn't extend to it), so it's a fundamentally
+// different risk than uncaughtException below. Exiting on every unhandled
+// rejection would reintroduce exactly the failure mode this handler exists
+// to fix: the NEXT unguarded fire-and-forget call anywhere in this large
+// codebase would still take down every other in-flight job and the whole
+// API, just with a clean log line first instead of a silent crash. Logging
+// and continuing costs nothing when the rejection really was isolated (the
+// common case), and still surfaces every occurrence for investigation.
 //
-// uncaughtException: Node's own guidance is that resuming after a genuine
-// synchronous throw escaping every try/catch is unsafe -- some part of the
-// stack may be in an inconsistent state. Log it and exit deliberately so
-// ECS replaces the task with a clean one, instead of crashing silently with
-// no log line at all (which is what made the original incident hard to
-// diagnose).
+// uncaughtException: different risk profile, different response. Node's own
+// guidance is that resuming after a genuine synchronous throw escaping every
+// try/catch is unsafe -- some part of the stack may be in an inconsistent
+// state. Log it and exit deliberately so ECS replaces the task with a clean
+// one, instead of crashing silently with no log line at all (which is what
+// made the original incident hard to diagnose).
 process.on('unhandledRejection', (reason, promise) => {
   logger.error('Unhandled promise rejection (process continuing)', {
     reason: reason instanceof Error ? reason.stack ?? reason.message : reason,

@@ -412,7 +412,6 @@ async function processPdfAccessibility(
   const onProgress = async (currentPage: number, totalPages: number) => {
     try {
       if (!totalPagesStored && totalPages > 0) {
-        totalPagesStored = true;
         const ej = await prisma.job.findUnique({ where: { id: dbJobId }, select: { input: true } });
         const ei = ej?.input && typeof ej.input === 'object' && !Array.isArray(ej.input)
           ? ej.input as Record<string, unknown> : {};
@@ -420,6 +419,12 @@ async function processPdfAccessibility(
           where: { id: dbJobId },
           data: { input: { ...ei, totalPages } as Prisma.InputJsonObject },
         });
+        // Only mark stored once the write actually succeeds -- setting this
+        // before the await (as an earlier draft did) meant a transient
+        // failure here left it permanently true, silently skipping this
+        // persistence block for the rest of the audit even after the
+        // transient condition cleared (a real CodeRabbit + Codex finding).
+        totalPagesStored = true;
         logger.info(`[PDF Worker] Job ${dbJobId}: ${totalPages} pages to audit`);
       }
       if (totalPages > 0) {

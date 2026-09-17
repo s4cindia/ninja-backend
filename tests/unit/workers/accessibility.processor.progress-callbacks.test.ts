@@ -131,6 +131,26 @@ describe('accessibility.processor progress callbacks — crash-safety', () => {
     expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('onProgress callback failed for job job-1'));
   });
 
+  // CodeRabbit + Codex review finding on this PR: an earlier draft set
+  // totalPagesStored = true BEFORE the persistence write, so a transient
+  // failure on the FIRST call left it permanently true -- every later call
+  // silently skipped persisting totalPages for the rest of the audit, even
+  // after the transient condition cleared.
+  it('retries persisting totalPages on the next call after a transient failure, rather than giving up forever', async () => {
+    const { onProgress } = await captureCallbacks();
+    vi.mocked(prisma.job.update).mockClear(); // drop captureCallbacks' own setup-phase writes
+
+    vi.mocked(prisma.job.update).mockRejectedValueOnce(new Error('connection pool exhausted'));
+    await onProgress(0, 10);
+    expect(prisma.job.update).toHaveBeenCalledTimes(1);
+
+    await onProgress(1, 10);
+    expect(prisma.job.update).toHaveBeenCalledTimes(2);
+    expect(prisma.job.update).toHaveBeenLastCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ input: expect.objectContaining({ totalPages: 10 }) }) })
+    );
+  });
+
   it('onProgress resolves (never rejects) when queueService.updateJobProgress fails', async () => {
     const { onProgress } = await captureCallbacks();
 
