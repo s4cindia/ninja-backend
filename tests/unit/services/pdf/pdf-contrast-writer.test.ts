@@ -340,6 +340,37 @@ describe('PdfContrastWriterService.fixColorContrast', () => {
     expect(content).toContain('Tj'); // original text-show op still present, untouched
   });
 
+  it('draws a backplate when the background is flat and known but too mid-luminance for text-color escalation alone', async () => {
+    // Real Math_Weir_PDF.pdf finding (PR #575): a confidently-FLAT medium
+    // gray background (e.g. #9b9c9f) caps even pure-black text's
+    // theoretical ratio around 7-8:1, and small-text anti-aliasing dilution
+    // (this file's own header doc comment) eats enough of that modest
+    // headroom that the measured ratio still lands below 4.5:1 -- even
+    // though extreme escalation is genuinely as dark as it can go and the
+    // background reads as NOT uncertain (unlike every other backplate test
+    // above, which mocks uncertain:true). Confirms the OR'd `!passes`
+    // condition, not just `uncertain`, reaches the backplate tier here.
+    const mockVerify = vi.mocked(verifyContrastInRegion);
+    mockVerify.mockClear();
+    mockVerify
+      .mockResolvedValueOnce({ ratio: 2.42, passes: false, foreground: '#f0f0f0', background: '#9b9c9f', uncertain: false, variance: 0.001 })
+      .mockResolvedValueOnce({ ratio: 2.42, passes: false, foreground: '#f0f0f0', background: '#9b9c9f', uncertain: false, variance: 0.001 })
+      .mockResolvedValueOnce({ ratio: 18.76, passes: true, foreground: '#000000', background: '#000000', uncertain: false, variance: 0.001 });
+
+    const doc = await realPdfWithText(60, 450, 14, { bold: false });
+    const originalReport = await pdfAuditService.runAuditFromBuffer(
+      Buffer.from(await doc.save()), 'writer-test-backplate-flat-insufficient', 'test.pdf', 'custom', ['contrast']
+    );
+    const issue = originalReport.issues.find(i => i.code === 'COLOR-CONTRAST')!;
+
+    const result = await pdfContrastWriterService.fixColorContrast(doc, issue);
+
+    expect(mockVerify).toHaveBeenCalledTimes(3);
+    expect(result.success).toBe(true);
+    expect(result.after).toContain('backplate');
+    expect(result.after).toContain('verified 18.76:1');
+  });
+
   it('leaves a genuinely busy background as guidance-only rather than stamping a backplate over it', async () => {
     // Same shape as the moderate-variance case above, but variance is well
     // past BUSY_VARIANCE_THRESHOLD (0.15) -- a real photo/illustration, not
