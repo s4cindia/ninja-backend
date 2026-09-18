@@ -523,4 +523,61 @@ describe('analyzeBookmark (missing bookmarks from headings)', () => {
       svc.analyzeBookmark(issue({ code: 'BOOKMARK-MISSING' }), parsedWithHeadings(), 'guidance-only')
     ).resolves.toBeNull();
   });
+
+  // Real Math_Weir_PDF.pdf incident: pdf-structure-writer.service.ts's own
+  // generateBookmarksFromHeadings (a deterministic, no-AI-call writer) was
+  // already wired on the APPLY side (STRUCTURE_WRITER_TYPES /
+  // 'bookmark-generate' in applyApprovedSuggestions) but nothing ever
+  // PRODUCED that suggestion type -- unreachable dead code. Mirrors
+  // analyzeColorContrast's own apply-to-pdf gating: never overrides an
+  // explicit config choice, and only engages when real TAGGED headings
+  // exist (isFromTags), since the deterministic writer walks the real
+  // structure tree and can't see font-size-heuristic headings at all.
+  describe('deterministic apply-to-pdf path (real tagged headings + mode opted in)', () => {
+    it('returns bookmark-generate/apply-to-pdf without calling Gemini when mode is apply-to-pdf and headings are tagged', async () => {
+      const spy = vi.spyOn(geminiService, 'generateWithSchema');
+      const res = await svc.analyzeBookmark(issue({ code: 'BOOKMARK-MISSING' }), parsedWithHeadings(), 'apply-to-pdf');
+
+      expect(res.suggestionType).toBe('bookmark-generate');
+      expect(res.applyMode).toBe('apply-to-pdf');
+      expect(spy).not.toHaveBeenCalled();
+    });
+
+    it('falls back to the AI guidance-only path when mode is apply-to-pdf but headings are only from the font-size heuristic (not tagged)', async () => {
+      const heuristicOnly = buildParsed({
+        pages: [
+          buildPage({
+            headings: [
+              { id: 'h1', level: 1, text: 'Chapter 3: Fractions', pageNumber: 3, position: { x: 0, y: 0 }, isFromTags: false, isProperlyNested: true },
+            ],
+          }),
+        ],
+      });
+      mockSchemaResult({
+        suggestedBookmarks: [{ pageNumber: 3, title: 'Chapter 3: Fractions', level: 1 }],
+        guidance: 'Add a top-level bookmark for Chapter 3.',
+        confidence: 0.8,
+        rationale: 'r',
+      });
+
+      const res = await svc.analyzeBookmark(issue({ code: 'BOOKMARK-MISSING' }), heuristicOnly, 'apply-to-pdf');
+
+      expect(res.suggestionType).toBe('bookmark-missing');
+      expect(res.applyMode).toBe('guidance-only');
+    });
+
+    it('still uses the AI guidance-only path when mode is guidance-only, even with real tagged headings (never overrides the config)', async () => {
+      mockSchemaResult({
+        suggestedBookmarks: [{ pageNumber: 3, title: 'Chapter 3: Fractions', level: 1 }],
+        guidance: 'Add a top-level bookmark for Chapter 3.',
+        confidence: 0.8,
+        rationale: 'r',
+      });
+
+      const res = await svc.analyzeBookmark(issue({ code: 'BOOKMARK-MISSING' }), parsedWithHeadings(), 'guidance-only');
+
+      expect(res.suggestionType).toBe('bookmark-missing');
+      expect(res.applyMode).toBe('guidance-only');
+    });
+  });
 });

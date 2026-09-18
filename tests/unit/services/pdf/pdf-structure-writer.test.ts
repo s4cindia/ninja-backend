@@ -339,3 +339,38 @@ describe('pdf-structure-writer.service — RoleMap-resolved custom heading tags'
     expect(tagOf(doc, cxRef)).toBe('H2'); // skip fixed relative to the transitively-resolved H1
   });
 });
+
+/**
+ * Real Math_Weir_PDF.pdf incident (fixing "Bookmark Missing" surfaced this):
+ * generateBookmarksFromHeadings matched literal /H1-/H9 tags only, the exact
+ * same RoleMap-blindness bug already fixed in fixHeadingHierarchy/
+ * fixMultipleH1 earlier -- this function just wasn't touched at the time.
+ * fixMultipleH1 always leaves the document's true FIRST H1 under its own
+ * original custom role name (only later H1s get renamed/demoted), so on a
+ * real document that had already been through that fix, this bug meant a
+ * generated bookmark outline would silently open on the SECOND heading,
+ * never the true first chapter title.
+ */
+describe('pdf-structure-writer.service — generateBookmarksFromHeadings resolves custom role-mapped heading tags', () => {
+  it('includes a heading tagged with a custom role name the /RoleMap maps to H1, not just literal Hn', async () => {
+    const doc = await PDFDocument.create();
+    doc.addPage([400, 600]);
+
+    const roleMapRef = doc.context.register(doc.context.obj({ cptitle: PDFName.of('H1') }));
+    const firstRef = doc.context.register(doc.context.obj({ S: PDFName.of('cptitle'), K: 0 }));
+    const secondRef = doc.context.register(doc.context.obj({ S: PDFName.of('H2'), K: 1 }));
+    const documentRef = doc.context.register(
+      doc.context.obj({ S: PDFName.of('Document'), K: doc.context.obj([firstRef, secondRef]) })
+    );
+    const structTreeRootRef = doc.context.register(
+      doc.context.obj({ Type: PDFName.of('StructTreeRoot'), RoleMap: roleMapRef, K: documentRef })
+    );
+    doc.catalog.set(PDFName.of('StructTreeRoot'), structTreeRootRef);
+
+    const result = pdfStructureWriterService.generateBookmarksFromHeadings(doc);
+
+    // Both headings included -- not just the literal /H2, which is what the
+    // pre-fix version would have silently produced (generated: 1).
+    expect(result.generated).toBe(2);
+  });
+});

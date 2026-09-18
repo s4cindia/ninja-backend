@@ -2191,6 +2191,32 @@ class AiAnalysisService {
 
     // BOOKMARK-MISSING or BOOKMARK-INSUFFICIENT: suggest bookmarks from headings
     const allHeadings = parsed.pages.flatMap(p => p.headings);
+
+    // Real Math_Weir_PDF.pdf incident: pdf-structure-writer.service.ts's own
+    // generateBookmarksFromHeadings (a complete, deterministic, no-AI-call
+    // writer that builds a full /Outlines tree from the REAL tagged
+    // structure) already existed and was already wired on the apply side
+    // (STRUCTURE_WRITER_TYPES / the 'bookmark-generate' branch below in
+    // applyApprovedSuggestions) -- but nothing ever PRODUCED that suggestion
+    // type, so it was unreachable dead code. This mirrors HEADING_CODES'
+    // own tagged-PDF-prefers-the-deterministic-writer pattern above, gated
+    // on `mode` (unlike headings, which have no separate on/off setting)
+    // the same way analyzeColorContrast gates its own apply-to-pdf branch --
+    // never applies without an explicit opt-in, and only when real tagged
+    // headings actually exist to build from (isFromTags, not the font-size
+    // heuristic, which generateBookmarksFromHeadings' real structure-tree
+    // walk can't see at all).
+    if (mode === 'apply-to-pdf' && allHeadings.some(h => h.isFromTags)) {
+      return {
+        suggestionType: 'bookmark-generate',
+        guidance: 'Bookmarks will be generated from the PDF\'s tagged heading structure.',
+        confidence: 0.9,
+        rationale: 'PDF has a tagged heading structure -- bookmarks can be generated algorithmically, no AI call needed',
+        model: 'rule-based',
+        applyMode: 'apply-to-pdf',
+      };
+    }
+
     if (allHeadings.length === 0) {
       return {
         suggestionType: 'bookmark-missing',
