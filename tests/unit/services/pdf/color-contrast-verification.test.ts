@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { PDFDocument, StandardFonts, rgb } from 'pdf-lib';
-import { verifyContrastInRegion } from '../../../../src/services/pdf/color-contrast-verification';
+import { verifyContrastInRegion, verifyBackplateContrast } from '../../../../src/services/pdf/color-contrast-verification';
 import { pdfAuditService } from '../../../../src/services/pdf/pdf-audit.service';
 
 async function buildPdf(color: number): Promise<Buffer> {
@@ -212,6 +212,80 @@ describe('verifyContrastInRegion', () => {
 
     expect(result).toBeTruthy();
     expect(result!.passes).toBe(false); // the fix (if attempted) would still fail here -- a known, accepted gap
+  });
+});
+
+describe('verifyBackplateContrast', () => {
+  // Codex P1 finding on PR #575, confirmed live on Math_Weir_PDF.pdf:
+  // verifyContrastInRegion (used before this function existed) reported a
+  // BLACK backplate behind original LIGHT text (#f0f0f0) as "verified" by
+  // reading the backplate's own fill as "foreground" against some unrelated
+  // nearby patch as "background" -- never actually measuring whether the
+  // original text is visible against the new backplate at all. Root cause:
+  // expectedBackgroundHex there is the OLD background, which no longer
+  // exists anywhere in the region once the backplate covers it.
+  // verifyBackplateContrast fixes this by using the KNOWN (just-written)
+  // backplate color directly instead of re-searching for one.
+
+  it('correctly measures light text against a dark backplate (the exact scenario that was broken)', async () => {
+    const src = await PDFDocument.create();
+    const page = src.addPage([400, 600]);
+    // A dark backplate rectangle, THEN light text drawn on top of it --
+    // painting order matches spliceBackplate's real insertion point (before
+    // the enclosing text object).
+    page.drawRectangle({ x: 95, y: 440, width: 200, height: 25, color: rgb(0, 0, 0) });
+    page.drawText('Light text on dark plate', { x: 100, y: 450, size: 14, color: rgb(0.94, 0.94, 0.94) }); // #f0f0f0-ish
+    const buffer = Buffer.from(await src.save());
+
+    const result = await verifyBackplateContrast(buffer, 1, BOUNDING_BOX, 4.5, '#000000');
+
+    expect(result).toBeTruthy();
+    // Must report the LIGHT TEXT as foreground and the BLACK PLATE as
+    // background -- not the reverse (the bug: plate misread as "ink").
+    expect(result!.background).toBe('#000000');
+    const fgRgb = parseInt(result!.foreground.slice(1), 16);
+    expect(fgRgb).toBeGreaterThan(0x808080); // genuinely light, not the plate's own black
+    expect(result!.passes).toBe(true);
+    expect(result!.ratio).toBeGreaterThan(10); // near-white on true black -- large, correct margin
+  });
+
+  it('correctly measures dark text against a light backplate', async () => {
+    const src = await PDFDocument.create();
+    const page = src.addPage([400, 600]);
+    page.drawRectangle({ x: 95, y: 440, width: 200, height: 25, color: rgb(1, 1, 1) });
+    page.drawText('Dark text on light plate', { x: 100, y: 450, size: 14, color: rgb(0.44, 0.44, 0.46) }); // ~#707176
+    const buffer = Buffer.from(await src.save());
+
+    const result = await verifyBackplateContrast(buffer, 1, BOUNDING_BOX, 4.5, '#ffffff');
+
+    expect(result).toBeTruthy();
+    expect(result!.background).toBe('#ffffff');
+    const fgRgb = parseInt(result!.foreground.slice(1), 16);
+    expect(fgRgb).toBeLessThan(0x808080); // genuinely dark, not the plate's own white
+    expect(result!.passes).toBe(true);
+  });
+
+  it('never reports uncertain -- the backplate background is known exactly, not sampled', async () => {
+    const src = await PDFDocument.create();
+    const page = src.addPage([400, 600]);
+    page.drawRectangle({ x: 95, y: 440, width: 200, height: 25, color: rgb(0, 0, 0) });
+    page.drawText('Text', { x: 100, y: 450, size: 14, color: rgb(0.94, 0.94, 0.94) });
+    const buffer = Buffer.from(await src.save());
+
+    const result = await verifyBackplateContrast(buffer, 1, BOUNDING_BOX, 4.5, '#000000');
+
+    expect(result).toBeTruthy();
+    expect(result!.uncertain).toBe(false);
+    expect(result!.variance).toBe(0);
+  });
+
+  it('returns null for an out-of-range page rather than throwing', async () => {
+    const src = await PDFDocument.create();
+    src.addPage([400, 600]);
+    const buffer = Buffer.from(await src.save());
+
+    const result = await verifyBackplateContrast(buffer, 99, BOUNDING_BOX, 4.5, '#000000');
+    expect(result).toBeNull();
   });
 });
 

@@ -63,7 +63,7 @@ import { logger } from '../../lib/logger';
 import { decodePageContent, writePageContent } from './pdf-content-stream-io';
 import { locateTextRun, locateTextRunsForPage, locateEnclosingTextObject, findPrecedingColor, type TextRunMatch, type PageContrastTarget } from './contrast-content-stream';
 import { computeCompliantColor } from './color-contrast-correction';
-import { verifyContrastInRegion } from './color-contrast-verification';
+import { verifyContrastInRegion, verifyBackplateContrast } from './color-contrast-verification';
 import { computeBackplateRect, spliceBackplate } from './pdf-contrast-backplate';
 import { BUSY_VARIANCE_THRESHOLD } from './validators/pdf-contrast.validator';
 import type { FixResult } from './pdf-structure-writer.service';
@@ -335,19 +335,36 @@ export class PdfContrastWriterService {
       verification = await verify();
     }
 
-    // Third tier: recoloring text can never fix contrast against a
-    // background that can't be measured at all (moderate and extreme text
-    // colors above have both now failed for the same reason). A solid
-    // backplate rectangle behind the text turns that unmeasurable
-    // background into a known, flat one instead. Gated on how FAR into
-    // "uncertain" territory this specific region falls, not just the
-    // boolean: BUSY_VARIANCE_THRESHOLD separates a mildly non-uniform
-    // background (a subtle gradient, JPEG noise, a neighboring element's
-    // edge bleeding into the sample -- safe to auto-cover) from a
-    // genuinely busy one (a real photo/illustration, where stamping an
-    // opaque box is a visible, potentially jarring change that should stay
-    // a human decision). See BUSY_VARIANCE_THRESHOLD's own doc comment.
-    if (verification && verification.uncertain && verification.variance <= BUSY_VARIANCE_THRESHOLD) {
+    // Third tier: a solid backplate rectangle behind the text, in a color
+    // chosen for maximum contrast against the ORIGINAL (unchanged) text
+    // color, sidesteps two distinct problems the first two tiers can't:
+    //
+    // 1. An unmeasurable background (moderate/extreme text recoloring both
+    //    failed for the same reason: the background itself can't be
+    //    confidently sampled -- verification.uncertain).
+    // 2. A perfectly measurable, FLAT background whose own luminance simply
+    //    doesn't leave enough headroom for text-color recoloring alone to
+    //    reach the required ratio -- confirmed on real Math_Weir_PDF.pdf
+    //    data (PR #575): a medium-gray background (e.g. #9b9c9f) caps pure
+    //    black text's theoretical ratio around 7-8:1, and small-text anti-
+    //    aliasing dilution (this file's own header doc comment) eats enough
+    //    of that modest headroom that the *measured* ratio still lands
+    //    below 4.5:1 even though the extreme color is genuinely as dark/
+    //    light as it can go. A backplate escapes this because its color is
+    //    chosen against the ORIGINAL text color, not constrained by the
+    //    original background's luminance -- live-tested on 3 real stuck
+    //    cases from this exact failure mode, all verified 11-19:1.
+    //
+    // Both share the same safety gate: BUSY_VARIANCE_THRESHOLD separates a
+    // mildly non-uniform background (a subtle gradient, JPEG noise, a
+    // neighboring element's edge bleeding into the sample -- safe to auto-
+    // cover) from a genuinely busy one (a real photo/illustration, where
+    // stamping an opaque box is a visible, potentially jarring change that
+    // should stay a human decision). See BUSY_VARIANCE_THRESHOLD's own doc
+    // comment. A flat background's variance is always comfortably under
+    // this threshold by definition, so case 2 above is never blocked by it
+    // in practice -- the gate's real job is still guarding case 1.
+    if (verification && (!verification.passes || verification.uncertain) && verification.variance <= BUSY_VARIANCE_THRESHOLD) {
       const enclosing = locateEnclosingTextObject(content, match.start);
       const backplateColorHex = computeCompliantColor(cd.background, cd.foreground, EXTREME_TARGET_RATIO).color;
       const rect = computeBackplateRect(boundingBox);
@@ -355,7 +372,14 @@ export class PdfContrastWriterService {
 
       if (spliced) {
         writePageContent(doc, pageNumber, spliced);
-        const backplateVerification = await verify();
+        // NOT verify() -- that calls verifyContrastInRegion with cd.background
+        // as a hint, a value that no longer exists anywhere in the sampled
+        // region now that the backplate covers it. verifyBackplateContrast
+        // uses the backplate's own known color directly instead of
+        // re-searching for a background that isn't there anymore. See its
+        // own doc comment for the real, live-reproduced failure this fixes.
+        const backplateBuffer = Buffer.from(await doc.save());
+        const backplateVerification = await verifyBackplateContrast(backplateBuffer, pageNumber, boundingBox, cd.requiredRatio, backplateColorHex);
         if (backplateVerification && backplateVerification.passes && !backplateVerification.uncertain) {
           logger.info(
             `[ContrastWriter] Backplate ${backplateColorHex} behind original text verified ` +
