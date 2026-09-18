@@ -251,14 +251,21 @@ class PDFStructureValidator {
 
       switch (issue.type) {
         case 'missing-h1':
+          // No standalone Matterhorn condition matches "no H1 anywhere in
+          // the document" -- the closest real one, 14-002, is narrower
+          // ("the FIRST heading tag specifically is not H1") and is its own
+          // case below. Previously mismapped to 14-003 (whose real text is
+          // "heading levels skip", not "no H1") -- a bug found and fixed
+          // alongside adding 14-002/14-006/14-007 coverage; see 'skipped-level'
+          // below for the checkpoint 14-003 actually belongs to.
           severity = 'serious';
-          code = 'MATTERHORN-14-003';
-          matterhornCheckpoint = '14-003';
-          matterhornHow = 'M';
+          code = 'HEADING-MISSING-H1';
           break;
         case 'skipped-level':
           severity = 'serious';
           code = 'HEADING-SKIP';
+          matterhornCheckpoint = '14-003';
+          matterhornHow = 'M';
           break;
         case 'multiple-h1':
           severity = 'moderate';
@@ -267,6 +274,24 @@ class PDFStructureValidator {
         case 'improper-nesting':
           severity = 'serious';
           code = 'HEADING-NESTING';
+          break;
+        case 'first-heading-not-h1':
+          severity = 'moderate';
+          code = 'HEADING-FIRST-NOT-H1';
+          matterhornCheckpoint = '14-002';
+          matterhornHow = 'M';
+          break;
+        case 'multiple-headings-one-node':
+          severity = 'minor';
+          code = 'HEADING-MULTIPLE-IN-NODE';
+          matterhornCheckpoint = '14-006';
+          matterhornHow = 'M';
+          break;
+        case 'mixed-heading-tag-types':
+          severity = 'minor';
+          code = 'HEADING-MIXED-TAG-TYPES';
+          matterhornCheckpoint = '14-007';
+          matterhornHow = 'M';
           break;
         default:
           severity = 'moderate';
@@ -307,6 +332,12 @@ class PDFStructureValidator {
         return 'Consider using only one H1 heading for the main document title. Use H2-H6 for subsections.';
       case 'improper-nesting':
         return 'Ensure headings are properly nested according to their hierarchy level.';
+      case 'first-heading-not-h1':
+        return 'Make the first heading in the document H1, and use H2-H6 for subsequent levels.';
+      case 'multiple-headings-one-node':
+        return 'Split the structure element so each heading has its own parent, or remove the extra heading tag.';
+      case 'mixed-heading-tag-types':
+        return 'Use either the generic H tag or numbered H1-H9 tags throughout the document, not both.';
       default:
         return 'Review and fix heading structure to ensure proper hierarchy.';
     }

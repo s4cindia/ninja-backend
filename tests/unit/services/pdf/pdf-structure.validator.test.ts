@@ -163,9 +163,15 @@ describe('PDFStructureValidator', () => {
 
       const result = await pdfStructureValidator.validateFromFile('/path/to/test.pdf');
 
-      const h1Issue = result.issues.find(i => i.code === 'MATTERHORN-14-003');
+      // No standalone Matterhorn condition matches "no H1 anywhere" -- was
+      // previously mismapped to 14-003 (whose real text is "heading levels
+      // skip", not this), a bug found and fixed alongside adding 14-002/
+      // 14-006/14-007 coverage. See the 'skipped-level' test below for
+      // where 14-003 actually belongs now.
+      const h1Issue = result.issues.find(i => i.code === 'HEADING-MISSING-H1');
       expect(h1Issue).toBeDefined();
       expect(h1Issue?.severity).toBe('serious');
+      expect(h1Issue?.matterhornCheckpoint).toBeUndefined();
       expect(h1Issue?.wcagCriteria).toContain('1.3.1');
       expect(h1Issue?.wcagCriteria).toContain('2.4.6');
     });
@@ -203,6 +209,104 @@ describe('PDFStructureValidator', () => {
       expect(skipIssue).toBeDefined();
       expect(skipIssue?.severity).toBe('serious');
       expect(skipIssue?.suggestion).toContain('not skipping levels');
+      // This is the real Matterhorn 14-003 ("heading levels skip") --
+      // previously unmapped entirely, so a genuine skip never showed up as
+      // a FAIL in the PAC compliance report at all.
+      expect(skipIssue?.matterhornCheckpoint).toBe('14-003');
+      expect(skipIssue?.matterhornHow).toBe('M');
+    });
+
+    it('identifies Matterhorn 14-002: first heading tag is not H1', async () => {
+      const mockParsedPdf = createMockParsedPdf({ isTagged: true, hasLanguage: true, hasTitle: true });
+      const mockStructure = createMockStructure({
+        isTaggedPDF: true,
+        hasProperHeadingHierarchy: false,
+        hasDocumentLanguage: true,
+        hasLogicalReadingOrder: true,
+        headingIssues: [
+          {
+            type: 'first-heading-not-h1',
+            severity: 'major' as const,
+            description: 'Document uses numbered headings, but the first heading tag is H2, not H1.',
+            location: 'Page 1',
+            wcagCriterion: '1.3.1',
+          },
+        ],
+      });
+
+      vi.mocked(pdfParserService.parse).mockResolvedValue(mockParsedPdf);
+      vi.mocked(pdfParserService.close).mockResolvedValue(undefined);
+      vi.mocked(structureAnalyzerService.analyzeStructure).mockResolvedValue(mockStructure);
+
+      const result = await pdfStructureValidator.validateFromFile('/path/to/test.pdf');
+
+      const issue = result.issues.find(i => i.code === 'HEADING-FIRST-NOT-H1');
+      expect(issue).toBeDefined();
+      expect(issue?.severity).toBe('moderate');
+      expect(issue?.matterhornCheckpoint).toBe('14-002');
+      expect(issue?.matterhornHow).toBe('M');
+    });
+
+    it('identifies Matterhorn 14-006: a structure element has more than one direct H tag', async () => {
+      const mockParsedPdf = createMockParsedPdf({ isTagged: true, hasLanguage: true, hasTitle: true });
+      const mockStructure = createMockStructure({
+        isTaggedPDF: true,
+        hasProperHeadingHierarchy: false,
+        hasDocumentLanguage: true,
+        hasLogicalReadingOrder: true,
+        headingIssues: [
+          {
+            type: 'multiple-headings-one-node',
+            severity: 'minor' as const,
+            description: 'A structure element directly contains more than one heading (H) tag.',
+            location: 'Page 3',
+            wcagCriterion: '1.3.1',
+          },
+        ],
+      });
+
+      vi.mocked(pdfParserService.parse).mockResolvedValue(mockParsedPdf);
+      vi.mocked(pdfParserService.close).mockResolvedValue(undefined);
+      vi.mocked(structureAnalyzerService.analyzeStructure).mockResolvedValue(mockStructure);
+
+      const result = await pdfStructureValidator.validateFromFile('/path/to/test.pdf');
+
+      const issue = result.issues.find(i => i.code === 'HEADING-MULTIPLE-IN-NODE');
+      expect(issue).toBeDefined();
+      expect(issue?.severity).toBe('minor');
+      expect(issue?.matterhornCheckpoint).toBe('14-006');
+      expect(issue?.matterhornHow).toBe('M');
+    });
+
+    it('identifies Matterhorn 14-007: document mixes the generic H tag with numbered H1-H9 tags', async () => {
+      const mockParsedPdf = createMockParsedPdf({ isTagged: true, hasLanguage: true, hasTitle: true });
+      const mockStructure = createMockStructure({
+        isTaggedPDF: true,
+        hasProperHeadingHierarchy: false,
+        hasDocumentLanguage: true,
+        hasLogicalReadingOrder: true,
+        headingIssues: [
+          {
+            type: 'mixed-heading-tag-types',
+            severity: 'minor' as const,
+            description: 'Document uses both the generic H tag and numbered heading tags (H1-H9).',
+            location: 'Document',
+            wcagCriterion: '1.3.1',
+          },
+        ],
+      });
+
+      vi.mocked(pdfParserService.parse).mockResolvedValue(mockParsedPdf);
+      vi.mocked(pdfParserService.close).mockResolvedValue(undefined);
+      vi.mocked(structureAnalyzerService.analyzeStructure).mockResolvedValue(mockStructure);
+
+      const result = await pdfStructureValidator.validateFromFile('/path/to/test.pdf');
+
+      const issue = result.issues.find(i => i.code === 'HEADING-MIXED-TAG-TYPES');
+      expect(issue).toBeDefined();
+      expect(issue?.severity).toBe('minor');
+      expect(issue?.matterhornCheckpoint).toBe('14-007');
+      expect(issue?.matterhornHow).toBe('M');
     });
 
     it('should identify multiple H1 headings as moderate issue', async () => {
@@ -401,7 +505,7 @@ describe('PDFStructureValidator', () => {
 
       const result = await pdfStructureValidator.validateFromFile('/path/to/test.pdf');
 
-      const heading = result.issues.find(i => i.code === 'MATTERHORN-14-003');
+      const heading = result.issues.find(i => i.code === 'HEADING-MISSING-H1');
       expect(heading).toBeDefined();
       expect(heading?.boundingBox).toBeUndefined();
     });
@@ -515,7 +619,14 @@ function createMockStructure(options: {
   hasDocumentLanguage: boolean;
   hasLogicalReadingOrder: boolean;
   headingIssues?: Array<{
-    type: 'missing-h1' | 'multiple-h1' | 'skipped-level' | 'improper-nesting';
+    type:
+      | 'missing-h1'
+      | 'multiple-h1'
+      | 'skipped-level'
+      | 'improper-nesting'
+      | 'first-heading-not-h1'
+      | 'multiple-headings-one-node'
+      | 'mixed-heading-tag-types';
     severity: 'critical' | 'major' | 'minor';
     description: string;
     location: string;
