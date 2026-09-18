@@ -597,6 +597,25 @@ class StructureAnalyzerService {
     return roleMap;
   }
 
+  /**
+   * Follows a /RoleMap mapping to its end, not just one hop -- PDF32000-1:2008
+   * §14.7.4.3 permits a custom role to map to ANOTHER custom role rather than
+   * a standard type directly (customA -> customB -> H2). A single
+   * roleMap.get() lookup (this function's own first version, caught by
+   * CodeRabbit review) only resolves one hop, silently failing to recognize a
+   * transitively-mapped heading. Tracks visited names to terminate a
+   * malformed cyclic mapping rather than looping forever.
+   */
+  private resolveRoleMapChain(roleMap: Map<string, string>, rawType: string): string {
+    const visited = new Set<string>();
+    let current = rawType;
+    while (roleMap.has(current) && !visited.has(current)) {
+      visited.add(current);
+      current = roleMap.get(current)!;
+    }
+    return current;
+  }
+
   private async extractTaggedHeadings(parsedPdf: ParsedPDF): Promise<HeadingInfo[]> {
     const headings: HeadingInfo[] = [];
     const pageMap = this.buildPageRefMap(parsedPdf.pdfLibDoc);
@@ -785,7 +804,7 @@ class StructureAnalyzerService {
       const pageNumber = this.resolvePageNumber(node, pdfDoc, currentPage, pageMap) ?? currentPage;
       const typeRef = node.get(PDFName.of('S'));
       const rawType = typeRef?.toString().replace(/^\//, '');
-      const type = rawType ? `/${roleMap.get(rawType) ?? rawType}` : undefined;
+      const type = rawType ? `/${this.resolveRoleMapChain(roleMap, rawType)}` : undefined;
 
       if (type && /^\/H[1-6]?$/.test(type)) {
         const level = type === '/H' ? 1 : parseInt(type.replace('/H', ''), 10);

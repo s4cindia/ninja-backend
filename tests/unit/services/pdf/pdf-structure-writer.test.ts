@@ -306,4 +306,36 @@ describe('pdf-structure-writer.service — RoleMap-resolved custom heading tags'
     // element, not by touching the RoleMap or the first element's own tag.
     expect(tagOf(doc, secondH1Ref)).toBe('H2');
   });
+
+  // CodeRabbit review finding on this fix's own first version: a RoleMap
+  // entry can map to ANOTHER custom role rather than a standard type
+  // directly (PDF32000-1:2008 §14.7.4.3 permits chaining) -- a single
+  // one-hop lookup silently fails to recognize a transitively-mapped
+  // heading. /customA -> /customB -> H1, neither hop alone reaches H1.
+  it('fixHeadingHierarchy follows a chained (transitive) RoleMap mapping, not just one hop', async () => {
+    const doc = await PDFDocument.create();
+    doc.addPage([400, 600]);
+
+    const roleMapRef = doc.context.register(
+      doc.context.obj({ customA: PDFName.of('customB'), customB: PDFName.of('H1'), cx: PDFName.of('H4') })
+    );
+
+    const aRef = doc.context.register(doc.context.obj({ S: PDFName.of('customA'), K: 0 })); // resolves to H1 via 2 hops
+    const cxRef = doc.context.register(doc.context.obj({ S: PDFName.of('cx'), K: 1 })); // resolves to H4 -- a skip
+
+    const documentRef = doc.context.register(
+      doc.context.obj({ S: PDFName.of('Document'), K: doc.context.obj([aRef, cxRef]) })
+    );
+    const structTreeRootRef = doc.context.register(
+      doc.context.obj({ Type: PDFName.of('StructTreeRoot'), RoleMap: roleMapRef, K: documentRef })
+    );
+    doc.catalog.set(PDFName.of('StructTreeRoot'), structTreeRootRef);
+
+    const results = pdfStructureWriterService.fixHeadingHierarchy(doc, [headingIssue('issue-1')]);
+
+    expect(results[0].success).toBe(true);
+    expect(results[0].after).toContain('Fixed 1 heading level(s)');
+    expect(tagOf(doc, aRef)).toBe('customA'); // untouched -- not the one being fixed
+    expect(tagOf(doc, cxRef)).toBe('H2'); // skip fixed relative to the transitively-resolved H1
+  });
 });

@@ -127,4 +127,38 @@ describe('structureAnalyzerService — tagged-heading extraction with bare (non-
     expect(fromTags).toHaveLength(1);
     expect(fromTags[0].level).toBe(1);
   });
+
+  // CodeRabbit review finding on this fix's own first version: a RoleMap
+  // entry can map to ANOTHER custom role rather than a standard type
+  // directly (PDF32000-1:2008 §14.7.4.3 permits chaining) -- a single
+  // one-hop lookup silently fails to recognize a transitively-mapped
+  // heading. /customA -> /customB -> H2, neither hop alone reaches H2.
+  it('recognizes a heading reached through a chained (transitive) RoleMap mapping, not just one hop', async () => {
+    const doc = await PDFDocument.create();
+    await buildPage(doc);
+
+    const roleMapRef = doc.context.register(
+      doc.context.obj({ customA: PDFName.of('customB'), customB: PDFName.of('H2') })
+    );
+    const hDict = doc.context.obj({ S: PDFName.of('customA'), K: 0 });
+    const hRef = doc.context.register(hDict);
+    const documentDict = doc.context.obj({ S: PDFName.of('Document'), K: hRef });
+    const documentRef = doc.context.register(documentDict);
+    const structTreeRootDict = doc.context.obj({
+      Type: PDFName.of('StructTreeRoot'),
+      RoleMap: roleMapRef,
+      K: documentRef,
+    });
+    const structTreeRootRef = doc.context.register(structTreeRootDict);
+    doc.catalog.set(PDFName.of('StructTreeRoot'), structTreeRootRef);
+
+    const buffer = Buffer.from(await doc.save());
+    const parsedPdf = await pdfParserService.parseBuffer(buffer, 'rolemap-transitive.pdf');
+
+    const headingHierarchy = await structureAnalyzerService.getHeadingsOnly(parsedPdf);
+
+    const fromTags = headingHierarchy.headings.filter(h => h.isFromTags);
+    expect(fromTags).toHaveLength(1);
+    expect(fromTags[0].level).toBe(2);
+  });
 });

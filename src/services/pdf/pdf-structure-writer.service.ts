@@ -110,6 +110,27 @@ export class PdfStructureWriterService {
   }
 
   /**
+   * Follows a /RoleMap mapping to its end, not just one hop -- PDF32000-1:2008
+   * §14.7.4.3 permits a custom role to map to ANOTHER custom role rather than
+   * a standard type directly (customA -> customB -> H2), and a reader is
+   * expected to keep following the chain. A single roleMap.get() lookup (this
+   * function's own first version, caught by CodeRabbit review) only resolves
+   * one hop, silently failing to recognize a transitively-mapped heading.
+   * Tracks visited names to terminate a malformed cyclic mapping (customA ->
+   * customB -> customA) rather than looping forever -- returns wherever the
+   * cycle was first re-entered rather than crashing or hanging.
+   */
+  private resolveRoleMapChain(roleMap: Map<string, string>, rawType: string): string {
+    const visited = new Set<string>();
+    let current = rawType;
+    while (roleMap.has(current) && !visited.has(current)) {
+      visited.add(current);
+      current = roleMap.get(current)!;
+    }
+    return current;
+  }
+
+  /**
    * Pre-order depth-first traversal of the structure tree — i.e. document
    * reading order: visit a node, then walk each of its children (and their
    * full subtrees) before moving on to the next sibling.
@@ -550,7 +571,7 @@ export class PdfStructureWriterService {
       const sTag = node.get(PDFName.of('S'));
       if (!sTag) return;
       const rawType = sTag.toString().replace(/^\//, '');
-      const resolvedType = roleMap.get(rawType) ?? rawType;
+      const resolvedType = this.resolveRoleMapChain(roleMap, rawType);
       const m = /^H([1-9])$/.exec(resolvedType);
       if (m) headingRefs.push({ ref, level: parseInt(m[1], 10) });
     });
@@ -642,7 +663,7 @@ export class PdfStructureWriterService {
       const sTag = node.get(PDFName.of('S'));
       if (!sTag) return;
       const rawType = sTag.toString().replace(/^\//, '');
-      const resolvedType = roleMap.get(rawType) ?? rawType;
+      const resolvedType = this.resolveRoleMapChain(roleMap, rawType);
       const m = /^H([1-9])$/.exec(resolvedType);
       if (m) allHeadings.push({ ref, level: parseInt(m[1], 10) });
     });
