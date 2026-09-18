@@ -32,6 +32,15 @@ export interface HeadingInfo {
   position: { x: number; y: number };
   isFromTags: boolean;
   isProperlyNested: boolean;
+  /**
+   * The literal resolved tag ('H', 'H1', ..., 'H9'), set only for tagged
+   * headings (isFromTags). Needed because `level` coerces bare /H to 1,
+   * indistinguishable from a real /H1 -- Matterhorn 14-002 ("the first
+   * heading tag is not H1") means the literal tag, not the coerced level,
+   * so a document opening on bare /H must still fail 14-002 even though
+   * its level reads as 1.
+   */
+  rawTag?: string;
 }
 
 /**
@@ -590,14 +599,30 @@ class StructureAnalyzerService {
     // Matterhorn 14-002: "Does use numbered headings, but the first heading
     // tag is not H1." Distinct from hasH1/missing-h1 above (no H1 ANYWHERE)
     // -- a document can have H1 later while still opening on H2, which only
-    // this check catches.
-    if (headings.length > 0 && headings[0].isFromTags && headings[0].level !== 1) {
+    // this check catches. Two CodeRabbit review findings on this fix's
+    // first version, both fixed here:
+    //  1. Reads taggedExtraction.headings[0] (the tag tree's own reading-
+    //     order first heading), not the later position-sorted headings[0]
+    //     -- distinct arrays (headings.sort() reorders the copy pushed into
+    //     `headings`, never taggedExtraction's own), but relying on that
+    //     without comment invites exactly this confusion, which is why the
+    //     sorted `headings` array must never be read here.
+    //  2. Compares the literal rawTag against 'H1', not the coerced level
+    //     -- level coerces bare /H to 1, indistinguishable from a real
+    //     /H1, but "the first heading tag is not H1" means the literal
+    //     tag: a document opening on bare /H must still fail this (its
+    //     first tag genuinely isn't "H1") even though its level reads as 1.
+    //     Gated on usesNumberedH, matching the condition's own "Does use
+    //     numbered headings" framing -- a document using ONLY bare /H
+    //     throughout never triggers this at all.
+    const firstTaggedHeading = taggedExtraction?.headings[0];
+    if (taggedExtraction?.usesNumberedH && firstTaggedHeading && firstTaggedHeading.rawTag !== 'H1') {
       issues.push({
         type: 'first-heading-not-h1',
         severity: 'major',
-        description: `Document uses numbered headings, but the first heading tag is H${headings[0].level}, not H1.`,
-        location: `Page ${headings[0].pageNumber}`,
-        pageNumber: headings[0].pageNumber,
+        description: `Document uses numbered headings, but the first heading tag is ${firstTaggedHeading.rawTag}, not H1.`,
+        location: `Page ${firstTaggedHeading.pageNumber}`,
+        pageNumber: firstTaggedHeading.pageNumber,
         wcagCriterion: '1.3.1',
       });
     }
@@ -921,6 +946,7 @@ class StructureAnalyzerService {
           position: { x: 0, y: 0 },
           isFromTags: true,
           isProperlyNested: true,
+          rawTag: resolvedType,
         });
       }
 
@@ -936,18 +962,28 @@ class StructureAnalyzerService {
       const children = kids instanceof PDFArray ? kids.asArray() : (kids ? [kids] : []);
 
       // Matterhorn 14-006: does THIS node (as a parent) have more than one
-      // DIRECT heading child -- checked here, before recursing, since once
-      // we recurse a child heading becomes indistinguishable from a
-      // grandchild heading in the flattened list.
-      let directHeadingChildCount = 0;
+      // DIRECT child tagged with the generic bare /H specifically -- NOT
+      // any numbered H1-H9 child. Confirmed against veraPDF's own real
+      // implementation of this rule (a CodeRabbit review finding on this
+      // fix's first version, which counted any Hn): "Each node in the tag
+      // tree shall contain at most one child H tag," tested as
+      // `kidsStandardTypes.filter(t => t === 'H').length <= 1`. This
+      // constraint is specific to PDF/UA's "weakly structured" heading
+      // style (bare /H, where NESTING DEPTH implies level) -- a node with
+      // two sibling /H children would make that depth-to-level mapping
+      // ambiguous; numbered Hn siblings carry their own explicit level and
+      // have no such ambiguity, so they're excluded. Checked here, before
+      // recursing, since once we recurse a child heading becomes
+      // indistinguishable from a grandchild heading in the flattened list.
+      let directBareHChildCount = 0;
       for (const kid of children) {
         const kidDict = kid instanceof PDFDict ? kid : pdfDoc.context.lookup(kid);
         if (!(kidDict instanceof PDFDict)) continue;
         const kidRawType = kidDict.get(PDFName.of('S'))?.toString().replace(/^\//, '');
         if (!kidRawType) continue;
-        if (this.isHeadingTagType(this.resolveRoleMapChain(roleMap, kidRawType))) directHeadingChildCount++;
+        if (this.resolveRoleMapChain(roleMap, kidRawType) === 'H') directBareHChildCount++;
       }
-      if (directHeadingChildCount > 1) {
+      if (directBareHChildCount > 1) {
         tagState.multiHeadingParentPages.push(pageNumber);
       }
 
