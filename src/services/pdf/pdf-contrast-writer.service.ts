@@ -63,7 +63,7 @@ import { logger } from '../../lib/logger';
 import { decodePageContent, writePageContent } from './pdf-content-stream-io';
 import { locateTextRun, locateTextRunsForPage, locateEnclosingTextObject, findPrecedingColor, type TextRunMatch, type PageContrastTarget } from './contrast-content-stream';
 import { computeCompliantColor } from './color-contrast-correction';
-import { verifyContrastInRegion } from './color-contrast-verification';
+import { verifyContrastInRegion, verifyBackplateContrast } from './color-contrast-verification';
 import { computeBackplateRect, spliceBackplate } from './pdf-contrast-backplate';
 import { BUSY_VARIANCE_THRESHOLD } from './validators/pdf-contrast.validator';
 import type { FixResult } from './pdf-structure-writer.service';
@@ -372,7 +372,14 @@ export class PdfContrastWriterService {
 
       if (spliced) {
         writePageContent(doc, pageNumber, spliced);
-        const backplateVerification = await verify();
+        // NOT verify() -- that calls verifyContrastInRegion with cd.background
+        // as a hint, a value that no longer exists anywhere in the sampled
+        // region now that the backplate covers it. verifyBackplateContrast
+        // uses the backplate's own known color directly instead of
+        // re-searching for a background that isn't there anymore. See its
+        // own doc comment for the real, live-reproduced failure this fixes.
+        const backplateBuffer = Buffer.from(await doc.save());
+        const backplateVerification = await verifyBackplateContrast(backplateBuffer, pageNumber, boundingBox, cd.requiredRatio, backplateColorHex);
         if (backplateVerification && backplateVerification.passes && !backplateVerification.uncertain) {
           logger.info(
             `[ContrastWriter] Backplate ${backplateColorHex} behind original text verified ` +

@@ -4,7 +4,7 @@ import { spliceColorFix, pdfContrastWriterService, resolveColorContrastTargets }
 import { locateTextRun, findPrecedingColor } from '../../../../src/services/pdf/contrast-content-stream';
 import { decodePageContent, writePageContent } from '../../../../src/services/pdf/pdf-content-stream-io';
 import { pdfAuditService } from '../../../../src/services/pdf/pdf-audit.service';
-import { verifyContrastInRegion } from '../../../../src/services/pdf/color-contrast-verification';
+import { verifyContrastInRegion, verifyBackplateContrast } from '../../../../src/services/pdf/color-contrast-verification';
 import { BUSY_VARIANCE_THRESHOLD } from '../../../../src/services/pdf/validators/pdf-contrast.validator';
 import type { AuditIssue } from '../../../../src/services/audit/base-audit.service';
 
@@ -13,9 +13,22 @@ import type { AuditIssue } from '../../../../src/services/audit/base-audit.servi
 // mockResolvedValueOnce to test the escalation branch deterministically,
 // without depending on exact rendering/anti-aliasing behavior for a
 // specific hand-picked font size to reliably fail-then-succeed.
+//
+// verifyBackplateContrast is mocked separately (not covered by the same
+// "wraps the real implementation" default) -- pdf-contrast-writer.service.ts
+// calls it, never verifyContrastInRegion, to verify a backplate fix (see
+// its own doc comment for why: verifyContrastInRegion's expectedBackgroundHex
+// is stale once a backplate covers the original background, a real bug
+// found on PR #575's own review). Every backplate test below mocks this
+// separately from the moderate/extreme escalation's verifyContrastInRegion
+// calls.
 vi.mock('../../../../src/services/pdf/color-contrast-verification', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../../../src/services/pdf/color-contrast-verification')>();
-  return { ...actual, verifyContrastInRegion: vi.fn(actual.verifyContrastInRegion) };
+  return {
+    ...actual,
+    verifyContrastInRegion: vi.fn(actual.verifyContrastInRegion),
+    verifyBackplateContrast: vi.fn(actual.verifyBackplateContrast),
+  };
 });
 
 describe('spliceColorFix', () => {
@@ -316,11 +329,13 @@ describe('PdfContrastWriterService.fixColorContrast', () => {
     // into the sample, not a real photo/illustration. The writer should
     // fall back to a backplate rather than giving up.
     const mockVerify = vi.mocked(verifyContrastInRegion);
+    const mockVerifyBackplate = vi.mocked(verifyBackplateContrast);
     mockVerify.mockClear();
+    mockVerifyBackplate.mockClear();
     mockVerify
       .mockResolvedValueOnce({ ratio: 3.0, passes: false, foreground: '#888888', background: '#ffffff', uncertain: true, variance: 0.05 })
-      .mockResolvedValueOnce({ ratio: 6.0, passes: false, foreground: '#000000', background: '#ffffff', uncertain: true, variance: 0.05 })
-      .mockResolvedValueOnce({ ratio: 18.0, passes: true, foreground: '#000000', background: '#ffffff', uncertain: false, variance: 0.001 });
+      .mockResolvedValueOnce({ ratio: 6.0, passes: false, foreground: '#000000', background: '#ffffff', uncertain: true, variance: 0.05 });
+    mockVerifyBackplate.mockResolvedValueOnce({ ratio: 18.0, passes: true, foreground: '#000000', background: '#ffffff', uncertain: false, variance: 0 });
 
     const doc = await realPdfWithText(60, 450, 14, { bold: false });
     const originalReport = await pdfAuditService.runAuditFromBuffer(
@@ -330,7 +345,8 @@ describe('PdfContrastWriterService.fixColorContrast', () => {
 
     const result = await pdfContrastWriterService.fixColorContrast(doc, issue);
 
-    expect(mockVerify).toHaveBeenCalledTimes(3);
+    expect(mockVerify).toHaveBeenCalledTimes(2);
+    expect(mockVerifyBackplate).toHaveBeenCalledTimes(1);
     expect(result.success).toBe(true);
     expect(result.after).toContain('backplate');
     expect(result.after).toContain('verified 18:1');
@@ -351,11 +367,13 @@ describe('PdfContrastWriterService.fixColorContrast', () => {
     // above, which mocks uncertain:true). Confirms the OR'd `!passes`
     // condition, not just `uncertain`, reaches the backplate tier here.
     const mockVerify = vi.mocked(verifyContrastInRegion);
+    const mockVerifyBackplate = vi.mocked(verifyBackplateContrast);
     mockVerify.mockClear();
+    mockVerifyBackplate.mockClear();
     mockVerify
       .mockResolvedValueOnce({ ratio: 2.42, passes: false, foreground: '#f0f0f0', background: '#9b9c9f', uncertain: false, variance: 0.001 })
-      .mockResolvedValueOnce({ ratio: 2.42, passes: false, foreground: '#f0f0f0', background: '#9b9c9f', uncertain: false, variance: 0.001 })
-      .mockResolvedValueOnce({ ratio: 18.76, passes: true, foreground: '#000000', background: '#000000', uncertain: false, variance: 0.001 });
+      .mockResolvedValueOnce({ ratio: 2.42, passes: false, foreground: '#f0f0f0', background: '#9b9c9f', uncertain: false, variance: 0.001 });
+    mockVerifyBackplate.mockResolvedValueOnce({ ratio: 18.76, passes: true, foreground: '#f0f0f0', background: '#000000', uncertain: false, variance: 0 });
 
     const doc = await realPdfWithText(60, 450, 14, { bold: false });
     const originalReport = await pdfAuditService.runAuditFromBuffer(
@@ -365,7 +383,8 @@ describe('PdfContrastWriterService.fixColorContrast', () => {
 
     const result = await pdfContrastWriterService.fixColorContrast(doc, issue);
 
-    expect(mockVerify).toHaveBeenCalledTimes(3);
+    expect(mockVerify).toHaveBeenCalledTimes(2);
+    expect(mockVerifyBackplate).toHaveBeenCalledTimes(1);
     expect(result.success).toBe(true);
     expect(result.after).toContain('backplate');
     expect(result.after).toContain('verified 18.76:1');
@@ -378,7 +397,9 @@ describe('PdfContrastWriterService.fixColorContrast', () => {
     // stamping an opaque box behind text on a busy background is a visible,
     // potentially jarring change that should stay a human decision.
     const mockVerify = vi.mocked(verifyContrastInRegion);
+    const mockVerifyBackplate = vi.mocked(verifyBackplateContrast);
     mockVerify.mockClear();
+    mockVerifyBackplate.mockClear();
     mockVerify
       .mockResolvedValueOnce({ ratio: 3.0, passes: false, foreground: '#888888', background: '#ffffff', uncertain: true, variance: 0.5 })
       .mockResolvedValueOnce({ ratio: 6.0, passes: false, foreground: '#000000', background: '#ffffff', uncertain: true, variance: 0.5 });
@@ -392,9 +413,11 @@ describe('PdfContrastWriterService.fixColorContrast', () => {
 
     const result = await pdfContrastWriterService.fixColorContrast(doc, issue);
 
-    // Exactly 2 calls -- proves the backplate path was skipped outright,
-    // not attempted and then separately failed (which would be 3 calls).
+    // Exactly 2 verifyContrastInRegion calls and ZERO verifyBackplateContrast
+    // calls -- proves the backplate path was skipped outright, not attempted
+    // and then separately failed.
     expect(mockVerify).toHaveBeenCalledTimes(2);
+    expect(mockVerifyBackplate).not.toHaveBeenCalled();
     expect(result.success).toBe(false);
     expect(result.error).toContain('Could not confidently measure');
     const afterContent = decodePageContent(doc, 1)!;
@@ -410,11 +433,13 @@ describe('PdfContrastWriterService.fixColorContrast', () => {
     expect(BUSY_VARIANCE_THRESHOLD).toBe(0.15);
 
     const mockVerify = vi.mocked(verifyContrastInRegion);
+    const mockVerifyBackplate = vi.mocked(verifyBackplateContrast);
     mockVerify.mockClear();
+    mockVerifyBackplate.mockClear();
     mockVerify
       .mockResolvedValueOnce({ ratio: 3.0, passes: false, foreground: '#888888', background: '#ffffff', uncertain: true, variance: 0.1272 })
-      .mockResolvedValueOnce({ ratio: 6.0, passes: false, foreground: '#000000', background: '#ffffff', uncertain: true, variance: 0.1272 })
-      .mockResolvedValueOnce({ ratio: 18.0, passes: true, foreground: '#000000', background: '#ffffff', uncertain: false, variance: 0.001 });
+      .mockResolvedValueOnce({ ratio: 6.0, passes: false, foreground: '#000000', background: '#ffffff', uncertain: true, variance: 0.1272 });
+    mockVerifyBackplate.mockResolvedValueOnce({ ratio: 18.0, passes: true, foreground: '#000000', background: '#ffffff', uncertain: false, variance: 0 });
 
     const doc = await realPdfWithText(60, 450, 14, { bold: false });
     const originalReport = await pdfAuditService.runAuditFromBuffer(

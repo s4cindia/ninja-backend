@@ -150,3 +150,83 @@ export async function verifyContrastInRegion(
     if (pdfjsDoc) await pdfjsDoc.destroy();
   }
 }
+
+/**
+ * Verifies a BACKPLATE fix specifically -- never use verifyContrastInRegion
+ * for this. Codex P1 finding on PR #575, confirmed live on Math_Weir_PDF.pdf:
+ * verifyContrastInRegion's expectedBackgroundHex is only a soft hint for
+ * sampleBackgroundRobust's candidate SEARCH, not an authoritative value --
+ * after a backplate write, the ORIGINAL background (the hint pdf-contrast-
+ * writer.service.ts was passing) no longer exists anywhere in the sampled
+ * region at all (the backplate rect is deliberately padded to fully cover
+ * it), so the search would either latch onto some other, uncovered nearby
+ * patch, or land on the backplate itself but get treated as the wrong role.
+ * Concretely reproduced: verifying a real black backplate behind original
+ * light text (#f0f0f0) returned foreground:#000000 (the backplate's OWN
+ * fill, misread as "ink") against some unrelated nearby patch as
+ * "background" -- a coincidental, meaningless ratio that never actually
+ * measured whether the original text is visible against the new backplate.
+ *
+ * The fix: we already know the backplate's exact color with certainty (we
+ * just wrote it) -- there is nothing to search for. Skip
+ * sampleBackgroundRobust entirely and feed sampleDark the known backplate
+ * RGB directly as `background`. sampleDark's own light/dark-candidate-swap
+ * logic (see its doc comment's "inverted box" handling) then correctly
+ * identifies the real text ink regardless of whether it's lighter or
+ * darker than the backplate, since it now has the TRUE background instead
+ * of a stale or wrong one to compare candidates against.
+ */
+export async function verifyBackplateContrast(
+  buffer: Buffer,
+  pageNumber: number,
+  boundingBox: { x: number; y: number; width: number; height: number },
+  requiredRatio: number,
+  backplateColorHex: string
+): Promise<ContrastVerificationResult | null> {
+  let pdfjsDoc: pdfjsLib.PDFDocumentProxy | null = null;
+  try {
+    pdfjsDoc = await pdfjsLib.getDocument({ data: new Uint8Array(buffer) }).promise;
+    const page = await pdfjsDoc.getPage(pageNumber);
+    const viewport = page.getViewport({ scale: RENDER_SCALE });
+
+    const canvas = createCanvas(Math.ceil(viewport.width), Math.ceil(viewport.height));
+    const ctx = canvas.getContext('2d');
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await page.render({ canvas: canvas as any, canvasContext: ctx as any, viewport }).promise;
+
+    const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    const { data } = imgData;
+    const cw = canvas.width;
+    const ch = canvas.height;
+
+    const canvasX = Math.round(boundingBox.x * RENDER_SCALE);
+    const canvasY = Math.round(boundingBox.y * RENDER_SCALE);
+    const itemW = Math.max(10, Math.round(boundingBox.width * RENDER_SCALE));
+    const itemH = Math.max(6, Math.round(boundingBox.height * RENDER_SCALE));
+    const top = canvasY - itemH;
+
+    const backplateRgb = pdfContrastValidator.hexToRgb(backplateColorHex);
+    const fgColor: RgbColor | null = pdfContrastValidator.sampleDark(
+      data, canvasX, top, itemW, itemH, cw, ch,
+      backplateRgb
+    );
+    if (!fgColor) return null;
+
+    const ratio = pdfContrastValidator.calculateContrastRatio(fgColor, backplateRgb);
+    return {
+      ratio: Math.round(ratio * 100) / 100,
+      passes: ratio >= requiredRatio,
+      foreground: pdfContrastValidator.rgbToHex(fgColor),
+      background: backplateColorHex,
+      // The background here is a known, exact, just-written value, not a
+      // sampled guess -- there is no "uncertain background" concept to
+      // report for it (unlike verifyContrastInRegion's bgSample.variance).
+      uncertain: false,
+      variance: 0,
+    };
+  } catch {
+    return null;
+  } finally {
+    if (pdfjsDoc) await pdfjsDoc.destroy();
+  }
+}
