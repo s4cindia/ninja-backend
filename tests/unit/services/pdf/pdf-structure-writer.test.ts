@@ -223,3 +223,87 @@ describe('pdf-structure-writer.service — fixHeadingHierarchy honest success re
     expect(results[0].error).toMatch(/no heading.*elements to fix/i);
   });
 });
+
+/**
+ * Live-confirmed bug (real Math_Weir_PDF.pdf, a 377-page textbook): its
+ * headings are tagged with the publisher's own custom role names (/a, /b,
+ * /c, /cn, /ct, /cptitle, /fmbmct -- 290 elements total across the real
+ * document), mapped to /H1-/H4 via the structure tree's own /RoleMap
+ * (PDF32000-1:2008 §14.7.4.3) -- entirely legal PDF, and a routine
+ * InDesign/publisher-production pattern, not a one-document quirk. Both
+ * fixHeadingHierarchy and fixMultipleH1 matched raw /S values only, so they
+ * saw zero heading elements and honestly bailed with "no heading elements
+ * to fix" on a document that actually has 290 correctly-tagged headings
+ * under non-standard names -- 24 HEADING-SKIP + 1 HEADING-MULTIPLE-H1 issue
+ * sat permanently unfixable, every one of 21 real remediation rounds,
+ * despite AI-analysis dispatching a genuine apply-to-pdf suggestion for
+ * both every single time.
+ */
+describe('pdf-structure-writer.service — RoleMap-resolved custom heading tags', () => {
+  it('fixHeadingHierarchy recognizes a heading skip expressed via custom role-mapped tags, not just literal Hn', async () => {
+    const doc = await PDFDocument.create();
+    doc.addPage([400, 600]);
+
+    // RoleMap: /cn -> H1, /c -> H4 (mirrors two of Math_Weir's real mappings).
+    const roleMapRef = doc.context.register(
+      doc.context.obj({ cn: PDFName.of('H1'), c: PDFName.of('H4'), Story: PDFName.of('Sect') })
+    );
+
+    const cnRef = doc.context.register(doc.context.obj({ S: PDFName.of('cn'), K: 0 })); // resolves to H1
+    const cRef = doc.context.register(doc.context.obj({ S: PDFName.of('c'), K: 1 }));   // resolves to H4 -- a skip
+    const storyRef = doc.context.register(doc.context.obj({ S: PDFName.of('Story'), K: 2 })); // resolves to Sect, not a heading at all
+
+    const documentRef = doc.context.register(
+      doc.context.obj({ S: PDFName.of('Document'), K: doc.context.obj([cnRef, cRef, storyRef]) })
+    );
+    const structTreeRootRef = doc.context.register(
+      doc.context.obj({ Type: PDFName.of('StructTreeRoot'), RoleMap: roleMapRef, K: documentRef })
+    );
+    doc.catalog.set(PDFName.of('StructTreeRoot'), structTreeRootRef);
+
+    const results = pdfStructureWriterService.fixHeadingHierarchy(doc, [headingIssue('issue-1')]);
+
+    expect(results[0].success).toBe(true);
+    expect(results[0].after).toContain('Fixed 1 heading level(s)');
+
+    // The H1-resolved element (/cn) is untouched -- it wasn't the one being
+    // fixed, and its own custom role name is preserved.
+    expect(tagOf(doc, cnRef)).toBe('cn');
+    // The skip is fixed by writing a literal H2 directly onto that ONE
+    // element -- not by touching the RoleMap (which still legitimately maps
+    // /c -> H4 for any OTHER /c-tagged element elsewhere in the document).
+    expect(tagOf(doc, cRef)).toBe('H2');
+    // A non-heading role-mapped tag (/Story -> Sect) is never miscounted as one.
+    expect(tagOf(doc, storyRef)).toBe('Story');
+  });
+
+  it('fixMultipleH1 demotes a second custom role-mapped H1, keeping the first one\'s own role name untouched', async () => {
+    const doc = await PDFDocument.create();
+    doc.addPage([400, 600]);
+
+    // RoleMap: /cptitle -> H1 (Math_Weir's real chapter-title mapping).
+    const roleMapRef = doc.context.register(doc.context.obj({ cptitle: PDFName.of('H1') }));
+
+    const firstH1Ref = doc.context.register(doc.context.obj({ S: PDFName.of('cptitle'), K: 0 }));
+    const secondH1Ref = doc.context.register(doc.context.obj({ S: PDFName.of('cptitle'), K: 1 }));
+
+    const documentRef = doc.context.register(
+      doc.context.obj({ S: PDFName.of('Document'), K: doc.context.obj([firstH1Ref, secondH1Ref]) })
+    );
+    const structTreeRootRef = doc.context.register(
+      doc.context.obj({ Type: PDFName.of('StructTreeRoot'), RoleMap: roleMapRef, K: documentRef })
+    );
+    doc.catalog.set(PDFName.of('StructTreeRoot'), structTreeRootRef);
+
+    const result = pdfStructureWriterService.fixMultipleH1(doc, headingIssue('issue-1'));
+
+    expect(result.success).toBe(true);
+    expect(result.before).toBe('2 H1 headings');
+    // First H1 (by document order) is kept -- its own custom role name is
+    // preserved, exactly like the literal-/H1 case.
+    expect(tagOf(doc, firstH1Ref)).toBe('cptitle');
+    // Second H1 is demoted -- written as a literal H2 directly onto that
+    // element, not by touching the RoleMap or the first element's own tag.
+    expect(tagOf(doc, secondH1Ref)).toBe('H2');
+  });
+});

@@ -1,4 +1,4 @@
-import { PDFDocument, PDFName, PDFDict, PDFArray, PDFString } from 'pdf-lib';
+import { PDFDocument, PDFName, PDFDict, PDFArray, PDFString, PDFRef } from 'pdf-lib';
 import { pdfParserService, ParsedPDF } from './pdf-parser.service';
 import { textExtractorService, TextLine, TextBlock, TextItem, DocumentText } from './text-extractor.service';
 
@@ -567,6 +567,36 @@ class StructureAnalyzerService {
     };
   }
 
+  /**
+   * Reads /StructTreeRoot's own /RoleMap, if any: a dict of custom tag name
+   * -> standard tag name (PDF32000-1:2008 §14.7.4.3). Real Math_Weir_PDF.pdf
+   * incident: its headings are tagged with the publisher's own custom role
+   * names (/a, /b, /c, /cn, /ct, /cptitle, /fmbmct), mapped to /H1-/H4 via a
+   * RoleMap -- traverseStructureTree's own /^\/H[1-6]?$/ test only ever
+   * matched a literal /S value, so it saw zero tagged headings on a document
+   * that actually has hundreds of correctly-tagged ones under non-standard
+   * names, silently falling back to the font-size/text heuristic for every
+   * heading instead. Small and duplicated locally rather than imported from
+   * pdf-structure-writer.service.ts's own identical helper (added for the
+   * same real incident, on the mutation side) -- this codebase's own
+   * established convention (see that file's own doc comment) is keeping
+   * structure-tree-walking helpers isolated per-feature over cross-module
+   * coupling.
+   */
+  private buildRoleMap(doc: PDFDocument, structTreeRoot: PDFDict): Map<string, string> {
+    const roleMap = new Map<string, string>();
+    const rmRaw = structTreeRoot.get(PDFName.of('RoleMap'));
+    const rm = rmRaw instanceof PDFRef ? doc.context.lookup(rmRaw) : rmRaw;
+    if (!(rm instanceof PDFDict)) return roleMap;
+
+    for (const [key, value] of rm.entries()) {
+      const customTag = key.toString().replace(/^\//, '');
+      const stdTag = value instanceof PDFName ? value.toString().replace(/^\//, '') : null;
+      if (stdTag) roleMap.set(customTag, stdTag);
+    }
+    return roleMap;
+  }
+
   private async extractTaggedHeadings(parsedPdf: ParsedPDF): Promise<HeadingInfo[]> {
     const headings: HeadingInfo[] = [];
     const pageMap = this.buildPageRefMap(parsedPdf.pdfLibDoc);
@@ -581,12 +611,14 @@ class StructureAnalyzerService {
         if (structTreeRootRef) {
           const structTreeRoot = parsedPdf.pdfLibDoc.context.lookup(structTreeRootRef);
           if (structTreeRoot instanceof PDFDict) {
+            const roleMap = this.buildRoleMap(parsedPdf.pdfLibDoc, structTreeRoot);
             await this.traverseStructureTree(
               structTreeRoot,
               parsedPdf.pdfLibDoc,
               headings,
               1,
-              pageMap
+              pageMap,
+              roleMap
             );
           }
         }
@@ -743,7 +775,8 @@ class StructureAnalyzerService {
     pdfDoc: PDFDocument,
     headings: HeadingInfo[],
     currentPage: number,
-    pageMap: Map<string, number>
+    pageMap: Map<string, number>,
+    roleMap: Map<string, string>
   ): Promise<void> {
     try {
       // This walk always seeds/threads a real number (unlike findTaggedTables,
@@ -751,7 +784,8 @@ class StructureAnalyzerService {
       // type-level safety net only, never a real fallback in practice.
       const pageNumber = this.resolvePageNumber(node, pdfDoc, currentPage, pageMap) ?? currentPage;
       const typeRef = node.get(PDFName.of('S'));
-      const type = typeRef?.toString();
+      const rawType = typeRef?.toString().replace(/^\//, '');
+      const type = rawType ? `/${roleMap.get(rawType) ?? rawType}` : undefined;
 
       if (type && /^\/H[1-6]?$/.test(type)) {
         const level = type === '/H' ? 1 : parseInt(type.replace('/H', ''), 10);
@@ -773,17 +807,23 @@ class StructureAnalyzerService {
         });
       }
 
+      // /K is an array only when a node has more than one child -- a node
+      // with exactly one child legally (and commonly, per PDF32000-1:2008
+      // §14.7.2) stores it bare, not wrapped in a 1-element array. Real
+      // incident on Math_Weir_PDF.pdf: /StructTreeRoot's own /K is a bare
+      // ref (not an array), so this traversal previously stopped at the
+      // ROOT and never found a single heading anywhere, tagged or not --
+      // 79% of the tree's 33,724 elements use this same bare-child
+      // encoding, so this wasn't a root-only edge case.
       const kids = node.get(PDFName.of('K'));
-      if (kids instanceof PDFArray) {
-        for (let i = 0; i < kids.size(); i++) {
-          const kid = kids.get(i);
-          if (kid instanceof PDFDict) {
-            await this.traverseStructureTree(kid, pdfDoc, headings, pageNumber, pageMap);
-          } else {
-            const resolved = pdfDoc.context.lookup(kid);
-            if (resolved instanceof PDFDict) {
-              await this.traverseStructureTree(resolved, pdfDoc, headings, pageNumber, pageMap);
-            }
+      const children = kids instanceof PDFArray ? kids.asArray() : (kids ? [kids] : []);
+      for (const kid of children) {
+        if (kid instanceof PDFDict) {
+          await this.traverseStructureTree(kid, pdfDoc, headings, pageNumber, pageMap, roleMap);
+        } else {
+          const resolved = pdfDoc.context.lookup(kid);
+          if (resolved instanceof PDFDict) {
+            await this.traverseStructureTree(resolved, pdfDoc, headings, pageNumber, pageMap, roleMap);
           }
         }
       }
