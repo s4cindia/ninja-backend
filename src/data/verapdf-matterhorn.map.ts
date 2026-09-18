@@ -4,20 +4,23 @@
  * Maps veraPDF MRR rule IDs (format: "{specPart}:{clause}-{testNumber}")
  * to Matterhorn Protocol 1.1 condition IDs (format: "CC-NNN").
  *
- * ⚠️  VALIDATION REQUIRED
- * The entries below are best-guess mappings derived from the ISO 14289-1
- * clause structure. They MUST be validated against actual veraPDF MRR output
- * from the 3 fixture PDFs in tests/fixtures/pdf/ before relying on them
- * in production PAC reports.
+ * VALIDATED entries below were confirmed by running veraPDF 1.30.2 locally
+ * (`--flavour ua1 --format mrr`) against the 3 fixture PDFs in
+ * tests/fixtures/pdf/ and reading the real ruleId off each failing <rule>.
+ * Two of the original best-guess placeholders were WRONG once checked
+ * against real output (31-009 and 31-027's clauses were swapped, and
+ * 06-002 guessed clause 6.2 instead of the real clause 5) — this is why
+ * every entry here must be validated against real MRR XML, not derived
+ * from the Matterhorn `section` field alone. See
+ * tests/unit/services/pdf/verapdf.service.test.ts for the fixture XML this
+ * was validated against.
  *
- * To generate the validation XML:
- *   See tests/fixtures/pdf/verapdf-output/README.md
- *
- * After staging generates XML output:
- *   1. Collect all unique ruleIds from the XML files
- *   2. Cross-check against this map
- *   3. Fill in any missing entries and remove UNVALIDATED comments
- *   4. Run the unit tests to confirm round-trip coverage
+ * Any NEW entry must go through the same process:
+ *   1. Get (or build) a fixture PDF that triggers the target condition
+ *   2. Run: verapdf --flavour ua1 --format mrr --maxfailuresdisplayed 99999 <file>
+ *      (see tests/fixtures/pdf/verapdf-output/README.md)
+ *   3. Read the real clause/testNumber/specification off the failing <rule>
+ *   4. Add the entry here and a matching parseMrrXml test case
  *
  * Matterhorn Coverage Plan — Step 4c
  */
@@ -34,35 +37,31 @@ import type { VeraPdfFailure } from '../services/pdf/verapdf.service';
  * Each entry carries a comment with the ISO 14289-1 clause it corresponds to.
  */
 export const VERAPDF_MATTERHORN_MAP: ReadonlyMap<string, string> = new Map<string, string>([
-  // ── CP01: Real content tagged ─────────────────────────────────────────────
-  // ISO 14289-1 §7.1 — Artefacts inside tagged content and vice versa
-  // UNVALIDATED: ruleId format needs confirmation from staging MRR output
-  // ['1:7.1-1', '01-003'],
-  // ['1:7.1-2', '01-004'],
-  // ['1:7.1-3', '01-005'],
-
   // ── CP06: Metadata ────────────────────────────────────────────────────────
-  // ISO 14289-1 §6.2 — pdfuaid:part entry in XMP metadata
-  // UNVALIDATED: most likely candidate based on ISO clause numbering
-  // ['1:6.2-1', '06-002'],
-
-  // ── CP07: Dictionary entries ──────────────────────────────────────────────
-  // ISO 14289-1 §7.3 — ViewerPreferences/DisplayDocTitle
-  // UNVALIDATED
-  // ['1:7.3-1', '07-001'],
-  // ['1:7.3-2', '07-002'],
+  // VALIDATED against real veraPDF 1.30.2 MRR output (cp06-metadata-failures.pdf):
+  // clause="5" testNumber="1" — "doesn't contain PDF/UA Identification Schema".
+  // Note: Ninja's own pdf-structure.validator.ts already detects this
+  // natively (matterhornCheckpoint: '06-002'), so mapVeraPdfFailures() will
+  // normally dedupe this away via `alreadyFound`. Kept as a fallback for
+  // cases the native XMP check misses.
+  ['1:5-1', '06-002'],
 
   // ── CP31: Fonts ───────────────────────────────────────────────────────────
-  // ISO 14289-1 §7.21.3 — Font program embedding
-  // ISO 14289-1 §7.21.4 — Character encoding / ToUnicode
-  // UNVALIDATED: fixture PDFs cp31-font-not-embedded.pdf and
-  //              cp31-missing-tounicode.pdf should confirm these
-  // ['1:7.21.3.1-1', '31-009'],   // font program not embedded
-  // ['1:7.21.4.1-1', '31-027'],   // font missing ToUnicode
+  // VALIDATED against real veraPDF 1.30.2 MRR output:
+  // cp31-font-not-embedded.pdf   → clause="7.21.4.1" testNumber="1"
+  // cp31-missing-tounicode.pdf   → clause="7.21.7"   testNumber="1"
+  // (The original placeholders for these two had the clauses swapped and
+  // didn't match either real value — see file header note.)
+  ['1:7.21.4.1-1', '31-009'],   // font program not embedded
+  ['1:7.21.7-1', '31-027'],     // font missing ToUnicode
 
   //
-  // TODO: Uncomment and validate after running veraPDF on staging fixture PDFs.
-  //       See tests/fixtures/pdf/verapdf-output/README.md for commands.
+  // ── Not yet validated — no fixture PDF built for these yet ────────────────
+  // CP01 (§7.1 Artefacts), CP07 (§7.3 ViewerPreferences/DisplayDocTitle):
+  // do NOT add without running real veraPDF output first — the Matterhorn
+  // `section` field alone is not reliable (confirmed: 07-001 and 07-002
+  // share the same section value, so it can't disambiguate them; the CP06
+  // guess above was also wrong until checked against real output).
   //
 ]);
 

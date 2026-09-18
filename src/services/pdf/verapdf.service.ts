@@ -125,21 +125,22 @@ class VeraPdfService {
   /**
    * Parse a veraPDF MRR XML string into VeraPdfFailure[].
    *
-   * MRR structure (condensed):
+   * Real MRR structure, confirmed against veraPDF 1.30.2 CLI output
+   * (`<check>` is a direct child of `<rule>` — there is no wrapping
+   * `<checks>` element, and there is no `<location>` element; the page
+   * index is embedded in `<context>` instead, e.g. ".../pages[0](...)"):
    *   <report>
    *     <jobs>
    *       <job>
    *         <validationReport>
    *           <details>
-   *             <rule status="failed" specification="ISO 14289-1"
-   *                   clause="6.2" testNumber="1">
+   *             <rule status="failed" specification="ISO 14289-1:2014"
+   *                   clause="7.21.4.1" testNumber="1">
    *               <description>…</description>
-   *               <checks failed="3">
-   *                 <check status="failed">
-   *                   <context>…</context>
-   *                   <location page="1">…</location>
-   *                 </check>
-   *               </checks>
+   *               <check status="failed">
+   *                 <context>root/document[0]/pages[0](27 0 obj PDPage)/…</context>
+   *                 <errorMessage>…</errorMessage>
+   *               </check>
    *             </rule>
    *           </details>
    *         </validationReport>
@@ -148,7 +149,8 @@ class VeraPdfService {
    *   </report>
    *
    * ruleId format: "{specMajor}:{clause}-{testNumber}"
-   * e.g. specification="ISO 14289-1" clause="6.2" testNumber="1" → "1:6.2-1"
+   * e.g. specification="ISO 14289-1:2014" clause="7.21.4.1" testNumber="1"
+   *      → "1:7.21.4.1-1"
    */
   private parseMrrXml(xml: string, filePath: string): VeraPdfFailure[] {
     if (!xml?.includes('<report')) return [];
@@ -192,13 +194,18 @@ class VeraPdfService {
           const testNumber = (r['@_testNumber'] as string | undefined) ?? '';
           const description = ((r['description'] as string | undefined) ?? '').trim();
 
-          // Extract major version from "ISO 14289-1" → "1"
-          const specMajor = specification.match(/\d+$/)?.[0] ?? '1';
+          // Extract the PDF/UA part number from the specification string.
+          // Real values look like "ISO 14289-1:2014" — the trailing ":2014"
+          // year would wrongly win a naive /\d+$/ match, so strip it first
+          // and pull the digit after the last hyphen (the "-1" part number).
+          const specMajor =
+            specification.replace(/:\d{4}$/, '').match(/-(\d+)$/)?.[1] ??
+            specification.match(/\d+$/)?.[0] ??
+            '1';
           const ruleId = `${specMajor}:${clause}-${testNumber}`;
 
-          // Extract first check's page and context for location hints
-          const checks = r['checks'] as Record<string, unknown> | undefined;
-          const checkList = checks?.['check'];
+          // `<check>` is a direct child of `<rule>` — no `<checks>` wrapper.
+          const checkList = r['check'];
           const firstCheck = Array.isArray(checkList) ? checkList[0] : undefined;
 
           let pageNumber: number | undefined;
@@ -213,7 +220,16 @@ class VeraPdfService {
               if (!isNaN(p)) pageNumber = p;
             }
             const rawContext = fc['context'] as string | undefined;
-            if (rawContext) context = String(rawContext).trim().slice(0, 200);
+            if (rawContext) {
+              context = String(rawContext).trim().slice(0, 200);
+              // No <location> element is present in real MRR output — the
+              // 0-based page index lives inside the context path instead,
+              // e.g. "root/document[0]/pages[0](27 0 obj PDPage)/…".
+              if (pageNumber === undefined) {
+                const pageMatch = /\bpages\[(\d+)\]/.exec(context);
+                if (pageMatch) pageNumber = parseInt(pageMatch[1], 10) + 1;
+              }
+            }
           }
 
           failures.push({ ruleId, description, pageNumber, context });
