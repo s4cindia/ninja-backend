@@ -2535,6 +2535,15 @@ export class PdfStructureWriterService {
     const pageRefToIndex = new Map<number, number>();
     pages.forEach((p, idx) => pageRefToIndex.set(p.ref.objectNumber, idx));
 
+    // Resolves custom role-mapped heading tags too -- see buildRoleMap's own
+    // doc comment (added for fixHeadingHierarchy/fixMultipleH1's identical
+    // real Math_Weir_PDF.pdf incident). Without this, a document whose FIRST
+    // heading is deliberately left under its original role name (e.g.
+    // fixMultipleH1 always keeps the first H1 that way) would silently open
+    // its generated bookmark outline on the SECOND heading, never the true
+    // first one.
+    const roleMap = this.buildRoleMap(doc, structRoot);
+
     // Collect headings in document order
     const headings: Array<{
       level: number;
@@ -2545,8 +2554,9 @@ export class PdfStructureWriterService {
 
     this.traverseStructTree(doc, structRoot, (node, ref) => {
       if (!ref) return;
-      const sTag = node.get(PDFName.of('S'))?.toString().replace(/^\//, '');
-      if (!sTag) return;
+      const rawTag = node.get(PDFName.of('S'))?.toString().replace(/^\//, '');
+      if (!rawTag) return;
+      const sTag = this.resolveRoleMapChain(roleMap, rawTag);
       const m = /^H([1-9])$/.exec(sTag);
       if (!m) return;
 
