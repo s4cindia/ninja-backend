@@ -16,8 +16,19 @@ https://github.com/veraPDF/veraPDF-corpus (Apache 2.0 / veraPDF Project)
 
 ## Status
 
-veraPDF runs will be executed on staging once `VERAPDF_PATH` is configured.
-Output XML files will be committed to this directory after the first staging run.
+DONE. veraPDF 1.30.2 was installed locally (via the official IzPack silent
+installer) and run against all 3 fixture PDFs. The XML output files in this
+directory are real captured output, used by
+`tests/unit/services/pdf/verapdf.service.test.ts` to validate `parseMrrXml`.
+
+Validating this real output against the assumed MRR shape in
+`verapdf.service.ts`'s `parseMrrXml` found two real parsing bugs (fixed):
+the `specMajor` regex matched the wrong trailing digits on specification
+strings that include a year, e.g. "ISO 14289-1:2014" (`/\d+$/` matched
+"2014" instead of "1"), and `<check>` elements are direct children of
+`<rule>` — there is no wrapping `<checks>` element as the original code
+assumed. It also found that 2 of the 3 original placeholder mappings in
+`verapdf-matterhorn.map.ts` had the wrong clause/testNumber.
 
 ## Commands
 

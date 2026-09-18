@@ -119,6 +119,12 @@ const TESTABLE_CONDITIONS: ReadonlySet<string> = new Set([
   '15-003',
   '15-004',
   '15-005',
+
+  // ── veraPDF (Matterhorn Coverage Plan Step 4) ────────────────────────────
+  // Only conditions with a VALIDATED entry in verapdf-matterhorn.map.ts —
+  // see that file for how each was confirmed against real MRR output.
+  '31-009', // font program not embedded
+  '31-027', // font missing ToUnicode entry
 ]);
 
 // ─── Service ──────────────────────────────────────────────────────────────────

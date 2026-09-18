@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="utf-8"?>
+<report>
+  <buildInformation>
+    <releaseDetails id="core" version="1.30.2" buildDate="2026-06-03T10:43:00+05:30"></releaseDetails>
+    <releaseDetails id="validation-model" version="1.30.2" buildDate="2026-06-03T10:46:00+05:30"></releaseDetails>
+    <releaseDetails id="apps" version="1.30.2" buildDate="2026-06-03T10:55:00+05:30"></releaseDetails>
+  </buildInformation>
+  <jobs>
+    <job>
+      <item size="19360">
+        <name>C:\Users\avrve\projects\ninja-workspace\ninja-backend\tests\fixtures\pdf\cp31-font-not-embedded.pdf</name>
+      </item>
+      <validationReport jobEndStatus="normal" profileName="PDF/UA-1 validation profile" statement="PDF file is not compliant with Validation Profile requirements." isCompliant="false">
+        <details passedRules="105" failedRules="1" passedChecks="90" failedChecks="1">
+          <rule specification="ISO 14289-1:2014" clause="7.21.4.1" testNumber="1" status="failed" failedChecks="1" tags="font">
+            <description>The font programs for all fonts used for rendering within a conforming file shall be embedded within that file, as defined in ISO 32000-1:2008, 9.9</description>
+            <object>PDFont</object>
+            <test>Subtype == "Type3" || Subtype == "Type0" || renderingMode == 3 || containsFontFile == true</test>
+            <check status="failed">
+              <context>root/document[0]/pages[0](27 0 obj PDPage)/contentStream[0](28 0 obj PDSemanticContentStream)/operators[4]/font[0](Helvetica)</context>
+              <errorMessage>The font program is not embedded</errorMessage>
+            </check>
+          </rule>
+        </details>
+      </validationReport>
+      <duration start="1789761350662" finish="1789761350975">00:00:00.313</duration>
+    </job>
+  </jobs>
+  <batchSummary totalJobs="1" failedToParse="0" encrypted="0" outOfMemory="0" veraExceptions="0">
+    <validationReports compliant="0" nonCompliant="1" failedJobs="0">1</validationReports>
+    <featureReports failedJobs="0">0</featureReports>
+    <repairReports failedJobs="0">0</repairReports>
+    <duration start="1789761350619" finish="1789761351001">00:00:00.382</duration>
+  </batchSummary>
+</report>
