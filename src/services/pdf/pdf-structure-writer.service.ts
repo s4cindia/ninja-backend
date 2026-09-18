@@ -77,6 +77,60 @@ export class PdfStructureWriterService {
   }
 
   /**
+   * Reads /StructTreeRoot's own /RoleMap, if any: a dict of custom tag name
+   * -> standard tag name (PDF32000-1:2008 §14.7.4.3). Confirmed live on a
+   * real Math_Weir_PDF.pdf incident: its headings are tagged with the
+   * publisher's own custom role names (/a, /b, /c, /cn, /ct, /cptitle,
+   * /fmbmct -- 290 elements total), mapped to /H1-/H4 via a RoleMap --
+   * fixHeadingHierarchy/fixMultipleH1 matched raw /S values only and so saw
+   * zero headings, honestly bailing on a document that actually has real,
+   * correctly-tagged heading structure under non-standard names. Custom
+   * RoleMaps are a routine InDesign/publisher-production pattern, not a
+   * one-document quirk, so this generalizes.
+   *
+   * Small and duplicated locally rather than imported from
+   * structure-tree-completeness.ts's own buildRoleMap (which resolves this
+   * same RoleMap for a read-only completeness check, not a mutation) --
+   * that module's own header already establishes the project's preference
+   * for keeping structure-tree-walking helpers isolated per-feature over
+   * cross-module coupling.
+   */
+  private buildRoleMap(doc: PDFDocument, structTreeRoot: PDFDict): Map<string, string> {
+    const roleMap = new Map<string, string>();
+    const rmRaw = structTreeRoot.get(PDFName.of('RoleMap'));
+    const rm = rmRaw instanceof PDFRef ? doc.context.lookup(rmRaw) : rmRaw;
+    if (!(rm instanceof PDFDict)) return roleMap;
+
+    for (const [key, value] of rm.entries()) {
+      const customTag = key.toString().replace(/^\//, '');
+      const stdTag = value instanceof PDFName ? value.toString().replace(/^\//, '') : null;
+      if (stdTag) roleMap.set(customTag, stdTag);
+    }
+    return roleMap;
+  }
+
+  /**
+   * Follows a /RoleMap mapping to its end, not just one hop -- PDF32000-1:2008
+   * §14.7.4.3 permits a custom role to map to ANOTHER custom role rather than
+   * a standard type directly (customA -> customB -> H2), and a reader is
+   * expected to keep following the chain. A single roleMap.get() lookup (this
+   * function's own first version, caught by CodeRabbit review) only resolves
+   * one hop, silently failing to recognize a transitively-mapped heading.
+   * Tracks visited names to terminate a malformed cyclic mapping (customA ->
+   * customB -> customA) rather than looping forever -- returns wherever the
+   * cycle was first re-entered rather than crashing or hanging.
+   */
+  private resolveRoleMapChain(roleMap: Map<string, string>, rawType: string): string {
+    const visited = new Set<string>();
+    let current = rawType;
+    while (roleMap.has(current) && !visited.has(current)) {
+      visited.add(current);
+      current = roleMap.get(current)!;
+    }
+    return current;
+  }
+
+  /**
    * Pre-order depth-first traversal of the structure tree — i.e. document
    * reading order: visit a node, then walk each of its children (and their
    * full subtrees) before moving on to the next sibling.
@@ -486,6 +540,14 @@ export class PdfStructureWriterService {
    * Algorithm: walk headings in document order; if Hn jumps more than one level
    * above the previous heading, rename it to (previous + 1).
    *
+   * Recognizes a heading whether it's tagged with a literal /H1-/H9 or with a
+   * custom role name the document's own /RoleMap maps to one (see
+   * buildRoleMap's doc comment for the real incident this fixes) -- either
+   * way, the actual RENAME always writes a literal /H<n> onto that one
+   * element (renameElement), never touching the RoleMap or any other
+   * same-role-tagged element, so this stays exactly as MCID-safe and
+   * single-element-scoped as before.
+   *
    * MCID-safe: only /S is modified, MCID bindings remain on child elements.
    *
    * @param issues - HEADING-SKIP AuditIssues (used for FixResult reporting only)
@@ -500,28 +562,33 @@ export class PdfStructureWriterService {
       }));
     }
 
+    const roleMap = this.buildRoleMap(doc, structRoot);
+
     // Collect all Hn elements in document (reading) order
     const headingRefs: Array<{ ref: PDFRef; level: number }> = [];
     this.traverseStructTree(doc, structRoot, (node, ref) => {
       if (!ref) return;
       const sTag = node.get(PDFName.of('S'));
       if (!sTag) return;
-      const m = /^H([1-9])$/.exec(sTag.toString().replace(/^\//, ''));
+      const rawType = sTag.toString().replace(/^\//, '');
+      const resolvedType = this.resolveRoleMapChain(roleMap, rawType);
+      const m = /^H([1-9])$/.exec(resolvedType);
       if (m) headingRefs.push({ ref, level: parseInt(m[1], 10) });
     });
 
-    // A structure tree with zero Hn elements means there is nothing this
-    // method can ever fix, no matter how many HEADING-SKIP issues detection
-    // reports — detection uses a separate text/font-size heuristic that
-    // scans visible content directly, entirely independent of the tag tree
-    // (see structure-tree-completeness.ts's isHeadingShell, which exists to
-    // catch and retag exactly this case upstream). Bailing to failure here
-    // too, rather than reporting success, is a deliberate second line of
-    // defense: it stays honest even if that upstream check didn't run, was
-    // bypassed, or the tree became heading-empty some other way. Reporting
-    // success on a 0-Hn tree previously meant every one of these issues got
-    // silently marked resolved every round on documents whose headings were
-    // simply never tagged in the first place.
+    // A structure tree with zero Hn elements (literal or RoleMap-resolved)
+    // means there is nothing this method can ever fix, no matter how many
+    // HEADING-SKIP issues detection reports — detection uses a separate
+    // text/font-size heuristic that scans visible content directly, entirely
+    // independent of the tag tree (see structure-tree-completeness.ts's
+    // isHeadingShell, which exists to catch and retag exactly this case
+    // upstream). Bailing to failure here too, rather than reporting success,
+    // is a deliberate second line of defense: it stays honest even if that
+    // upstream check didn't run, was bypassed, or the tree became
+    // heading-empty some other way. Reporting success on a 0-Hn tree
+    // previously meant every one of these issues got silently marked
+    // resolved every round on documents whose headings were simply never
+    // tagged in the first place.
     if (headingRefs.length === 0) {
       logger.info('[StructureWriter] fixHeadingHierarchy: 0 heading(s) renamed (0 Hn elements found in structure tree)');
       return issues.map(i => ({
@@ -586,13 +653,18 @@ export class PdfStructureWriterService {
       return { issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error: 'No structure tree root found' };
     }
 
-    // Collect all heading elements in document (reading) order
+    const roleMap = this.buildRoleMap(doc, structRoot);
+
+    // Collect all heading elements in document (reading) order -- resolves
+    // custom role-mapped heading tags too, see buildRoleMap's doc comment.
     const allHeadings: Array<{ ref: PDFRef; level: number }> = [];
     this.traverseStructTree(doc, structRoot, (node, ref) => {
       if (!ref) return;
       const sTag = node.get(PDFName.of('S'));
       if (!sTag) return;
-      const m = /^H([1-9])$/.exec(sTag.toString().replace(/^\//, ''));
+      const rawType = sTag.toString().replace(/^\//, '');
+      const resolvedType = this.resolveRoleMapChain(roleMap, rawType);
+      const m = /^H([1-9])$/.exec(resolvedType);
       if (m) allHeadings.push({ ref, level: parseInt(m[1], 10) });
     });
 
