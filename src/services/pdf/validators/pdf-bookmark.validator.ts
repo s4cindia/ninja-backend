@@ -61,6 +61,18 @@ class PdfBookmarkValidator {
           'Add bookmarks for all major sections. In Microsoft Word, export with "Create bookmarks using Headings" enabled. ' +
           'In InDesign, enable "Create PDF Bookmarks" in export settings with paragraph styles mapped to bookmark levels.',
         context: `Pages: ${pageCount}, Bookmarks: 0`,
+        // Whole-document issue, anchored to page 1 -- same convention
+        // pdf-structure.validator.ts's own document-level issues (missing
+        // title/language, multiple H1s) already use. Without a pageNumber,
+        // BaseAuditService.calculateAffectedPageRatio's "no page data for
+        // this severity bucket" fallback treats it as affecting 100% of
+        // pages -- correct for a genuinely whole-document concern like a
+        // missing title, but this issue's own severity bucket can end up
+        // holding ONLY this one issue once others in it are fixed (real
+        // Math_Weir_PDF.pdf incident: fixing HEADING-MULTIPLE-H1 left this
+        // as the sole 'moderate' issue, and the fallback alone swung the
+        // score 91 -> 53 despite the document becoming MORE accessible).
+        pageNumber: 1,
       });
       logger.info('[PdfBookmarkValidator] Found BOOKMARK-MISSING');
       return issues;
@@ -81,6 +93,8 @@ class PdfBookmarkValidator {
         suggestion:
           'Add bookmarks to cover all major sections and subsections so users can navigate to any part of the document.',
         context: `Pages: ${pageCount}, Bookmarks: ${totalBookmarks}`,
+        // Same whole-document anchoring as BOOKMARK-MISSING above -- see its comment.
+        pageNumber: 1,
       });
     }
 
