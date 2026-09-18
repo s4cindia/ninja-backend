@@ -87,7 +87,13 @@ const TESTABLE_CONDITIONS: ReadonlySet<string> = new Set([
   '07-001', // ViewerPreferences/DisplayDocTitle not set (if emitted)
   '11-001', // Table is not properly structured
   '12-001', // Logical reading order cannot be determined
-  '14-003', // H element missing from structure (heading hierarchy)
+  '14-002', // First heading tag is not H1
+  '14-003', // Numbered heading levels skip (e.g. H3 directly follows H1) --
+            // was miswired to 'missing-h1' (no H1 anywhere) instead of the
+            // real skipped-level detector; fixed alongside adding this
+            // checkpoint's other two conditions below.
+  '14-006', // A single structure element has more than one direct H tag
+  '14-007', // Document uses both the generic H tag and numbered H1-H9 tags
 
   // ── Alt text validator ───────────────────────────────────────────────────
   '13-001', // Figure has no /Alt AND no /ActualText

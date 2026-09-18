@@ -34,6 +34,24 @@ export interface HeadingInfo {
   isProperlyNested: boolean;
 }
 
+/**
+ * Accumulated during traverseStructureTree's single walk, alongside the
+ * flattened HeadingInfo[] -- both feed Matterhorn 14-006/14-007, which need
+ * information the flattened list alone can't express (parent/child
+ * relationships, and which literal tag spelling -- bare /H vs numbered
+ * /H1-/H9 -- each heading actually used).
+ */
+interface HeadingTagState {
+  usesBareH: boolean;
+  usesNumberedH: boolean;
+  /** One page number per structure element found to have >1 direct heading child. */
+  multiHeadingParentPages: number[];
+}
+
+interface TaggedHeadingExtraction extends HeadingTagState {
+  headings: HeadingInfo[];
+}
+
 export interface HeadingHierarchy {
   headings: HeadingInfo[];
   hasProperHierarchy: boolean;
@@ -41,7 +59,14 @@ export interface HeadingHierarchy {
   multipleH1: boolean;
   skippedLevels: Array<{ from: number; to: number; location: string }>;
   issues: Array<{
-    type: 'missing-h1' | 'multiple-h1' | 'skipped-level' | 'improper-nesting';
+    type:
+      | 'missing-h1'
+      | 'multiple-h1'
+      | 'skipped-level'
+      | 'improper-nesting'
+      | 'first-heading-not-h1'
+      | 'multiple-headings-one-node'
+      | 'mixed-heading-tag-types';
     severity: 'critical' | 'major' | 'minor';
     description: string;
     location: string;
@@ -493,11 +518,18 @@ class StructureAnalyzerService {
       }
     }
 
+    // Matterhorn 14-002/14-006/14-007 are all specifically about STRUCTURE
+    // TREE tag usage (the literal /H vs /H1-/H9 tags and how they're
+    // nested) -- meaningless against the font-size/text heuristic path,
+    // which has no real tags to inspect at all. Only set when the tagged
+    // extraction actually ran and produced real headings.
+    let taggedExtraction: TaggedHeadingExtraction | null = null;
     if (isTaggedPDF) {
-      const taggedHeadings = await this.extractTaggedHeadings(parsedPdf);
-      if (taggedHeadings.length > 0) {
+      const extraction = await this.extractTaggedHeadings(parsedPdf);
+      if (extraction.headings.length > 0) {
         headings.length = 0;
-        headings.push(...taggedHeadings);
+        headings.push(...extraction.headings);
+        taggedExtraction = extraction;
       }
     }
 
@@ -553,6 +585,54 @@ class StructureAnalyzerService {
       }
 
       previousLevel = heading.level;
+    }
+
+    // Matterhorn 14-002: "Does use numbered headings, but the first heading
+    // tag is not H1." Distinct from hasH1/missing-h1 above (no H1 ANYWHERE)
+    // -- a document can have H1 later while still opening on H2, which only
+    // this check catches.
+    if (headings.length > 0 && headings[0].isFromTags && headings[0].level !== 1) {
+      issues.push({
+        type: 'first-heading-not-h1',
+        severity: 'major',
+        description: `Document uses numbered headings, but the first heading tag is H${headings[0].level}, not H1.`,
+        location: `Page ${headings[0].pageNumber}`,
+        pageNumber: headings[0].pageNumber,
+        wcagCriterion: '1.3.1',
+      });
+    }
+
+    // Matterhorn 14-006: "A node contains more than one H tag." A single
+    // structure element with two-or-more DIRECT heading children -- distinct
+    // from multiple-h1 above, which only looks at the flattened, order-only
+    // heading list and can't see parent/child relationships at all.
+    if (taggedExtraction) {
+      for (const pageNumber of taggedExtraction.multiHeadingParentPages) {
+        issues.push({
+          type: 'multiple-headings-one-node',
+          severity: 'minor',
+          description: 'A structure element directly contains more than one heading (H) tag.',
+          location: `Page ${pageNumber}`,
+          pageNumber,
+          wcagCriterion: '1.3.1',
+        });
+      }
+    }
+
+    // Matterhorn 14-007: "Document uses both H and H# tags." The generic
+    // bare /H and numbered /H1-/H9 are two different, mutually-exclusive
+    // heading styles per the spec; mixing them within one document is itself
+    // the violation, regardless of whether either style's own hierarchy is
+    // otherwise correct.
+    if (taggedExtraction?.usesBareH && taggedExtraction?.usesNumberedH) {
+      issues.push({
+        type: 'mixed-heading-tag-types',
+        severity: 'minor',
+        description: 'Document uses both the generic H tag and numbered heading tags (H1-H9). Use one heading tag style consistently.',
+        location: 'Document',
+        pageNumber: 1,
+        wcagCriterion: '1.3.1',
+      });
     }
 
     const hasProperHierarchy = issues.filter(i => i.severity !== 'minor').length === 0;
@@ -616,8 +696,9 @@ class StructureAnalyzerService {
     return current;
   }
 
-  private async extractTaggedHeadings(parsedPdf: ParsedPDF): Promise<HeadingInfo[]> {
+  private async extractTaggedHeadings(parsedPdf: ParsedPDF): Promise<TaggedHeadingExtraction> {
     const headings: HeadingInfo[] = [];
+    const tagState: HeadingTagState = { usesBareH: false, usesNumberedH: false, multiHeadingParentPages: [] };
     const pageMap = this.buildPageRefMap(parsedPdf.pdfLibDoc);
 
     try {
@@ -637,7 +718,8 @@ class StructureAnalyzerService {
               headings,
               1,
               pageMap,
-              roleMap
+              roleMap,
+              tagState
             );
           }
         }
@@ -646,7 +728,7 @@ class StructureAnalyzerService {
       console.warn('Failed to extract tagged headings:', err instanceof Error ? err.message : 'Unknown error');
     }
 
-    return headings;
+    return { headings, ...tagState };
   }
 
   private buildPageRefMap(pdfDoc: PDFDocument): Map<string, number> {
@@ -789,13 +871,26 @@ class StructureAnalyzerService {
     return null;
   }
 
+  /**
+   * Recognizes a resolved (RoleMap-followed) type string as a heading tag:
+   * the bare generic /H, or a numbered /H1-/H9. PDF/UA permits heading
+   * levels up to H9 (Matterhorn 14-005 explicitly tests "7th level or
+   * higher"), so this (unlike an earlier version of this file, and unlike
+   * a couple of other heading regexes elsewhere in this codebase that were
+   * never audited as part of this fix) intentionally does not cap at H6.
+   */
+  private isHeadingTagType(resolvedType: string): boolean {
+    return /^H[1-9]?$/.test(resolvedType);
+  }
+
   private async traverseStructureTree(
     node: PDFDict,
     pdfDoc: PDFDocument,
     headings: HeadingInfo[],
     currentPage: number,
     pageMap: Map<string, number>,
-    roleMap: Map<string, string>
+    roleMap: Map<string, string>,
+    tagState: HeadingTagState
   ): Promise<void> {
     try {
       // This walk always seeds/threads a real number (unlike findTaggedTables,
@@ -804,15 +899,18 @@ class StructureAnalyzerService {
       const pageNumber = this.resolvePageNumber(node, pdfDoc, currentPage, pageMap) ?? currentPage;
       const typeRef = node.get(PDFName.of('S'));
       const rawType = typeRef?.toString().replace(/^\//, '');
-      const type = rawType ? `/${this.resolveRoleMapChain(roleMap, rawType)}` : undefined;
+      const resolvedType = rawType ? this.resolveRoleMapChain(roleMap, rawType) : undefined;
 
-      if (type && /^\/H[1-6]?$/.test(type)) {
-        const level = type === '/H' ? 1 : parseInt(type.replace('/H', ''), 10);
+      if (resolvedType && this.isHeadingTagType(resolvedType)) {
+        const isBare = resolvedType === 'H';
+        const level = isBare ? 1 : parseInt(resolvedType.replace('H', ''), 10);
+        if (isBare) tagState.usesBareH = true;
+        else tagState.usesNumberedH = true;
 
         let text = '';
-        const kids = node.get(PDFName.of('K'));
-        if (kids instanceof PDFString) {
-          text = kids.decodeText();
+        const kidsForText = node.get(PDFName.of('K'));
+        if (kidsForText instanceof PDFString) {
+          text = kidsForText.decodeText();
         }
 
         headings.push({
@@ -836,13 +934,30 @@ class StructureAnalyzerService {
       // encoding, so this wasn't a root-only edge case.
       const kids = node.get(PDFName.of('K'));
       const children = kids instanceof PDFArray ? kids.asArray() : (kids ? [kids] : []);
+
+      // Matterhorn 14-006: does THIS node (as a parent) have more than one
+      // DIRECT heading child -- checked here, before recursing, since once
+      // we recurse a child heading becomes indistinguishable from a
+      // grandchild heading in the flattened list.
+      let directHeadingChildCount = 0;
+      for (const kid of children) {
+        const kidDict = kid instanceof PDFDict ? kid : pdfDoc.context.lookup(kid);
+        if (!(kidDict instanceof PDFDict)) continue;
+        const kidRawType = kidDict.get(PDFName.of('S'))?.toString().replace(/^\//, '');
+        if (!kidRawType) continue;
+        if (this.isHeadingTagType(this.resolveRoleMapChain(roleMap, kidRawType))) directHeadingChildCount++;
+      }
+      if (directHeadingChildCount > 1) {
+        tagState.multiHeadingParentPages.push(pageNumber);
+      }
+
       for (const kid of children) {
         if (kid instanceof PDFDict) {
-          await this.traverseStructureTree(kid, pdfDoc, headings, pageNumber, pageMap, roleMap);
+          await this.traverseStructureTree(kid, pdfDoc, headings, pageNumber, pageMap, roleMap, tagState);
         } else {
           const resolved = pdfDoc.context.lookup(kid);
           if (resolved instanceof PDFDict) {
-            await this.traverseStructureTree(resolved, pdfDoc, headings, pageNumber, pageMap, roleMap);
+            await this.traverseStructureTree(resolved, pdfDoc, headings, pageNumber, pageMap, roleMap, tagState);
           }
         }
       }
