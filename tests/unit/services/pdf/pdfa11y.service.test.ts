@@ -158,10 +158,14 @@ describe('Pdfa11yService.parseJsonReport — synthetic shape regressions', () =>
 });
 
 describe('Pdfa11yService.isAvailable / validate — graceful degradation', () => {
-  it('reports unavailable and resolves validate() to [] when PDFA11Y_PATH is unset', async () => {
+  it('reports unavailable and resolves validate() to { ran: false, failures: [] } when PDFA11Y_PATH is unset', async () => {
     if (process.env.PDFA11Y_PATH) return; // not this environment's concern
     expect(pdfa11yService.isAvailable()).toBe(false);
-    await expect(pdfa11yService.validate('anything.pdf')).resolves.toEqual([]);
+    // Codex finding on PR #577, confirmed real: `ran` must be false here,
+    // not just `failures` empty — pac-report.service.ts needs to tell
+    // "didn't run" apart from "ran and found nothing" to avoid classifying
+    // an untested condition as a false PASS.
+    await expect(pdfa11yService.validate('anything.pdf')).resolves.toEqual({ ran: false, failures: [] });
   });
 });
 

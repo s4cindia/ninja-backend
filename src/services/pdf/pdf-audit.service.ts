@@ -69,6 +69,19 @@ export interface PdfValidationResult {
     validator: string;
     error: string;
   }>;
+  /**
+   * Whether veraPDF/pdfa11y actually EXECUTED for this audit (not just
+   * "installed") — Codex finding on PR #577, confirmed real: pac-report.
+   * service.ts's TESTABLE_CONDITIONS previously had no way to distinguish
+   * "this validator ran and found nothing" from "this validator never ran
+   * at all", so a condition only that validator can test would be
+   * classified PASS purely because the binary was unavailable for this
+   * particular audit — a false PDF/UA-compliance result. Persisted into
+   * the final AuditReport's metadata so pac-report.service.ts can read it
+   * back later (it runs long after the audit, straight from the DB).
+   */
+  veraPdfRan: boolean;
+  pdfa11yRan: boolean;
 }
 
 /**
@@ -271,6 +284,8 @@ class PdfAuditService extends BaseAuditService<PdfParseResult, PdfValidationResu
       bookmarkIssues: [],
       matterhornResults: [],
       validatorErrors: [],
+      veraPdfRan: false,
+      pdfa11yRan: false,
     };
 
     // Determine which validators to run based on scan level
@@ -520,8 +535,9 @@ class PdfAuditService extends BaseAuditService<PdfParseResult, PdfValidationResu
     if (veraPdfService.isAvailable() && parsed.filePath) {
       try {
         logger.info(`[PdfAudit] Running veraPDF on: ${parsed.filePath}`);
-        const veraPdfFailures = await veraPdfService.validate(parsed.filePath);
-        logger.info(`[PdfAudit] veraPDF found ${veraPdfFailures.length} failures`);
+        const { ran: veraPdfRan, failures: veraPdfFailures } = await veraPdfService.validate(parsed.filePath);
+        result.veraPdfRan = veraPdfRan;
+        logger.info(`[PdfAudit] veraPDF ran=${veraPdfRan}, found ${veraPdfFailures.length} failures`);
 
         // Build set of Matterhorn conditions already covered by Ninja validators
         const alreadyFound = new Set(
@@ -564,8 +580,9 @@ class PdfAuditService extends BaseAuditService<PdfParseResult, PdfValidationResu
     if (pdfa11yService.isAvailable() && parsed.filePath) {
       try {
         logger.info(`[PdfAudit] Running pdfa11y on: ${parsed.filePath}`);
-        const pdfa11yFailures = await pdfa11yService.validate(parsed.filePath);
-        logger.info(`[PdfAudit] pdfa11y found ${pdfa11yFailures.length} failures`);
+        const { ran: pdfa11yRan, failures: pdfa11yFailures } = await pdfa11yService.validate(parsed.filePath);
+        result.pdfa11yRan = pdfa11yRan;
+        logger.info(`[PdfAudit] pdfa11y ran=${pdfa11yRan}, found ${pdfa11yFailures.length} failures`);
 
         const alreadyFound = new Set(
           result.issues
@@ -770,6 +787,11 @@ class PdfAuditService extends BaseAuditService<PdfParseResult, PdfValidationResu
         matterhornFailed: adjustedMatterhornResults.filter(r => !r.passed).length,
         matterhornSummary,
         validatorErrors: validation.validatorErrors,
+        // Whether veraPDF/pdfa11y actually executed for THIS audit — see
+        // PdfValidationResult's own doc comment for why pac-report.service.ts
+        // needs this rather than inferring it from "found zero failures".
+        veraPdfRan: validation.veraPdfRan,
+        pdfa11yRan: validation.pdfa11yRan,
       },
       auditedAt: new Date(),
     };

@@ -224,7 +224,8 @@ async function runVeraPdf(buffer: Buffer, label: string): Promise<VeraPdfFailure
   try {
     const tempFilePath = path.join(tempDir, `${label}.pdf`);
     await fs.writeFile(tempFilePath, buffer);
-    return await veraPdfService.validate(tempFilePath);
+    const { failures } = await veraPdfService.validate(tempFilePath);
+    return failures;
   } finally {
     await fs.rm(tempDir, { recursive: true, force: true }).catch(() => {});
   }

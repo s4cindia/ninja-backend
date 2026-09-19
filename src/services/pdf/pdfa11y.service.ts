@@ -45,6 +45,20 @@ export interface Pdfa11yFailure {
   context?: string;
 }
 
+export interface Pdfa11yValidationResult {
+  /**
+   * True only when pdfa11y actually executed and produced parseable JSON
+   * output — false for every graceful-degradation path (unavailable,
+   * timeout, exec error, unparseable stdout), even though those also
+   * return an empty `failures` array. See VeraPdfValidationResult's own
+   * doc comment (verapdf.service.ts) for why this distinction is required:
+   * a caller must never treat "found nothing" the same as "never ran" when
+   * deciding whether a Matterhorn condition genuinely passed.
+   */
+  ran: boolean;
+  failures: Pdfa11yFailure[];
+}
+
 const TIMEOUT_MS = 120_000;
 
 interface Pdfa11yFinding {
@@ -83,13 +97,14 @@ class Pdfa11yService {
 
   /**
    * Run pdfa11y against filePath in PDF/UA-1 JSON mode.
-   * Never throws — always returns Pdfa11yFailure[] (possibly empty).
+   * Never throws — always returns a Pdfa11yValidationResult. See that
+   * type's own doc comment for why `ran` matters and must not be ignored.
    * Logs one logger.info when not available; logger.warn on timeout or exec error.
    */
-  async validate(filePath: string): Promise<Pdfa11yFailure[]> {
+  async validate(filePath: string): Promise<Pdfa11yValidationResult> {
     if (!this.isAvailable()) {
       logger.info('[pdfa11y] Not available (PDFA11Y_PATH unset or binary missing) — skipping');
-      return [];
+      return { ran: false, failures: [] };
     }
 
     let stdout: string;
@@ -111,12 +126,12 @@ class Pdfa11yService {
 
       if (error.killed) {
         logger.warn(`[pdfa11y] Validation timed out after ${TIMEOUT_MS}ms — skipping: ${filePath}`);
-        return [];
+        return { ran: false, failures: [] };
       }
 
       if (error.code === 'ENOENT' || error.code === 'EACCES') {
         logger.info(`[pdfa11y] Not available (binary not executable or missing, code=${error.code}) — skipping`);
-        return [];
+        return { ran: false, failures: [] };
       }
 
       // pdfa11y exits non-zero whenever the verdict is FAIL, same convention
@@ -130,8 +145,14 @@ class Pdfa11yService {
           `[pdfa11y] Execution error (code=${error.code}) — skipping: ${filePath}`,
           error,
         );
-        return [];
+        return { ran: false, failures: [] };
       }
+    }
+
+    const trimmedStdout = stdout?.trim() ?? '';
+    if (!trimmedStdout.startsWith('[') && !trimmedStdout.startsWith('{')) {
+      logger.warn(`[pdfa11y] Output did not look like JSON — skipping: ${filePath}`);
+      return { ran: false, failures: [] };
     }
 
     const failures = this.parseJsonReport(stdout, filePath);
@@ -144,7 +165,7 @@ class Pdfa11yService {
       }
     }
 
-    return failures;
+    return { ran: true, failures };
   }
 
   /**

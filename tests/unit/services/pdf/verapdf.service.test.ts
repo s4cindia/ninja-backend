@@ -116,10 +116,14 @@ describe('VeraPdfService.parseMrrXml — real MRR output', () => {
 });
 
 describe('VeraPdfService.isAvailable / validate — graceful degradation', () => {
-  it('reports unavailable and resolves validate() to [] when VERAPDF_PATH is unset', async () => {
+  it('reports unavailable and resolves validate() to { ran: false, failures: [] } when VERAPDF_PATH is unset', async () => {
     if (process.env.VERAPDF_PATH) return; // not this environment's concern
     expect(veraPdfService.isAvailable()).toBe(false);
-    await expect(veraPdfService.validate('anything.pdf')).resolves.toEqual([]);
+    // Codex finding on PR #577, confirmed real: `ran` must be false here,
+    // not just `failures` empty — a caller (pac-report.service.ts) needs to
+    // tell "didn't run" apart from "ran and found nothing" to avoid
+    // classifying an untested condition as a false PASS.
+    await expect(veraPdfService.validate('anything.pdf')).resolves.toEqual({ ran: false, failures: [] });
   });
 });
 

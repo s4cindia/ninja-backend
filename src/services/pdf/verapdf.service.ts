@@ -37,6 +37,23 @@ export interface VeraPdfFailure {
   context?: string;
 }
 
+export interface VeraPdfValidationResult {
+  /**
+   * True only when veraPDF actually executed and produced parseable MRR
+   * output — false for every graceful-degradation path (unavailable,
+   * timeout, exec error, unparseable stdout), even though those also
+   * return an empty `failures` array. Codex finding, confirmed real: a
+   * caller that only looked at `failures.length === 0` couldn't tell "ran
+   * and found nothing" apart from "never ran at all", which let
+   * pac-report.service.ts classify a condition as PASS purely because
+   * veraPDF happened not to be available for that audit — a false
+   * PDF/UA-compliance result. Callers MUST check `ran` before treating an
+   * empty `failures` array as a genuine pass.
+   */
+  ran: boolean;
+  failures: VeraPdfFailure[];
+}
+
 const TIMEOUT_MS = 120_000;
 
 class VeraPdfService {
@@ -57,13 +74,14 @@ class VeraPdfService {
 
   /**
    * Run veraPDF against filePath in PDF/UA-1 MRR mode.
-   * Never throws — always returns VeraPdfFailure[] (possibly empty).
+   * Never throws — always returns a VeraPdfValidationResult. See that
+   * type's own doc comment for why `ran` matters and must not be ignored.
    * Logs one logger.info when not available; logger.warn on timeout or exec error.
    */
-  async validate(filePath: string): Promise<VeraPdfFailure[]> {
+  async validate(filePath: string): Promise<VeraPdfValidationResult> {
     if (!this.isAvailable()) {
       logger.info('[veraPDF] Not available (VERAPDF_PATH unset or binary missing) — skipping');
-      return [];
+      return { ran: false, failures: [] };
     }
 
     let stdout: string;
@@ -85,13 +103,13 @@ class VeraPdfService {
 
       if (error.killed) {
         logger.warn(`[veraPDF] Validation timed out after ${TIMEOUT_MS}ms — skipping: ${filePath}`);
-        return [];
+        return { ran: false, failures: [] };
       }
 
       // Java not found or binary not executable — treat as unavailable.
       if (error.code === 'ENOENT' || error.code === 'EACCES') {
         logger.info(`[veraPDF] Not available (binary not executable or Java missing, code=${error.code}) — skipping`);
-        return [];
+        return { ran: false, failures: [] };
       }
 
       // veraPDF exits non-zero when it finds failures but still emits valid MRR XML to stdout.
@@ -103,8 +121,13 @@ class VeraPdfService {
           `[veraPDF] Execution error (code=${error.code}) — skipping: ${filePath}`,
           error,
         );
-        return [];
+        return { ran: false, failures: [] };
       }
+    }
+
+    if (!stdout?.includes('<report')) {
+      logger.warn(`[veraPDF] Output did not look like MRR XML — skipping: ${filePath}`);
+      return { ran: false, failures: [] };
     }
 
     const failures = this.parseMrrXml(stdout, filePath);
@@ -119,7 +142,7 @@ class VeraPdfService {
       }
     }
 
-    return failures;
+    return { ran: true, failures };
   }
 
   /**
