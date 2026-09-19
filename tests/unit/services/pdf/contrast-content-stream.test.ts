@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { locateTextRun, locateTextRunsForPage, locateEnclosingTextObject } from '../../../../src/services/pdf/contrast-content-stream';
+import { locateTextRun, locateTextRunsForPage, locateEnclosingTextObject, findPrecedingColor } from '../../../../src/services/pdf/contrast-content-stream';
 
 // Same shape as content-stream.test.ts's twoLineStream (verified pdf-lib output
 // shape: q BT … Tm … Tj … ET Q). Line 1 anchor (50,150), line 2 anchor (50,120).
@@ -736,5 +736,150 @@ Q
     const match = locateTextRun(stream, { x: 50, baselineY: 150 });
     expect(match).toBeTruthy();
     expect(locateEnclosingTextObject(stream, match!.start)).toBeNull();
+  });
+});
+
+describe('findPrecedingColor', () => {
+  it('finds the nearest preceding fill-color op when nothing is scoped', () => {
+    const stream = `BT
+0.5 0.5 0.5 rg
+<41> Tj
+ET
+`;
+    const pos = stream.indexOf('ET');
+    expect(findPrecedingColor(stream, pos)).toEqual([0.5, 0.5, 0.5]);
+  });
+
+  it('defaults to black when no fill-color op precedes the position at all', () => {
+    const stream = `BT
+<41> Tj
+ET
+`;
+    expect(findPrecedingColor(stream, stream.indexOf('ET'))).toEqual([0, 0, 0]);
+  });
+
+  it('does NOT treat a color set inside an already-closed q...Q as still ambient', () => {
+    // Regression test for a real bug found live on Math_Weir_PDF.pdf: a
+    // naive linear "nearest preceding rg" scan picks up a color set inside
+    // a q...Q block that has already been popped by the queried position --
+    // exactly what pdf-contrast-backplate.ts's spliceBackplate does
+    // (wraps its rectangle's `1 1 1 rg` fill in its own q...Q specifically
+    // so it can't affect anything outside the rectangle). A later run's
+    // restore-after-fix computation must see the color from BEFORE that
+    // q, not the rectangle's own scoped white.
+    const stream = `0.2 0.2 0.2 rg
+q
+1 1 1 rg
+10 10 20 20 re
+f
+Q
+BT
+<41> Tj
+ET
+`;
+    const pos = stream.indexOf('ET');
+    expect(findPrecedingColor(stream, pos)).toEqual([0.2, 0.2, 0.2]);
+  });
+
+  it('still finds a color set inside a q...Q that has NOT closed yet by the queried position', () => {
+    const stream = `q
+0.3 0.4 0.5 rg
+BT
+<41> Tj
+ET
+`;
+    // No matching Q before this position -- the color genuinely is still
+    // in effect (the q hasn't been popped), so it must be found normally.
+    const pos = stream.indexOf('ET');
+    expect(findPrecedingColor(stream, pos)).toEqual([0.3, 0.4, 0.5]);
+  });
+
+  it('handles nested q/Q, only reverting to the color active before the OUTER q once both close', () => {
+    const stream = `0.1 0.1 0.1 rg
+q
+0.9 0.9 0.9 rg
+q
+1 1 1 rg
+10 10 20 20 re
+f
+Q
+20 20 20 20 re
+f
+Q
+BT
+<41> Tj
+ET
+`;
+    const pos = stream.indexOf('ET');
+    expect(findPrecedingColor(stream, pos)).toEqual([0.1, 0.1, 0.1]);
+  });
+
+  it('declines (returns null) when the color in effect was last set by scn (colorspace-dependent, unparseable)', () => {
+    const stream = `BT
+1 0.5 0.2 scn
+<41> Tj
+ET
+`;
+    expect(findPrecedingColor(stream, stream.indexOf('ET'))).toBeNull();
+  });
+
+  it('parses g (grayscale) and k (CMYK) fill ops, not just rg', () => {
+    const grayStream = `0.75 g
+BT
+<41> Tj
+ET
+`;
+    expect(findPrecedingColor(grayStream, grayStream.indexOf('ET'))).toEqual([0.75, 0.75, 0.75]);
+
+    const cmykStream = `0 0 0 0.2 k
+BT
+<41> Tj
+ET
+`;
+    const result = findPrecedingColor(cmykStream, cmykStream.indexOf('ET'))!;
+    expect(result[0]).toBeCloseTo(0.8);
+    expect(result[1]).toBeCloseTo(0.8);
+    expect(result[2]).toBeCloseTo(0.8);
+  });
+
+  it('reproduces the real Math_Weir_PDF.pdf regression: a backplate immediately before a later cell must not leak white into that cell\'s restore', () => {
+    // Simplified real-shape excerpt of page 343's content stream: a genuine
+    // ambient text color set once, well upstream (matching this real
+    // document's convention where the overwhelming majority of runs carry
+    // no color op of their own and instead inherit it), then a backplate
+    // (scoped white) drawn for one table cell, then an ambient-only cell
+    // (no color op of its own), then the cell whose restore-after-fix
+    // computation this test targets -- about to get its OWN internal color
+    // op spliced in (not yet present, matching the real call-site: this is
+    // queried at match.start, before the fix's own insertion).
+    const stream = `0.184 0.192 0.220 rg
+/P <</MCID 1 >>BDC
+q
+1 0 0 1 0 0 cm
+1 1 1 rg
+193.6 660.4 29.2 15.0 re
+f
+Q
+BT
+9 0 0 9 193.6 663.1 Tm
+(5.248)Tj
+ET
+EMC
+/P <</MCID 2 >>BDC
+BT
+9 0 0 9 233.6 663.1 Tm
+(4.377)Tj
+ET
+EMC
+`;
+    // The position a real fix would query is the SECOND cell's run.start --
+    // right after its own "BT", before splicing in its own fix.
+    const secondRunStart = stream.lastIndexOf('BT') + 'BT\n'.length;
+    // Must find the real ambient color from before the backplate's own q,
+    // NOT the backplate rectangle's scoped white -- the old naive linear
+    // scan (this function's original implementation) returned [1, 1, 1]
+    // here, which is exactly the bug that corrupted a 19-cell cluster on
+    // the real document.
+    expect(findPrecedingColor(stream, secondRunStart)).toEqual([0.184, 0.192, 0.22]);
   });
 });
