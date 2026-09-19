@@ -1680,14 +1680,45 @@ export class PdfModifierService {
         const parser = new XMLParser({ ignoreAttributes: false, attributeNamePrefix: '@_' });
         const parsed = parser.parse(raw) as Record<string, unknown>;
 
-        // Locate the rdf:Description node and apply patches as child elements
+        // Locate the rdf:Description node and apply patches as child elements.
+        //
+        // Real-world XMP commonly has MULTIPLE sibling <rdf:Description>
+        // elements under <rdf:RDF> (one per namespace group -- Adobe's own
+        // exporters do this routinely), which fast-xml-parser represents as
+        // an ARRAY, not a single object. Confirmed live on a real document
+        // (Army trial): writePdfUaIdentifier reported success, but the saved
+        // PDF never contained "pdfuaid" anywhere -- the old code below
+        // treated `desc` as a plain object unconditionally; when it was
+        // actually an array, `desc[key] = value` set a non-index string
+        // property on the array, which XMLBuilder silently drops on
+        // re-serialization (an array only serializes its own indexed
+        // elements back to repeated XML nodes). Fix: append a NEW
+        // <rdf:Description> (with a proper namespace declaration for the
+        // prefix being patched) instead of merging into an ambiguous array.
         const xmpmeta = parsed['x:xmpmeta'] as Record<string, unknown> | undefined;
         const rdfRdf = xmpmeta?.['rdf:RDF'] as Record<string, unknown> | undefined;
         if (rdfRdf) {
-          let desc = rdfRdf['rdf:Description'] as Record<string, unknown> | undefined;
-          if (!desc) { desc = {}; rdfRdf['rdf:Description'] = desc; }
-          for (const [key, value] of Object.entries(patches)) {
-            desc[key] = value;
+          const existingDesc = rdfRdf['rdf:Description'];
+          const namespaceUri = (prefix: string): string | undefined =>
+            prefix === 'pdfuaid' ? 'http://www.aiim.org/pdfua/ns/id/' : undefined;
+
+          if (Array.isArray(existingDesc)) {
+            const newDesc: Record<string, unknown> = { '@_rdf:about': '' };
+            for (const [key, value] of Object.entries(patches)) {
+              const uri = namespaceUri(key.split(':')[0]);
+              if (uri) newDesc[`@_xmlns:${key.split(':')[0]}`] = uri;
+              newDesc[key] = value;
+            }
+            existingDesc.push(newDesc);
+          } else {
+            let desc = existingDesc as Record<string, unknown> | undefined;
+            if (!desc) { desc = { '@_rdf:about': '' }; rdfRdf['rdf:Description'] = desc; }
+            for (const [key, value] of Object.entries(patches)) {
+              const prefix = key.split(':')[0];
+              const uri = namespaceUri(prefix);
+              if (uri && !(`@_xmlns:${prefix}` in desc)) desc[`@_xmlns:${prefix}`] = uri;
+              desc[key] = value;
+            }
           }
         }
 
