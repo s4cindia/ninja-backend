@@ -40,7 +40,7 @@ export interface PacConditionResult {
   /** IDs of AuditIssues that caused this FAIL */
   issueIds?: string[];
   /** Which validator sourced the failing issue */
-  source?: 'ninja' | 'verapdf';
+  source?: 'ninja' | 'verapdf' | 'pdfa11y';
 }
 
 export interface PacCheckpointResult {
@@ -85,7 +85,9 @@ const TESTABLE_CONDITIONS: ReadonlySet<string> = new Set([
   '01-004', // Tagged content inside Artifact
   '06-002', // pdfuaid:part missing from XMP metadata
   '07-001', // ViewerPreferences/DisplayDocTitle not set (if emitted)
-  '11-001', // Table is not properly structured
+  '11-001', // Document language is not specified (stale comment fixed: this
+            // is Matterhorn's real language condition, not a table check —
+            // tables are CP15, listed separately below)
   '12-001', // Logical reading order cannot be determined
   '14-002', // First heading tag is not H1
   '14-003', // Numbered heading levels skip (e.g. H3 directly follows H1) --
@@ -125,6 +127,25 @@ const TESTABLE_CONDITIONS: ReadonlySet<string> = new Set([
   // see that file for how each was confirmed against real MRR output.
   '31-009', // font program not embedded
   '31-027', // font missing ToUnicode entry
+
+  // ── pdfa11y (Matterhorn Coverage Plan Step 6) ────────────────────────────
+  // Only conditions with a VALIDATED entry in pdfa11y-matterhorn.map.ts —
+  // see that file's header for why pdfa11y's own rule-ID numbers can't be
+  // trusted by number alone, and how each entry below was confirmed against
+  // real Matterhorn condition text instead.
+  '11-002', // Alt/ActualText/E language cannot be determined
+  '11-003', // Outline entry language cannot be determined
+  '11-004', // Annotation /Contents language cannot be determined
+  '11-005', // Form field /TU language cannot be determined
+  '11-006', // Document metadata language cannot be determined
+  '28-004', // Annotation missing /Contents and no enclosing /Alt
+  '28-005', // Form field missing /TU and no enclosing /Alt
+  '28-007', // TrapNet annotation present
+  '28-010', // Widget annotation not nested within a Form structure element
+  '28-011', // Link annotation not nested within a Link structure element
+  '28-014', // Media clip data dictionary missing /CT entry
+  '28-015', // Media clip data dictionary missing /Alt entry
+  '31-030', // Text-showing operator references the .notdef glyph
 ]);
 
 // ─── Service ──────────────────────────────────────────────────────────────────
@@ -293,7 +314,9 @@ class PacReportService {
         ...base,
         status: 'FAIL',
         issueIds: failingIssues.map((i) => i.id),
-        source: failingIssues[0].source === 'verapdf' ? 'verapdf' : 'ninja',
+        source: failingIssues[0].source === 'verapdf' || failingIssues[0].source === 'pdfa11y'
+          ? failingIssues[0].source
+          : 'ninja',
       };
     }
 
