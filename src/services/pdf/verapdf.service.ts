@@ -37,6 +37,23 @@ export interface VeraPdfFailure {
   context?: string;
 }
 
+export interface VeraPdfValidationResult {
+  /**
+   * True only when veraPDF actually executed and produced parseable MRR
+   * output — false for every graceful-degradation path (unavailable,
+   * timeout, exec error, unparseable stdout), even though those also
+   * return an empty `failures` array. Codex finding, confirmed real: a
+   * caller that only looked at `failures.length === 0` couldn't tell "ran
+   * and found nothing" apart from "never ran at all", which let
+   * pac-report.service.ts classify a condition as PASS purely because
+   * veraPDF happened not to be available for that audit — a false
+   * PDF/UA-compliance result. Callers MUST check `ran` before treating an
+   * empty `failures` array as a genuine pass.
+   */
+  ran: boolean;
+  failures: VeraPdfFailure[];
+}
+
 const TIMEOUT_MS = 120_000;
 
 class VeraPdfService {
@@ -57,13 +74,14 @@ class VeraPdfService {
 
   /**
    * Run veraPDF against filePath in PDF/UA-1 MRR mode.
-   * Never throws — always returns VeraPdfFailure[] (possibly empty).
+   * Never throws — always returns a VeraPdfValidationResult. See that
+   * type's own doc comment for why `ran` matters and must not be ignored.
    * Logs one logger.info when not available; logger.warn on timeout or exec error.
    */
-  async validate(filePath: string): Promise<VeraPdfFailure[]> {
+  async validate(filePath: string): Promise<VeraPdfValidationResult> {
     if (!this.isAvailable()) {
       logger.info('[veraPDF] Not available (VERAPDF_PATH unset or binary missing) — skipping');
-      return [];
+      return { ran: false, failures: [] };
     }
 
     let stdout: string;
@@ -85,13 +103,13 @@ class VeraPdfService {
 
       if (error.killed) {
         logger.warn(`[veraPDF] Validation timed out after ${TIMEOUT_MS}ms — skipping: ${filePath}`);
-        return [];
+        return { ran: false, failures: [] };
       }
 
       // Java not found or binary not executable — treat as unavailable.
       if (error.code === 'ENOENT' || error.code === 'EACCES') {
         logger.info(`[veraPDF] Not available (binary not executable or Java missing, code=${error.code}) — skipping`);
-        return [];
+        return { ran: false, failures: [] };
       }
 
       // veraPDF exits non-zero when it finds failures but still emits valid MRR XML to stdout.
@@ -103,11 +121,27 @@ class VeraPdfService {
           `[veraPDF] Execution error (code=${error.code}) — skipping: ${filePath}`,
           error,
         );
-        return [];
+        return { ran: false, failures: [] };
       }
     }
 
-    const failures = this.parseMrrXml(stdout, filePath);
+    if (!stdout?.includes('<report')) {
+      logger.warn(`[veraPDF] Output did not look like MRR XML — skipping: ${filePath}`);
+      return { ran: false, failures: [] };
+    }
+
+    // CodeRabbit finding on PR #577, confirmed real: the old code trusted
+    // stdout merely containing the substring "<report" as proof the run
+    // succeeded, then unconditionally returned `ran: true` — but
+    // parseMrrXml's OWN internal try/catch (XML parse exception, or a
+    // structurally-incomplete <jobs>/<job>) also degrades to zero failures
+    // on genuine malformed output, which is indistinguishable from "parsed
+    // fine, zero rules failed" without checking parseMrrXml's own verdict.
+    const { ok, failures } = this.parseMrrXml(stdout, filePath);
+    if (!ok) {
+      logger.warn(`[veraPDF] MRR report was malformed or incomplete — skipping: ${filePath}`);
+      return { ran: false, failures: [] };
+    }
 
     // Log a warning for each ruleId that has no Matterhorn mapping.
     // These should be added to src/data/verapdf-matterhorn.map.ts.
@@ -119,7 +153,7 @@ class VeraPdfService {
       }
     }
 
-    return failures;
+    return { ran: true, failures };
   }
 
   /**
@@ -151,9 +185,17 @@ class VeraPdfService {
    * ruleId format: "{specMajor}:{clause}-{testNumber}"
    * e.g. specification="ISO 14289-1:2014" clause="7.21.4.1" testNumber="1"
    *      → "1:7.21.4.1-1"
+   *
+   * Returns `ok: false` for genuinely malformed/incomplete XML (parse
+   * exception, or a missing/non-array <jobs>/<job> — veraPDF always emits
+   * a real <jobs><job> for the single file validate() always passes, so
+   * its absence means the report is truncated or corrupt, not "zero
+   * jobs"). CodeRabbit finding on PR #577, confirmed real: validate() must
+   * be able to tell this apart from "parsed cleanly, zero rules failed",
+   * or a corrupt report gets recorded as a genuine, clean run.
    */
-  private parseMrrXml(xml: string, filePath: string): VeraPdfFailure[] {
-    if (!xml?.includes('<report')) return [];
+  private parseMrrXml(xml: string, filePath: string): { ok: boolean; failures: VeraPdfFailure[] } {
+    if (!xml?.includes('<report')) return { ok: false, failures: [] };
 
     const parser = new XMLParser({
       ignoreAttributes: false,
@@ -166,7 +208,7 @@ class VeraPdfService {
       parsed = parser.parse(xml) as Record<string, unknown>;
     } catch (err) {
       logger.warn(`[veraPDF] Failed to parse MRR XML for ${filePath}`, err);
-      return [];
+      return { ok: false, failures: [] };
     }
 
     const failures: VeraPdfFailure[] = [];
@@ -175,7 +217,7 @@ class VeraPdfService {
       const report = parsed['report'] as Record<string, unknown> | undefined;
       const jobsWrapper = report?.['jobs'] as Record<string, unknown> | undefined;
       const jobs = jobsWrapper?.['job'];
-      if (!Array.isArray(jobs)) return [];
+      if (!Array.isArray(jobs)) return { ok: false, failures: [] };
 
       for (const job of jobs) {
         const valReport = (job as Record<string, unknown>)['validationReport'] as
@@ -237,9 +279,10 @@ class VeraPdfService {
       }
     } catch (err) {
       logger.warn(`[veraPDF] Error traversing MRR XML for ${filePath}`, err);
+      return { ok: false, failures };
     }
 
-    return failures;
+    return { ok: true, failures };
   }
 }
 

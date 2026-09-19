@@ -40,7 +40,7 @@ export interface PacConditionResult {
   /** IDs of AuditIssues that caused this FAIL */
   issueIds?: string[];
   /** Which validator sourced the failing issue */
-  source?: 'ninja' | 'verapdf';
+  source?: 'ninja' | 'verapdf' | 'pdfa11y';
 }
 
 export interface PacCheckpointResult {
@@ -72,20 +72,26 @@ export interface PacReport {
 // ─── Testable conditions ──────────────────────────────────────────────────────
 
 /**
- * The complete set of Matterhorn condition IDs that Ninja validators (or
- * veraPDF via the mapping table) can currently test.
+ * Matterhorn condition IDs that Ninja's OWN validators can test —
+ * unconditionally testable, since Ninja's own code always runs as part of
+ * every audit (no external binary/availability dependency).
  *
  * A condition in this set but with no corresponding failing issue → PASS.
- * A machine condition NOT in this set → UNTESTED.
+ * A machine condition in NEITHER this set nor the veraPDF/pdfa11y sets
+ * below (or in one of those sets but that tool didn't run for this
+ * specific audit — see generateReport's own buildEffectiveTestableSet) →
+ * UNTESTED.
  *
- * Update this set whenever a new validator or veraPDF mapping is added.
+ * Update this set whenever a new Ninja-native validator is added.
  */
-const TESTABLE_CONDITIONS: ReadonlySet<string> = new Set([
+const NINJA_TESTABLE_CONDITIONS: ReadonlySet<string> = new Set([
   // ── Structure validator ──────────────────────────────────────────────────
   '01-004', // Tagged content inside Artifact
   '06-002', // pdfuaid:part missing from XMP metadata
   '07-001', // ViewerPreferences/DisplayDocTitle not set (if emitted)
-  '11-001', // Table is not properly structured
+  '11-001', // Document language is not specified (stale comment fixed: this
+            // is Matterhorn's real language condition, not a table check —
+            // tables are CP15, listed separately below)
   '12-001', // Logical reading order cannot be determined
   '14-002', // First heading tag is not H1
   '14-003', // Numbered heading levels skip (e.g. H3 directly follows H1) --
@@ -119,12 +125,57 @@ const TESTABLE_CONDITIONS: ReadonlySet<string> = new Set([
   '15-003',
   '15-004',
   '15-005',
+]);
 
-  // ── veraPDF (Matterhorn Coverage Plan Step 4) ────────────────────────────
-  // Only conditions with a VALIDATED entry in verapdf-matterhorn.map.ts —
-  // see that file for how each was confirmed against real MRR output.
+/**
+ * Matterhorn condition IDs testable via veraPDF (Matterhorn Coverage Plan
+ * Step 4) — only counted as testable for a given report when that report's
+ * audit actually ran veraPDF (see PdfValidationResult.veraPdfRan / Codex
+ * finding on PR #577: a condition here must NOT be classified PASS just
+ * because veraPDF happened to be unavailable for this particular audit).
+ *
+ * Only conditions with a VALIDATED entry in verapdf-matterhorn.map.ts — see
+ * that file for how each was confirmed against real MRR output.
+ */
+const VERAPDF_TESTABLE_CONDITIONS: ReadonlySet<string> = new Set([
   '31-009', // font program not embedded
   '31-027', // font missing ToUnicode entry
+]);
+
+/**
+ * Matterhorn condition IDs testable via pdfa11y (Matterhorn Coverage Plan
+ * Step 6) — only counted as testable for a given report when that report's
+ * audit actually ran pdfa11y (see PdfValidationResult.pdfa11yRan / the same
+ * Codex finding as VERAPDF_TESTABLE_CONDITIONS above).
+ *
+ * Only conditions with a VALIDATED entry in pdfa11y-matterhorn.map.ts — see
+ * that file's header for why pdfa11y's own rule-ID numbers can't be
+ * trusted by number alone, and how each entry below was confirmed against
+ * real Matterhorn condition text instead.
+ */
+const PDFA11Y_TESTABLE_CONDITIONS: ReadonlySet<string> = new Set([
+  // CodeRabbit finding on PR #577, confirmed real: pdfa11y-matterhorn.map.ts
+  // ALSO maps UA-09-001/UA-10-001 to these same two conditions as a
+  // redundant cross-validating fallback (see that file's own comments) --
+  // but veraPdfRan and pdfa11yRan are tracked independently, so an audit
+  // where pdfa11y ran but veraPDF did not (different binary availability,
+  // one timed out, etc.) must still be able to mark these PASS from
+  // pdfa11y's own result, not just from VERAPDF_TESTABLE_CONDITIONS.
+  '31-009', // font program not embedded (also in VERAPDF_TESTABLE_CONDITIONS)
+  '31-027', // font missing ToUnicode entry (also in VERAPDF_TESTABLE_CONDITIONS)
+  '11-002', // Alt/ActualText/E language cannot be determined
+  '11-003', // Outline entry language cannot be determined
+  '11-004', // Annotation /Contents language cannot be determined
+  '11-005', // Form field /TU language cannot be determined
+  '11-006', // Document metadata language cannot be determined
+  '28-004', // Annotation missing /Contents and no enclosing /Alt
+  '28-005', // Form field missing /TU and no enclosing /Alt
+  '28-007', // TrapNet annotation present
+  '28-010', // Widget annotation not nested within a Form structure element
+  '28-011', // Link annotation not nested within a Link structure element
+  '28-014', // Media clip data dictionary missing /CT entry
+  '28-015', // Media clip data dictionary missing /Alt entry
+  '31-030', // Text-showing operator references the .notdef glyph
 ]);
 
 // ─── Service ──────────────────────────────────────────────────────────────────
@@ -156,9 +207,20 @@ class PacReportService {
     const output = job.output as Record<string, unknown> | null;
     const auditReport = output?.['auditReport'] as Record<string, unknown> | undefined;
     const rawIssues = (auditReport?.['issues'] as AuditIssue[] | undefined) ?? [];
-    const isTagged = (auditReport?.['metadata'] as Record<string, unknown> | undefined)?.['isTagged'] as boolean ?? false;
+    const metadata = auditReport?.['metadata'] as Record<string, unknown> | undefined;
+    const isTagged = metadata?.['isTagged'] as boolean ?? false;
     const jobInput = job.input as Record<string, unknown> | null;
     const fileName = (auditReport?.['fileName'] as string | undefined) ?? (jobInput?.['fileName'] as string | undefined) ?? 'unknown.pdf';
+
+    // A condition only veraPDF/pdfa11y can test must not be classified PASS
+    // when that tool never actually ran for THIS audit (Codex finding on
+    // PR #577) — build this report's effective testable set from what
+    // genuinely ran, not just from the static per-tool condition lists.
+    const veraPdfRan = metadata?.['veraPdfRan'] === true;
+    const pdfa11yRan = metadata?.['pdfa11yRan'] === true;
+    const effectiveTestableConditions = new Set(NINJA_TESTABLE_CONDITIONS);
+    if (veraPdfRan) for (const id of VERAPDF_TESTABLE_CONDITIONS) effectiveTestableConditions.add(id);
+    if (pdfa11yRan) for (const id of PDFA11Y_TESTABLE_CONDITIONS) effectiveTestableConditions.add(id);
 
     // Build a lookup: matterhornConditionId → [issue, ...]
     const failureMap = this.buildFailureMap(rawIssues);
@@ -167,7 +229,7 @@ class PacReportService {
     const checkpointMap = new Map<string, PacCheckpointResult>();
 
     for (const [, condition] of MATTERHORN_CONDITIONS) {
-      const conditionResult = this.classifyCondition(condition, failureMap);
+      const conditionResult = this.classifyCondition(condition, failureMap, effectiveTestableConditions);
 
       let checkpoint = checkpointMap.get(condition.checkpoint);
       if (!checkpoint) {
@@ -268,6 +330,7 @@ class PacReportService {
   private classifyCondition(
     condition: MatterhornCondition,
     failureMap: Map<string, AuditIssue[]>,
+    effectiveTestableConditions: ReadonlySet<string>,
   ): PacConditionResult {
     const base: PacConditionResult = {
       id: condition.id,
@@ -293,11 +356,13 @@ class PacReportService {
         ...base,
         status: 'FAIL',
         issueIds: failingIssues.map((i) => i.id),
-        source: failingIssues[0].source === 'verapdf' ? 'verapdf' : 'ninja',
+        source: failingIssues[0].source === 'verapdf' || failingIssues[0].source === 'pdfa11y'
+          ? failingIssues[0].source
+          : 'ninja',
       };
     }
 
-    if (TESTABLE_CONDITIONS.has(condition.id)) {
+    if (effectiveTestableConditions.has(condition.id)) {
       return { ...base, status: 'PASS' };
     }
 

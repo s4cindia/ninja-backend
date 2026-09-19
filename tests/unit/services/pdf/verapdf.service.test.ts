@@ -24,10 +24,17 @@ function loadFixtureXml(name: string): string {
 }
 
 // parseMrrXml is private; tested via a direct cast, same pragmatic pattern
-// used elsewhere in this suite for private-method coverage.
-function parseMrrXml(xml: string): VeraPdfFailure[] {
-  return (veraPdfService as unknown as { parseMrrXml: (xml: string, filePath: string) => VeraPdfFailure[] })
+// used elsewhere in this suite for private-method coverage. Returns just
+// `.failures` for the many existing tests below that only care about the
+// parsed content — parseMrrXmlFull (below) exposes the full { ok, failures }
+// shape for the ok/malformed-report regression tests.
+type MrrParseResult = { ok: boolean; failures: VeraPdfFailure[] };
+function parseMrrXmlFull(xml: string): MrrParseResult {
+  return (veraPdfService as unknown as { parseMrrXml: (xml: string, filePath: string) => MrrParseResult })
     .parseMrrXml(xml, 'test.pdf');
+}
+function parseMrrXml(xml: string): VeraPdfFailure[] {
+  return parseMrrXmlFull(xml).failures;
 }
 
 describe('VeraPdfService.parseMrrXml — real MRR output', () => {
@@ -115,11 +122,61 @@ describe('VeraPdfService.parseMrrXml — real MRR output', () => {
   });
 });
 
+describe('VeraPdfService.parseMrrXml — ok flag (CodeRabbit finding on PR #577)', () => {
+  it('reports ok:true for a real, well-formed report, even with zero failures', () => {
+    const xml = `<?xml version="1.0" encoding="utf-8"?>
+<report>
+  <jobs>
+    <job>
+      <validationReport>
+        <details>
+        </details>
+      </validationReport>
+    </job>
+  </jobs>
+</report>`;
+
+    expect(parseMrrXmlFull(xml)).toEqual({ ok: true, failures: [] });
+  });
+
+  it('reports ok:false for XML that merely contains the substring "<report" but is not real MRR structure', () => {
+    // A genuinely malformed/truncated report -- e.g. a stray log line or a
+    // process crash mid-write -- could still contain "<report" without
+    // being a real report at all. Confirmed real bug: the old code
+    // returned [] here (a legitimate empty result), indistinguishable from
+    // a real report with zero failing rules.
+    expect(parseMrrXmlFull('<report>this is not real MRR XML</report>')).toEqual({ ok: false, failures: [] });
+  });
+
+  it('reports ok:false when <jobs>/<job> is missing entirely', () => {
+    const xml = `<?xml version="1.0" encoding="utf-8"?>
+<report>
+  <buildInformation></buildInformation>
+</report>`;
+
+    expect(parseMrrXmlFull(xml)).toEqual({ ok: false, failures: [] });
+  });
+
+  it('reports ok:false for unparseable XML (parse exception)', () => {
+    expect(parseMrrXmlFull('<report><unclosed-tag></report>').ok).toBe(false);
+  });
+
+  it('reports ok:true for the real captured fixtures', () => {
+    expect(parseMrrXmlFull(loadFixtureXml('cp31-font-not-embedded.xml')).ok).toBe(true);
+    expect(parseMrrXmlFull(loadFixtureXml('cp31-missing-tounicode.xml')).ok).toBe(true);
+    expect(parseMrrXmlFull(loadFixtureXml('cp06-metadata-failures.xml')).ok).toBe(true);
+  });
+});
+
 describe('VeraPdfService.isAvailable / validate — graceful degradation', () => {
-  it('reports unavailable and resolves validate() to [] when VERAPDF_PATH is unset', async () => {
+  it('reports unavailable and resolves validate() to { ran: false, failures: [] } when VERAPDF_PATH is unset', async () => {
     if (process.env.VERAPDF_PATH) return; // not this environment's concern
     expect(veraPdfService.isAvailable()).toBe(false);
-    await expect(veraPdfService.validate('anything.pdf')).resolves.toEqual([]);
+    // Codex finding on PR #577, confirmed real: `ran` must be false here,
+    // not just `failures` empty — a caller (pac-report.service.ts) needs to
+    // tell "didn't run" apart from "ran and found nothing" to avoid
+    // classifying an untested condition as a false PASS.
+    await expect(veraPdfService.validate('anything.pdf')).resolves.toEqual({ ran: false, failures: [] });
   });
 });
 

@@ -22,7 +22,7 @@ import { logger } from '../../lib/logger';
 import { config } from '../../config';
 import { s3Client, s3Service } from '../s3.service';
 import { fileStorageService } from '../storage/file-storage.service';
-import { veraPdfService, VeraPdfFailure } from '../pdf/verapdf.service';
+import { veraPdfService, VeraPdfValidationResult } from '../pdf/verapdf.service';
 import { createAndEnqueuePdfAuditJob } from '../../controllers/pdf.controller';
 import { AppError } from '../../utils/app-error';
 
@@ -216,9 +216,22 @@ export async function updateAutoModeConfig(
   });
 }
 
-/** Write a buffer to a scratch temp file and run veraPDF against it — veraPDF is a CLI tool, it needs a real path. */
-async function runVeraPdf(buffer: Buffer, label: string): Promise<VeraPdfFailure[]> {
-  if (!veraPdfService.isAvailable()) return [];
+/**
+ * Write a buffer to a scratch temp file and run veraPDF against it — veraPDF
+ * is a CLI tool, it needs a real path.
+ *
+ * Returns the full { ran, failures } result, not just the failures array —
+ * CodeRabbit finding on PR #577, confirmed real: this study persists the
+ * result directly into ComparisonTrial.ninjaPacResult/pdfxtPacResult, and
+ * getTrialReport() later reads `Array.isArray(...) ? .length : null` to
+ * compute pacFailureCount. Persisting just an empty array (the old
+ * behaviour) made "veraPDF was unavailable/timed out for this trial" and
+ * "veraPDF ran and found zero failures" both look like a clean pass —
+ * exactly the ran-vs-found-nothing ambiguity this whole PR's other fix was
+ * about, in a second, independent place it also applies.
+ */
+async function runVeraPdf(buffer: Buffer, label: string): Promise<VeraPdfValidationResult> {
+  if (!veraPdfService.isAvailable()) return { ran: false, failures: [] };
 
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'ninja-comparison-study-'));
   try {
@@ -238,7 +251,7 @@ async function runVeraPdf(buffer: Buffer, label: string): Promise<VeraPdfFailure
 export async function validateTrial(id: string): Promise<ComparisonTrial> {
   const trial = await prisma.comparisonTrial.findUniqueOrThrow({ where: { id } });
 
-  let ninjaPacResult: VeraPdfFailure[] = [];
+  let ninjaPacResult: VeraPdfValidationResult = { ran: false, failures: [] };
   if (trial.ninjaJobId) {
     const job = await prisma.job.findUnique({ where: { id: trial.ninjaJobId } });
     const output = job?.output as { remediatedFileUrl?: string } | null;
@@ -250,7 +263,7 @@ export async function validateTrial(id: string): Promise<ComparisonTrial> {
     }
   }
 
-  let pdfxtPacResult: VeraPdfFailure[] = [];
+  let pdfxtPacResult: VeraPdfValidationResult = { ran: false, failures: [] };
   if (trial.pdfxtS3Path) {
     const buffer = await s3Service.getFileBuffer(trial.pdfxtS3Path);
     pdfxtPacResult = await runVeraPdf(buffer, 'pdfxt');
@@ -288,6 +301,20 @@ export interface TrialReport {
   };
 }
 
+/**
+ * Reads a persisted VeraPdfValidationResult JSON blob back out of a
+ * ComparisonTrial row. Returns null (not 0) unless veraPDF genuinely ran
+ * for that side of the trial — a stale row persisted before this fix
+ * (a bare array, no `ran` field) also safely degrades to null rather than
+ * being misread as a real failure count.
+ */
+function extractPacFailureCount(raw: unknown): number | null {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const result = raw as { ran?: unknown; failures?: unknown };
+  if (result.ran !== true || !Array.isArray(result.failures)) return null;
+  return result.failures.length;
+}
+
 function pagesPerHour(pageCount: number | null, timeMs: number | null): number | null {
   if (!pageCount || !timeMs || timeMs <= 0) return null;
   return Math.round((pageCount / (timeMs / 3_600_000)) * 10) / 10;
@@ -308,8 +335,8 @@ export async function getTrialReport(id: string): Promise<TrialReport> {
       : null;
 
   const pageCount = trial.pdfxtPageCount ?? null;
-  const ninjaPacFailures = Array.isArray(trial.ninjaPacResult) ? trial.ninjaPacResult.length : null;
-  const pdfxtPacFailures = Array.isArray(trial.pdfxtPacResult) ? trial.pdfxtPacResult.length : null;
+  const ninjaPacFailures = extractPacFailureCount(trial.ninjaPacResult);
+  const pdfxtPacFailures = extractPacFailureCount(trial.pdfxtPacResult);
 
   return {
     trialId: trial.id,

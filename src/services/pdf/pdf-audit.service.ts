@@ -29,6 +29,8 @@ import { pdfSupplementalValidator } from './validators/pdf-supplemental.validato
 import { smartTriageService } from './smart-triage/triage.service';
 import { veraPdfService } from './verapdf.service';
 import { mapVeraPdfFailures } from '../../data/verapdf-matterhorn.map';
+import { pdfa11yService } from './pdfa11y.service';
+import { mapPdfa11yFailures } from '../../data/pdfa11y-matterhorn.map';
 import { ScanLevel, SCAN_LEVEL_CONFIGS, ValidatorType } from '../../types/scan-level.types';
 
 /**
@@ -67,6 +69,19 @@ export interface PdfValidationResult {
     validator: string;
     error: string;
   }>;
+  /**
+   * Whether veraPDF/pdfa11y actually EXECUTED for this audit (not just
+   * "installed") — Codex finding on PR #577, confirmed real: pac-report.
+   * service.ts's TESTABLE_CONDITIONS previously had no way to distinguish
+   * "this validator ran and found nothing" from "this validator never ran
+   * at all", so a condition only that validator can test would be
+   * classified PASS purely because the binary was unavailable for this
+   * particular audit — a false PDF/UA-compliance result. Persisted into
+   * the final AuditReport's metadata so pac-report.service.ts can read it
+   * back later (it runs long after the audit, straight from the DB).
+   */
+  veraPdfRan: boolean;
+  pdfa11yRan: boolean;
 }
 
 /**
@@ -269,6 +284,8 @@ class PdfAuditService extends BaseAuditService<PdfParseResult, PdfValidationResu
       bookmarkIssues: [],
       matterhornResults: [],
       validatorErrors: [],
+      veraPdfRan: false,
+      pdfa11yRan: false,
     };
 
     // Determine which validators to run based on scan level
@@ -518,8 +535,9 @@ class PdfAuditService extends BaseAuditService<PdfParseResult, PdfValidationResu
     if (veraPdfService.isAvailable() && parsed.filePath) {
       try {
         logger.info(`[PdfAudit] Running veraPDF on: ${parsed.filePath}`);
-        const veraPdfFailures = await veraPdfService.validate(parsed.filePath);
-        logger.info(`[PdfAudit] veraPDF found ${veraPdfFailures.length} failures`);
+        const { ran: veraPdfRan, failures: veraPdfFailures } = await veraPdfService.validate(parsed.filePath);
+        result.veraPdfRan = veraPdfRan;
+        logger.info(`[PdfAudit] veraPDF ran=${veraPdfRan}, found ${veraPdfFailures.length} failures`);
 
         // Build set of Matterhorn conditions already covered by Ninja validators
         const alreadyFound = new Set(
@@ -550,6 +568,50 @@ class PdfAuditService extends BaseAuditService<PdfParseResult, PdfValidationResu
       }
     } else if (!veraPdfService.isAvailable()) {
       logger.info('[PdfAudit] veraPDF not available (VERAPDF_PATH unset or binary missing) — skipping');
+    }
+
+    // 10. pdfa11y — second free/open PDF/UA-1 validator (Matterhorn Coverage Step 6)
+    // Runs only when PDFA11Y_PATH is set and points to an existing binary,
+    // AND a real file path is available. Rebuilds `alreadyFound` fresh
+    // (rather than reusing veraPDF's own set above) so it also sees
+    // whatever veraPDF just added, not just Ninja-native issues — pdfa11y
+    // runs last in the pipeline specifically so it only ever fills gaps
+    // neither of the other two sources already covered.
+    if (pdfa11yService.isAvailable() && parsed.filePath) {
+      try {
+        logger.info(`[PdfAudit] Running pdfa11y on: ${parsed.filePath}`);
+        const { ran: pdfa11yRan, failures: pdfa11yFailures } = await pdfa11yService.validate(parsed.filePath);
+        result.pdfa11yRan = pdfa11yRan;
+        logger.info(`[PdfAudit] pdfa11y ran=${pdfa11yRan}, found ${pdfa11yFailures.length} failures`);
+
+        const alreadyFound = new Set(
+          result.issues
+            .map((i) => i.matterhornCheckpoint)
+            .filter((c): c is string => c !== undefined),
+        );
+
+        const mapped = mapPdfa11yFailures(pdfa11yFailures, alreadyFound);
+        logger.info(`[PdfAudit] pdfa11y mapped ${mapped.size} new conditions (${pdfa11yFailures.length - mapped.size} skipped — already found)`);
+
+        for (const [conditionId, failure] of mapped) {
+          result.issues.push({
+            id: `pdfa11y-${conditionId}`,
+            source: 'pdfa11y',
+            severity: 'serious',
+            code: `MATTERHORN-${conditionId}`,
+            message: failure.description,
+            matterhornCheckpoint: conditionId,
+            matterhornHow: 'M',
+            pageNumber: failure.pageNumber,
+            context: failure.context,
+            category: 'pdf-ua',
+          });
+        }
+      } catch (err) {
+        logger.error(`[PdfAudit] pdfa11y validation failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
+      }
+    } else if (!pdfa11yService.isAvailable()) {
+      logger.info('[PdfAudit] pdfa11y not available (PDFA11Y_PATH unset or binary missing) — skipping');
     }
 
     // Generate Matterhorn results from structure issues
@@ -725,6 +787,11 @@ class PdfAuditService extends BaseAuditService<PdfParseResult, PdfValidationResu
         matterhornFailed: adjustedMatterhornResults.filter(r => !r.passed).length,
         matterhornSummary,
         validatorErrors: validation.validatorErrors,
+        // Whether veraPDF/pdfa11y actually executed for THIS audit — see
+        // PdfValidationResult's own doc comment for why pac-report.service.ts
+        // needs this rather than inferring it from "found zero failures".
+        veraPdfRan: validation.veraPdfRan,
+        pdfa11yRan: validation.pdfa11yRan,
       },
       auditedAt: new Date(),
     };
@@ -1027,7 +1094,7 @@ class PdfAuditService extends BaseAuditService<PdfParseResult, PdfValidationResu
     onValidatorComplete?: (label: string, issuesFound: number, completed: number, total: number, startedAt: Date) => void
   ): Promise<AuditReport> {
     let parsed: PdfParseResult | null = null;
-    let veraPdfTempDir: string | null = null;
+    let externalValidatorTempDir: string | null = null;
 
     try {
       logger.info(`[PdfAudit] Starting audit from buffer: ${fileName} (job: ${jobId}, scan: ${scanLevel})`);
@@ -1040,14 +1107,14 @@ class PdfAuditService extends BaseAuditService<PdfParseResult, PdfValidationResu
       parsed = await this.parseBuffer(buffer, fileName, onProgress);
       logger.info(`[PdfAudit] Buffer parsed successfully`);
 
-      // Write temp file for veraPDF if the binary is available.
-      // veraPDF is a CLI tool that requires a real file path on disk.
-      if (veraPdfService.isAvailable()) {
-        veraPdfTempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'ninja-verapdf-'));
-        const tempFilePath = path.join(veraPdfTempDir, `${jobId}.pdf`);
+      // Write temp file for veraPDF/pdfa11y if either binary is available.
+      // Both are CLI tools that require a real file path on disk.
+      if (veraPdfService.isAvailable() || pdfa11yService.isAvailable()) {
+        externalValidatorTempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'ninja-pdf-validator-'));
+        const tempFilePath = path.join(externalValidatorTempDir, `${jobId}.pdf`);
         await fs.writeFile(tempFilePath, buffer);
         parsed.filePath = tempFilePath;
-        logger.info(`[PdfAudit] Wrote temp file for veraPDF: ${tempFilePath}`);
+        logger.info(`[PdfAudit] Wrote temp file for veraPDF/pdfa11y: ${tempFilePath}`);
       }
 
       // Validate
@@ -1074,10 +1141,10 @@ class PdfAuditService extends BaseAuditService<PdfParseResult, PdfValidationResu
           logger.warn('[PdfAudit] Failed to close parsedPdf handle:', closeError);
         }
       }
-      // Cleanup veraPDF temp directory
-      if (veraPdfTempDir) {
-        await fs.rm(veraPdfTempDir, { recursive: true, force: true }).catch((e) => {
-          logger.warn(`[PdfAudit] Failed to remove veraPDF temp dir: ${e instanceof Error ? e.message : String(e)}`);
+      // Cleanup veraPDF/pdfa11y temp directory
+      if (externalValidatorTempDir) {
+        await fs.rm(externalValidatorTempDir, { recursive: true, force: true }).catch((e) => {
+          logger.warn(`[PdfAudit] Failed to remove veraPDF/pdfa11y temp dir: ${e instanceof Error ? e.message : String(e)}`);
         });
       }
     }

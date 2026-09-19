@@ -1,0 +1,1158 @@
+[
+  {
+    "path": "tests/fixtures/pdf/cp31-missing-tounicode.pdf",
+    "verdict": "FAIL",
+    "summary": {
+      "total": 69,
+      "passed": 21,
+      "failed": 1,
+      "errors": 1,
+      "warnings": 0,
+      "infos": 0,
+      "conforming": false
+    },
+    "results": [
+      {
+        "id": "UA-01-002",
+        "title": "MarkInfo declares the document as marked",
+        "description": "PDF/UA-1 §6 requires the catalog to declare the document as tagged via /MarkInfo<</Marked true>>. A structure tree alone is not sufficient -- consumers use MarkInfo to recognise tagged content.",
+        "category": "01 Structure tree",
+        "spec": "PDF/UA-1+2",
+        "severity": "error",
+        "wcag": [
+          "1.3.1"
+        ],
+        "state": "PASS",
+        "findings": []
+      },
+      {
+        "id": "UA-01-005",
+        "title": "Document has a structure tree",
+        "description": "A PDF/UA-conforming document must ship a structure tree (Tagged PDF). Without it, assistive technology sees only positioned glyphs -- there is no semantic outline to announce.",
+        "category": "01 Structure tree",
+        "spec": "PDF/UA-1+2",
+        "severity": "error",
+        "wcag": [
+          "1.3.1"
+        ],
+        "state": "PASS",
+        "findings": []
+      },
+      {
+        "id": "UA-01-014",
+        "title": "Every structure element has a /P (parent) entry",
+        "description": "PDF/UA-1 §7.1 (ISO 32000-1 Table 355) and PDF/UA-2 §8.2.1 (ISO 32000-2:2020, 14.7.2, Table 323) require every structure element dictionary to contain the /P (parent) entry. The parent reference makes the structure tree navigable in both directions; an element without /P is detached from its ancestors and cannot be located from the leaf upward.",
+        "category": "01 Structure tree",
+        "spec": "PDF/UA-1+2",
+        "severity": "error",
+        "wcag": [
+          "1.3.1"
+        ],
+        "state": "PASS",
+        "findings": []
+      },
+      {
+        "id": "UA-01-016",
+        "title": "MarkInfo /Suspects is not true",
+        "description": "ISO 14289-1 §7.1 requires the catalog's /MarkInfo /Suspects entry to be false (ISO 32000-1 Table 321). A true value marks the tagging as unreliable -- the producer flags that the structure tree may not match the real content -- which contradicts the PDF/UA guarantee that assistive technology can trust the tags.",
+        "category": "01 Structure tree",
+        "spec": "PDF/UA-1+2",
+        "severity": "error",
+        "wcag": [
+          "1.3.1"
+        ],
+        "state": "PASS",
+        "findings": []
+      },
+      {
+        "id": "UA-02-003",
+        "title": "Content-stream MCIDs match the structure tree",
+        "description": "PDF/UA-1 §7.1 requires every marked-content sequence with a /MCID to be the target of a structure tree MCR, and every structure tree MCR to point at a real marked-content sequence. A mismatch in either direction breaks the link between the document's visual content and its semantic structure: screen readers either narrate a tag with no content underneath, or skip over content that exists but is not in the reading order.",
+        "category": "01 Structure tree",
+        "spec": "PDF/UA-1+2",
+        "severity": "error",
+        "wcag": [
+          "1.3.1"
+        ],
+        "state": "PASS",
+        "findings": []
+      },
+      {
+        "id": "UA-06-003",
+        "title": "XMP metadata declares PDF/UA identifier",
+        "description": "ISO 14289 requires the XMP metadata stream to declare pdfuaid:part = 1 (PDF/UA-1) or 2 (PDF/UA-2). Conforming consumers rely on this identifier to recognise the document as PDF/UA-compliant.",
+        "category": "06 Metadata",
+        "spec": "PDF/UA-1+2",
+        "severity": "error",
+        "state": "PASS",
+        "findings": []
+      },
+      {
+        "id": "UA-06-004",
+        "title": "XMP metadata contains dc:title",
+        "description": "PDF/UA-1 §7.1 requires the document title to be expressed via dc:title in the XMP metadata stream (Dublin Core namespace). PDF 2.0 / PDF/UA-2 keep this requirement and deprecate the DocumentInfo dictionary for everything except ModDate, so XMP dc:title is the normative single source. UA-06-005 still cross-checks DocumentInfo /Title when one happens to be present.",
+        "category": "06 Metadata",
+        "spec": "PDF/UA-1+2",
+        "severity": "error",
+        "wcag": [
+          "2.4.2"
+        ],
+        "state": "PASS",
+        "findings": []
+      },
+      {
+        "id": "UA-06-005",
+        "title": "DocumentInfo /Title and XMP dc:title agree",
+        "description": "When a document declares both DocumentInfo /Title and XMP dc:title they should express the same title. PDF/UA-1 §7.1 makes XMP dc:title the normative source (UA-06-004), and PDF 2.0 / PDF/UA-2 deprecate the DocumentInfo dictionary -- but legacy consumers still read DocumentInfo, so a mismatch leaves them announcing a different title than AT does. No spec mandates the match, so this is a Warning (promoted to Error under --strict). When only one of the two is present the check declines (N/A).",
+        "category": "06 Metadata",
+        "spec": "PDF/UA-1+2",
+        "severity": "warning",
+        "wcag": [
+          "2.4.2"
+        ],
+        "state": "N/A",
+        "findings": [
+          {
+            "severity": "notApplicable",
+            "message": "DocumentInfo /Title is absent -- title agreement cannot be evaluated"
+          }
+        ]
+      },
+      {
+        "id": "UA-07-001",
+        "title": "ViewerPreferences/DisplayDocTitle is true",
+        "description": "Conforming viewers must show the document title (not the file name) in their window title bar. This is controlled by /ViewerPreferences<</DisplayDocTitle true>> on the catalog; without it the document title declared in metadata is invisible to users of assistive technology.",
+        "category": "07 Viewer preferences",
+        "spec": "PDF/UA-1+2",
+        "severity": "error",
+        "wcag": [
+          "2.4.2"
+        ],
+        "state": "PASS",
+        "findings": []
+      },
+      {
+        "id": "UA-08-001",
+        "title": "Pages declare an accessible /Tabs value",
+        "description": "ISO 14289-1 §7.18.3 / Matterhorn 28-008, 28-009 require /Tabs = S on every page that has an annotation, so annotation tab order follows the structure tree. PDF/UA-2 §8.9.3.3 widens the allowed set to S, A (Annotation order) or W (Widget order). The legacy R (row) and C (column) values are disallowed everywhere: they bypass the structure tree and produce reading orders that AT cannot rely on. Pages with no annotation carry no /Tabs obligation. /Tabs is inheritable, so the effective value (own /Tabs, else the closest /Pages ancestor's /Tabs) is what counts.",
+        "category": "08 Tab order",
+        "spec": "PDF/UA-1+2",
+        "severity": "error",
+        "wcag": [
+          "2.4.3"
+        ],
+        "state": "N/A",
+        "findings": [
+          {
+            "severity": "notApplicable",
+            "message": "no page carries an annotation -- the /Tabs requirement does not apply"
+          }
+        ]
+      },
+      {
+        "id": "UA-09-001",
+        "title": "All fonts are embedded",
+        "description": "PDF/UA-1 §7.21.4 requires every font used in the document to be embedded so rendering does not depend on a system font that may differ or be missing. The standard-14 PostScript fonts (Helvetica, Times, Courier, Symbol, ZapfDingbats) are reported as a warning rather than an error when not embedded -- the strict spec requires their embedding, but viewers and validators including PAC accept them as implicitly available.",
+        "category": "09 Fonts",
+        "spec": "PDF/UA-1+2",
+        "severity": "error",
+        "state": "PASS",
+        "findings": []
+      },
+      {
+        "id": "UA-10-001",
+        "title": "All fonts have a /ToUnicode map",
+        "description": "PDF/UA-1 §7.21.3 requires every font to expose a Unicode mapping so text extraction, copy-paste and screen-reader output can reconstruct the actual characters. A /ToUnicode CMap is the most general solution; simple fonts using the predefined WinAnsiEncoding / MacRomanEncoding / MacExpertEncoding without a /Differences override also qualify, because the encoding table implies the mapping.",
+        "category": "09 Fonts",
+        "spec": "PDF/UA-1+2",
+        "severity": "error",
+        "wcag": [
+          "1.3.1"
+        ],
+        "state": "FAIL",
+        "findings": [
+          {
+            "severity": "error",
+            "message": "font 'JAPTCA+AboriginalSerif' (Type0) has no Unicode mapping (no /ToUnicode CMap and no predefined /Encoding)",
+            "hint": "Embed a /ToUnicode CMap, or for simple fonts set /Encoding to WinAnsiEncoding (or MacRomanEncoding / MacExpertEncoding) without a /Differences override."
+          }
+        ]
+      },
+      {
+        "id": "UA-10-002",
+        "title": "/ToUnicode covers every used code",
+        "description": "PDF/UA-1 §7.21.3 requires every rendered code to have a working Unicode mapping. A /ToUnicode CMap that is empty (only a codespace range, no bfchar/bfrange) -- or that maps some codes but not the ones actually used on the page -- silently fails text extraction. This check matches each Tj/TJ code against the font's /ToUnicode coverage.",
+        "category": "09 Fonts",
+        "spec": "PDF/UA-1+2",
+        "severity": "error",
+        "wcag": [
+          "1.3.1"
+        ],
+        "state": "N/A",
+        "findings": [
+          {
+            "severity": "notApplicable",
+            "message": "no fonts with a /ToUnicode CMap to inspect"
+          }
+        ]
+      },
+      {
+        "id": "UA-10-003",
+        "title": "/ToUnicode values are valid Unicode",
+        "description": "ISO 14289-1 §7.21.7 / ISO 14289-2 §8.4.5.8 require every Unicode value a /ToUnicode CMap maps to be greater than U+0000 and not equal to U+FEFF or U+FFFE. U+0000 carries no character; U+FEFF (BOM/ZWNBSP) and U+FFFE (a noncharacter) are not real content -- any of them breaks the text extraction the CMap exists to enable.",
+        "category": "09 Fonts",
+        "spec": "PDF/UA-1+2",
+        "severity": "error",
+        "wcag": [
+          "1.3.1"
+        ],
+        "state": "N/A",
+        "findings": [
+          {
+            "severity": "notApplicable",
+            "message": "no font carries a /ToUnicode CMap -- nothing to inspect"
+          }
+        ]
+      },
+      {
+        "id": "UA-10-004",
+        "title": "No text-showing operator references the .notdef glyph",
+        "description": "ISO 14289-1 §7.21.8 / ISO 14289-2 §8.4.5.9 forbid referencing the .notdef glyph from any text-showing operator. The .notdef glyph carries no character, so text drawn through it cannot be extracted or voiced. This check flags a composite (Type0) Identity-encoded font that shows code 0 -- CID 0, glyph index 0, the .notdef glyph.",
+        "category": "09 Fonts",
+        "spec": "PDF/UA-1+2",
+        "severity": "error",
+        "wcag": [
+          "1.3.1"
+        ],
+        "state": "PASS",
+        "findings": []
+      },
+      {
+        "id": "UA-11-001",
+        "title": "Document declares a primary language",
+        "description": "PDF/UA-1 §7.2 lets the document's natural language be declared as /Lang on the catalog OR per structure element, so a missing Catalog /Lang is a Warning (per-element coverage may compensate, see UA-11-002). PDF/UA-2 §8.4.4 makes a non-empty Catalog /Lang mandatory, so the same omission is a hard Error under PDF/UA-2.",
+        "category": "11 Natural language",
+        "spec": "PDF/UA-1+2",
+        "severity": "warning",
+        "wcag": [
+          "3.1.1"
+        ],
+        "state": "PASS",
+        "findings": []
+      },
+      {
+        "id": "UA-11-002",
+        "title": "Text-bearing structure elements declare /Lang",
+        "description": "PDF/UA-1 §7.2 allows the document's natural language to be declared either at the Catalog or per structure element. The Catalog form is covered by UA-11-001; this check verifies the per-element coverage when the Catalog form is absent. Every text-bearing element (P, H/H1-H6, Span, Lbl, LBody, TD, TH, Caption, Note, BibEntry, Quote, Reference, TOCI) must carry /Lang or inherit it from an ancestor.",
+        "category": "11 Natural language",
+        "spec": "PDF/UA-1",
+        "severity": "error",
+        "wcag": [
+          "3.1.1",
+          "3.1.2"
+        ],
+        "state": "N/A",
+        "findings": [
+          {
+            "severity": "notApplicable",
+            "message": "Catalog /Lang is set -- every element inherits it, per-element coverage is not required"
+          }
+        ]
+      },
+      {
+        "id": "UA-11-003",
+        "title": "Declared /Lang values are well-formed language tags",
+        "description": "PDF/UA-1 §7.2 / PDF/UA-2 §8.4.4 require every /Lang value (on the Catalog or a structure element) to be a Language-Tag as defined in RFC 3066: 1-8 letters optionally followed by \"-\"-separated subtags of 1-8 letters or digits. A malformed tag (e.g. a 9-letter primary subtag or a leading digit) cannot be interpreted by assistive technology.",
+        "category": "11 Natural language",
+        "spec": "PDF/UA-1+2",
+        "severity": "error",
+        "wcag": [
+          "3.1.1",
+          "3.1.2"
+        ],
+        "state": "PASS",
+        "findings": []
+      },
+      {
+        "id": "UA-11-004",
+        "title": "Alt, ActualText and E have a determinable language",
+        "description": "ISO 14289-1 §7.2 requires the natural language of an /Alt, /ActualText or /E string to be determinable (ISO 32000-1 §14.9.2): via the element's /Lang, an ancestor's /Lang, or the catalog /Lang. Alternate text with no resolvable language cannot be voiced correctly by assistive technology.",
+        "category": "11 Natural language",
+        "spec": "PDF/UA-1+2",
+        "severity": "error",
+        "wcag": [
+          "3.1.2"
+        ],
+        "state": "N/A",
+        "findings": [
+          {
+            "severity": "notApplicable",
+            "message": "no element carries /Alt, /ActualText or /E -- nothing to inspect"
+          }
+        ]
+      },
+      {
+        "id": "UA-11-005",
+        "title": "Annotation /Contents has a determinable language",
+        "description": "ISO 14289-1 §7.2 requires the natural language of an annotation's /Contents string to be determinable (ISO 32000-1 §14.9.2): via the annotation's /Lang, the /Lang of the structure element that owns it, or the catalog /Lang. Annotation text with no resolvable language cannot be voiced correctly by assistive technology.",
+        "category": "11 Natural language",
+        "spec": "PDF/UA-1+2",
+        "severity": "error",
+        "wcag": [
+          "3.1.2"
+        ],
+        "state": "N/A",
+        "findings": [
+          {
+            "severity": "notApplicable",
+            "message": "no annotation carries /Contents -- nothing to inspect"
+          }
+        ]
+      },
+      {
+        "id": "UA-11-006",
+        "title": "Outline entries have a determinable language",
+        "description": "ISO 14289-1 §7.2 requires the natural language of outline (bookmark) entries to be determinable. Outline items carry no /Lang of their own, so their language must come from the document catalog's /Lang. A document with bookmarks but no catalog /Lang leaves their language undeterminable, and assistive technology cannot voice them correctly.",
+        "category": "11 Natural language",
+        "spec": "PDF/UA-1+2",
+        "severity": "error",
+        "wcag": [
+          "3.1.2"
+        ],
+        "state": "PASS",
+        "findings": []
+      },
+      {
+        "id": "UA-11-007",
+        "title": "Document metadata has a determinable language",
+        "description": "ISO 14289-1 §7.2 requires the natural language of document metadata to be determinable. XMP language alternatives (e.g. dc:title) carry an xml:lang=\"x-default\" fallback, which is not itself a language, so the document must declare a catalog /Lang. Metadata with an x-default alternative but no catalog /Lang leaves its language undeterminable.",
+        "category": "11 Natural language",
+        "spec": "PDF/UA-1+2",
+        "severity": "error",
+        "wcag": [
+          "3.1.2"
+        ],
+        "state": "N/A",
+        "findings": [
+          {
+            "severity": "notApplicable",
+            "message": "document metadata has no x-default language alternative -- nothing to inspect"
+          }
+        ]
+      },
+      {
+        "id": "UA-11-008",
+        "title": "Span alternate text has a determinable language",
+        "description": "ISO 14289-1 §7.2 requires the natural language of a Span marked-content sequence's /ActualText, /Alt or /E text to be determinable. The language comes from the Span's own /Lang, a /Lang on an enclosing marked-content sequence, the /Lang inherited from the enclosing structure element, or the catalog /Lang. A Span that carries alternate text but supplies none of these leaves that text in an undetermined language, so assistive technology cannot voice it correctly.",
+        "category": "11 Natural language",
+        "spec": "PDF/UA-1+2",
+        "severity": "error",
+        "wcag": [
+          "3.1.2"
+        ],
+        "state": "PASS",
+        "findings": []
+      },
+      {
+        "id": "UA-11-009",
+        "title": "Form field /TU has a determinable language",
+        "description": "ISO 14289-1 §7.2 requires the natural language of a form field's /TU (alternate field name) to be determinable. The language comes from the /Lang on the field's own structure element or the catalog /Lang. A field whose /TU has neither leaves its description in an undetermined language, so assistive technology cannot voice it correctly.",
+        "category": "11 Natural language",
+        "spec": "PDF/UA-1+2",
+        "severity": "error",
+        "wcag": [
+          "3.1.2"
+        ],
+        "state": "N/A",
+        "findings": [
+          {
+            "severity": "notApplicable",
+            "message": "no form field carries a /TU -- nothing to inspect"
+          }
+        ]
+      },
+      {
+        "id": "UA-12-003",
+        "title": "Embedded file specifications have non-empty /F and /UF",
+        "description": "ISO 14289-1 §7.11 requires the file specification dictionary of an embedded file to contain non-empty /F and /UF keys (the legacy and the Unicode file name). A missing or empty name leaves the attachment without a portable, AT-presentable identifier.",
+        "category": "12 Embedded files",
+        "spec": "PDF/UA-1+2",
+        "severity": "error",
+        "wcag": [
+          "1.3.1"
+        ],
+        "state": "N/A",
+        "findings": [
+          {
+            "severity": "notApplicable",
+            "message": "document has no embedded files -- nothing to inspect"
+          }
+        ]
+      },
+      {
+        "id": "UA-13-004",
+        "title": "Figure has Alt or ActualText",
+        "description": "Every Figure structure element must provide an accessible text equivalent so screen readers have something to announce. PDF/UA-1 §7.3 accepts /Alt (a description of the image) or /ActualText (a textual replacement, used for decorative or rebus-style figures).",
+        "category": "13 Graphics",
+        "spec": "PDF/UA-1+2",
+        "severity": "error",
+        "wcag": [
+          "1.1.1"
+        ],
+        "state": "N/A",
+        "findings": [
+          {
+            "severity": "notApplicable",
+            "message": "document contains no Figure structure elements -- nothing to inspect"
+          }
+        ]
+      },
+      {
+        "id": "UA-14-001",
+        "title": "Real content is inside a marked-content sequence or Artifact",
+        "description": "PDF/UA-1 §7.1 requires every content-painting operator to either live inside a marked-content sequence (BDC.../EMC) wired into the structure tree, or to be explicitly tagged as an /Artifact so assistive technology knows to skip it. Untagged real content is invisible to the structure tree: a screen reader cannot present it and cannot place it in the reading order.",
+        "category": "01 Structure tree",
+        "spec": "PDF/UA-1+2",
+        "severity": "error",
+        "wcag": [
+          "1.3.1"
+        ],
+        "state": "PASS",
+        "findings": []
+      },
+      {
+        "id": "UA-14-003",
+        "title": "Headings start at H1 and are properly nested",
+        "description": "PDF/UA-1 §7.4.2 requires the first heading to be H1 and subsequent levels to descend by at most one. Starting with H3, or jumping H1 -> H3, leaves the document outline broken in ways assistive technology cannot reconstruct.",
+        "category": "14 Headings",
+        "spec": "PDF/UA-1",
+        "severity": "error",
+        "wcag": [
+          "1.3.1",
+          "2.4.6"
+        ],
+        "state": "PASS",
+        "findings": []
+      },
+      {
+        "id": "UA-14-006",
+        "title": "Heading style is consistent (H or H<n>, not both)",
+        "description": "PDF/UA-1 §7.4.4 requires a single heading style per document (strongly or weakly structured, not both). /H is the unnumbered form whose level is implied by structure nesting; /H1.../H6 is the explicit-level form. Mixing them within one document confuses assistive technology -- the unlevelled /H cannot be placed on the H<n> outline. PDF/UA-2 forbids /H outright, so this applies to PDF/UA-1 only.",
+        "category": "14 Headings",
+        "spec": "PDF/UA-1",
+        "severity": "error",
+        "wcag": [
+          "1.3.1",
+          "2.4.6"
+        ],
+        "state": "PASS",
+        "findings": []
+      },
+      {
+        "id": "UA-14-008",
+        "title": "A node has at most one child H (unnumbered heading) tag",
+        "description": "ISO 14289-1 §7.4.4 requires each node in the tag tree to contain at most one child H (unnumbered heading) tag. Two sibling H tags under the same node present assistive technology with competing headings that have no defined order or level. Use the numbered heading types H1..H6 when a section needs more than one heading.",
+        "category": "14 Headings",
+        "spec": "PDF/UA-1",
+        "severity": "error",
+        "wcag": [
+          "1.3.1"
+        ],
+        "state": "PASS",
+        "findings": []
+      },
+      {
+        "id": "UA-14-010",
+        "title": "Artifact and tagged content are not nested inside one another",
+        "description": "ISO 14289-1 §7.1 forbids nesting an Artifact and structure-tagged content inside one another, in either direction. An Artifact inside tagged content, or tagged content inside an Artifact, makes it ambiguous whether the enclosed content is part of the reading order: assistive technology cannot tell whether to present or skip it. Keep Artifact marked-content sequences and structure-tagged sequences as siblings, never nested.",
+        "category": "01 Structure tree",
+        "spec": "PDF/UA-1+2",
+        "severity": "error",
+        "wcag": [
+          "1.3.1"
+        ],
+        "state": "PASS",
+        "findings": []
+      },
+      {
+        "id": "UA-15-003",
+        "title": "Table contains rows (TR)",
+        "description": "Tables must use the canonical Table -> (THead|TBody|TFoot)? -> TR -> (TH|TD) tagging pattern. This check fires when a Table structure element has no TR among its children -- usually a sign that the author tagged visual layout (paragraphs in a grid) rather than semantic table structure.",
+        "category": "15 Tables",
+        "spec": "PDF/UA-1+2",
+        "severity": "error",
+        "wcag": [
+          "1.3.1"
+        ],
+        "state": "N/A",
+        "findings": [
+          {
+            "severity": "notApplicable",
+            "message": "document contains no Table structure elements -- nothing to inspect"
+          }
+        ]
+      },
+      {
+        "id": "UA-15-004",
+        "title": "Table rows contain only TH or TD",
+        "description": "Per PDF/UA-1 §7.5 the only valid children of a TR are TH (header cell) and TD (data cell). Other tags between TR and the cell content break the table semantics: AT cannot map content to row/column positions and may drop or misattribute cells.",
+        "category": "15 Tables",
+        "spec": "PDF/UA-1+2",
+        "severity": "error",
+        "wcag": [
+          "1.3.1"
+        ],
+        "state": "N/A",
+        "findings": [
+          {
+            "severity": "notApplicable",
+            "message": "document contains no TR (table row) structure elements -- nothing to inspect"
+          }
+        ]
+      },
+      {
+        "id": "UA-15-005",
+        "title": "Table header cells declare /Scope",
+        "description": "Per PDF/UA-1 §7.5 every TH structure element must carry a /Scope attribute (Row, Column or Both) so assistive technology can associate data cells with the correct header. Geometric guessing fails on layouts with column groups, row groups, or multi-level headers.",
+        "category": "15 Tables",
+        "spec": "PDF/UA-1",
+        "severity": "error",
+        "wcag": [
+          "1.3.1"
+        ],
+        "state": "N/A",
+        "findings": [
+          {
+            "severity": "notApplicable",
+            "message": "document contains no TH (table header) structure elements -- nothing to inspect"
+          }
+        ]
+      },
+      {
+        "id": "UA-15-006",
+        "title": "Tables are regular (no overlaps, consistent rows and columns)",
+        "description": "PDF/UA-1 §7.2 and PDF/UA-2 §8.2.5.26 require tables to be regular: cells must not overlap, every row must span the same number of columns and every column the same number of rows once /RowSpan and /ColSpan are applied. Irregular tables cannot be mapped to a reliable row/column model by assistive technology.",
+        "category": "15 Tables",
+        "spec": "PDF/UA-1+2",
+        "severity": "error",
+        "wcag": [
+          "1.3.1"
+        ],
+        "state": "N/A",
+        "findings": [
+          {
+            "severity": "notApplicable",
+            "message": "document contains no tables -- nothing to inspect"
+          }
+        ]
+      },
+      {
+        "id": "UA-15-008",
+        "title": "Table sub-elements are correctly nested",
+        "description": "The table structure types must be nested per ISO 14289-1 §7.2 (ISO 32000-1 §14.8.4.3.4): TR only inside Table/THead/TBody/TFoot; THead/TBody/TFoot only inside Table; TH/TD only inside TR; Table may contain only TR/THead/TBody/TFoot/Caption; and THead/TBody/TFoot may contain only TR. A Table may carry at most one Caption, placed as its first or last child. Misplaced table elements break the row/column model assistive technology reconstructs.",
+        "category": "15 Tables",
+        "spec": "PDF/UA-1+2",
+        "severity": "error",
+        "wcag": [
+          "1.3.1"
+        ],
+        "state": "N/A",
+        "findings": [
+          {
+            "severity": "notApplicable",
+            "message": "document contains no table structure elements -- nothing to inspect"
+          }
+        ]
+      },
+      {
+        "id": "UA-15-009",
+        "title": "Table has at most one THead/TFoot, with a TBody when grouped",
+        "description": "A Table may contain at most one THead and at most one TFoot row group (ISO 14289-1 §7.2, ISO 32000-1 §14.8.4.3.4). Whenever a THead or a TFoot is present, the Table must also carry at least one TBody, so the header/footer rows are anchored to a body. Simple tables that place TR directly under Table are unaffected.",
+        "category": "15 Tables",
+        "spec": "PDF/UA-1+2",
+        "severity": "error",
+        "wcag": [
+          "1.3.1"
+        ],
+        "state": "N/A",
+        "findings": [
+          {
+            "severity": "notApplicable",
+            "message": "document contains no Table structure elements -- nothing to inspect"
+          }
+        ]
+      },
+      {
+        "id": "UA-16-001",
+        "title": "List contains list items (LI)",
+        "description": "Lists must use the canonical L -> LI -> (Lbl|LBody) tagging pattern. A list whose children are paragraphs (rather than LI) is unannouncable as a list to assistive technology -- the user hears flat content instead of an enumeration.",
+        "category": "16 Lists",
+        "spec": "PDF/UA-1+2",
+        "severity": "error",
+        "wcag": [
+          "1.3.1"
+        ],
+        "state": "N/A",
+        "findings": [
+          {
+            "severity": "notApplicable",
+            "message": "document contains no L (list) structure elements -- nothing to inspect"
+          }
+        ]
+      },
+      {
+        "id": "UA-16-003",
+        "title": "Lists declare /ListNumbering",
+        "description": "ISO 14289-2 §8.2.5.25 (and ISO 32000-1 §14.8.5.4) governs /ListNumbering on L structure elements. The default is None. Ordered lists (Decimal, LowerRoman, ...) must declare the attribute so AT announces the ordering; unordered lists with neutral bullets may legitimately omit it. ISO 14289-2 strengthens this when the list carries Lbl children: \"If Lbl structure elements are present, the ListNumbering attribute shall be present on the respective L structure element\" -- in that case the missing attribute is a hard Error; otherwise it remains a Warning.",
+        "category": "16 Lists",
+        "spec": "PDF/UA-1+2",
+        "severity": "error",
+        "wcag": [
+          "1.3.1"
+        ],
+        "state": "N/A",
+        "findings": [
+          {
+            "severity": "notApplicable",
+            "message": "document contains no L (list) structure elements -- nothing to inspect"
+          }
+        ]
+      },
+      {
+        "id": "UA-16-004",
+        "title": "List sub-elements are correctly nested",
+        "description": "The list structure types must be nested per ISO 14289-1 §7.2 (ISO 32000-1 §14.8.4.3.3): LI only inside L; LBody only inside LI; L may contain only L/LI/Caption; and LI may contain only Lbl/LBody. A Caption on an L, when present, must be its first child. Misplaced list elements stop assistive technology from announcing the enumeration structure.",
+        "category": "16 Lists",
+        "spec": "PDF/UA-1+2",
+        "severity": "error",
+        "wcag": [
+          "1.3.1"
+        ],
+        "state": "N/A",
+        "findings": [
+          {
+            "severity": "notApplicable",
+            "message": "document contains no list structure elements -- nothing to inspect"
+          }
+        ]
+      },
+      {
+        "id": "UA-17-001",
+        "title": "Formula has accessible math representation",
+        "description": "Every Formula structure element must provide an accessible math representation. PDF/UA-1 §7.5 requires /Alt or /ActualText. PDF/UA-2 §8.2.5.29.1 additionally accepts MathML -- either as a direct 'math' child of Formula or as an Associated File with AFRelationship /Supplement and Subtype application/mathml+xml (PDF Association BPG \"Math in PDF\"). Without one of these, assistive technology has no usable representation; the rendered glyphs rely on specialised math fonts whose Unicode mapping is unreliable.",
+        "category": "13 Graphics",
+        "spec": "PDF/UA-1+2",
+        "severity": "error",
+        "wcag": [
+          "1.1.1"
+        ],
+        "state": "N/A",
+        "findings": [
+          {
+            "severity": "notApplicable",
+            "message": "document contains no Formula structure elements -- nothing to inspect"
+          }
+        ]
+      },
+      {
+        "id": "UA-19-001",
+        "title": "Notes carry /ID and references resolve",
+        "description": "PDF/UA-1 §7.9 requires Note structure elements to carry an /ID so other elements (typically Reference) can target them, and requires every /Ref to resolve to an existing tagged element. Without /ID a Note cannot be reached as a labelled anchor; a /Ref targeting an untagged or /ID-less element produces a broken cross-reference.",
+        "category": "19 Notes and references",
+        "spec": "PDF/UA-1",
+        "severity": "error",
+        "wcag": [
+          "1.3.1",
+          "2.4.4"
+        ],
+        "state": "N/A",
+        "findings": [
+          {
+            "severity": "notApplicable",
+            "message": "document contains no Note or /Ref-bearing elements -- nothing to inspect"
+          }
+        ]
+      },
+      {
+        "id": "UA-19-003",
+        "title": "Note structure elements have unique /ID values",
+        "description": "PDF/UA-1 §7.9 requires each Note structure element to have a unique /ID. The /ID is the anchor a Reference element targets; reusing the same value across notes makes the cross-reference ambiguous, so assistive technology cannot resolve which note a jump refers to.",
+        "category": "19 Notes and references",
+        "spec": "PDF/UA-1",
+        "severity": "error",
+        "wcag": [
+          "1.3.1",
+          "2.4.4"
+        ],
+        "state": "N/A",
+        "findings": [
+          {
+            "severity": "notApplicable",
+            "message": "document contains no Note structure elements -- nothing to inspect"
+          }
+        ]
+      },
+      {
+        "id": "UA-20-001",
+        "title": "Optional Content Groups declare /Name",
+        "description": "ISO 32000-1 Table 98 / ISO 32000-2 Table 96 require every Optional Content Group to expose a /Name string so the user can identify the layer in the viewer's layer panel. Without /Name AT presents unnamed layers without a meaningful label. (PDF/UA-1 §7.10 / PDF/UA-2 §8.7 additionally require /Name on the optional content configuration dictionaries; that is not yet checked.)",
+        "category": "20 Optional content",
+        "spec": "PDF/UA-1+2",
+        "severity": "error",
+        "wcag": [
+          "1.3.1"
+        ],
+        "state": "N/A",
+        "findings": [
+          {
+            "severity": "notApplicable",
+            "message": "document has no Optional Content Groups -- nothing to inspect"
+          }
+        ]
+      },
+      {
+        "id": "UA-20-002",
+        "title": "Optional Content default configuration does not declare /AS",
+        "description": "ISO 14289-1 §7.10 and ISO 14289-2 §8.7 forbid the /AS key in any Optional Content configuration dictionary. /AS declares automatic state-change rules that adjust layer visibility based on usage information (Print, Export, View). PDF/UA disallows it so optional-content visibility cannot silently change behind assistive technology's back during reading.",
+        "category": "20 Optional content",
+        "spec": "PDF/UA-1+2",
+        "severity": "error",
+        "wcag": [
+          "1.3.1"
+        ],
+        "state": "N/A",
+        "findings": [
+          {
+            "severity": "notApplicable",
+            "message": "document has no optional-content configurations to inspect"
+          }
+        ]
+      },
+      {
+        "id": "UA-20-003",
+        "title": "Optional Content configurations declare /Name",
+        "description": "ISO 14289-1 §7.10 / ISO 14289-2 §8.7 require every optional-content configuration dictionary (the /OCProperties /D default configuration and each member of /Configs) to carry a non-empty /Name, so the layer configuration can be identified in the viewer. This is separate from the per-OCG /Name requirement (UA-20-001).",
+        "category": "20 Optional content",
+        "spec": "PDF/UA-1+2",
+        "severity": "error",
+        "wcag": [
+          "1.3.1"
+        ],
+        "state": "N/A",
+        "findings": [
+          {
+            "severity": "notApplicable",
+            "message": "document has no optional-content configurations to inspect"
+          }
+        ]
+      },
+      {
+        "id": "UA-26-001",
+        "title": "Encryption permits accessibility extraction",
+        "description": "PDF/UA-1 §7.16 requires the document's security handler to grant assistive-technology extraction. In the standard PDF security handler this is /P bit 10 (mask 512); a permission set that clears that bit makes the PDF inaccessible by construction, even if every other PDF/UA rule is satisfied.",
+        "category": "26 Security",
+        "spec": "PDF/UA-1",
+        "severity": "error",
+        "wcag": [
+          "1.3.1"
+        ],
+        "state": "N/A",
+        "findings": [
+          {
+            "severity": "notApplicable",
+            "message": "document is not encrypted -- AT extraction is unrestricted"
+          }
+        ]
+      },
+      {
+        "id": "UA-27-001",
+        "title": "Multi-page documents declare /Outlines",
+        "description": "PDF/UA-1 §7.17 calls for navigation aids on documents that benefit from them. Outlines (bookmarks) are the canonical aid: they give AT users jump targets without linear reading. pdfa11y flags documents over 21 pages that lack an /Outlines entry on the catalog or whose outline tree is empty.",
+        "category": "27 Navigation",
+        "spec": "PDF/UA-1+2",
+        "severity": "warning",
+        "wcag": [
+          "2.4.5"
+        ],
+        "state": "N/A",
+        "findings": [
+          {
+            "severity": "notApplicable",
+            "message": "document has 1 page(s); the outline check applies above 21"
+          }
+        ]
+      },
+      {
+        "id": "UA-27-002",
+        "title": "Table-of-contents sub-elements are correctly nested",
+        "description": "The table-of-contents structure types must be nested per ISO 14289-1 §7.2 (ISO 32000-1 §14.8.4.3.5): TOCI only inside TOC; TOC may contain only TOC/TOCI/Caption; and a Caption on a TOC, when present, must be its first child. Misplaced TOC elements break the navigable outline assistive technology reconstructs.",
+        "category": "27 Navigation",
+        "spec": "PDF/UA-1+2",
+        "severity": "error",
+        "wcag": [
+          "1.3.1"
+        ],
+        "state": "N/A",
+        "findings": [
+          {
+            "severity": "notApplicable",
+            "message": "document contains no TOC structure elements -- nothing to inspect"
+          }
+        ]
+      },
+      {
+        "id": "UA-28-001",
+        "title": "Link annotations have /Contents",
+        "description": "Every interactive Link annotation should expose a /Contents value describing where the link goes; without it assistive technology either reads the raw URI or skips the link entirely. PDF/UA-1 §7.18 requires it (reported as an error). PDF/UA-2 relaxes this to a recommendation, so the absence is reported as an advisory there.",
+        "category": "28 Annotations and forms",
+        "spec": "PDF/UA-1+2",
+        "severity": "error",
+        "wcag": [
+          "2.4.4"
+        ],
+        "state": "N/A",
+        "findings": [
+          {
+            "severity": "notApplicable",
+            "message": "document contains no Link annotations -- nothing to inspect"
+          }
+        ]
+      },
+      {
+        "id": "UA-28-003",
+        "title": "Form fields have /TU tooltip",
+        "description": "PDF/UA-1 §7.18.1 requires every form field to expose a /TU tooltip so AT can announce its purpose. The visible label rendered on the page is not enough: AT cannot reliably associate label glyphs with field widgets by geometry. /TU may live on the widget itself or be inherited from a Parent field dictionary. (PDF/UA-2 §8.10.2 allows a Lbl structure element instead, so this check applies to PDF/UA-1 only.)",
+        "category": "28 Annotations and forms",
+        "spec": "PDF/UA-1",
+        "severity": "error",
+        "wcag": [
+          "1.3.1",
+          "4.1.2"
+        ],
+        "state": "N/A",
+        "findings": [
+          {
+            "severity": "notApplicable",
+            "message": "document contains no Widget (form field) annotations -- nothing to inspect"
+          }
+        ]
+      },
+      {
+        "id": "UA-28-004",
+        "title": "Annotations are linked from the structure tree",
+        "description": "PDF/UA-1 §7.18 requires every real-content annotation to be reachable from the structure tree via its /StructParent. Without that link the annotation has no place in the reading order, so AT either announces it out of context or misses it entirely. Decorative annotations (PrinterMark, TrapNet, Watermark, Popup) are exempt.",
+        "category": "28 Annotations and forms",
+        "spec": "PDF/UA-1+2",
+        "severity": "error",
+        "wcag": [
+          "1.3.1"
+        ],
+        "state": "N/A",
+        "findings": [
+          {
+            "severity": "notApplicable",
+            "message": "document contains no structure-tree-eligible annotations -- nothing to inspect"
+          }
+        ]
+      },
+      {
+        "id": "UA-28-006",
+        "title": "Artifact-only annotation subtypes are not in the structure tree",
+        "description": "PrinterMark (UA-1 §7.18.8 / UA-2 §8.9.2.4.14) and TrapNet (UA-1 §7.18.2 / UA-2 §8.9.2.4.15) annotations are page furniture: they are not real content and must not be reachable from the structure tree. A /StructParent on one of these subtypes pulls printer marks or trapping data into the reading order, where screen readers narrate them out of context. (Watermark is excluded: PDF/UA-2 allows it as real content.)",
+        "category": "28 Annotations and forms",
+        "spec": "PDF/UA-1+2",
+        "severity": "error",
+        "wcag": [
+          "1.3.1"
+        ],
+        "state": "N/A",
+        "findings": [
+          {
+            "severity": "notApplicable",
+            "message": "document contains no PrinterMark / TrapNet annotations -- nothing to inspect"
+          }
+        ]
+      },
+      {
+        "id": "UA-28-007",
+        "title": "AcroForm fields are referenced from the structure tree",
+        "description": "PDF/UA-1 §7.18 requires every interactive form field to be reachable from the structure tree via its widget's /StructParent. This check walks /AcroForm/Fields and verifies the cross-reference -- the symmetric UA-28-004 check walks per-page /Annots, so the two together cover both directions of the field ↔ structure-tree relationship.",
+        "category": "28 Annotations and forms",
+        "spec": "PDF/UA-1+2",
+        "severity": "error",
+        "wcag": [
+          "1.3.1"
+        ],
+        "state": "N/A",
+        "findings": [
+          {
+            "severity": "notApplicable",
+            "message": "document has no /AcroForm/Fields -- nothing to inspect"
+          }
+        ]
+      },
+      {
+        "id": "UA-28-012",
+        "title": "No visible TrapNet annotations",
+        "description": "ISO 14289-1 §7.18.2 forbids TrapNet (trap network) annotations. A TrapNet describes colour-trapping for print production and carries no meaning for assistive technology; when it is presented on the page it becomes a phantom, undescribable annotation. A TrapNet that is hidden (/F flag) or lies outside the crop box is tolerated because it is not shown.",
+        "category": "28 Annotations and forms",
+        "spec": "PDF/UA-1",
+        "severity": "error",
+        "wcag": [
+          "1.3.1"
+        ],
+        "state": "N/A",
+        "findings": [
+          {
+            "severity": "notApplicable",
+            "message": "document contains no TrapNet annotations -- nothing to inspect"
+          }
+        ]
+      },
+      {
+        "id": "UA-28-013",
+        "title": "Link annotations are enclosed in a Link structure element",
+        "description": "ISO 14289-1 §7.18.5 requires a link annotation to be tagged with a Link structure element (ISO 32000-1 §14.8.4.4.2): the Link element owns the annotation via an OBJR and encloses the associated content. A link whose owning structure element is not a Link (or that is not in the structure tree at all) is not announced as a link. Hidden or off-page links are exempt because they are not presented.",
+        "category": "28 Annotations and forms",
+        "spec": "PDF/UA-1",
+        "severity": "error",
+        "wcag": [
+          "1.3.1"
+        ],
+        "state": "N/A",
+        "findings": [
+          {
+            "severity": "notApplicable",
+            "message": "document has no visible Link annotations -- nothing to inspect"
+          }
+        ]
+      },
+      {
+        "id": "UA-28-014",
+        "title": "Widget annotations are nested within a Form structure element",
+        "description": "ISO 14289-1 §7.18.4 requires a Widget annotation (an interactive form field) to be nested within a Form structure element (ISO 32000-1 §14.8.4.4.2). A widget whose owning structure element is not a Form -- or that is not in the structure tree at all -- is not exposed as a form control. Hidden or off-page widgets are exempt because they are not presented.",
+        "category": "28 Annotations and forms",
+        "spec": "PDF/UA-1",
+        "severity": "error",
+        "wcag": [
+          "1.3.1"
+        ],
+        "state": "N/A",
+        "findings": [
+          {
+            "severity": "notApplicable",
+            "message": "document has no visible Widget annotations -- nothing to inspect"
+          }
+        ]
+      },
+      {
+        "id": "UA-28-022",
+        "title": "Media clip data dictionaries carry a /CT (content type) entry",
+        "description": "ISO 14289-1 §7.18.6.2 requires the /CT (content type) entry in every media clip data dictionary. The content type lets a conforming reader identify the media format and select an accessible player; a clip without /CT cannot be handled reliably.",
+        "category": "28 Annotations and forms",
+        "spec": "PDF/UA-1",
+        "severity": "error",
+        "wcag": [
+          "1.1.1"
+        ],
+        "state": "N/A",
+        "findings": [
+          {
+            "severity": "notApplicable",
+            "message": "document has no media clips -- nothing to inspect"
+          }
+        ]
+      },
+      {
+        "id": "UA-28-023",
+        "title": "Media clip data dictionaries carry a default /Alt description",
+        "description": "ISO 14289-1 §7.18.6.2 requires the /Alt entry in every media clip data dictionary to supply a default textual description: a (culture, text) pair with an empty culture string and non-empty text. Without it, assistive technology has no fallback description when the media cannot be played.",
+        "category": "28 Annotations and forms",
+        "spec": "PDF/UA-1",
+        "severity": "error",
+        "wcag": [
+          "1.1.1"
+        ],
+        "state": "N/A",
+        "findings": [
+          {
+            "severity": "notApplicable",
+            "message": "document has no media clips -- nothing to inspect"
+          }
+        ]
+      },
+      {
+        "id": "UA-28-025",
+        "title": "Visible annotations expose a text description (/Contents or enclosing /Alt)",
+        "description": "ISO 14289-1 §7.18.1 requires an annotation that is not a Widget, not hidden, and not outside the crop box to expose a textual description -- either its own /Contents entry or an /Alt entry on the enclosing structure element -- so assistive technology can convey it.",
+        "category": "28 Annotations and forms",
+        "spec": "PDF/UA-1",
+        "severity": "error",
+        "wcag": [
+          "1.1.1"
+        ],
+        "state": "N/A",
+        "findings": [
+          {
+            "severity": "notApplicable",
+            "message": "document has no visible non-Widget annotations -- nothing to inspect"
+          }
+        ]
+      },
+      {
+        "id": "UA-28-026",
+        "title": "Widget annotations expose a description (/TU or enclosing /Alt)",
+        "description": "ISO 14289-1 §7.18.1 requires a form field to expose a description so assistive technology can announce it -- either a /TU tooltip on the field (inherited by its widgets) or an /Alt entry on the structure element enclosing each Widget annotation. Hidden widgets and widgets outside the crop box are exempt.",
+        "category": "28 Annotations and forms",
+        "spec": "PDF/UA-1",
+        "severity": "error",
+        "wcag": [
+          "1.3.1",
+          "4.1.2"
+        ],
+        "state": "N/A",
+        "findings": [
+          {
+            "severity": "notApplicable",
+            "message": "document has no visible Widget annotations -- nothing to inspect"
+          }
+        ]
+      },
+      {
+        "id": "UA-28-028",
+        "title": "Document does not use a dynamic XFA form",
+        "description": "ISO 14289-1 §7.15 forbids dynamic XFA forms. A dynamic XFA form re-renders its layout at open time from the XFA template, bypassing the tagged page content so assistive technology has nothing to read. The form is dynamic when its XFA config packet declares <dynamicRender>required. Static XFA is permitted under PDF/UA-1; PDF/UA-2 forbids XFA entirely (UA-28-010).",
+        "category": "28 Annotations and forms",
+        "spec": "PDF/UA-1",
+        "severity": "error",
+        "wcag": [
+          "1.3.1"
+        ],
+        "state": "N/A",
+        "findings": [
+          {
+            "severity": "notApplicable",
+            "message": "document has no XFA form -- nothing to inspect"
+          }
+        ]
+      },
+      {
+        "id": "UA-28-032",
+        "title": "Form without a Role attribute references exactly one widget",
+        "description": "ISO 14289-1 §7.18.4 requires a Form structure element that omits a PrintField /Role attribute (Table 348) to have only one child: an object reference identifying the widget annotation (ISO 32000-1 §14.8.4.5, Table 340). Such a Form represents a single interactive control, so it must not enclose additional structure children or reference zero or several widgets. A Form carrying a /Role attribute may group controls and is exempt.",
+        "category": "28 Annotations and forms",
+        "spec": "PDF/UA-1",
+        "severity": "error",
+        "wcag": [
+          "1.3.1",
+          "4.1.2"
+        ],
+        "state": "N/A",
+        "findings": [
+          {
+            "severity": "notApplicable",
+            "message": "document has no Form structure elements -- nothing to inspect"
+          }
+        ]
+      },
+      {
+        "id": "UA-30-001",
+        "title": "Document contains no reference XObjects",
+        "description": "ISO 14289-1 §7.20 forbids reference XObjects (form XObjects with a /Ref entry, ISO 32000-1 §8.10.4). A reference XObject imports page content from an external file; that content is not part of this document's structure tree and cannot be tagged, so assistive technology cannot reach it. PDF 2.0 deprecates the feature, so PDF/UA-2 documents must not use it either.",
+        "category": "30 XObjects",
+        "spec": "PDF/UA-1+2",
+        "severity": "error",
+        "wcag": [
+          "1.3.1"
+        ],
+        "state": "N/A",
+        "findings": [
+          {
+            "severity": "notApplicable",
+            "message": "document has no form XObjects -- nothing to inspect"
+          }
+        ]
+      },
+      {
+        "id": "UA-30-002",
+        "title": "Form XObjects with marked content are invoked at most once",
+        "description": "ISO 14289-1 §7.20 requires the content of form XObjects to be incorporated into structure elements (ISO 32000-1 §14.7.2). A form XObject carrying an /MCID marked-content sequence is tied to a single place in the structure tree; drawing it via Do more than once makes that MCID map to several positions at once, so its semantic parent is ambiguous. A marked-content form XObject must be invoked at most once.",
+        "category": "30 XObjects",
+        "spec": "PDF/UA-1",
+        "severity": "error",
+        "wcag": [
+          "1.3.1"
+        ],
+        "state": "N/A",
+        "findings": [
+          {
+            "severity": "notApplicable",
+            "message": "document has no form XObjects -- nothing to inspect"
+          }
+        ]
+      },
+      {
+        "id": "UA-31-001",
+        "title": "CIDFontType2 declares /CIDToGIDMap = Identity or a stream",
+        "description": "ISO 32000-1 §9.7.4.2 requires the /CIDToGIDMap entry on a CIDFontType2 to be either /Identity (the default, optionally omitted) or a stream mapping CIDs to glyph IDs. Any other Name value leaves consumers without a defined CID → GID mapping; PDF/UA leans on this entry for assistive-technology text extraction from TrueType-based CID fonts.",
+        "category": "09 Fonts",
+        "spec": "PDF/UA-1+2",
+        "severity": "error",
+        "wcag": [
+          "1.3.1"
+        ],
+        "state": "PASS",
+        "findings": []
+      },
+      {
+        "id": "UA-31-008",
+        "title": "Custom structure types are mapped to standard types",
+        "description": "PDF/UA-1 §7.1 (PDF/UA-2 §8.2.4) requires every structure element type to be either a standard PDF structure type or mapped to one via the /RoleMap entry on StructTreeRoot. Custom names that survive role-map resolution are opaque to assistive technology.",
+        "category": "01 Structure tree",
+        "spec": "PDF/UA-1+2",
+        "severity": "error",
+        "wcag": [
+          "1.3.1"
+        ],
+        "state": "PASS",
+        "findings": []
+      },
+      {
+        "id": "UA-31-009",
+        "title": "Role maps are acyclic and do not remap within a namespace",
+        "description": "PDF/UA-1 §7.1 and PDF/UA-2 §8.2.4 require role mappings to terminate: a circular /RoleMap or /RoleMapNS chain never resolves to a standard type. PDF/UA-2 §8.2.4-3 additionally forbids role-mapping a type to another type in the same explicitly declared namespace.",
+        "category": "01 Structure tree",
+        "spec": "PDF/UA-1+2",
+        "severity": "error",
+        "wcag": [
+          "1.3.1"
+        ],
+        "state": "N/A",
+        "findings": [
+          {
+            "severity": "notApplicable",
+            "message": "document declares no role mappings -- nothing to inspect"
+          }
+        ]
+      },
+      {
+        "id": "UA-31-010",
+        "title": "Standard structure types are not remapped",
+        "description": "PDF/UA-1 §7.1 and PDF/UA-2 §8.2.4 forbid role-mapping a standard structure type (the tags defined in ISO 32000 §14.8.4, e.g. P, H1, Table) to another type. Their meaning is fixed; remapping them misleads assistive technology.",
+        "category": "01 Structure tree",
+        "spec": "PDF/UA-1+2",
+        "severity": "error",
+        "wcag": [
+          "1.3.1"
+        ],
+        "state": "N/A",
+        "findings": [
+          {
+            "severity": "notApplicable",
+            "message": "document declares no role mappings -- nothing to inspect"
+          }
+        ]
+      }
+    ]
+  }
+]

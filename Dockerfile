@@ -62,6 +62,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY scripts/install-verapdf.sh /tmp/install-verapdf.sh
 RUN bash /tmp/install-verapdf.sh && rm /tmp/install-verapdf.sh
 
+# Install pdfa11y CLI (second free/open PDF/UA validator — Matterhorn coverage Step 6)
+# A single static Go binary, no JVM/installer needed.
+COPY scripts/install-pdfa11y.sh /tmp/install-pdfa11y.sh
+RUN bash /tmp/install-pdfa11y.sh && rm /tmp/install-pdfa11y.sh
+
 # Copy EPUBCheck from download stage (cached)
 COPY --from=epubcheck /epubcheck/epubcheck-5.1.0 /app/lib/epubcheck/epubcheck-5.1.0
 
@@ -85,6 +90,7 @@ RUN npm rebuild sharp --platform=linux --arch=x64 \
 ARG COMMIT_SHA=unknown
 ENV EPUBCHECK_PATH=/app/lib/epubcheck/epubcheck-5.1.0/epubcheck.jar
 ENV VERAPDF_PATH=/opt/verapdf/verapdf
+ENV PDFA11Y_PATH=/opt/pdfa11y/pdfa11y
 ENV NODE_ENV=production
 ENV PORT=3000
 ENV COMMIT_SHA=$COMMIT_SHA
