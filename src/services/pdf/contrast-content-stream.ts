@@ -544,9 +544,10 @@ function parseFillColorOpToRgb(content: string, op: { start: number; end: number
 
 /**
  * Finds the RGB value that was ACTUALLY in effect immediately before
- * `beforePos` in the whole content stream -- scans every fill-color op from
- * the start of the stream up to that position and parses the nearest one,
- * not scoped to any one run or text object.
+ * `beforePos` in the whole content stream -- walks every token from the
+ * start of the stream up to that position, simulating the real graphics-
+ * state color stack (`q` pushes the current color, `Q` pops it back), not
+ * scoped to any one run or text object.
  *
  * This is what pdf-contrast-writer.service.ts's spliceColorFix restores
  * after a fix, and it matters which color that is: a fixed run's OWN
@@ -564,21 +565,67 @@ function parseFillColorOpToRgb(content: string, op: { start: number; end: number
  * further upstream) -- which this function derives directly from the
  * stream itself instead of from anything specific to the run being fixed.
  *
- * Declines (returns null) rather than guessing when the nearest preceding
- * op is `sc`/`scn` (colorspace-dependent, unparseable without tracking
- * /ColorSpace -- same "bail rather than guess" discipline as
- * parseFillColorOpToRgb itself): that op genuinely IS the ambient color
- * right before `beforePos`, so falling through to an EVEN EARLIER op would
- * return a color that's no longer actually in effect there, an active
- * wrong guess rather than a declined unknown. Falls back to pure black
- * ([0,0,0], the PDF default initial fill color per PDF32000-1:2008 §8.6.3)
- * only when NO fill-color op precedes this position at all.
+ * MUST track `q`/`Q` scope, not just take the textually-nearest preceding
+ * op: a naive linear scan (this function's original implementation) picks
+ * up a color set *inside* an already-closed `q...Q` block as if it were
+ * still ambient. Confirmed live on Math_Weir_PDF.pdf, round 2 of a real
+ * Auto Mode run: pdf-contrast-backplate.ts's spliceBackplate deliberately
+ * wraps its rectangle's `1 1 1 rg` (white) in its own `q...Q` so it can't
+ * leak into surrounding text -- but a LATER cell's own recolor-fix restore,
+ * computed by the old linear scan, found that scoped white as the
+ * "nearest preceding rg" and restored white as if it were genuinely
+ * ambient. Real PDF graphics-state semantics say `Q` already popped that
+ * color back to whatever was active before the backplate's own `q` by the
+ * time execution reaches any later content -- this walk simulates exactly
+ * that instead of trusting raw textual proximity. Confirmed as the actual
+ * mechanism behind a 19-cell cluster of new near-white-on-white contrast
+ * regressions across three rows of one dense table: the leaked white
+ * became the ambient color for every subsequent ambient-only text run
+ * (the overwhelming majority of this document's text objects carry no
+ * color op of their own) until the next explicit color reset.
+ *
+ * Declines (returns null) rather than guessing when the color in effect at
+ * `beforePos` was last set by `sc`/`scn` (colorspace-dependent, unparseable
+ * without tracking /ColorSpace -- same "bail rather than guess" discipline
+ * as parseFillColorOpToRgb itself): that op genuinely IS the ambient color
+ * right before `beforePos`, so falling back to an earlier op would return a
+ * color that's no longer actually in effect there, an active wrong guess
+ * rather than a declined unknown. Falls back to pure black ([0,0,0], the
+ * PDF default initial fill color per PDF32000-1:2008 §8.6.3) only when NO
+ * fill-color op is in effect at all (never set, or every `q` this position
+ * is nested in was pushed before any color op ever ran).
  */
 export function findPrecedingColor(content: string, beforePos: number): [number, number, number] | null {
   const tokens = tokenize(content);
-  const ops = findFillColorOps(tokens, 0, beforePos);
-  if (ops.length === 0) return [0, 0, 0];
-  return parseFillColorOpToRgb(content, ops[ops.length - 1]);
+
+  // 'unset' = the PDF default black, never overridden by any op seen so far
+  // at this stack depth. 'unknown' = last set by an unparseable sc/scn.
+  type ColorState = { kind: 'rgb'; rgb: [number, number, number] } | { kind: 'unknown' } | { kind: 'unset' };
+
+  let current: ColorState = { kind: 'unset' };
+  const stack: ColorState[] = [];
+  let pendingStart: number | null = null;
+
+  for (const tk of tokens) {
+    if (tk.start >= beforePos) break;
+    if (tk.t !== 'op') {
+      if (pendingStart === null) pendingStart = tk.start;
+      continue;
+    }
+    if (tk.v === 'q') {
+      stack.push(current);
+    } else if (tk.v === 'Q') {
+      current = stack.pop() ?? current; // unbalanced Q: nothing sensible to revert to
+    } else if (FILL_COLOR_OPS.has(tk.v)) {
+      const rgb = parseFillColorOpToRgb(content, { start: pendingStart ?? tk.start, end: tk.end });
+      current = rgb ? { kind: 'rgb', rgb } : { kind: 'unknown' };
+    }
+    pendingStart = null;
+  }
+
+  if (current.kind === 'rgb') return current.rgb;
+  if (current.kind === 'unset') return [0, 0, 0];
+  return null;
 }
 
 export interface PageContrastTarget {
