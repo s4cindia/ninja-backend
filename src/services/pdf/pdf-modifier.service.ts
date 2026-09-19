@@ -1699,8 +1699,19 @@ export class PdfModifierService {
         const rdfRdf = xmpmeta?.['rdf:RDF'] as Record<string, unknown> | undefined;
         if (rdfRdf) {
           const existingDesc = rdfRdf['rdf:Description'];
-          const namespaceUri = (prefix: string): string | undefined =>
-            prefix === 'pdfuaid' ? 'http://www.aiim.org/pdfua/ns/id/' : undefined;
+          // Codex/CodeRabbit finding on this same PR, confirmed real: the
+          // first version of this map only knew 'pdfuaid', so patching
+          // dc:title (deriveAndSetTitle's own call to this same method)
+          // against a multi-description document would append <dc:title>
+          // with NO xmlns:dc declared anywhere -- namespace-invalid XMP,
+          // for exactly the same reason the pdfuaid bug this PR fixes
+          // happened in the first place. Every prefix this method is ever
+          // called with (see its own call sites) must be listed here.
+          const XMP_NAMESPACE_URIS: Record<string, string> = {
+            pdfuaid: 'http://www.aiim.org/pdfua/ns/id/',
+            dc: 'http://purl.org/dc/elements/1.1/',
+          };
+          const namespaceUri = (prefix: string): string | undefined => XMP_NAMESPACE_URIS[prefix];
 
           if (Array.isArray(existingDesc)) {
             const newDesc: Record<string, unknown> = { '@_rdf:about': '' };

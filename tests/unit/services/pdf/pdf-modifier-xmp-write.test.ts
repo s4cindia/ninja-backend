@@ -99,6 +99,27 @@ describe('writePdfUaIdentifier / writeXmpStream', () => {
     expect(xmp).toContain('Adobe PDF Library 17.0');
   });
 
+  it('REGRESSION: declares xmlns:dc when deriveAndSetTitle patches dc:title into a multi-description document', async () => {
+    // Codex + CodeRabbit finding on this same PR, confirmed real: the first
+    // version of namespaceUri only knew 'pdfuaid' -- deriveAndSetTitle's own
+    // dc:title patch would hit the exact same array branch and append
+    // <dc:title> with no xmlns:dc declared anywhere, since none of the
+    // MULTI_DESCRIPTION_XMP fixture's existing descriptions declare `dc`
+    // either (only xmp: and pdf:).
+    const doc = await PDFDocument.create();
+    doc.addPage([400, 600]);
+    await setRawXmp(doc, MULTI_DESCRIPTION_XMP);
+
+    await pdfModifierService.writeXmpStream(doc, { 'dc:title': 'A Real Title' });
+
+    const xmp = readRawXmp(doc);
+    expect(xmp).toContain('<dc:title>A Real Title</dc:title>');
+    expect(xmp).toContain('xmlns:dc="http://purl.org/dc/elements/1.1/"');
+    // Both original descriptions must survive untouched.
+    expect(xmp).toContain('2025-09-10T15:35:06+05:30');
+    expect(xmp).toContain('Adobe PDF Library 17.0');
+  });
+
   it('REGRESSION: survives a doc.save() round trip with a multi-description XMP (the exact real-world symptom)', async () => {
     const doc = await PDFDocument.create();
     doc.addPage([400, 600]);
