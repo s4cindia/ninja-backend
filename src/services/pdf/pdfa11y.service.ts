@@ -155,7 +155,21 @@ class Pdfa11yService {
       return { ran: false, failures: [] };
     }
 
-    const failures = this.parseJsonReport(stdout, filePath);
+    // CodeRabbit finding on PR #577, confirmed real: the old code trusted
+    // stdout merely starting with '[' or '{' as proof the run succeeded,
+    // then unconditionally returned `ran: true` — but parseJsonReport's own
+    // internal try/catch (JSON parse exception, or a report missing its
+    // `results` array entirely, e.g. `{}` or `{"results":[]}`... actually a
+    // present-but-empty results array IS a legitimate "ran, nothing to
+    // report" outcome; only a MISSING/malformed results array indicates a
+    // report that isn't pdfa11y's real shape at all) also degrades to zero
+    // failures on genuinely malformed output, indistinguishable from
+    // "parsed fine, zero rules failed" without checking its own verdict.
+    const { ok, failures } = this.parseJsonReport(stdout, filePath);
+    if (!ok) {
+      logger.warn(`[pdfa11y] JSON report was malformed or incomplete — skipping: ${filePath}`);
+      return { ran: false, failures: [] };
+    }
 
     for (const failure of failures) {
       if (!PDFA11Y_MATTERHORN_MAP.has(failure.ruleId)) {
@@ -181,23 +195,31 @@ class Pdfa11yService {
    * rule is kept, matching verapdf.service.ts's own "first check only"
    * precedent (Ninja surfaces one representative AuditIssue per Matterhorn
    * condition, not one per raw finding).
+   *
+   * Returns `ok: false` for genuinely malformed/incomplete JSON (parse
+   * exception, not an array, empty array, or missing/non-array `results` —
+   * a real pdfa11y report is always a non-empty array whose first element
+   * has a `results` array, even when every check passes). CodeRabbit
+   * finding on PR #577, confirmed real: validate() must be able to tell
+   * this apart from "parsed cleanly, zero rules failed", or a corrupt
+   * report gets recorded as a genuine, clean run.
    */
-  private parseJsonReport(json: string, filePath: string): Pdfa11yFailure[] {
-    if (!json?.trim()) return [];
+  private parseJsonReport(json: string, filePath: string): { ok: boolean; failures: Pdfa11yFailure[] } {
+    if (!json?.trim()) return { ok: false, failures: [] };
 
     let parsed: Pdfa11yReport[];
     try {
       parsed = JSON.parse(json) as Pdfa11yReport[];
     } catch (err) {
       logger.warn(`[pdfa11y] Failed to parse JSON report for ${filePath}`, err);
-      return [];
+      return { ok: false, failures: [] };
     }
 
     const failures: Pdfa11yFailure[] = [];
 
     try {
-      const doc = Array.isArray(parsed) ? parsed[0] : undefined;
-      if (!doc || !Array.isArray(doc.results)) return [];
+      const doc = Array.isArray(parsed) && parsed.length > 0 ? parsed[0] : undefined;
+      if (!doc || !Array.isArray(doc.results)) return { ok: false, failures: [] };
 
       for (const result of doc.results) {
         if (result.state !== 'FAIL' && result.state !== 'WARN') continue;
@@ -211,9 +233,10 @@ class Pdfa11yService {
       }
     } catch (err) {
       logger.warn(`[pdfa11y] Error traversing JSON report for ${filePath}`, err);
+      return { ok: false, failures };
     }
 
-    return failures;
+    return { ok: true, failures };
   }
 }
 

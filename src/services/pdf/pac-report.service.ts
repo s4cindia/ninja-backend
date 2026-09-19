@@ -154,6 +154,15 @@ const VERAPDF_TESTABLE_CONDITIONS: ReadonlySet<string> = new Set([
  * real Matterhorn condition text instead.
  */
 const PDFA11Y_TESTABLE_CONDITIONS: ReadonlySet<string> = new Set([
+  // CodeRabbit finding on PR #577, confirmed real: pdfa11y-matterhorn.map.ts
+  // ALSO maps UA-09-001/UA-10-001 to these same two conditions as a
+  // redundant cross-validating fallback (see that file's own comments) --
+  // but veraPdfRan and pdfa11yRan are tracked independently, so an audit
+  // where pdfa11y ran but veraPDF did not (different binary availability,
+  // one timed out, etc.) must still be able to mark these PASS from
+  // pdfa11y's own result, not just from VERAPDF_TESTABLE_CONDITIONS.
+  '31-009', // font program not embedded (also in VERAPDF_TESTABLE_CONDITIONS)
+  '31-027', // font missing ToUnicode entry (also in VERAPDF_TESTABLE_CONDITIONS)
   '11-002', // Alt/ActualText/E language cannot be determined
   '11-003', // Outline entry language cannot be determined
   '11-004', // Annotation /Contents language cannot be determined

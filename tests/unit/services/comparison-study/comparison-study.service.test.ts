@@ -150,11 +150,11 @@ describe('comparison-study.service', () => {
         contentType: 'text-dominant',
         ninjaActiveMs: 30 * 60 * 1000, // 30 min
         ninjaGpuCostUsd: 0.42,
-        ninjaPacResult: [{ ruleId: '1:6.2-1' }],
+        ninjaPacResult: { ran: true, failures: [{ ruleId: '1:6.2-1' }] },
         pdfxtTimeMs: 60 * 60 * 1000, // 60 min
         pdfxtPageCount: 20,
         pdfxtCostUsd: 5,
-        pdfxtPacResult: [],
+        pdfxtPacResult: { ran: true, failures: [] },
         job: { output: { aiAnalysisStats: { totalCostUsd: 0.08 } } },
       });
 
@@ -192,6 +192,34 @@ describe('comparison-study.service', () => {
       expect(report.ninja.costUsd).toBeNull();
       expect(report.pdfxt.pagesPerHour).toBeNull();
     });
+
+    it('reports pacFailureCount as null (not 0) when veraPDF never ran for that side, even for an old-shape stale row', async () => {
+      // CodeRabbit finding on PR #577, confirmed real: persisting just the
+      // raw failures array made "veraPDF was unavailable/timed out" and
+      // "veraPDF ran and found zero failures" both read back as
+      // pacFailureCount: 0 -- a false clean-pass result. { ran: false }
+      // must read back as null, and a stale pre-fix row (a bare array, no
+      // `ran` field at all) must ALSO safely degrade to null rather than
+      // being misread as a real zero-failure result.
+      mockPrisma.comparisonTrial.findUniqueOrThrow.mockResolvedValue({
+        id: 'trial-3',
+        sourceFileName: 'sample.pdf',
+        contentType: 'mixed',
+        ninjaActiveMs: null,
+        ninjaGpuCostUsd: null,
+        ninjaPacResult: { ran: false, failures: [] },
+        pdfxtTimeMs: null,
+        pdfxtPageCount: null,
+        pdfxtCostUsd: null,
+        pdfxtPacResult: [{ ruleId: 'stale-pre-fix-row' }], // old shape, predates this fix
+        job: { output: null },
+      });
+
+      const report = await getTrialReport('trial-3');
+
+      expect(report.ninja.pacFailureCount).toBeNull();
+      expect(report.pdfxt.pacFailureCount).toBeNull();
+    });
   });
 
   describe('getAggregateReport', () => {
@@ -205,8 +233,8 @@ describe('comparison-study.service', () => {
         const base = {
           sourceFileName: 'x.pdf',
           contentType: 'mixed',
-          ninjaPacResult: [],
-          pdfxtPacResult: [],
+          ninjaPacResult: { ran: true, failures: [] },
+          pdfxtPacResult: { ran: true, failures: [] },
           pdfxtPageCount: 10,
           job: { output: null },
         };

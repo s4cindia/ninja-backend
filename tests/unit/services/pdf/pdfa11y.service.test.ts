@@ -18,10 +18,17 @@ function loadFixtureJson(name: string): string {
 }
 
 // parseJsonReport is private; tested via a direct cast, same pragmatic
-// pattern used for verapdf.service.ts's parseMrrXml.
-function parseJsonReport(json: string): Pdfa11yFailure[] {
-  return (pdfa11yService as unknown as { parseJsonReport: (json: string, filePath: string) => Pdfa11yFailure[] })
+// pattern used for verapdf.service.ts's parseMrrXml. Returns just
+// `.failures` for the many existing tests below that only care about the
+// parsed content — parseJsonReportFull (below) exposes the full
+// { ok, failures } shape for the ok/malformed-report regression tests.
+type JsonParseResult = { ok: boolean; failures: Pdfa11yFailure[] };
+function parseJsonReportFull(json: string): JsonParseResult {
+  return (pdfa11yService as unknown as { parseJsonReport: (json: string, filePath: string) => JsonParseResult })
     .parseJsonReport(json, 'test.pdf');
+}
+function parseJsonReport(json: string): Pdfa11yFailure[] {
+  return parseJsonReportFull(json).failures;
 }
 
 describe('Pdfa11yService.parseJsonReport — real JSON output', () => {
@@ -154,6 +161,47 @@ describe('Pdfa11yService.parseJsonReport — synthetic shape regressions', () =>
     const failures = parseJsonReport(json);
     expect(failures[0].pageNumber).toBeUndefined();
     expect(failures[0].context).toBeUndefined();
+  });
+});
+
+describe('Pdfa11yService.parseJsonReport — ok flag (CodeRabbit finding on PR #577)', () => {
+  it('reports ok:true for a real, well-formed report, even with zero failures', () => {
+    const json = JSON.stringify([{
+      path: 'test.pdf',
+      verdict: 'PASS',
+      summary: { total: 1, passed: 1, failed: 0, errors: 0, warnings: 0, infos: 0, conforming: true },
+      results: [{ id: 'UA-01-002', title: 'MarkInfo declares the document as marked', state: 'PASS' }],
+    }]);
+
+    expect(parseJsonReportFull(json)).toEqual({ ok: true, failures: [] });
+  });
+
+  it('reports ok:false for a technically-valid JSON object missing the expected report shape', () => {
+    // Confirmed real bug: {} and {"results":[]} are valid JSON that the old
+    // "starts with [ or {" check in validate() would accept, but neither is
+    // pdfa11y's real report shape (a non-empty array whose first element
+    // has a results array) -- indistinguishable from a real report with
+    // zero failing rules without this check.
+    expect(parseJsonReportFull('{}')).toEqual({ ok: false, failures: [] });
+    expect(parseJsonReportFull('{"results":[]}')).toEqual({ ok: false, failures: [] });
+  });
+
+  it('reports ok:false for an empty array (not a real per-file report)', () => {
+    expect(parseJsonReportFull('[]')).toEqual({ ok: false, failures: [] });
+  });
+
+  it('reports ok:false when the first array element has no results array', () => {
+    expect(parseJsonReportFull('[{"path":"test.pdf","verdict":"PASS"}]')).toEqual({ ok: false, failures: [] });
+  });
+
+  it('reports ok:false for unparseable JSON', () => {
+    expect(parseJsonReportFull('not json at all')).toEqual({ ok: false, failures: [] });
+  });
+
+  it('reports ok:true for the real captured fixtures', () => {
+    expect(parseJsonReportFull(loadFixtureJson('cp31-font-not-embedded.json')).ok).toBe(true);
+    expect(parseJsonReportFull(loadFixtureJson('cp31-missing-tounicode.json')).ok).toBe(true);
+    expect(parseJsonReportFull(loadFixtureJson('cp06-metadata-failures.json')).ok).toBe(true);
   });
 });
 

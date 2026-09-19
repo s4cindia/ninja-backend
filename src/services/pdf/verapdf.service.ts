@@ -130,7 +130,18 @@ class VeraPdfService {
       return { ran: false, failures: [] };
     }
 
-    const failures = this.parseMrrXml(stdout, filePath);
+    // CodeRabbit finding on PR #577, confirmed real: the old code trusted
+    // stdout merely containing the substring "<report" as proof the run
+    // succeeded, then unconditionally returned `ran: true` — but
+    // parseMrrXml's OWN internal try/catch (XML parse exception, or a
+    // structurally-incomplete <jobs>/<job>) also degrades to zero failures
+    // on genuine malformed output, which is indistinguishable from "parsed
+    // fine, zero rules failed" without checking parseMrrXml's own verdict.
+    const { ok, failures } = this.parseMrrXml(stdout, filePath);
+    if (!ok) {
+      logger.warn(`[veraPDF] MRR report was malformed or incomplete — skipping: ${filePath}`);
+      return { ran: false, failures: [] };
+    }
 
     // Log a warning for each ruleId that has no Matterhorn mapping.
     // These should be added to src/data/verapdf-matterhorn.map.ts.
@@ -174,9 +185,17 @@ class VeraPdfService {
    * ruleId format: "{specMajor}:{clause}-{testNumber}"
    * e.g. specification="ISO 14289-1:2014" clause="7.21.4.1" testNumber="1"
    *      → "1:7.21.4.1-1"
+   *
+   * Returns `ok: false` for genuinely malformed/incomplete XML (parse
+   * exception, or a missing/non-array <jobs>/<job> — veraPDF always emits
+   * a real <jobs><job> for the single file validate() always passes, so
+   * its absence means the report is truncated or corrupt, not "zero
+   * jobs"). CodeRabbit finding on PR #577, confirmed real: validate() must
+   * be able to tell this apart from "parsed cleanly, zero rules failed",
+   * or a corrupt report gets recorded as a genuine, clean run.
    */
-  private parseMrrXml(xml: string, filePath: string): VeraPdfFailure[] {
-    if (!xml?.includes('<report')) return [];
+  private parseMrrXml(xml: string, filePath: string): { ok: boolean; failures: VeraPdfFailure[] } {
+    if (!xml?.includes('<report')) return { ok: false, failures: [] };
 
     const parser = new XMLParser({
       ignoreAttributes: false,
@@ -189,7 +208,7 @@ class VeraPdfService {
       parsed = parser.parse(xml) as Record<string, unknown>;
     } catch (err) {
       logger.warn(`[veraPDF] Failed to parse MRR XML for ${filePath}`, err);
-      return [];
+      return { ok: false, failures: [] };
     }
 
     const failures: VeraPdfFailure[] = [];
@@ -198,7 +217,7 @@ class VeraPdfService {
       const report = parsed['report'] as Record<string, unknown> | undefined;
       const jobsWrapper = report?.['jobs'] as Record<string, unknown> | undefined;
       const jobs = jobsWrapper?.['job'];
-      if (!Array.isArray(jobs)) return [];
+      if (!Array.isArray(jobs)) return { ok: false, failures: [] };
 
       for (const job of jobs) {
         const valReport = (job as Record<string, unknown>)['validationReport'] as
@@ -260,9 +279,10 @@ class VeraPdfService {
       }
     } catch (err) {
       logger.warn(`[veraPDF] Error traversing MRR XML for ${filePath}`, err);
+      return { ok: false, failures };
     }
 
-    return failures;
+    return { ok: true, failures };
   }
 }
 
