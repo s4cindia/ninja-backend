@@ -280,6 +280,18 @@ class PdfFigureStructTreeValidator {
    * span produced no real geometry, or whose page content couldn't be
    * decoded — callers already treat a missing boundingBox as a safe,
    * pre-existing fallback to the whole-page render.
+   *
+   * The device→top-left flip below (`pageHeight - box.maxY`) assumes
+   * /Rotate 0 and a MediaBox origin at (0,0) — a page with real rotation or
+   * a non-zero CropBox/MediaBox origin needs pdfjs's own per-page viewport
+   * transform, not a bare height subtraction, to land on the same pixels
+   * ai-analysis.service.ts's crop later renders (CodeRabbit finding on
+   * PR #583, confirmed real). NOT fixed here: this is the exact same
+   * simplification image-extractor.service.ts's own ImageInfo.position
+   * already makes and this whole codebase's AuditIssue.boundingBox
+   * convention is built on — a pre-existing, shared limitation, not one
+   * newly introduced by this file, and unconfirmed to matter for any real
+   * document exercised so far (Math_Weir_PDF.pdf has no rotated pages).
    */
   private attachBoundingBoxes(
     doc: ParsedPDF['pdfLibDoc'],

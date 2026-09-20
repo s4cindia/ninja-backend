@@ -15,11 +15,15 @@
  * near zero after its first pass (433 -> 303 in round 2, then only 3-7 per
  * round for five more rounds, on a document with 283 such issues).
  *
- * Reuses the axis-aligned CTM tracking (a/d scale, e/f translate; b/c shear
- * ignored) already established in zone-extractor/seam-c/content-stream.ts's
- * own tagContentStream -- every real sample inspected (a 12-figure page,
- * plus several single-figure pages) uses translation-only `cm` operands,
- * matching that existing, already-relied-upon simplification.
+ * Tracks the FULL affine CTM (all six a/b/c/d/e/f values, proper matrix
+ * composition on `cm`) -- every real sample inspected on Math_Weir_PDF.pdf
+ * (a 12-figure page, plus several single-figure pages) happens to use only
+ * translation-only `cm` operands, but a rotated or skewed transform
+ * elsewhere in a real document (e.g. a sideways figure caption) must not
+ * silently collapse every point to the same coordinate, the way the
+ * a/d-only simplification zone-extractor/seam-c/content-stream.ts's own
+ * tagContentStream already accepts for its own, different purpose
+ * (CodeRabbit finding on PR #583, confirmed real).
  *
  * CTM state is tracked across the ENTIRE page content stream continuously
  * -- q/Q/cm are NEVER reset at a marked-content boundary. Confirmed
@@ -39,7 +43,19 @@
  *     doesn't need to distinguish painted vs. clip-only paths for bbox
  *     purposes -- either way it's real evidence of "content lives here").
  *   - `Do`/inline-image (`BI`) invocations: the unit square's four corners
- *     transformed by the current CTM.
+ *     transformed by the current CTM. This assumes an Image XObject; a
+ *     `Do` invoking a FORM XObject instead should really use that form's
+ *     own /BBox (transformed by both its own /Matrix and the current CTM),
+ *     not a bare unit square (CodeRabbit finding on PR #583, confirmed
+ *     real, but deliberately NOT fixed here -- resolving a Form XObject
+ *     needs a page-Resources lookup this module doesn't otherwise need at
+ *     all, a genuinely bigger, separate undertaking). Confirmed dormant for
+ *     the real document this was built against: of Math_Weir_PDF.pdf's 283
+ *     real struct-tree-only Figures, exactly one uses `Do` at all, and it
+ *     invokes a real Image XObject (`/Im0`) that pdf-alttext.validator.ts's
+ *     own image-based path almost certainly already covers, via
+ *     computeImageCoveredFigures's exclusion above -- so this gap has zero
+ *     measured impact on the document it was built and validated against.
  *   - Text run anchors (Tj/TJ/'/"): the current text matrix's own
  *     translation, transformed through the CTM -- an ANCHOR point only,
  *     not true glyph-width extent (no font metrics available from a raw
@@ -85,8 +101,8 @@ export function locateMcidBoundingBoxes(
   if (targetMcids.size === 0) return results;
   const tokens = tokenize(content);
 
-  type Ctm = { a: number; d: number; e: number; f: number };
-  let ctm: Ctm = { a: 1, d: 1, e: 0, f: 0 };
+  type Ctm = { a: number; b: number; c: number; d: number; e: number; f: number };
+  let ctm: Ctm = { a: 1, b: 0, c: 0, d: 1, e: 0, f: 0 };
   const ctmStack: Ctm[] = [];
 
   // Marked-content nesting: which currently-open frame (if any) is one of
@@ -113,8 +129,8 @@ export function locateMcidBoundingBoxes(
   let curMinX = Infinity, curMinY = Infinity, curMaxX = -Infinity, curMaxY = -Infinity;
   const include = (x: number, y: number): void => {
     if (activeMcid === null) return;
-    const X = ctm.a * x + ctm.e;
-    const Y = ctm.d * y + ctm.f;
+    const X = ctm.a * x + ctm.c * y + ctm.e;
+    const Y = ctm.b * x + ctm.d * y + ctm.f;
     if (X < curMinX) curMinX = X;
     if (X > curMaxX) curMaxX = X;
     if (Y < curMinY) curMinY = Y;
@@ -122,7 +138,20 @@ export function locateMcidBoundingBoxes(
   };
 
   const finalizeActive = (): void => {
-    if (activeMcid !== null && curMinX <= curMaxX && curMinY <= curMaxY) {
+    // Requires real extent in AT LEAST one axis, not just "some point was
+    // seen" -- a Figure whose only content is a single text anchor (no
+    // accompanying path/clip-rect geometry) would otherwise finalize a
+    // true single-point box (minX===maxX AND minY===maxY), which a caller
+    // padding it for a crop (ai-analysis.service.ts's cropBase64Region)
+    // would silently turn into a tiny, useless few-pixel crop instead of
+    // falling back to the full page (CodeRabbit finding on PR #583,
+    // confirmed real). A genuine flat line (e.g. a horizontal leader line,
+    // zero HEIGHT but real width) still correctly passes this check.
+    if (
+      activeMcid !== null &&
+      curMinX <= curMaxX && curMinY <= curMaxY &&
+      (curMaxX > curMinX || curMaxY > curMinY)
+    ) {
       results.set(activeMcid, { minX: curMinX, minY: curMinY, maxX: curMaxX, maxY: curMaxY });
     }
     activeMcid = null;
@@ -166,10 +195,26 @@ export function locateMcidBoundingBoxes(
       case 'Q': { const p = ctmStack.pop(); if (p) ctm = p; break; }
       case 'cm': {
         const a = num(operands[operands.length - 6]);
+        const b = num(operands[operands.length - 5]);
+        const c = num(operands[operands.length - 4]);
         const d = num(operands[operands.length - 3]);
         const e = num(operands[operands.length - 2]);
         const f = num(operands[operands.length - 1]);
-        ctm = { a: ctm.a * a, d: ctm.d * d, e: ctm.a * e + ctm.e, f: ctm.d * f + ctm.f };
+        // Full affine composition (new_CTM = [a b c d e f] x ctm, PDF's
+        // row-vector convention) -- CodeRabbit finding on PR #583, confirmed
+        // real: the previous a/d/e/f-only version silently collapsed every
+        // point to a single coordinate under a rotated or skewed `cm` (e.g.
+        // a 90-degree `0 1 -1 0 e f cm`). Every real sample inspected on
+        // Math_Weir_PDF.pdf uses translation-only `cm` operands, but this is
+        // no longer assumed -- b/c are now tracked and applied for real.
+        ctm = {
+          a: a * ctm.a + b * ctm.c,
+          b: a * ctm.b + b * ctm.d,
+          c: c * ctm.a + d * ctm.c,
+          d: c * ctm.b + d * ctm.d,
+          e: e * ctm.a + f * ctm.c + ctm.e,
+          f: e * ctm.b + f * ctm.d + ctm.f,
+        };
         break;
       }
       case 'BDC': case 'BMC': {

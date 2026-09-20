@@ -149,4 +149,51 @@ describe('locateMcidBoundingBoxes', () => {
     // EMC and isn't tracked as a span at all) -- must not be found.
     expect(result.has(999)).toBe(false);
   });
+
+  it('correctly transforms points under a rotated (non-axis-aligned) cm matrix, not just translation', () => {
+    // CodeRabbit finding on PR #583, confirmed real: an a/d-only CTM model
+    // collapses every point under a 90-degree rotation (`0 1 -1 0 e f cm`)
+    // to the single coordinate (e, f). A point at local (10, 0) under this
+    // matrix must land at device (100, 210): X = a*x+c*y+e = 0*10+(-1)*0+100,
+    // Y = b*x+d*y+f = 1*10+0*0+200.
+    const content = '<</MCID 1>>BDC q 0 1 -1 0 100 200 cm 0 0 m 10 0 l S Q EMC';
+
+    const box = locateMcidBoundingBoxes(content, new Set([1])).get(1);
+
+    expect(box).toEqual({ minX: 100, minY: 200, maxX: 100, maxY: 210 });
+  });
+
+  it('composes a rotation and a translation correctly across two successive cm operators', () => {
+    const content =
+      '<</MCID 1>>BDC ' +
+      'q 1 0 0 1 100 200 cm ' + // translate first
+      '0 1 -1 0 0 0 cm ' + // then rotate 90 degrees in the NEW local space
+      '0 0 m 10 0 l S Q EMC';
+
+    const box = locateMcidBoundingBoxes(content, new Set([1])).get(1);
+
+    // Composed CTM: rotate-then-translate in device space -> local (10,0)
+    // maps to device (100, 210), local (0,0) maps to device (100, 200).
+    expect(box).toEqual({ minX: 100, minY: 200, maxX: 100, maxY: 210 });
+  });
+
+  it('does not return a box for a Figure whose only content is a single text anchor with no accompanying path geometry (a true degenerate point)', () => {
+    // CodeRabbit finding on PR #583, confirmed real: a single-point box
+    // (zero extent in BOTH axes) would otherwise get padded into a tiny,
+    // useless few-pixel crop by ai-analysis.service.ts's cropBase64Region
+    // instead of falling back to the full page.
+    const content = '<</MCID 1>>BDC q 1 0 0 1 100 200 cm BT 9 0 0 9 0 0 Tm (x)Tj ET Q EMC';
+
+    const box = locateMcidBoundingBoxes(content, new Set([1])).get(1);
+
+    expect(box).toBeUndefined();
+  });
+
+  it('still returns a box for a genuine flat line (zero height, real width) -- not the same as a true degenerate point', () => {
+    const content = '<</MCID 1>>BDC q 1 0 0 1 0 0 cm 0 0 m 50 0 l S Q EMC';
+
+    const box = locateMcidBoundingBoxes(content, new Set([1])).get(1);
+
+    expect(box).toEqual({ minX: 0, minY: 0, maxX: 50, maxY: 0 });
+  });
 });
