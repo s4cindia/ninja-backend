@@ -14,6 +14,7 @@ import { PDFDocument, PDFName, PDFRef, PDFString } from 'pdf-lib';
 import { pdfFigureStructTreeValidator } from '../../../../src/services/pdf/validators/pdf-figure-structtree.validator';
 import { imageExtractorService } from '../../../../src/services/pdf/image-extractor.service';
 import { pdfModifierService } from '../../../../src/services/pdf/pdf-modifier.service';
+import { writePageContent } from '../../../../src/services/pdf/pdf-content-stream-io';
 import type { ParsedPDF } from '../../../../src/services/pdf/pdf-parser.service';
 import type { ImageInfo } from '../../../../src/services/pdf/image-extractor.service';
 
@@ -245,5 +246,56 @@ describe('PdfFigureStructTreeValidator', () => {
     expect(result.issues).toHaveLength(1);
     expect(result.issues[0].pageNumber).toBe(1);
     expect(result.issues[0].element).toBe('figure_p1_mc7');
+  });
+
+  describe('boundingBox attachment (mcid-bounding-box.ts)', () => {
+    it('attaches a real, top-left-origin boundingBox when the Figure\'s MCID resolves to drawn geometry', async () => {
+      const { doc, parsedPdf } = await buildTaggedDoc([{ mcid: 5 }]);
+      writePageContent(doc, 1, '<</MCID 5>>BDC q 1 0 0 1 100 500 cm 0 0 m 70 0 l S Q EMC');
+
+      const result = await pdfFigureStructTreeValidator.validate(parsedPdf);
+
+      expect(result.issues).toHaveLength(1);
+      // Device box: x 100-170, y 500-500 (a flat line). Page height 792 ->
+      // top-left y = 792 - 500 = 292.
+      expect(result.issues[0].boundingBox).toEqual({
+        x: 100, y: 292, width: 70, height: 0, pageWidth: 612, pageHeight: 792,
+      });
+    });
+
+    it('attaches independent boundingBoxes for multiple Figures on the same page', async () => {
+      const { doc, parsedPdf } = await buildTaggedDoc([{ mcid: 1 }, { mcid: 2 }]);
+      writePageContent(
+        doc, 1,
+        '<</MCID 1>>BDC q 1 0 0 1 10 10 cm 0 0 m 5 0 l S Q EMC ' +
+        '<</MCID 2>>BDC q 1 0 0 1 200 200 cm 0 0 m 5 0 l S Q EMC',
+      );
+
+      const result = await pdfFigureStructTreeValidator.validate(parsedPdf);
+
+      expect(result.issues).toHaveLength(2);
+      const byElement = new Map(result.issues.map(i => [i.element, i.boundingBox]));
+      expect(byElement.get('figure_p1_mc1')).toEqual({ x: 10, y: 782, width: 5, height: 0, pageWidth: 612, pageHeight: 792 });
+      expect(byElement.get('figure_p1_mc2')).toEqual({ x: 200, y: 592, width: 5, height: 0, pageWidth: 612, pageHeight: 792 });
+    });
+
+    it('leaves boundingBox unset when the page has no content stream at all', async () => {
+      const { parsedPdf } = await buildTaggedDoc([{ mcid: 5 }]);
+
+      const result = await pdfFigureStructTreeValidator.validate(parsedPdf);
+
+      expect(result.issues).toHaveLength(1);
+      expect(result.issues[0].boundingBox).toBeUndefined();
+    });
+
+    it('leaves boundingBox unset when the MCID never appears in the page content (bail rather than guess)', async () => {
+      const { doc, parsedPdf } = await buildTaggedDoc([{ mcid: 5 }]);
+      writePageContent(doc, 1, '<</MCID 999>>BDC q 1 0 0 1 10 10 cm 0 0 m 5 0 l S Q EMC');
+
+      const result = await pdfFigureStructTreeValidator.validate(parsedPdf);
+
+      expect(result.issues).toHaveLength(1);
+      expect(result.issues[0].boundingBox).toBeUndefined();
+    });
   });
 });

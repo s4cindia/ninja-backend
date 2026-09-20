@@ -11,7 +11,7 @@
 import pLimit from 'p-limit';
 import { z } from 'zod';
 import { SchemaType, Schema } from '@google/generative-ai';
-import { createCanvas } from '@napi-rs/canvas';
+import { createCanvas, loadImage } from '@napi-rs/canvas';
 import { Prisma } from '@prisma/client';
 import prisma from '../../lib/prisma';
 import { logger } from '../../lib/logger';
@@ -2366,21 +2366,72 @@ class AiAnalysisService {
     const pageBase64 = await pageRenderCache.get(pageNumber)!;
     if (!pageBase64) return null;
 
-    logger.info(`[AiAnalysis] Using page render fallback for image on page ${pageNumber} (format: ${img?.format ?? 'unknown'})`);
+    // Crop to the issue's own region when one is known (e.g.
+    // pdf-figure-structtree.validator.ts's own struct-tree-only /Figure
+    // detections, via mcid-bounding-box.ts) -- reuses the SAME cached
+    // whole-page render (no extra pdfjs render call) rather than
+    // renderRegionToBase64's own from-scratch render, since a page with
+    // several such issues (up to 12 on one real page) would otherwise
+    // re-render the whole page once per issue. Without this, every issue
+    // on a multi-figure page got the IDENTICAL uncropped page image with no
+    // way to tell which figure was being asked about -- confirmed live as
+    // the real cause of a 283-issue category's round-over-round yield
+    // collapsing to near zero after Auto Mode's first pass.
+    const region = issue.boundingBox;
+    const croppedBase64 = region ? await this.cropBase64Region(pageBase64, region) : null;
+    const finalBase64 = croppedBase64 ?? pageBase64;
+
+    logger.info(
+      `[AiAnalysis] Using page render fallback for image on page ${pageNumber} ` +
+      `(format: ${img?.format ?? 'unknown'}, cropped: ${croppedBase64 !== null})`,
+    );
     return {
       id: img?.id ?? `page_render_p${pageNumber}`,
       pageNumber,
       index: img?.index ?? 0,
-      position: img?.position ?? { x: 0, y: 0, width: 0, height: 0 },
-      dimensions: img?.dimensions ?? { width: 0, height: 0 },
+      position: img?.position ?? region ?? { x: 0, y: 0, width: 0, height: 0 },
+      dimensions: img?.dimensions ?? (region ? { width: region.width, height: region.height } : { width: 0, height: 0 }),
       format: 'png',
       colorSpace: 'RGB',
       bitsPerComponent: 8,
       hasAlpha: false,
       fileSizeBytes: 0,
       mimeType: 'image/png',
-      base64: pageBase64,
+      base64: finalBase64,
     };
+  }
+
+  /**
+   * Crops a region (unscaled PDF points, top-left origin) out of an
+   * already-rendered whole-page PNG (itself rendered at scale 1.0 by
+   * renderPageToBase64, so page points map 1:1 to this image's own
+   * pixels — no scale factor needed here, unlike renderRegionToBase64's
+   * from-scratch scale-2.0 render). Returns null (falling back to the
+   * uncropped page) on any decode failure or a degenerate region, rather
+   * than throwing.
+   */
+  private async cropBase64Region(
+    pageBase64: string,
+    region: { x: number; y: number; width: number; height: number },
+  ): Promise<string | null> {
+    try {
+      const image = await loadImage(Buffer.from(pageBase64, 'base64'));
+      const pad = 4;
+      const sx = Math.max(0, Math.round(region.x - pad));
+      const sy = Math.max(0, Math.round(region.y - pad));
+      const sw = Math.min(image.width - sx, Math.round(region.width + pad * 2));
+      const sh = Math.min(image.height - sy, Math.round(region.height + pad * 2));
+      if (sw <= 0 || sh <= 0) return null;
+
+      const crop = createCanvas(sw, sh);
+      const ctx = crop.getContext('2d');
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      ctx.drawImage(image as any, sx, sy, sw, sh, 0, 0, sw, sh);
+      return crop.toBuffer('image/png').toString('base64');
+    } catch (err) {
+      logger.warn(`[AiAnalysis] Failed to crop page render region: ${err instanceof Error ? err.message : String(err)}`);
+      return null;
+    }
   }
 
   /**
