@@ -475,7 +475,12 @@ export class PdfStructureWriterService {
    * The scope lives in a Table-owner attribute object:
    *   { /O: /Table, /Scope: /Column | /Row | /Both }
    *
-   * Per Matterhorn Protocol 07-002: TH elements MUST have a /Scope attribute.
+   * Per Matterhorn Protocol 15-003: TH elements MUST have a /Scope attribute
+   * (mismapped as "07-002" — the real 07-002 is an unrelated ViewerPreferences/
+   * DisplayDocTitle condition — in this comment and three others in this file
+   * until corrected alongside pdf-table-header-scope.validator.ts, which
+   * closes the standalone detection gap for an already-tagged TH with no
+   * /Scope at all).
    * PAC 2024 validates this independently of the TH tag rename.
    */
   writeScopeAttribute(
@@ -1338,7 +1343,7 @@ export class PdfStructureWriterService {
    *
    * Both steps are required:
    *   1. renameElement(TD → TH)  — fixes tag type
-   *   2. writeScopeAttribute(Column) — fixes Matterhorn 07-002
+   *   2. writeScopeAttribute(Column) — fixes Matterhorn 15-003
    *
    * Complex tables (merged cells, id/headers associations) remain HITL.
    *
@@ -1627,6 +1632,167 @@ export class PdfStructureWriterService {
     }
 
     return results;
+  }
+
+  /**
+   * Matterhorn 15-003 fix: writes /Scope to every EXISTING TH cell in the
+   * target table that's missing one, inferred purely from the cell's own
+   * position in the table grid — never promotes a TD to TH (that's
+   * fixSimpleTableHeaders/fixSimpleTableColumnHeaders's job, for a
+   * genuinely different issue). See pdf-table-header-scope.validator.ts's
+   * own header comment for the real gap this closes: a TH that's ALREADY
+   * correctly tagged (by the document's own producer, or an earlier
+   * remediation round) but was never given a Scope attribute at all,
+   * confirmed on a real document via the real PAC/axesPAC desktop tool —
+   * 708 TH cells across 105 real tables, zero with any Scope.
+   *
+   * A TH in the header row (row index 0) gets scope="Column" (it describes
+   * the column below it); a TH in the header column (column index 0) gets
+   * scope="Row". The row-0/col-0 corner cell is genuinely ambiguous by
+   * position alone — it's ALSO in row 0 of every plain header-row-only
+   * table (the common case: a single header row, TD everywhere else,
+   * including column 0) — so its scope is decided by checking for real
+   * evidence of a header column elsewhere in the table (a TH at column 0
+   * in some row other than row 0) and, symmetrically, real evidence of a
+   * header row elsewhere (a TH at row 0 in some column other than column
+   * 0): both → scope="Both", header-column evidence only → scope="Row",
+   * otherwise (including the plain header-row-only case) → scope="Column".
+   * A TH found outside row 0 and column 0 entirely (a genuinely irregular
+   * or multi-level-header shape) is deliberately left unscoped rather than
+   * guessed at, matching this codebase's own "bail rather than guess"
+   * convention — those need Headers/IDs-based association instead, a
+   * separate, larger undertaking. A table with a MIX (some fixable, some
+   * not) still reports success for the ones that could be fixed.
+   */
+  fixTableHeaderScope(
+    doc: PDFDocument,
+    issues: AuditIssue[],
+    preResolvedTargets?: Map<string, { dict: PDFDict; ref: PDFRef }>,
+  ): FixResult[] {
+    const structRoot = this.getStructTreeRoot(doc);
+    if (!structRoot) {
+      return issues.map(i => ({
+        issueId: i.id, success: false,
+        before: 'unknown', after: 'unknown',
+        error: 'No structure tree root found',
+      }));
+    }
+
+    const results: FixResult[] = [];
+
+    for (const issue of issues) {
+      try {
+        const target = preResolvedTargets?.get(issue.id) ?? this.findTargetTable(doc, structRoot, issue.element);
+        if (!target) {
+          results.push({
+            issueId: issue.id, success: false,
+            before: 'unknown', after: 'unknown',
+            error: `No Table element found matching "${issue.element}"`,
+          });
+          continue;
+        }
+
+        const rows = this.collectAllRows(doc, target.dict);
+        if (rows.length === 0) {
+          results.push({
+            issueId: issue.id, success: false,
+            before: 'unknown', after: 'unknown',
+            error: 'Target table has no TR row',
+          });
+          continue;
+        }
+
+        const rowCells = rows.map(r => this.findAllCellsInOrder(doc, r.dict));
+
+        // Real evidence of headers on each axis, excluding the ambiguous
+        // corner cell itself, used to decide the corner's own scope below.
+        const hasHeaderColumnBeyondRow0 = rowCells.slice(1).some(cells => cells[0]?.tag === 'TH');
+        const hasHeaderRowBeyondCol0 = (rowCells[0] ?? []).slice(1).some(cell => cell.tag === 'TH');
+
+        let fixedCount = 0;
+        let skippedCount = 0;
+        rowCells.forEach((cells, rowIndex) => {
+          cells.forEach((cell, colIndex) => {
+            if (cell.tag !== 'TH') return;
+            if (this.hasScopeAttributeForFix(doc, cell.dict)) return;
+
+            const isHeaderRow = rowIndex === 0;
+            const isHeaderCol = colIndex === 0;
+            if (!isHeaderRow && !isHeaderCol) { skippedCount++; return; }
+
+            let scope: 'Row' | 'Column' | 'Both';
+            if (isHeaderRow && isHeaderCol) {
+              scope = hasHeaderColumnBeyondRow0
+                ? (hasHeaderRowBeyondCol0 ? 'Both' : 'Row')
+                : 'Column';
+            } else {
+              scope = isHeaderRow ? 'Column' : 'Row';
+            }
+
+            this.writeScopeAttribute(doc, cell.ref, scope);
+            fixedCount++;
+          });
+        });
+
+        if (fixedCount === 0) {
+          results.push({
+            issueId: issue.id, success: false,
+            before: `${skippedCount} TH cell(s) missing /Scope`, after: 'unknown',
+            error: skippedCount > 0
+              ? `All ${skippedCount} missing-/Scope TH cell(s) are outside row 0/column 0 — refusing to guess a scope for a multi-level header`
+              : 'No TH cells missing /Scope found on this table (already fixed or moved)',
+          });
+          continue;
+        }
+
+        results.push({
+          issueId: issue.id,
+          success: true,
+          before: `${fixedCount + skippedCount} TH cell(s) missing /Scope`,
+          after: skippedCount > 0
+            ? `${fixedCount} TH cell(s) now have /Scope (${skippedCount} outside row 0/column 0 left unscoped)`
+            : `${fixedCount} TH cell(s) now have /Scope`,
+        });
+      } catch (err) {
+        results.push({
+          issueId: issue.id, success: false,
+          before: 'unknown', after: 'unknown',
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+
+    return results;
+  }
+
+  /** Every direct cell (TD or TH) of a row, in original /K order, tagged with which. */
+  private findAllCellsInOrder(doc: PDFDocument, row: PDFDict): Array<{ dict: PDFDict; ref: PDFRef; tag: string }> {
+    const results: Array<{ dict: PDFDict; ref: PDFRef; tag: string }> = [];
+    const k = row.get(PDFName.of('K'));
+    const kids = k instanceof PDFArray ? k.asArray() : k === undefined ? [] : [k];
+    for (const kid of kids) {
+      if (!(kid instanceof PDFRef)) continue;
+      const resolved = doc.context.lookup(kid);
+      if (!(resolved instanceof PDFDict)) continue;
+      const tag = resolved.get(PDFName.of('S'))?.toString().replace(/^\//, '');
+      if (tag === 'TD' || tag === 'TH') results.push({ dict: resolved, ref: kid, tag });
+    }
+    return results;
+  }
+
+  /** True if the element's /A (attributes) already carries a Table-owner dict with a /Scope entry. */
+  private hasScopeAttributeForFix(doc: PDFDocument, elem: PDFDict): boolean {
+    const aRaw = elem.get(PDFName.of('A'));
+    const a = aRaw instanceof PDFRef ? doc.context.lookup(aRaw) : aRaw;
+    const check = (d: unknown): boolean => d instanceof PDFDict && d.get(PDFName.of('Scope')) !== undefined;
+    if (check(a)) return true;
+    if (a instanceof PDFArray) {
+      for (const item of a.asArray()) {
+        const resolved = item instanceof PDFRef ? doc.context.lookup(item) : item;
+        if (check(resolved)) return true;
+      }
+    }
+    return false;
   }
 
   /**
@@ -1982,7 +2148,7 @@ export class PdfStructureWriterService {
    * Every valid entry's TH cells also get a /Scope attribute derived independently from
    * `hasHeaderRow`/`hasHeaderColumn` and the cell's own row/column (not from
    * `isHeader` alone, which can't distinguish which case applies) -- per
-   * Matterhorn 07-002, PAC 2024 checks /Scope independently of the TH tag
+   * Matterhorn 15-003, PAC 2024 checks /Scope independently of the TH tag
    * itself (same CodeRabbit/Codex review round). /ParentTree is extended
    * ONCE per page across every entry's combined MCIDs, sorted by MCID --
    * not once per entry -- since insertMarkedContentSpans assigns MCIDs in
@@ -2244,7 +2410,7 @@ export class PdfStructureWriterService {
                 // own isHeader formula ORs together
                 // ((hasHeaderRow && row===0) || (hasHeaderColumn &&
                 // column===0)), since both can independently be true for the
-                // same corner cell. Per Matterhorn 07-002, every TH needs a
+                // same corner cell. Per Matterhorn 15-003, every TH needs a
                 // /Scope PAC 2024 checks independently of the tag itself --
                 // building a table with TH cells but no /Scope trades one
                 // accessibility failure for another.

@@ -179,6 +179,7 @@ const BOOKMARK_CODES = new Set(['BOOKMARK-MISSING', 'BOOKMARK-INSUFFICIENT', 'BO
 const PDFUA_IDENTIFIER_CODES = new Set(['PDFUA-IDENTIFIER-MISSING', 'MATTERHORN-06-002']);
 const UNTAGGED_CONTENT_CODES = new Set(['UNTAGGED-CONTENT', 'MATTERHORN-01-005']);
 const UNTAGGED_CONTENT_COMPLEX_CODES = new Set(['UNTAGGED-CONTENT-COMPLEX']);
+const TABLE_HEADER_SCOPE_CODES = new Set(['TABLE-HEADER-MISSING-SCOPE']);
 
 // Document-level codes always produce the same result for the whole document,
 // so the suggestion cache below keys them by code alone.
@@ -1310,6 +1311,27 @@ class AiAnalysisService {
         guidance: 'Untagged decorative vector graphics on this page will be marked as PDF artifacts.',
         confidence: 1.0,
         rationale: 'Deterministic fix — wraps untagged painted-path regions in /Artifact BMC…EMC, never touches path geometry or colors',
+        model: 'rule-based',
+        applyMode: 'apply-to-pdf',
+      };
+    }
+
+    if (TABLE_HEADER_SCOPE_CODES.has(code)) {
+      // Deliberately its OWN dedicated branch, not folded into the
+      // TABLE_HEADERS_CODES/TABLE_SCOPE_CODES promotion logic above: that
+      // logic (classifyTableHeaderOrientation, findRegularHeaderRowIndex)
+      // exists to decide whether/how to promote a TD to TH in the first
+      // place, keyed off a TableInfo. pdf-table-header-scope.validator.ts's
+      // own detection only ever fires when the TH cells ALREADY exist —
+      // running the promotion logic against that case would evaluate the
+      // wrong question and risk producing a wrong or confusing suggestion.
+      // Purely positional (row 0 / column 0), so no AI or TableInfo lookup
+      // is needed at all — deterministic like the other rule-based fixes.
+      return {
+        suggestionType: 'table-header-scope-fix',
+        guidance: 'Existing table header cells will get a Scope attribute (Row, Column, or Both) based on their position in the table.',
+        confidence: 1.0,
+        rationale: 'Deterministic fix — writes /Scope to an existing TH cell inferred from its row/column position, never promotes a TD to TH',
         model: 'rule-based',
         applyMode: 'apply-to-pdf',
       };
@@ -2679,7 +2701,11 @@ class AiAnalysisService {
       .map(a => issueById.get(a.issueId))
       .filter((i): i is AuditIssue => !!i);
     const tableHeaderIssues = approved
-      .filter(a => a.suggestionType === 'table-header-fix' || a.suggestionType === 'table-header-fix-column')
+      .filter(a =>
+        a.suggestionType === 'table-header-fix' ||
+        a.suggestionType === 'table-header-fix-column' ||
+        a.suggestionType === 'table-header-scope-fix'
+      )
       .map(a => issueById.get(a.issueId))
       .filter((i): i is AuditIssue => !!i);
     const preResolvedTableTargets =
@@ -2796,7 +2822,7 @@ class AiAnalysisService {
     // for repeat contrast fixes.
     const pagesRewrittenSincePreResolve = new Set<number>();
 
-    const STRUCTURE_WRITER_TYPES = new Set(['heading-fix', 'list-fix', 'table-header-fix', 'table-header-fix-column', 'table-artifact-fix', 'table-from-layout-fix', 'bookmark-generate', 'heading-multiple-h1-fix', 'pdfua-identifier', 'color-contrast-fix', 'alt-text-decorative', 'untagged-content-fix']);
+    const STRUCTURE_WRITER_TYPES = new Set(['heading-fix', 'list-fix', 'table-header-fix', 'table-header-fix-column', 'table-header-scope-fix', 'table-artifact-fix', 'table-from-layout-fix', 'bookmark-generate', 'heading-multiple-h1-fix', 'pdfua-identifier', 'color-contrast-fix', 'alt-text-decorative', 'untagged-content-fix']);
 
     let applied = 0;
     let failed = 0;
@@ -2830,6 +2856,10 @@ class AiAnalysisService {
           modification = { success: r.success, description: r.after, error: r.error };
         } else if (suggestionType === 'table-header-fix-column') {
           const results = pdfStructureWriterService.fixSimpleTableColumnHeaders(doc, [originalIssue], preResolvedTableTargets);
+          const r = results[0];
+          modification = { success: r.success, description: r.after, error: r.error };
+        } else if (suggestionType === 'table-header-scope-fix') {
+          const results = pdfStructureWriterService.fixTableHeaderScope(doc, [originalIssue], preResolvedTableTargets);
           const r = results[0];
           modification = { success: r.success, description: r.after, error: r.error };
         } else if (suggestionType === 'table-artifact-fix') {
