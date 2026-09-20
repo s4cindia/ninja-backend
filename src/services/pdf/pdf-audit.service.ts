@@ -21,6 +21,7 @@ import { PdfContrastValidator } from './validators/pdf-contrast.validator';
 import { pdfAltTextValidator } from './validators/pdf-alttext.validator';
 import { pdfTableValidator, TABLE_LIKELY_FORMULA_CODE } from './validators/pdf-table.validator';
 import { pdfFormulaValidator } from './validators/pdf-formula.validator';
+import { pdfFigureStructTreeValidator } from './validators/pdf-figure-structtree.validator';
 import { pdfStructureValidator } from './validators/pdf-structure.validator';
 import { pdfLinkValidator } from './validators/pdf-link.validator';
 import { pdfFormValidator } from './validators/pdf-form.validator';
@@ -366,6 +367,27 @@ class PdfAuditService extends BaseAuditService<PdfParseResult, PdfValidationResu
           const errorMessage = error instanceof Error ? error.message : 'Unknown error';
           logger.error(`[PdfAudit] PdfFormulaValidator failed:`, error);
           result.validatorErrors.push({ validator: 'PdfFormulaValidator', error: errorMessage });
+        }
+      }
+
+      // 2c. Figure Struct-Tree Validator (struct-tree walk for /Figure
+      // without /Alt or /ActualText, catching what pdf-alttext.validator.ts's
+      // image-XObject-based enumeration structurally cannot see -- see that
+      // validator's own header comment for the real ~24x undercount this
+      // fixes, confirmed via the real PAC/axesPAC desktop tool). Gated on
+      // willRunAltText (its own concern is alt text, not structure), same
+      // "bonus sub-check" pattern as Formula above.
+      if (willRunAltText) {
+        try {
+          logger.info(`[PdfAudit] Running PdfFigureStructTreeValidator...`);
+          const figureResult = await pdfFigureStructTreeValidator.validate(parsed.parsedPdf);
+          result.altTextIssues.push(...figureResult.issues);
+          result.issues.push(...figureResult.issues);
+          logger.info(`[PdfAudit] PdfFigureStructTreeValidator found ${figureResult.issues.length} issues`);
+        } catch (error) {
+          const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+          logger.error(`[PdfAudit] PdfFigureStructTreeValidator failed:`, error);
+          result.validatorErrors.push({ validator: 'PdfFigureStructTreeValidator', error: errorMessage });
         }
       }
 

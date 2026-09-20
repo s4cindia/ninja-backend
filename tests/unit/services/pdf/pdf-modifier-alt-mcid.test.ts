@@ -159,6 +159,213 @@ describe('setAltText — MCID-exact figure targeting', () => {
     expect(figureAlt).toBeNull(); // the real figure on page 1 was left alone
   });
 
+  /**
+   * Regression coverage for the struct-tree-native id format
+   * pdf-figure-structtree.validator.ts emits ("figure_p{page}_mc{mcid}") --
+   * bypasses the image/xObject-name matching entirely, mirroring
+   * setActualText's identical mc-vs-idx branching for
+   * formula_p{page}_mc{mcid}. This id names the exact Figure by its own
+   * MCID directly, with no image or XObject involved at all (the whole
+   * point: a Figure with no discoverable image, e.g. a vector-drawn or
+   * bare-MCID marked-content-only glyph).
+   */
+  it('writes /Alt onto a Figure via the struct-tree-native figure_p{page}_mc{mcid} id, with no image involved at all', async () => {
+    const src = await PDFDocument.create();
+    const page = src.addPage([400, 600]);
+    const font = await src.embedFont(StandardFonts.Helvetica);
+    page.drawText('X', { x: 100, y: 450, size: 14, font }); // a bare glyph (e.g. a rasterized "X-bar" symbol in real documents), no image XObject
+    const doc = await PDFDocument.load(await src.save());
+
+    buildStructTreeFromZones(doc, [{ pageNumber: 1, bbox: { x: 80, y: 120, w: 240, h: 60 }, zoneType: 'figure' }]);
+
+    const root = doc.context.lookup(doc.catalog.get(PDFName.of('StructTreeRoot'))) as PDFDict;
+    let mcid: number | undefined;
+    const findMcid = (node: unknown): void => {
+      if (!(node instanceof PDFDict)) return;
+      if (node.get(PDFName.of('S'))?.toString() === '/Figure') {
+        const k = node.get(PDFName.of('K'));
+        if (k instanceof PDFNumber) mcid = k.asNumber();
+      }
+      const k = node.get(PDFName.of('K'));
+      const kids = k instanceof PDFArray ? k.asArray() : [k];
+      for (const kid of kids) if (kid instanceof PDFRef) findMcid(doc.context.lookup(kid));
+    };
+    findMcid(root);
+    expect(mcid).toBeDefined();
+
+    const res = await pdfModifierService.setAltText(doc, `figure_p1_mc${mcid}`, 'X-bar, the sample mean symbol');
+    expect(res.success).toBe(true);
+
+    let figureAlt: string | null = null;
+    const walk = (node: unknown): void => {
+      if (!(node instanceof PDFDict)) return;
+      if (node.get(PDFName.of('S'))?.toString() === '/Figure') {
+        const alt = node.get(PDFName.of('Alt'));
+        if (alt instanceof PDFString) figureAlt = alt.decodeText();
+      }
+      const k = node.get(PDFName.of('K'));
+      const kids = k instanceof PDFArray ? k.asArray() : [k];
+      for (const kid of kids) if (kid instanceof PDFRef) walk(doc.context.lookup(kid));
+    };
+    walk(root);
+    expect(figureAlt).toBe('X-bar, the sample mean symbol');
+  });
+
+  it('picks the right Figure by MCID (struct-tree-native id) when several share a page, leaving the other untouched', async () => {
+    const src = await PDFDocument.create();
+    const page = src.addPage([400, 600]);
+    const font = await src.embedFont(StandardFonts.Helvetica);
+    page.drawText('mu', { x: 100, y: 450, size: 14, font });
+    page.drawText('sigma', { x: 100, y: 200, size: 14, font });
+    const doc = await PDFDocument.load(await src.save());
+
+    buildStructTreeFromZones(doc, [
+      { pageNumber: 1, bbox: { x: 80, y: 120, w: 240, h: 60 }, zoneType: 'figure' },
+      { pageNumber: 1, bbox: { x: 80, y: 370, w: 240, h: 60 }, zoneType: 'figure' },
+    ]);
+
+    const root = doc.context.lookup(doc.catalog.get(PDFName.of('StructTreeRoot'))) as PDFDict;
+    const figureMcids: number[] = [];
+    const findMcids = (node: unknown): void => {
+      if (!(node instanceof PDFDict)) return;
+      if (node.get(PDFName.of('S'))?.toString() === '/Figure') {
+        const k = node.get(PDFName.of('K'));
+        if (k instanceof PDFNumber) figureMcids.push(k.asNumber());
+      }
+      const k = node.get(PDFName.of('K'));
+      const kids = k instanceof PDFArray ? k.asArray() : [k];
+      for (const kid of kids) if (kid instanceof PDFRef) findMcids(doc.context.lookup(kid));
+    };
+    findMcids(root);
+    expect(figureMcids.length).toBe(2);
+    const [firstMcid, secondMcid] = figureMcids;
+
+    const res = await pdfModifierService.setAltText(doc, `figure_p1_mc${secondMcid}`, 'sigma, standard deviation');
+    expect(res.success).toBe(true);
+
+    const altsByMcid = new Map<number, string>();
+    const walk = (node: unknown): void => {
+      if (!(node instanceof PDFDict)) return;
+      if (node.get(PDFName.of('S'))?.toString() === '/Figure') {
+        const k = node.get(PDFName.of('K'));
+        const a = node.get(PDFName.of('Alt'));
+        if (k instanceof PDFNumber) altsByMcid.set(k.asNumber(), a instanceof PDFString ? a.decodeText() : 'None');
+      }
+      const kk = node.get(PDFName.of('K'));
+      const kids = kk instanceof PDFArray ? kk.asArray() : [kk];
+      for (const kid of kids) if (kid instanceof PDFRef) walk(doc.context.lookup(kid));
+    };
+    walk(root);
+    expect(altsByMcid.get(secondMcid)).toBe('sigma, standard deviation');
+    expect(altsByMcid.get(firstMcid)).toBe('None');
+  });
+
+  it('fails instead of guessing when the struct-tree-native MCID does not match any Figure on the page', async () => {
+    const src = await PDFDocument.create();
+    const page = src.addPage([400, 600]);
+    const font = await src.embedFont(StandardFonts.Helvetica);
+    page.drawText('mu', { x: 100, y: 450, size: 14, font });
+    const doc = await PDFDocument.load(await src.save());
+
+    buildStructTreeFromZones(doc, [{ pageNumber: 1, bbox: { x: 80, y: 120, w: 240, h: 60 }, zoneType: 'figure' }]);
+
+    const res = await pdfModifierService.setAltText(doc, 'figure_p1_mc99', 'wrong reading');
+    expect(res.success).toBe(false);
+
+    const root = doc.context.lookup(doc.catalog.get(PDFName.of('StructTreeRoot'))) as PDFDict;
+    let figureAlt: string | null = null;
+    const walk = (node: unknown): void => {
+      if (!(node instanceof PDFDict)) return;
+      if (node.get(PDFName.of('S'))?.toString() === '/Figure') {
+        const alt = node.get(PDFName.of('Alt'));
+        if (alt instanceof PDFString) figureAlt = alt.decodeText();
+      }
+      const k = node.get(PDFName.of('K'));
+      const kids = k instanceof PDFArray ? k.asArray() : [k];
+      for (const kid of kids) if (kid instanceof PDFRef) walk(doc.context.lookup(kid));
+    };
+    walk(root);
+    expect(figureAlt).toBeNull();
+  });
+
+  /**
+   * CodeRabbit/Codex finding, confirmed real: the positional fallback id
+   * pdf-figure-structtree.validator.ts emits when it can't resolve an MCID
+   * ("figure_p{page}_{index}") wasn't recognized by setAltText's mc-only
+   * regex at all -- it fell through to the unrelated img_p{page}_{index}
+   * regex below, which ALSO doesn't match "figure_p...", silently
+   * defaulting to page 1/index 0 and potentially overwriting an unrelated
+   * Figure's /Alt while still reporting success.
+   */
+  it('writes /Alt via the struct-tree-native positional id (figure_p{page}_{index}), not just the MCID form', async () => {
+    const src = await PDFDocument.create();
+    const page = src.addPage([400, 600]);
+    const font = await src.embedFont(StandardFonts.Helvetica);
+    page.drawText('mu', { x: 100, y: 450, size: 14, font });
+    page.drawText('sigma', { x: 100, y: 200, size: 14, font });
+    const doc = await PDFDocument.load(await src.save());
+
+    buildStructTreeFromZones(doc, [
+      { pageNumber: 1, bbox: { x: 80, y: 120, w: 240, h: 60 }, zoneType: 'figure' },
+      { pageNumber: 1, bbox: { x: 80, y: 370, w: 240, h: 60 }, zoneType: 'figure' },
+    ]);
+
+    // Strip the MCID binding from both Figures so only positional targeting
+    // can work — reproduces exactly the shape the validator's own
+    // positional fallback exists for (a Figure with no resolvable MCID).
+    const root = doc.context.lookup(doc.catalog.get(PDFName.of('StructTreeRoot'))) as PDFDict;
+    const figures: PDFDict[] = [];
+    const findFigures = (node: unknown): void => {
+      if (!(node instanceof PDFDict)) return;
+      if (node.get(PDFName.of('S'))?.toString() === '/Figure') figures.push(node);
+      const k = node.get(PDFName.of('K'));
+      const kids = k instanceof PDFArray ? k.asArray() : [k];
+      for (const kid of kids) if (kid instanceof PDFRef) findFigures(doc.context.lookup(kid));
+    };
+    findFigures(root);
+    expect(figures.length).toBe(2);
+    for (const f of figures) f.delete(PDFName.of('K'));
+
+    const res = await pdfModifierService.setAltText(doc, 'figure_p1_1', 'sigma, standard deviation');
+    expect(res.success).toBe(true);
+
+    const alts = figures.map(f => {
+      const a = f.get(PDFName.of('Alt'));
+      return a instanceof PDFString ? a.decodeText() : 'None';
+    });
+    expect(alts[1]).toBe('sigma, standard deviation');
+    expect(alts[0]).toBe('None'); // untouched
+  });
+
+  it('rejects an unrecognized figure_p-prefixed id rather than falling through to the image-based path and silently defaulting to page 1/index 0', async () => {
+    const src = await PDFDocument.create();
+    const page = src.addPage([400, 600]);
+    const font = await src.embedFont(StandardFonts.Helvetica);
+    page.drawText('mu', { x: 100, y: 450, size: 14, font });
+    const doc = await PDFDocument.load(await src.save());
+
+    buildStructTreeFromZones(doc, [{ pageNumber: 1, bbox: { x: 80, y: 120, w: 240, h: 60 }, zoneType: 'figure' }]);
+
+    const res = await pdfModifierService.setAltText(doc, 'figure_pXYZ_totally_wrong', 'should not apply');
+    expect(res.success).toBe(false);
+    expect(res.error).toContain('does not match the expected');
+
+    const root = doc.context.lookup(doc.catalog.get(PDFName.of('StructTreeRoot'))) as PDFDict;
+    let figureAlt: string | null = null;
+    const walk = (node: unknown): void => {
+      if (!(node instanceof PDFDict)) return;
+      if (node.get(PDFName.of('S'))?.toString() === '/Figure') {
+        const alt = node.get(PDFName.of('Alt'));
+        if (alt instanceof PDFString) figureAlt = alt.decodeText();
+      }
+      const k = node.get(PDFName.of('K'));
+      const kids = k instanceof PDFArray ? k.asArray() : [k];
+      for (const kid of kids) if (kid instanceof PDFRef) walk(doc.context.lookup(kid));
+    };
+    walk(root);
+    expect(figureAlt).toBeNull(); // the real figure on page 1 was left alone
+  });
+
   it('writes /ActualText onto a Formula element (MCID-exact)', async () => {
     const src = await PDFDocument.create();
     const page = src.addPage([400, 600]);

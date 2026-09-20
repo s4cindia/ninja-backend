@@ -762,6 +762,62 @@ export class PdfModifierService {
         };
       }
 
+      // Struct-tree-native ids from pdf-figure-structtree.validator.ts's own
+      // struct-tree walk — bypass the image/xObject-name matching below
+      // entirely. That matching exists to correlate an IMAGE (found via
+      // Resources/XObject) back to its Figure; these ids already name the
+      // exact Figure directly (by MCID when resolvable, mirroring
+      // setActualText's identical mc-vs-idx branching for
+      // formula_p{page}_mc{mcid}, or by same-page positional index when the
+      // validator found no MCID to bind to). CodeRabbit/Codex finding,
+      // confirmed real: only the mc form was originally handled here — a
+      // positional id fell through to the img_p regex below (which doesn't
+      // match either), silently defaulting to page 1/index 0 and
+      // potentially overwriting an unrelated Figure while reporting
+      // success. Any other figure_p-prefixed id is now explicitly rejected
+      // rather than falling through to the image-based path at all.
+      const figureMc = imageId.match(/^figure_p(\d+)_mc(\d+)$/);
+      const figureIdx = figureMc ? null : imageId.match(/^figure_p(\d+)_(\d+)$/);
+      if (imageId.startsWith('figure_p') && !figureMc && !figureIdx) {
+        return {
+          success: false,
+          description: 'Unrecognized element id',
+          error: `"${imageId}" does not match the expected figure_p{page}_mc{mcid} or figure_p{page}_{index} format`,
+        };
+      }
+      if (figureMc || figureIdx) {
+        const targetPage = parseInt((figureMc ?? figureIdx!)[1], 10);
+        const targetMcid = figureMc ? parseInt(figureMc[2], 10) : null;
+        const figures = this.findStructureElementsByType(structTreeRoot, new Set(['Figure', 'figure']), doc.context);
+        const pageRef = doc.getPage(targetPage - 1).ref;
+        const figuresOnPage = figures.filter(fig => {
+          const pg = this.resolveElementPageRef(fig, doc);
+          if (pg) return pg.toString() === pageRef.toString();
+          return this.resolvesToPageViaMcid(fig, doc, targetPage);
+        });
+        const target = targetMcid !== null
+          ? figuresOnPage.find(f => this.structElemHasMcid(f, targetMcid))
+          : figuresOnPage[parseInt(figureIdx![2], 10)];
+        if (!target) {
+          return {
+            success: false,
+            description: 'Figure element not found',
+            error: `No matching Figure element for ${imageId} on page ${targetPage} — refusing to guess a different element`,
+          };
+        }
+        const altEntry = target.get(PDFName.of('Alt'));
+        const before = altEntry instanceof PDFString ? altEntry.decodeText() : (altEntry instanceof PDFHexString ? altEntry.decodeText() : 'None');
+        target.set(PDFName.of('Alt'), PDFString.of(altText));
+        logger.info(`[PdfModifier] Set alt text on Figure (${imageId})`);
+        return {
+          success: true,
+          description: `Set alt text on Figure element (${imageId})`,
+          pageNumber: targetPage,
+          before,
+          after: altText,
+        };
+      }
+
       // Parse page and index from imageId (format: img_p{page}_{index}_{...})
       const match = imageId.match(/img_p(\d+)_(\d+)/);
       const targetPage = match ? parseInt(match[1], 10) : 1;
