@@ -109,6 +109,8 @@ import { AuditIssue } from '../../audit/base-audit.service';
 import { ParsedPDF } from '../pdf-parser.service';
 import { pdfModifierService } from '../pdf-modifier.service';
 import { imageExtractorService } from '../image-extractor.service';
+import { decodePageContent } from '../pdf-content-stream-io';
+import { locateMcidBoundingBoxes } from '../mcid-bounding-box';
 import { logger } from '../../../lib/logger';
 
 export interface FigureStructTreeValidationResult {
@@ -160,6 +162,12 @@ class PdfFigureStructTreeValidator {
 
     const perPageIndex = new Map<number, number>();
     const seen = new Set<string>();
+    // Every emitted issue whose MCID resolved to a real page, collected for
+    // a single post-pass bounding-box lookup below (grouped by page, one
+    // decode + one locateMcidBoundingBoxes call per page rather than one
+    // per figure) -- mirrors computeImageCoveredFigures's own "compute once,
+    // reuse" convention above.
+    const pendingBoxLookup: Array<{ issue: AuditIssue; pageNumber: number; mcid: number }> = [];
 
     const visit = (nodeRef: unknown, inheritedPage: PageInfo | undefined): void => {
       if (nodeRef instanceof PDFRef) {
@@ -185,7 +193,11 @@ class PdfFigureStructTreeValidator {
           withAlternate++;
         } else if (!coveredFigures.has(node)) {
           const content = this.resolveContentRef(node, ownPage, doc, pageInfoFor);
-          issues.push(this.buildIssue(content.pageInfo, content.mcid, perPageIndex));
+          const issue = this.buildIssue(content.pageInfo, content.mcid, perPageIndex);
+          issues.push(issue);
+          if (content.mcid !== undefined && content.pageInfo) {
+            pendingBoxLookup.push({ issue, pageNumber: content.pageInfo.pageNumber, mcid: content.mcid });
+          }
         }
       }
 
@@ -194,6 +206,8 @@ class PdfFigureStructTreeValidator {
     };
 
     visit(root, undefined);
+
+    this.attachBoundingBoxes(doc, pendingBoxLookup);
 
     logger.info(
       `[PdfFigureStructTreeValidator] ${totalFigures} figure(s): ${withAlternate} with alternate, ` +
@@ -243,6 +257,76 @@ class PdfFigureStructTreeValidator {
       logger.debug(`[PdfFigureStructTreeValidator] Could not compute image-covered figures: ${err instanceof Error ? err.message : String(err)}`);
     }
     return covered;
+  }
+
+  /**
+   * Attaches a real boundingBox to each issue whose Figure content actually
+   * resolves to drawn geometry on its page — closes a real, confirmed-live
+   * gap: without this, every one of these issues fell back to a WHOLE-PAGE
+   * render for AI captioning (fallbackToPageRender in ai-analysis.service.ts
+   * has no bounding box to crop to), and on a page with more than one such
+   * Figure, every separate issue got the IDENTICAL full-page image with no
+   * way to tell which one it was being asked about. Confirmed as the real
+   * cause of Auto Mode's yield collapsing to near zero after its first
+   * round on a real 377-page document (Math_Weir_PDF.pdf): 433 -> 303 in
+   * round 2 (real embedded images, handled fine by the image-based path),
+   * then only 3-7 out of 283 struct-tree-only Figures per round for five
+   * more rounds.
+   *
+   * One content-stream decode + one locateMcidBoundingBoxes call per PAGE
+   * (not per figure), grouping every pending issue on that page into a
+   * single lookup — mirrors computeImageCoveredFigures's own batching.
+   * Leaves `issue.boundingBox` unset (never fabricated) for any MCID whose
+   * span produced no real geometry, or whose page content couldn't be
+   * decoded — callers already treat a missing boundingBox as a safe,
+   * pre-existing fallback to the whole-page render.
+   *
+   * The device→top-left flip below (`pageHeight - box.maxY`) assumes
+   * /Rotate 0 and a MediaBox origin at (0,0) — a page with real rotation or
+   * a non-zero CropBox/MediaBox origin needs pdfjs's own per-page viewport
+   * transform, not a bare height subtraction, to land on the same pixels
+   * ai-analysis.service.ts's crop later renders (CodeRabbit finding on
+   * PR #583, confirmed real). NOT fixed here: this is the exact same
+   * simplification image-extractor.service.ts's own ImageInfo.position
+   * already makes and this whole codebase's AuditIssue.boundingBox
+   * convention is built on — a pre-existing, shared limitation, not one
+   * newly introduced by this file, and unconfirmed to matter for any real
+   * document exercised so far (Math_Weir_PDF.pdf has no rotated pages).
+   */
+  private attachBoundingBoxes(
+    doc: ParsedPDF['pdfLibDoc'],
+    entries: Array<{ issue: AuditIssue; pageNumber: number; mcid: number }>,
+  ): void {
+    const byPage = new Map<number, Array<{ issue: AuditIssue; mcid: number }>>();
+    for (const entry of entries) {
+      if (!byPage.has(entry.pageNumber)) byPage.set(entry.pageNumber, []);
+      byPage.get(entry.pageNumber)!.push({ issue: entry.issue, mcid: entry.mcid });
+    }
+
+    for (const [pageNumber, list] of byPage) {
+      try {
+        const content = decodePageContent(doc, pageNumber);
+        if (!content) continue;
+        const boxes = locateMcidBoundingBoxes(content, new Set(list.map(l => l.mcid)));
+        if (boxes.size === 0) continue;
+
+        const { width: pageWidth, height: pageHeight } = doc.getPage(pageNumber - 1).getSize();
+        for (const { issue, mcid } of list) {
+          const box = boxes.get(mcid);
+          if (!box) continue;
+          issue.boundingBox = {
+            x: box.minX,
+            y: pageHeight - box.maxY,
+            width: box.maxX - box.minX,
+            height: box.maxY - box.minY,
+            pageWidth,
+            pageHeight,
+          };
+        }
+      } catch (err) {
+        logger.debug(`[PdfFigureStructTreeValidator] Could not compute bounding boxes for page ${pageNumber}: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
   }
 
   /**
