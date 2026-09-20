@@ -13,6 +13,8 @@ import { PDFName } from 'pdf-lib';
 import { AuditIssue, IssueSeverity } from '../../audit/base-audit.service';
 import { structureAnalyzerService, DocumentStructure } from '../structure-analyzer.service';
 import { pdfParserService, ParsedPDF } from '../pdf-parser.service';
+import { decodePageContent } from '../pdf-content-stream-io';
+import { findUntaggedPathRuns } from '../pdf-artifact-tagger';
 import { logger } from '../../../lib/logger';
 
 /**
@@ -101,6 +103,15 @@ class PDFStructureValidator {
 
     // Validate content structure
     issues.push(...this.validateContentStructure(structure));
+
+    // Validate untagged painted-path content (Matterhorn 01-005) — tagged
+    // PDFs only. An untagged document goes through Seam-C's from-scratch
+    // autotagger first (which already tags every painted path), so this
+    // check only ever finds something real on a document that arrived
+    // already (partially) tagged by its own original producer.
+    if (structure.isTaggedPDF) {
+      issues.push(...this.validateUntaggedContent(parsedPdf));
+    }
 
     // Calculate summary
     const summary = this.calculateSummary(issues);
@@ -483,6 +494,77 @@ class PDFStructureValidator {
    * Check whether the PDF's XMP metadata stream contains a pdfuaid:part entry.
    * Returns false (not present) on any read error — never throws.
    */
+  /**
+   * Matterhorn 01-005 ("Content is neither marked as Artifact nor tagged as
+   * real content", UA1:7.1-2, machine-testable) — confirmed live via the
+   * real PAC/axesPAC desktop tool on a real 377-page document that this
+   * codebase's own audit had zero coverage for: ~24,000 untagged vector-
+   * graphics path-paint sequences (crop marks, table row/header shading
+   * rectangles — see pdf-artifact-tagger.ts's own header for the full
+   * finding). One issue per affected page (not per untagged path) — a
+   * dense table page can carry hundreds of individually-untagged fill
+   * calls that pdf-artifact-tagger.ts's own run-merging collapses into a
+   * small number of contiguous decorative regions; surfacing each raw
+   * path-paint call as its own issue would be both meaningless to a
+   * reviewer and unusable at this codebase's issue-list/DB scale.
+   */
+  private validateUntaggedContent(parsedPdf: ParsedPDF): AuditIssue[] {
+    const issues: AuditIssue[] = [];
+    let pageCount: number;
+    try {
+      pageCount = parsedPdf.pdfLibDoc.getPageCount();
+    } catch (err) {
+      logger.debug(`[PDFStructureValidator] Could not read page count for untagged-content check: ${err instanceof Error ? err.message : String(err)}`);
+      return issues;
+    }
+
+    for (let pageNumber = 1; pageNumber <= pageCount; pageNumber++) {
+      let content: string | null;
+      try {
+        content = decodePageContent(parsedPdf.pdfLibDoc, pageNumber);
+      } catch (err) {
+        logger.debug(`[PDFStructureValidator] Could not decode page ${pageNumber} for untagged-content check: ${err instanceof Error ? err.message : String(err)}`);
+        continue;
+      }
+      if (!content) continue;
+
+      const runs = findUntaggedPathRuns(content);
+      if (runs.length === 0) continue;
+
+      // CodeRabbit finding, confirmed real: detecting a path is untagged
+      // never proves it's decorative -- a tagged PDF can contain a genuine
+      // untagged vector chart, map, diagram, or logo, and auto-artifacting
+      // one would hide real content from assistive technology. Every real
+      // instance confirmed on Math_Weir_PDF.pdf (crop marks, table
+      // row/header shading) uses only straight lines/rectangles; route a
+      // page containing ANY curve-based run to manual review instead of
+      // auto-apply (see UNTAGGED_CONTENT_CODES' dispatch in
+      // ai-analysis.service.ts) rather than only gating the specific
+      // curved runs -- this keeps the writer's existing "fix every
+      // untagged run on this page" contract simple and conservative.
+      const hasComplexRun = runs.some(r => r.hasCurves);
+
+      issues.push(this.createIssue({
+        source: 'pdf-structure',
+        severity: 'moderate',
+        code: hasComplexRun ? 'UNTAGGED-CONTENT-COMPLEX' : 'UNTAGGED-CONTENT',
+        message: `${runs.length} vector-graphics region(s) on this page are neither tagged as real content nor marked as an artifact` +
+          (hasComplexRun ? ' (includes curved paths -- may be meaningful graphics, needs manual review)' : ''),
+        wcagCriteria: ['1.3.1'],
+        location: `Page ${pageNumber}`,
+        suggestion: hasComplexRun
+          ? 'Review these vector graphics: mark them as PDF artifacts if decorative, or tag them as real content (e.g. Figure with alt text) if they convey information.'
+          : 'Mark decorative vector graphics (crop marks, background shading) as PDF artifacts so assistive technology correctly skips them.',
+        category: 'structure',
+        pageNumber,
+        matterhornCheckpoint: '01-005',
+        matterhornHow: 'M',
+      }));
+    }
+
+    return issues;
+  }
+
   private hasPdfUaIdentifier(parsedPdf: ParsedPDF): boolean {
     try {
       const metadataRef = parsedPdf.pdfLibDoc.catalog.get(PDFName.of('Metadata'));

@@ -121,4 +121,40 @@ describe('PacReportService.generateReport — veraPDF/pdfa11y ran-flag gating', 
 
     expect(condition?.status).toBe('PASS');
   });
+
+  it('reports 01-005 as UNTESTED (not a false PASS) when no UNTAGGED-CONTENT issue is present', async () => {
+    // CodeRabbit finding, confirmed real: pdf-structure.validator.ts's
+    // untagged-content check only scans painted PATHS (pdf-artifact-
+    // tagger.ts), not Do/BI/sh -- a tagged PDF whose only untagged content
+    // is an image, inline image, or shading produces no issue there at
+    // all. 01-005 is deliberately NOT in NINJA_TESTABLE_CONDITIONS, so the
+    // no-failure-found case correctly falls back to UNTESTED instead of
+    // claiming full condition coverage this codebase doesn't have yet.
+    vi.mocked(prisma.job.findFirst).mockResolvedValue(mockJob({}) as never);
+
+    const report = await pacReportService.generateReport('job-1', 'tenant-1');
+
+    expect(findCondition(report, '01-005')?.status).toBe('UNTESTED');
+  });
+
+  it('still reports 01-005 as FAIL when a real UNTAGGED-CONTENT issue is present, despite the partial-coverage UNTESTED default', async () => {
+    const issue: AuditIssue = {
+      id: 'untagged-1',
+      source: 'pdf-structure',
+      severity: 'moderate',
+      code: 'UNTAGGED-CONTENT',
+      message: '2 vector-graphics region(s) on this page are neither tagged as real content nor marked as an artifact',
+      matterhornCheckpoint: '01-005',
+      matterhornHow: 'M',
+      pageNumber: 1,
+      location: 'Page 1',
+    };
+    vi.mocked(prisma.job.findFirst).mockResolvedValue(mockJob({ issues: [issue] }) as never);
+
+    const report = await pacReportService.generateReport('job-1', 'tenant-1');
+    const condition = findCondition(report, '01-005');
+
+    expect(condition?.status).toBe('FAIL');
+    expect(condition?.source).toBe('ninja');
+  });
 });

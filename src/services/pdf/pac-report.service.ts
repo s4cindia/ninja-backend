@@ -87,6 +87,21 @@ export interface PacReport {
 const NINJA_TESTABLE_CONDITIONS: ReadonlySet<string> = new Set([
   // ── Structure validator ──────────────────────────────────────────────────
   '01-004', // Tagged content inside Artifact
+  // NOTE: 01-005 ("Content is neither marked as Artifact nor tagged as real
+  // content") is deliberately NOT listed here despite pdf-structure.validator.ts
+  // emitting UNTAGGED-CONTENT issues with matterhornCheckpoint: '01-005'.
+  // CodeRabbit finding, confirmed real: that validator only scans painted
+  // *paths* (pdf-artifact-tagger.ts) -- a tagged PDF whose only untagged
+  // content is text, an image/XObject, an inline image, or a shading
+  // produces no issue there at all, so treating 01-005 as fully Ninja-
+  // tested would make a document with an untagged IMAGE (a real 01-005
+  // violation this codebase doesn't check for) wrongly report PASS. A real
+  // UNTAGGED-CONTENT failure still correctly reports FAIL regardless (see
+  // classifyCondition: a present failing issue always wins over testable-
+  // set membership) -- omitting this from the testable set only affects
+  // the no-failure-found case, correctly falling back to UNTESTED instead
+  // of a false PASS. Add it here only once detection covers every
+  // applicable content type (Do/BI/sh, including nested Form XObjects).
   '06-002', // pdfuaid:part missing from XMP metadata
   '07-001', // ViewerPreferences/DisplayDocTitle not set (if emitted)
   '11-001', // Document language is not specified (stale comment fixed: this

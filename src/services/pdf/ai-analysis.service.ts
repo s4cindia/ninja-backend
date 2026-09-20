@@ -177,6 +177,8 @@ const LINK_CODES = new Set(['LINK-NOT-DESCRIPTIVE', 'LINK-URL-AS-TEXT', 'LINK-GE
 const FORM_CODES = new Set(['FORM-FIELD-NO-LABEL', 'FORM-FIELD-MISSING-TOOLTIP']);
 const BOOKMARK_CODES = new Set(['BOOKMARK-MISSING', 'BOOKMARK-INSUFFICIENT', 'BOOKMARK-GENERIC-TEXT']);
 const PDFUA_IDENTIFIER_CODES = new Set(['PDFUA-IDENTIFIER-MISSING', 'MATTERHORN-06-002']);
+const UNTAGGED_CONTENT_CODES = new Set(['UNTAGGED-CONTENT', 'MATTERHORN-01-005']);
+const UNTAGGED_CONTENT_COMPLEX_CODES = new Set(['UNTAGGED-CONTENT-COMPLEX']);
 
 // Document-level codes always produce the same result for the whole document,
 // so the suggestion cache below keys them by code alone.
@@ -1300,6 +1302,35 @@ class AiAnalysisService {
     if (FORMULA_ACTUALTEXT_CODES.has(code)) {
       if (!issue.pageNumber || !parsed.parsedPdf || !issue.boundingBox) return null;
       return this.analyzeFormulaActualText(issue, parsed.parsedPdf, parsed.isTagged);
+    }
+
+    if (UNTAGGED_CONTENT_CODES.has(code)) {
+      return {
+        suggestionType: 'untagged-content-fix',
+        guidance: 'Untagged decorative vector graphics on this page will be marked as PDF artifacts.',
+        confidence: 1.0,
+        rationale: 'Deterministic fix — wraps untagged painted-path regions in /Artifact BMC…EMC, never touches path geometry or colors',
+        model: 'rule-based',
+        applyMode: 'apply-to-pdf',
+      };
+    }
+
+    if (UNTAGGED_CONTENT_COMPLEX_CODES.has(code)) {
+      // CodeRabbit finding, confirmed real: a curve-based untagged path
+      // could be genuine illustrative content (chart/map/diagram/logo), not
+      // decoration -- auto-artifacting it would hide real content from
+      // assistive technology. Route to manual review instead of the
+      // deterministic apply-to-pdf path the plain (straight-line-only)
+      // UNTAGGED-CONTENT code gets.
+      return {
+        suggestionType: 'untagged-content-review',
+        guidance: 'This page has untagged vector graphics that include curved paths, which may be meaningful content rather than decoration. Review before marking as an artifact.',
+        confidence: 0.4,
+        rationale: 'Curved path construction operators (c/v/y) detected — cannot be confidently classified as decorative without human review',
+        model: 'rule-based',
+        applyMode: 'guidance-only',
+        requiresManualReview: true,
+      };
     }
 
     return null;
@@ -2752,9 +2783,20 @@ class AiAnalysisService {
     // WHOLE batch fresh (same sibling set, current doc state) the first time
     // a page that's already had a successful fix comes up again, rather than
     // splicing against stale positions and corrupting an unrelated operator.
-    const contrastFixedPages = new Set<number>();
+    //
+    // NOT contrast-fix-specific despite the name's origin: ANY successful
+    // content-stream rewrite on a page invalidates that page's byte offsets
+    // equally. CodeRabbit finding on this PR, confirmed real: untagged-
+    // content-fix (fixUntaggedContent) splices /Artifact BMC…EMC into the
+    // SAME page a pending color-contrast-fix might target later in this
+    // same approval batch, shifting every subsequent offset on that page
+    // exactly like a same-page contrast fix would -- so it must register
+    // here too, or a later contrast fix on that page would splice against
+    // stale positions using the same failure mode PR #563 already fixed
+    // for repeat contrast fixes.
+    const pagesRewrittenSincePreResolve = new Set<number>();
 
-    const STRUCTURE_WRITER_TYPES = new Set(['heading-fix', 'list-fix', 'table-header-fix', 'table-header-fix-column', 'table-artifact-fix', 'table-from-layout-fix', 'bookmark-generate', 'heading-multiple-h1-fix', 'pdfua-identifier', 'color-contrast-fix', 'alt-text-decorative']);
+    const STRUCTURE_WRITER_TYPES = new Set(['heading-fix', 'list-fix', 'table-header-fix', 'table-header-fix-column', 'table-artifact-fix', 'table-from-layout-fix', 'bookmark-generate', 'heading-multiple-h1-fix', 'pdfua-identifier', 'color-contrast-fix', 'alt-text-decorative', 'untagged-content-fix']);
 
     let applied = 0;
     let failed = 0;
@@ -2823,16 +2865,23 @@ class AiAnalysisService {
         } else if (suggestionType === 'heading-multiple-h1-fix') {
           const result = pdfStructureWriterService.fixMultipleH1(doc, originalIssue);
           modification = { success: result.success, description: result.after, error: result.error };
+        } else if (suggestionType === 'untagged-content-fix') {
+          const results = pdfStructureWriterService.fixUntaggedContent(doc, [originalIssue]);
+          const r = results[0];
+          modification = { success: r.success, description: r.after, error: r.error };
+          if (r.success && originalIssue.pageNumber !== undefined) {
+            pagesRewrittenSincePreResolve.add(originalIssue.pageNumber);
+          }
         } else if (suggestionType === 'pdfua-identifier') {
           modification = await pdfModifierService.writePdfUaIdentifier(doc);
         } else if (suggestionType === 'color-contrast-fix') {
-          if (originalIssue.pageNumber !== undefined && contrastFixedPages.has(originalIssue.pageNumber)) {
+          if (originalIssue.pageNumber !== undefined && pagesRewrittenSincePreResolve.has(originalIssue.pageNumber)) {
             preResolvedContrastMatches = resolveColorContrastTargets(doc, colorContrastIssues);
           }
           const result = await pdfContrastWriterService.fixColorContrast(doc, originalIssue, preResolvedContrastMatches);
           modification = { success: result.success, description: result.after, error: result.error };
           if (result.success && originalIssue.pageNumber !== undefined) {
-            contrastFixedPages.add(originalIssue.pageNumber);
+            pagesRewrittenSincePreResolve.add(originalIssue.pageNumber);
           }
         } else if (suggestionType === 'alt-text-decorative') {
           // Hardcoded '' rather than the stored value -- matches applyAll/applySuggestion.
