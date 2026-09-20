@@ -6,7 +6,7 @@ describe('findUntaggedPathRuns', () => {
     const content = `0 0 m\n10 10 l\nS\n`;
     const runs = findUntaggedPathRuns(content);
     expect(runs).toHaveLength(1);
-    expect(runs[0]).toEqual({ start: 0, end: content.indexOf('S') + 1 });
+    expect(runs[0]).toEqual({ start: 0, end: content.indexOf('S') + 1, hasCurves: false });
   });
 
   it('ignores a path used only for clipping (ends in n, not a paint op)', () => {
@@ -63,6 +63,78 @@ describe('findUntaggedPathRuns', () => {
     const content = `0 0 m\n10 10 l\nS\nBT\n(x)Tj\nET\n20 20 m\n30 30 l\nS\n`;
     const runs = findUntaggedPathRuns(content);
     expect(runs).toHaveLength(2);
+  });
+
+  it('marks a run containing a Bezier curve operator (c/v/y) as hasCurves', () => {
+    const content = `0 0 m\n10 10 20 20 30 30 c\nS\n`;
+    const runs = findUntaggedPathRuns(content);
+    expect(runs).toHaveLength(1);
+    expect(runs[0].hasCurves).toBe(true);
+  });
+
+  it('marks a straight-line-only run (m/l/re/h) as NOT hasCurves', () => {
+    const content = `0 0 m\n10 10 l\n0 0 100 100 re\nh\nS\n`;
+    const runs = findUntaggedPathRuns(content);
+    expect(runs).toHaveLength(1);
+    expect(runs[0].hasCurves).toBe(false);
+  });
+
+  it('propagates hasCurves across a merged run: one curve anywhere in the merge taints the whole run', () => {
+    const content =
+      `0 0 m\n10 10 l\nf\n` +          // straight-line unit 1
+      `0 0 0 0.5 k\n` +                 // color-set (doesn't break the merge)
+      `20 20 m\n5 5 10 10 15 15 c\nf\n`; // curved unit 2 -- same merged run
+    const runs = findUntaggedPathRuns(content);
+    expect(runs).toHaveLength(1);
+    expect(runs[0].hasCurves).toBe(true);
+  });
+
+  it('does not flag a path inside /OC BDC (optional-content layer marker) as already-tagged -- OC is not an accessibility tag', () => {
+    // CodeRabbit finding: a naive "any BDC/BMC means tagged" check produces
+    // a false negative here, since /OC controls layer visibility and has
+    // nothing to do with structure/artifact tagging.
+    const content = `/OC /MC0 BDC\n0 0 m\n10 10 l\nS\nEMC\n`;
+    const runs = findUntaggedPathRuns(content);
+    expect(runs).toHaveLength(1);
+  });
+
+  it('still suppresses detection for a path genuinely inside a real tag nested INSIDE an /OC layer', () => {
+    const content = `/OC /MC0 BDC\n/P <</MCID 0 >>BDC\n0 0 m\n10 10 l\nS\nEMC\nEMC\n`;
+    expect(findUntaggedPathRuns(content)).toHaveLength(0);
+  });
+
+  it('correctly resumes untagged detection after a real tag closes inside an outer /OC layer', () => {
+    // Nesting order: OC(false) -> real(true) -> EMC pops real -> depth back
+    // to 0 (still inside OC, which never counted) -> next path IS untagged.
+    const content =
+      `/OC /MC0 BDC\n` +
+      `/P <</MCID 0 >>BDC\n(x)Tj\nEMC\n` +
+      `20 20 m\n30 30 l\nS\n` +
+      `EMC\n`;
+    const runs = findUntaggedPathRuns(content);
+    expect(runs).toHaveLength(1);
+  });
+
+  it('does not corrupt an inline image by parsing its binary payload as path operators', () => {
+    // CodeRabbit finding: a real bug where BI's binary payload (unparseable
+    // as tokens) could contain byte sequences that look like "m"/"l"/"S"
+    // and get misdetected as an untagged path run, then have /Artifact BMC
+    // spliced directly into the image data.
+    const content = `BI\n/W 2/H 1/BPC 8/CS/G\nID \x00m 0 0 l S\x00\nEI\n0 0 m\n5 5 l\nS\n`;
+    const runs = findUntaggedPathRuns(content);
+    // Only the REAL untagged path after EI is found -- nothing inside the
+    // inline image's own binary span.
+    expect(runs).toHaveLength(1);
+    expect(runs[0].start).toBeGreaterThan(content.indexOf('EI'));
+  });
+
+  it('never splices into inline image binary data when applying the fix', () => {
+    const content = `BI\n/W 2/H 1/BPC 8/CS/G\nID \x00m 0 0 l S\x00\nEI\n`;
+    const result = tagUntaggedPaintedPaths(content);
+    // Nothing outside the image is untagged, and the image itself must be
+    // left byte-for-byte untouched.
+    expect(result.count).toBe(0);
+    expect(result.content).toBe(content);
   });
 
   it('reproduces the real Math_Weir_PDF.pdf crop-mark shape: two short tick-mark paths per page, both untagged', () => {

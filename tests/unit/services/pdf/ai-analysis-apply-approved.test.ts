@@ -527,6 +527,54 @@ describe('aiAnalysisService.applyApprovedSuggestions', () => {
     expect(result.failed).toBe(0);
   });
 
+  // CodeRabbit finding on this feature's own PR, confirmed real: ANY
+  // successful content-stream rewrite invalidates a page's precomputed byte
+  // offsets, not just another contrast fix -- untagged-content-fix
+  // (fixUntaggedContent) splices /Artifact BMC…EMC into the page, which
+  // shifts every later offset on it exactly like a same-page contrast fix
+  // would. A pending color-contrast-fix on that same page must re-resolve
+  // rather than reuse offsets computed before the untagged-content fix ran.
+  it('re-resolves color-contrast matches after a same-page untagged-content-fix, not just after another contrast fix', async () => {
+    const jobWithIssues = {
+      id: 'job-1',
+      output: {
+        fileName: 'doc.pdf',
+        auditReport: {
+          issues: [
+            { id: 'untagged-1', code: 'UNTAGGED-CONTENT', pageNumber: 1 },
+            { id: 'contrast-1', code: 'COLOR-CONTRAST', pageNumber: 1, contrastData: { foreground: '#ff0000', background: '#ffffff', ratio: 3.7, requiredRatio: 4.5, isLargeText: false } },
+          ],
+        },
+      },
+    };
+    vi.mocked(prisma.job.findUnique).mockResolvedValue(jobWithIssues as any);
+    vi.mocked(prisma.aiAnalysis.findMany).mockResolvedValue([
+      { issueId: 'untagged-1', suggestionType: 'untagged-content-fix' },
+      { issueId: 'contrast-1', suggestionType: 'color-contrast-fix', value: '#cc0000' },
+    ] as any);
+    vi.mocked(fileStorageService.getRemediatedFile).mockResolvedValue(Buffer.from('pdf'));
+    vi.mocked(pdfModifierService.loadPDF).mockResolvedValue({} as any);
+    vi.mocked(pdfModifierService.savePDF).mockResolvedValue(Buffer.from('modified-pdf'));
+    vi.mocked(fileStorageService.saveRemediatedFile).mockResolvedValue('s3://remediated/doc.pdf');
+
+    const { pdfStructureWriterService } = await import('../../../../src/services/pdf/pdf-structure-writer.service');
+    vi.mocked(pdfStructureWriterService.fixUntaggedContent).mockReturnValue([
+      { issueId: 'untagged-1', success: true, before: '1 untagged region', after: 'marked as /Artifact' },
+    ]);
+
+    const { pdfContrastWriterService, resolveColorContrastTargets } = await import('../../../../src/services/pdf/pdf-contrast-writer.service');
+    vi.mocked(resolveColorContrastTargets).mockReturnValue(new Map());
+    vi.mocked(pdfContrastWriterService.fixColorContrast).mockResolvedValue({ issueId: 'contrast-1', success: true, before: 'a', after: 'b' });
+
+    const result = await aiAnalysisService.applyApprovedSuggestions('job-1', 1, 'user-1', 'apply_all');
+
+    // Once upfront, then again before the contrast fix -- because the
+    // untagged-content-fix on the SAME page ran first in this batch.
+    expect(resolveColorContrastTargets).toHaveBeenCalledTimes(2);
+    expect(result.applied).toBe(2);
+    expect(result.failed).toBe(0);
+  });
+
   it('does not call pdfComprehensiveParserService when no table-from-layout-fix suggestions are in the batch', async () => {
     vi.mocked(prisma.aiAnalysis.findMany).mockResolvedValue([
       { issueId: 'issue-1', suggestionType: 'alt-text', value: 'A red apple' },

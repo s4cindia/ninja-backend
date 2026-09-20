@@ -163,6 +163,46 @@ describe('PDFStructureValidator', () => {
       expect(issue?.location).toBe('Page 1');
     });
 
+    it('routes a page with a curved untagged path to UNTAGGED-CONTENT-COMPLEX instead of auto-fixable UNTAGGED-CONTENT (may be meaningful graphics, not decoration)', async () => {
+      const pdfLibDoc = await validateWithRealPage('0 0 m\n10 10 20 20 30 30 c\nS\n');
+      const mockParsedPdf = { ...createMockParsedPdf({ isTagged: true, hasLanguage: true, hasTitle: true }), pdfLibDoc };
+      const mockStructure = createMockStructure({
+        isTaggedPDF: true, hasProperHeadingHierarchy: true, hasDocumentLanguage: true, hasLogicalReadingOrder: true,
+      });
+      vi.mocked(pdfParserService.parse).mockResolvedValue(mockParsedPdf);
+      vi.mocked(pdfParserService.close).mockResolvedValue(undefined);
+      vi.mocked(structureAnalyzerService.analyzeStructure).mockResolvedValue(mockStructure);
+
+      const result = await pdfStructureValidator.validateFromFile('/path/to/test.pdf');
+
+      expect(result.issues.find(i => i.code === 'UNTAGGED-CONTENT')).toBeUndefined();
+      const complexIssue = result.issues.find(i => i.code === 'UNTAGGED-CONTENT-COMPLEX');
+      expect(complexIssue).toBeDefined();
+      expect(complexIssue?.matterhornCheckpoint).toBe('01-005');
+    });
+
+    it('routes a page with ANY curved run to UNTAGGED-CONTENT-COMPLEX even when other runs on the same page are simple', async () => {
+      const pdfLibDoc = await validateWithRealPage(
+        '0 0 m\n10 10 l\nS\n' + 'BT\n(x)Tj\nET\n' + '20 20 m\n5 5 10 10 15 15 c\nS\n'
+      );
+      const mockParsedPdf = { ...createMockParsedPdf({ isTagged: true, hasLanguage: true, hasTitle: true }), pdfLibDoc };
+      const mockStructure = createMockStructure({
+        isTaggedPDF: true, hasProperHeadingHierarchy: true, hasDocumentLanguage: true, hasLogicalReadingOrder: true,
+      });
+      vi.mocked(pdfParserService.parse).mockResolvedValue(mockParsedPdf);
+      vi.mocked(pdfParserService.close).mockResolvedValue(undefined);
+      vi.mocked(structureAnalyzerService.analyzeStructure).mockResolvedValue(mockStructure);
+
+      const result = await pdfStructureValidator.validateFromFile('/path/to/test.pdf');
+
+      // The whole page routes to the conservative code -- even the simple
+      // straight-line run isn't auto-fixed once ANY run on the page is
+      // curve-based (see validateUntaggedContent's own doc comment for why
+      // this is deliberately page-level, not per-run).
+      expect(result.issues.find(i => i.code === 'UNTAGGED-CONTENT')).toBeUndefined();
+      expect(result.issues.find(i => i.code === 'UNTAGGED-CONTENT-COMPLEX')).toBeDefined();
+    });
+
     it('does not flag a page whose painted paths are all already tagged', async () => {
       const pdfLibDoc = await validateWithRealPage('/Artifact BMC\n0 0 m\n10 10 l\nS\nEMC\n');
       const mockParsedPdf = { ...createMockParsedPdf({ isTagged: true, hasLanguage: true, hasTitle: true }), pdfLibDoc };

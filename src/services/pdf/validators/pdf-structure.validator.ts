@@ -531,14 +531,30 @@ class PDFStructureValidator {
       const runs = findUntaggedPathRuns(content);
       if (runs.length === 0) continue;
 
+      // CodeRabbit finding, confirmed real: detecting a path is untagged
+      // never proves it's decorative -- a tagged PDF can contain a genuine
+      // untagged vector chart, map, diagram, or logo, and auto-artifacting
+      // one would hide real content from assistive technology. Every real
+      // instance confirmed on Math_Weir_PDF.pdf (crop marks, table
+      // row/header shading) uses only straight lines/rectangles; route a
+      // page containing ANY curve-based run to manual review instead of
+      // auto-apply (see UNTAGGED_CONTENT_CODES' dispatch in
+      // ai-analysis.service.ts) rather than only gating the specific
+      // curved runs -- this keeps the writer's existing "fix every
+      // untagged run on this page" contract simple and conservative.
+      const hasComplexRun = runs.some(r => r.hasCurves);
+
       issues.push(this.createIssue({
         source: 'pdf-structure',
         severity: 'moderate',
-        code: 'UNTAGGED-CONTENT',
-        message: `${runs.length} vector-graphics region(s) on this page are neither tagged as real content nor marked as an artifact`,
+        code: hasComplexRun ? 'UNTAGGED-CONTENT-COMPLEX' : 'UNTAGGED-CONTENT',
+        message: `${runs.length} vector-graphics region(s) on this page are neither tagged as real content nor marked as an artifact` +
+          (hasComplexRun ? ' (includes curved paths -- may be meaningful graphics, needs manual review)' : ''),
         wcagCriteria: ['1.3.1'],
         location: `Page ${pageNumber}`,
-        suggestion: 'Mark decorative vector graphics (crop marks, background shading) as PDF artifacts so assistive technology correctly skips them.',
+        suggestion: hasComplexRun
+          ? 'Review these vector graphics: mark them as PDF artifacts if decorative, or tag them as real content (e.g. Figure with alt text) if they convey information.'
+          : 'Mark decorative vector graphics (crop marks, background shading) as PDF artifacts so assistive technology correctly skips them.',
         category: 'structure',
         pageNumber,
         matterhornCheckpoint: '01-005',
