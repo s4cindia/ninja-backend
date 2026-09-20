@@ -5,9 +5,11 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { PDFDocument } from 'pdf-lib';
 import { pdfStructureValidator } from '../../../../src/services/pdf/validators/pdf-structure.validator';
 import { structureAnalyzerService, DocumentStructure, TableCell } from '../../../../src/services/pdf/structure-analyzer.service';
 import { pdfParserService, ParsedPDF } from '../../../../src/services/pdf/pdf-parser.service';
+import { writePageContent } from '../../../../src/services/pdf/pdf-content-stream-io';
 
 // Mock dependencies
 vi.mock('../../../../src/services/pdf/structure-analyzer.service');
@@ -130,6 +132,65 @@ describe('PDFStructureValidator', () => {
       expect(titleIssue?.severity).toBe('serious');
       expect(titleIssue?.message).toContain('title is not present');
       expect(titleIssue?.wcagCriteria).toContain('2.4.2');
+    });
+  });
+
+  describe('untagged content (Matterhorn 01-005)', () => {
+    async function validateWithRealPage(content: string): Promise<ParsedPDF['pdfLibDoc']> {
+      const doc = await PDFDocument.create();
+      doc.addPage([612, 792]);
+      writePageContent(doc, 1, content);
+      return doc;
+    }
+
+    it('flags a page with an untagged painted-path region', async () => {
+      const pdfLibDoc = await validateWithRealPage('0 0 m\n10 10 l\nS\n');
+      const mockParsedPdf = { ...createMockParsedPdf({ isTagged: true, hasLanguage: true, hasTitle: true }), pdfLibDoc };
+      const mockStructure = createMockStructure({
+        isTaggedPDF: true, hasProperHeadingHierarchy: true, hasDocumentLanguage: true, hasLogicalReadingOrder: true,
+      });
+      vi.mocked(pdfParserService.parse).mockResolvedValue(mockParsedPdf);
+      vi.mocked(pdfParserService.close).mockResolvedValue(undefined);
+      vi.mocked(structureAnalyzerService.analyzeStructure).mockResolvedValue(mockStructure);
+
+      const result = await pdfStructureValidator.validateFromFile('/path/to/test.pdf');
+
+      const issue = result.issues.find(i => i.code === 'UNTAGGED-CONTENT');
+      expect(issue).toBeDefined();
+      expect(issue?.matterhornCheckpoint).toBe('01-005');
+      expect(issue?.matterhornHow).toBe('M');
+      expect(issue?.pageNumber).toBe(1);
+      expect(issue?.location).toBe('Page 1');
+    });
+
+    it('does not flag a page whose painted paths are all already tagged', async () => {
+      const pdfLibDoc = await validateWithRealPage('/Artifact BMC\n0 0 m\n10 10 l\nS\nEMC\n');
+      const mockParsedPdf = { ...createMockParsedPdf({ isTagged: true, hasLanguage: true, hasTitle: true }), pdfLibDoc };
+      const mockStructure = createMockStructure({
+        isTaggedPDF: true, hasProperHeadingHierarchy: true, hasDocumentLanguage: true, hasLogicalReadingOrder: true,
+      });
+      vi.mocked(pdfParserService.parse).mockResolvedValue(mockParsedPdf);
+      vi.mocked(pdfParserService.close).mockResolvedValue(undefined);
+      vi.mocked(structureAnalyzerService.analyzeStructure).mockResolvedValue(mockStructure);
+
+      const result = await pdfStructureValidator.validateFromFile('/path/to/test.pdf');
+
+      expect(result.issues.find(i => i.code === 'UNTAGGED-CONTENT')).toBeUndefined();
+    });
+
+    it('does not run this check on an untagged PDF (Seam-C autotag handles paths for those)', async () => {
+      const pdfLibDoc = await validateWithRealPage('0 0 m\n10 10 l\nS\n');
+      const mockParsedPdf = { ...createMockParsedPdf({ isTagged: false, hasLanguage: true, hasTitle: true }), pdfLibDoc };
+      const mockStructure = createMockStructure({
+        isTaggedPDF: false, hasProperHeadingHierarchy: true, hasDocumentLanguage: true, hasLogicalReadingOrder: true,
+      });
+      vi.mocked(pdfParserService.parse).mockResolvedValue(mockParsedPdf);
+      vi.mocked(pdfParserService.close).mockResolvedValue(undefined);
+      vi.mocked(structureAnalyzerService.analyzeStructure).mockResolvedValue(mockStructure);
+
+      const result = await pdfStructureValidator.validateFromFile('/path/to/test.pdf');
+
+      expect(result.issues.find(i => i.code === 'UNTAGGED-CONTENT')).toBeUndefined();
     });
   });
 

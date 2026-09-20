@@ -521,6 +521,10 @@ export class PdfAiAnalysisController {
       } else if (suggestionType === 'heading-multiple-h1-fix') {
         const result = pdfStructureWriterService.fixMultipleH1(doc, originalIssue);
         modification = { success: result.success, description: result.after, error: result.error };
+      } else if (suggestionType === 'untagged-content-fix') {
+        const results = pdfStructureWriterService.fixUntaggedContent(doc, [originalIssue]);
+        const r = results[0];
+        modification = { success: r.success, description: r.after, error: r.error };
       } else if (suggestionType === 'pdfua-identifier') {
         modification = await pdfModifierService.writePdfUaIdentifier(doc);
       } else if (suggestionType === 'color-contrast-fix') {

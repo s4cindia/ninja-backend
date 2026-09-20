@@ -30,6 +30,7 @@ import {
 import { AuditIssue } from '../audit/base-audit.service';
 import { logger } from '../../lib/logger';
 import { pageContentMcids, decodePageContent, writePageContent } from './pdf-content-stream-io';
+import { tagUntaggedPaintedPaths } from './pdf-artifact-tagger';
 import {
   matchCellRanges,
   insertMarkedContentSpans,
@@ -2744,6 +2745,49 @@ export class PdfStructureWriterService {
       }
     }
     // PDFNumber = inline MCID reference — needs content stream parsing; skip
+  }
+
+  /**
+   * Matterhorn 01-005 fix — wraps every untagged painted-path region on each
+   * issue's page in `/Artifact BMC … EMC` (see pdf-artifact-tagger.ts for
+   * the full detection/merging logic and the real-document finding behind
+   * it). Purely a marked-content change: never touches path geometry,
+   * colors, or any other operator, so it's always a deterministic, no-AI,
+   * risk-free apply-to-pdf fix — confirmed live via a rendered pixel diff
+   * against a real affected page (zero pixels differ before vs. after).
+   */
+  fixUntaggedContent(doc: PDFDocument, issues: AuditIssue[]): FixResult[] {
+    return issues.map((issue) => {
+      if (!issue.pageNumber) {
+        return { issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error: 'Issue has no pageNumber' };
+      }
+
+      let content: string | null;
+      try {
+        content = decodePageContent(doc, issue.pageNumber);
+      } catch (err) {
+        return {
+          issueId: issue.id, success: false, before: 'unknown', after: 'unknown',
+          error: `Could not decode page ${issue.pageNumber}: ${err instanceof Error ? err.message : String(err)}`,
+        };
+      }
+      if (!content) {
+        return { issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error: `Page ${issue.pageNumber} has no content stream` };
+      }
+
+      const { content: fixed, count } = tagUntaggedPaintedPaths(content);
+      if (count === 0) {
+        return { issueId: issue.id, success: false, before: 'untagged content present', after: 'unknown', error: 'No untagged painted-path regions found on this page (already fixed or moved)' };
+      }
+
+      writePageContent(doc, issue.pageNumber, fixed);
+      return {
+        issueId: issue.id,
+        success: true,
+        before: `${count} untagged vector-graphics region(s)`,
+        after: `${count} region(s) marked as /Artifact`,
+      };
+    });
   }
 }
 

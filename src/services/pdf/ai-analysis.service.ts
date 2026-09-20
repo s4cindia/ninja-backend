@@ -177,6 +177,7 @@ const LINK_CODES = new Set(['LINK-NOT-DESCRIPTIVE', 'LINK-URL-AS-TEXT', 'LINK-GE
 const FORM_CODES = new Set(['FORM-FIELD-NO-LABEL', 'FORM-FIELD-MISSING-TOOLTIP']);
 const BOOKMARK_CODES = new Set(['BOOKMARK-MISSING', 'BOOKMARK-INSUFFICIENT', 'BOOKMARK-GENERIC-TEXT']);
 const PDFUA_IDENTIFIER_CODES = new Set(['PDFUA-IDENTIFIER-MISSING', 'MATTERHORN-06-002']);
+const UNTAGGED_CONTENT_CODES = new Set(['UNTAGGED-CONTENT', 'MATTERHORN-01-005']);
 
 // Document-level codes always produce the same result for the whole document,
 // so the suggestion cache below keys them by code alone.
@@ -1300,6 +1301,17 @@ class AiAnalysisService {
     if (FORMULA_ACTUALTEXT_CODES.has(code)) {
       if (!issue.pageNumber || !parsed.parsedPdf || !issue.boundingBox) return null;
       return this.analyzeFormulaActualText(issue, parsed.parsedPdf, parsed.isTagged);
+    }
+
+    if (UNTAGGED_CONTENT_CODES.has(code)) {
+      return {
+        suggestionType: 'untagged-content-fix',
+        guidance: 'Untagged decorative vector graphics on this page will be marked as PDF artifacts.',
+        confidence: 1.0,
+        rationale: 'Deterministic fix — wraps untagged painted-path regions in /Artifact BMC…EMC, never touches path geometry or colors',
+        model: 'rule-based',
+        applyMode: 'apply-to-pdf',
+      };
     }
 
     return null;
@@ -2754,7 +2766,7 @@ class AiAnalysisService {
     // splicing against stale positions and corrupting an unrelated operator.
     const contrastFixedPages = new Set<number>();
 
-    const STRUCTURE_WRITER_TYPES = new Set(['heading-fix', 'list-fix', 'table-header-fix', 'table-header-fix-column', 'table-artifact-fix', 'table-from-layout-fix', 'bookmark-generate', 'heading-multiple-h1-fix', 'pdfua-identifier', 'color-contrast-fix', 'alt-text-decorative']);
+    const STRUCTURE_WRITER_TYPES = new Set(['heading-fix', 'list-fix', 'table-header-fix', 'table-header-fix-column', 'table-artifact-fix', 'table-from-layout-fix', 'bookmark-generate', 'heading-multiple-h1-fix', 'pdfua-identifier', 'color-contrast-fix', 'alt-text-decorative', 'untagged-content-fix']);
 
     let applied = 0;
     let failed = 0;
@@ -2823,6 +2835,10 @@ class AiAnalysisService {
         } else if (suggestionType === 'heading-multiple-h1-fix') {
           const result = pdfStructureWriterService.fixMultipleH1(doc, originalIssue);
           modification = { success: result.success, description: result.after, error: result.error };
+        } else if (suggestionType === 'untagged-content-fix') {
+          const results = pdfStructureWriterService.fixUntaggedContent(doc, [originalIssue]);
+          const r = results[0];
+          modification = { success: r.success, description: r.after, error: r.error };
         } else if (suggestionType === 'pdfua-identifier') {
           modification = await pdfModifierService.writePdfUaIdentifier(doc);
         } else if (suggestionType === 'color-contrast-fix') {

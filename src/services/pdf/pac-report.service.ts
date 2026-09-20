@@ -87,6 +87,7 @@ export interface PacReport {
 const NINJA_TESTABLE_CONDITIONS: ReadonlySet<string> = new Set([
   // ── Structure validator ──────────────────────────────────────────────────
   '01-004', // Tagged content inside Artifact
+  '01-005', // Content is neither marked as Artifact nor tagged as real content
   '06-002', // pdfuaid:part missing from XMP metadata
   '07-001', // ViewerPreferences/DisplayDocTitle not set (if emitted)
   '11-001', // Document language is not specified (stale comment fixed: this
