@@ -63,7 +63,24 @@ class PdfTableHeaderScopeValidator {
     const perPageTableIndex = new Map<number, number>();
     const seen = new Set<string>();
 
-    const visit = (nodeRef: unknown, inheritedPage: number | undefined): void => {
+    // Deliberately NO ancestor-inheritance fallback for a /Table's page --
+    // only its own /Pg or a subtree search into its own descendants
+    // (mirroring pdf-structure-writer.service.ts's own resolveElementPageRef
+    // exactly). findTargetTable, which later resolves this validator's own
+    // `table_p{page}_{index}` ids back to a real element, has no
+    // ancestor-fallback either: it only ever consults a table's own/subtree
+    // /Pg (plus an MCID-overlap fallback for a page it already suspects,
+    // which doesn't apply here since there's no candidate page to test yet).
+    // An ancestor-inherited page would emit an id findTargetTable can never
+    // resolve, AND would consume a perPageTableIndex slot that shifts every
+    // OTHER real, resolvable table after it on the same page out of sync
+    // with findTargetTable's own indexing (CodeRabbit finding on PR #582,
+    // confirmed real via a dedicated regression test). A /Table with no
+    // resolvable page at all is skipped entirely -- not fabricated onto a
+    // guessed page -- matching structure-analyzer.service.ts's own
+    // "leaving it unmatched rather than defaulting to a fabricated page"
+    // convention for this exact class of gap.
+    const visit = (nodeRef: unknown): void => {
       if (nodeRef instanceof PDFRef) {
         const key = nodeRef.toString();
         if (seen.has(key)) return;
@@ -72,32 +89,19 @@ class PdfTableHeaderScopeValidator {
       const node = nodeRef instanceof PDFRef ? doc.context.lookup(nodeRef) : nodeRef;
 
       if (node instanceof PDFArray) {
-        for (const item of node.asArray()) visit(item, inheritedPage);
+        for (const item of node.asArray()) visit(item);
         return;
       }
       if (!(node instanceof PDFDict)) return;
 
-      const isTable = node.get(PDFName.of('S'))?.toString() === '/Table';
-      const directPage = this.resolvePageNumber(doc, node.get(PDFName.of('Pg')));
-      // /Table specifically needs a subtree search before falling back to
-      // ancestor inheritance: some real documents put /Pg on neither the
-      // /Table node nor any ancestor up to /Document, only on leaf row/cell
-      // descendants (the same gap resolveTablePageNumber/findPageNumberInSubtree
-      // in structure-analyzer.service.ts already exists to close, and
-      // findTargetTable's own resolveElementPageRef relies on for the exact
-      // same reason). Every other node keeps the simpler own-/Pg-else-
-      // inherited resolution.
-      const subtreePage = directPage === undefined && isTable
-        ? this.resolvePageNumber(doc, this.findPageRefInSubtree(doc, node))
-        : undefined;
-      const ownPage = directPage ?? subtreePage ?? inheritedPage;
+      if (node.get(PDFName.of('S'))?.toString() === '/Table') {
+        const directPage = this.resolvePageNumber(doc, node.get(PDFName.of('Pg')));
+        const pageNumber = directPage ?? this.resolvePageNumber(doc, this.findPageRefInSubtree(doc, node));
 
-      if (isTable) {
-        if (ownPage === undefined) {
-          logger.warn('[PdfTableHeaderScopeValidator] Skipping /Table struct element with no resolvable page (no /Pg on itself, its subtree, or any ancestor) -- leaving it unmatched rather than defaulting to a fabricated page.');
+        if (pageNumber === undefined) {
+          logger.warn('[PdfTableHeaderScopeValidator] Skipping /Table struct element with no resolvable page (no /Pg on itself or its subtree) -- leaving it unmatched rather than defaulting to a fabricated page.');
         } else {
           totalTables++;
-          const pageNumber = ownPage;
           const tableIndex = perPageTableIndex.get(pageNumber) ?? 0;
           perPageTableIndex.set(pageNumber, tableIndex + 1);
 
@@ -111,10 +115,10 @@ class PdfTableHeaderScopeValidator {
       }
 
       const k = node.get(PDFName.of('K'));
-      if (k !== undefined) visit(k, ownPage);
+      if (k !== undefined) visit(k);
     };
 
-    visit(root, undefined);
+    visit(root);
 
     logger.info(
       `[PdfTableHeaderScopeValidator] ${totalTables} table(s), ${totalThCells} TH cell(s): ` +
@@ -138,10 +142,22 @@ class PdfTableHeaderScopeValidator {
    * vs column-0 headers here — that positional classification is the
    * writer's job at fix time; detection only needs to know whether
    * anything is missing at all.
+   *
+   * Matterhorn 15-003's own condition text is "In a table NOT organized
+   * with Headers attributes and IDs, a TH cell does not contain a Scope
+   * attribute" -- a table that already associates its data cells to header
+   * cells via /Headers (referencing a header cell's own /ID) is exempt,
+   * regardless of whether any TH also happens to carry /Scope. Detected by
+   * the presence of a /Headers entry on ANY cell in the table (CodeRabbit
+   * finding on PR #582, confirmed real: without this, an already-accessible
+   * complex table using Headers/IDs would get a false-positive issue, and
+   * the writer's positional Scope guess could conflict with its deliberate
+   * ID associations).
    */
   private findThCellsMissingScope(doc: ParsedPDF['pdfLibDoc'], table: PDFDict): { total: number; missing: number } {
     let total = 0;
     let missing = 0;
+    let usesHeadersIdOrganization = false;
     const seen = new Set<string>();
 
     const visitRow = (rowRef: unknown): void => {
@@ -167,6 +183,7 @@ class PdfTableHeaderScopeValidator {
       for (const cellRef of cellRefs) {
         const cell = cellRef instanceof PDFRef ? doc.context.lookup(cellRef) : cellRef;
         if (!(cell instanceof PDFDict)) continue;
+        if (cell.get(PDFName.of('Headers')) !== undefined) usesHeadersIdOrganization = true;
         if (cell.get(PDFName.of('S'))?.toString().replace(/^\//, '') !== 'TH') continue;
         total++;
         if (!this.hasScopeAttribute(doc, cell)) missing++;
@@ -177,14 +194,24 @@ class PdfTableHeaderScopeValidator {
     const kids = k instanceof PDFArray ? k.asArray() : k === undefined ? [] : [k];
     for (const kid of kids) visitRow(kid);
 
+    if (usesHeadersIdOrganization) return { total: 0, missing: 0 };
     return { total, missing };
   }
 
-  /** True if the element's /A (attributes) already carries a Table-owner dict with a /Scope entry. */
+  /**
+   * True if the element's /A (attributes) already carries a Table-owner
+   * dict with a /Scope entry. Requires /O === /Table specifically (not just
+   * any dict with a same-named key) -- Matterhorn 15-003's /Scope is
+   * defined under the Table attribute owner; a differently-owned attribute
+   * dict that happens to also carry a "Scope" key would otherwise be
+   * misread as already satisfying this condition (CodeRabbit finding on
+   * PR #582, confirmed real).
+   */
   private hasScopeAttribute(doc: ParsedPDF['pdfLibDoc'], elem: PDFDict): boolean {
     const aRaw = elem.get(PDFName.of('A'));
     const a = aRaw instanceof PDFRef ? doc.context.lookup(aRaw) : aRaw;
-    const check = (d: unknown): boolean => d instanceof PDFDict && d.get(PDFName.of('Scope')) !== undefined;
+    const check = (d: unknown): boolean =>
+      d instanceof PDFDict && d.get(PDFName.of('O'))?.toString() === '/Table' && d.get(PDFName.of('Scope')) !== undefined;
     if (check(a)) return true;
     if (a instanceof PDFArray) {
       for (const item of a.asArray()) {

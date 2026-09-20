@@ -1780,11 +1780,19 @@ export class PdfStructureWriterService {
     return results;
   }
 
-  /** True if the element's /A (attributes) already carries a Table-owner dict with a /Scope entry. */
+  /**
+   * True if the element's /A (attributes) already carries a Table-owner
+   * dict with a /Scope entry. Requires /O === /Table specifically, mirroring
+   * pdf-table-header-scope.validator.ts's own hasScopeAttribute (CodeRabbit
+   * finding on PR #582, confirmed real: a differently-owned attribute dict
+   * that happens to carry a same-named "Scope" key must not be misread as
+   * already satisfying Matterhorn 15-003).
+   */
   private hasScopeAttributeForFix(doc: PDFDocument, elem: PDFDict): boolean {
     const aRaw = elem.get(PDFName.of('A'));
     const a = aRaw instanceof PDFRef ? doc.context.lookup(aRaw) : aRaw;
-    const check = (d: unknown): boolean => d instanceof PDFDict && d.get(PDFName.of('Scope')) !== undefined;
+    const check = (d: unknown): boolean =>
+      d instanceof PDFDict && d.get(PDFName.of('O'))?.toString() === '/Table' && d.get(PDFName.of('Scope')) !== undefined;
     if (check(a)) return true;
     if (a instanceof PDFArray) {
       for (const item of a.asArray()) {

@@ -195,22 +195,28 @@ describe('PdfTableHeaderScopeValidator', () => {
     expect(result.issues[0].element).toBe('table_p2_0');
   });
 
-  it('falls back to an inherited ancestor page when a /Table has no /Pg on itself or any descendant', async () => {
+  it('skips a /Table whose only resolvable page comes from an ancestor (not its own /Pg or subtree) rather than emit an id findTargetTable could never resolve', async () => {
+    // CodeRabbit finding on PR #582, confirmed real: findTargetTable (which
+    // later resolves this validator's own table_p{page}_{index} ids back to
+    // a real element) has no ancestor-fallback at all -- only a table's own
+    // or subtree /Pg. An ancestor-inherited page would emit an
+    // unresolvable id AND shift perPageTableIndex for every OTHER real
+    // table on the same page out of sync with findTargetTable's own count.
     const doc = await PDFDocument.create();
     const page1 = doc.addPage([612, 792]);
 
     const th = doc.context.register(doc.context.obj({ S: PDFName.of('TH') })); // no /Pg at all
     const headerRow = doc.context.register(doc.context.obj({ S: PDFName.of('TR'), K: [th] }));
     const tableRef = doc.context.register(doc.context.obj({ S: PDFName.of('Table'), K: [headerRow] })); // no /Pg
-    // The Document ancestor DOES carry a /Pg -- the only page breadcrumb available.
+    // The Document ancestor DOES carry a /Pg -- but it must NOT be consulted.
     const docRef = doc.context.register(doc.context.obj({ S: PDFName.of('Document'), Pg: page1.ref, K: [tableRef] }));
     doc.catalog.set(PDFName.of('StructTreeRoot'), doc.context.register(doc.context.obj({ Type: PDFName.of('StructTreeRoot'), K: [docRef] })));
 
     const parsedPdf = { pdfLibDoc: doc } as unknown as ParsedPDF;
     const result = await pdfTableHeaderScopeValidator.validate(parsedPdf);
 
-    expect(result.issues).toHaveLength(1);
-    expect(result.issues[0].pageNumber).toBe(1);
+    expect(result.issues).toHaveLength(0);
+    expect(result.metadata.totalTables).toBe(0);
   });
 
   it('skips a /Table with no resolvable page anywhere rather than fabricating page 1', async () => {
@@ -251,5 +257,32 @@ describe('PdfTableHeaderScopeValidator', () => {
 
     expect(result.issues).toHaveLength(2);
     expect(result.issues[0].message).not.toBe(result.issues[1].message);
+  });
+
+  it('exempts a table already organized with Headers/IDs from the Scope requirement, per Matterhorn 15-003\'s own condition text', async () => {
+    // CodeRabbit finding on PR #582, confirmed real: 15-003 only applies to
+    // a table "NOT organized with Headers attributes and IDs" -- a table
+    // that associates data cells to header cells via /Headers is exempt
+    // even though its TH cells carry no /Scope.
+    const doc = await PDFDocument.create();
+    const page = doc.addPage([612, 792]);
+
+    const th1Ref = doc.context.register(doc.context.obj({ S: PDFName.of('TH'), Pg: page.ref, ID: doc.context.obj('h1') }));
+    const th2Ref = doc.context.register(doc.context.obj({ S: PDFName.of('TH'), Pg: page.ref, ID: doc.context.obj('h2') }));
+    const td1Ref = doc.context.register(doc.context.obj({ S: PDFName.of('TD'), Pg: page.ref, Headers: [doc.context.obj('h1')] }));
+    const td2Ref = doc.context.register(doc.context.obj({ S: PDFName.of('TD'), Pg: page.ref, Headers: [doc.context.obj('h2')] }));
+    const tableRef = doc.context.register(doc.context.obj({
+      S: PDFName.of('Table'), Pg: page.ref,
+      K: [row(doc, [th1Ref, th2Ref]), row(doc, [td1Ref, td2Ref])],
+    }));
+    const docRef = doc.context.register(doc.context.obj({ S: PDFName.of('Document'), K: [tableRef] }));
+    doc.catalog.set(PDFName.of('StructTreeRoot'), doc.context.register(doc.context.obj({ Type: PDFName.of('StructTreeRoot'), K: [docRef] })));
+
+    const parsedPdf = { pdfLibDoc: doc } as unknown as ParsedPDF;
+    const result = await pdfTableHeaderScopeValidator.validate(parsedPdf);
+
+    expect(result.issues).toHaveLength(0);
+    expect(result.metadata.totalThCells).toBe(0);
+    expect(result.metadata.thCellsMissingScope).toBe(0);
   });
 });

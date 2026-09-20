@@ -1327,13 +1327,17 @@ class AiAnalysisService {
       // wrong question and risk producing a wrong or confusing suggestion.
       // Purely positional (row 0 / column 0), so no AI or TableInfo lookup
       // is needed at all — deterministic like the other rule-based fixes.
+      // Respects tableFixMode the same way headerApplyMode above does
+      // (CodeRabbit finding, confirmed real: this unconditionally returned
+      // 'apply-to-pdf' regardless of a tenant/trial configured for
+      // guidance-only table fixes).
       return {
         suggestionType: 'table-header-scope-fix',
         guidance: 'Existing table header cells will get a Scope attribute (Row, Column, or Both) based on their position in the table.',
         confidence: 1.0,
         rationale: 'Deterministic fix — writes /Scope to an existing TH cell inferred from its row/column position, never promotes a TD to TH',
         model: 'rule-based',
-        applyMode: 'apply-to-pdf',
+        applyMode: config.tableFixMode === 'guidance-only' ? 'guidance-only' : 'apply-to-pdf',
       };
     }
 
