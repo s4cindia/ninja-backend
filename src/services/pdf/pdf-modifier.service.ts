@@ -762,6 +762,45 @@ export class PdfModifierService {
         };
       }
 
+      // Struct-tree-native id (figure_p{page}_mc{mcid}), from
+      // pdf-figure-structtree.validator.ts's own struct-tree walk — bypasses
+      // the image/xObject-name matching below entirely. That matching exists
+      // to correlate an IMAGE (found via Resources/XObject) back to its
+      // Figure; this id already names the exact Figure by its own MCID, no
+      // image or xObject name involved at all (mirrors setActualText's
+      // identical mc-vs-idx branching for formula_p{page}_mc{mcid}).
+      const figureMc = imageId.match(/^figure_p(\d+)_mc(\d+)$/);
+      if (figureMc) {
+        const targetPage = parseInt(figureMc[1], 10);
+        const targetMcid = parseInt(figureMc[2], 10);
+        const figures = this.findStructureElementsByType(structTreeRoot, new Set(['Figure', 'figure']), doc.context);
+        const pageRef = doc.getPage(targetPage - 1).ref;
+        const figuresOnPage = figures.filter(fig => {
+          const pg = this.resolveElementPageRef(fig, doc);
+          if (pg) return pg.toString() === pageRef.toString();
+          return this.resolvesToPageViaMcid(fig, doc, targetPage);
+        });
+        const target = figuresOnPage.find(f => this.structElemHasMcid(f, targetMcid));
+        if (!target) {
+          return {
+            success: false,
+            description: 'Figure element not found',
+            error: `No Figure element with MCID ${targetMcid} on page ${targetPage} — refusing to guess a different element`,
+          };
+        }
+        const altEntry = target.get(PDFName.of('Alt'));
+        const before = altEntry instanceof PDFString ? altEntry.decodeText() : (altEntry instanceof PDFHexString ? altEntry.decodeText() : 'None');
+        target.set(PDFName.of('Alt'), PDFString.of(altText));
+        logger.info(`[PdfModifier] Set alt text on Figure (${imageId})`);
+        return {
+          success: true,
+          description: `Set alt text on Figure element (${imageId})`,
+          pageNumber: targetPage,
+          before,
+          after: altText,
+        };
+      }
+
       // Parse page and index from imageId (format: img_p{page}_{index}_{...})
       const match = imageId.match(/img_p(\d+)_(\d+)/);
       const targetPage = match ? parseInt(match[1], 10) : 1;
