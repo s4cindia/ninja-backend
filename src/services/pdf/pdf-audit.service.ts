@@ -22,6 +22,7 @@ import { pdfAltTextValidator } from './validators/pdf-alttext.validator';
 import { pdfTableValidator, TABLE_LIKELY_FORMULA_CODE } from './validators/pdf-table.validator';
 import { pdfFormulaValidator } from './validators/pdf-formula.validator';
 import { pdfFigureStructTreeValidator } from './validators/pdf-figure-structtree.validator';
+import { pdfTableHeaderScopeValidator } from './validators/pdf-table-header-scope.validator';
 import { pdfStructureValidator } from './validators/pdf-structure.validator';
 import { pdfLinkValidator } from './validators/pdf-link.validator';
 import { pdfFormValidator } from './validators/pdf-form.validator';
@@ -439,6 +440,27 @@ class PdfAuditService extends BaseAuditService<PdfParseResult, PdfValidationResu
           logger.error(`[PdfAudit] PdfTableValidator failed:`, error);
           result.validatorErrors.push({ validator: 'PdfTableValidator', error: errorMessage });
           onValidatorComplete?.('Tables', 0, ++completedValidators, totalValidators, tablesStart);
+        }
+      }
+
+      // 4b. Table Header Scope Validator (struct-tree walk for an EXISTING
+      // /TH with no /Scope attribute — a genuinely different gap from
+      // PdfTableValidator's "not tagged as TH at all" check above; see that
+      // validator's own header comment for the real ~708-cell undercount
+      // this fixes, confirmed via the real PAC/axesPAC desktop tool). A
+      // bonus sub-check alongside Tables, so it stays out of the progress
+      // total and reports through result.issues only.
+      if (willRunTables) {
+        try {
+          logger.info(`[PdfAudit] Running PdfTableHeaderScopeValidator...`);
+          const scopeResult = await pdfTableHeaderScopeValidator.validate(parsed.parsedPdf);
+          result.tableIssues.push(...scopeResult.issues);
+          result.issues.push(...scopeResult.issues);
+          logger.info(`[PdfAudit] PdfTableHeaderScopeValidator found ${scopeResult.issues.length} issues`);
+        } catch (error) {
+          const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+          logger.error(`[PdfAudit] PdfTableHeaderScopeValidator failed:`, error);
+          result.validatorErrors.push({ validator: 'PdfTableHeaderScopeValidator', error: errorMessage });
         }
       }
 
