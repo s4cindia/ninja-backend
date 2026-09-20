@@ -39,14 +39,69 @@
  * through the existing ALT_TEXT_MISSING_CODES dispatch in
  * ai-analysis.service.ts and pac-report.service.ts's NINJA_TESTABLE_
  * CONDITIONS with zero additional wiring. The element id
- * ("figure_p{page}_mc{mcid}") is a new, struct-tree-native format
- * pdfModifierService.setAltText resolves directly by MCID (bypassing its
- * existing image/xObject-name matching entirely, since the MCID already
- * uniquely identifies the exact Figure) — see that method's own doc
- * comment for the extension. dispatchIssue's existing ALT_TEXT_MISSING_
- * CODES branch already degrades gracefully when imageById has no entry for
- * this id (fallbackToPageRender renders the page directly from
- * issue.pageNumber), so no dispatch changes were needed either.
+ * ("figure_p{page}_mc{mcid}", or "figure_p{page}_{index}" when no MCID is
+ * resolvable) is a new, struct-tree-native format pdfModifierService.
+ * setAltText resolves directly (bypassing its existing image/xObject-name
+ * matching entirely) — see that method's own doc comment for the
+ * extension. dispatchIssue's existing ALT_TEXT_MISSING_CODES branch already
+ * degrades gracefully when imageById has no entry for this id
+ * (fallbackToPageRender renders the page directly from issue.pageNumber),
+ * so no dispatch changes were needed either.
+ *
+ * Several real correctness bugs found by CodeRabbit/Codex on this file's
+ * first version, all fixed here:
+ *
+ * 1. `visit`'s traversal required every resolved node to be a PDFDict,
+ *    silently skipping the entire subtree whenever an indirect /K
+ *    reference pointed at a PDFArray instead (a real, common producer
+ *    shape — including StructTreeRoot's own /K in many real documents).
+ *    Generalized to resolve one ref/array/dict layer at a time and recurse
+ *    into arrays explicitly, matching pdfModifierService.traverseStructTree's
+ *    own handling.
+ *
+ * 2. Page resolution only ever read the Figure's own direct /Pg, defaulting
+ *    to page 1 whenever that was absent -- both a real case (a Figure can
+ *    inherit its page from an ancestor with no /Pg of its own) and silently
+ *    wrong (an issue's page/element id pointing at the wrong page makes
+ *    setAltText's own page-scoped Figure search fail or, worse, resolve a
+ *    same-numbered Figure on the wrong page). `visit` now threads an
+ *    inherited page down through the traversal, and /K's own MCR-dictionary
+ *    form (`<</Type /MCR /Pg ref /MCID n>>`, used when a Figure's content
+ *    genuinely lives on a different page than its structural position) is
+ *    resolved explicitly rather than only handling a bare MCID integer.
+ *
+ * 3. An explicit empty `/Alt` ("") -- the PDF/UA-compliant way to mark a
+ *    Figure decorative, and the exact convention pdf-alttext.validator.ts's
+ *    own image path already honors (image.altText === '' short-circuits as
+ *    already-resolved, never re-flagged) -- was being treated as "missing"
+ *    here (`.trim().length > 0` requires non-empty content). A struct-tree-
+ *    only Figure with a real, deliberate empty /Alt would flip from
+ *    accepted to failing purely because it has no discoverable image
+ *    XObject. Now: an /Alt or /ActualText entry that's PRESENT at all
+ *    (even empty) counts as having an alternate.
+ *
+ * 4. setAltText only recognized this validator's MCID-based id format
+ *    (figure_p{page}_mc{mcid}); the positional fallback id
+ *    (figure_p{page}_{index}, emitted when no MCID is resolvable) fell
+ *    through to the unrelated img_p{page}_{index} regex, which doesn't
+ *    match either -- silently defaulting to page 1/index 0 and potentially
+ *    overwriting an unrelated Figure's /Alt while reporting success.
+ *    setAltText now has a matching positional branch (mirroring
+ *    setActualText's identical mc-vs-idx handling), and explicitly rejects
+ *    an unrecognized figure_p-prefixed id rather than falling through to
+ *    the image-based matching at all.
+ *
+ * 5. The emitted issue `message` was identical for every Figure on the same
+ *    page ("Figure on page N has no alternative text") -- base-audit.
+ *    service.ts's deduplicateIssues keys on (source, code,
+ *    matterhornCheckpoint, pageNumber, location, boundingBox, message),
+ *    and with no boundingBox set here either, every Figure on the same
+ *    page produced an IDENTICAL key, silently collapsing multiple real,
+ *    distinct issues into one in the final audit's result.issues (though
+ *    not result.altTextIssues, which isn't deduplicated) -- confirmed a
+ *    real, live-relevant bug: the real Math_Weir_PDF.pdf document's page 17
+ *    alone has 3 such Figures. The element id, which is unique per Figure,
+ *    is now included in the message.
  */
 
 import { PDFName, PDFDict, PDFArray, PDFNumber, PDFRef, PDFString, PDFHexString } from 'pdf-lib';
@@ -100,34 +155,45 @@ class PdfFigureStructTreeValidator {
       const { width, height } = page.getSize();
       pageByRef.set(page.ref.toString(), { pageNumber: i + 1, width, height });
     });
+    const pageInfoFor = (pgEntry: unknown): PageInfo | undefined =>
+      pgEntry instanceof PDFRef ? pageByRef.get(pgEntry.toString()) : undefined;
 
     const perPageIndex = new Map<number, number>();
     const seen = new Set<string>();
 
-    const visit = (nodeRef: unknown): void => {
-      const node = nodeRef instanceof PDFRef ? doc.context.lookup(nodeRef) : nodeRef;
-      if (!(node instanceof PDFDict)) return;
+    const visit = (nodeRef: unknown, inheritedPage: PageInfo | undefined): void => {
       if (nodeRef instanceof PDFRef) {
         const key = nodeRef.toString();
         if (seen.has(key)) return;
         seen.add(key);
       }
+      const node = nodeRef instanceof PDFRef ? doc.context.lookup(nodeRef) : nodeRef;
+
+      // An indirect /K can point straight at an array (common — including
+      // StructTreeRoot's own /K in many real documents), not only a dict.
+      if (node instanceof PDFArray) {
+        for (const item of node.asArray()) visit(item, inheritedPage);
+        return;
+      }
+      if (!(node instanceof PDFDict)) return;
+
+      const ownPage = pageInfoFor(node.get(PDFName.of('Pg'))) ?? inheritedPage;
 
       if (node.get(PDFName.of('S'))?.toString() === '/Figure') {
         totalFigures++;
         if (this.hasAlternate(node)) {
           withAlternate++;
         } else if (!coveredFigures.has(node)) {
-          issues.push(this.buildIssue(node, pageByRef, perPageIndex, doc));
+          const content = this.resolveContentRef(node, ownPage, doc, pageInfoFor);
+          issues.push(this.buildIssue(content.pageInfo, content.mcid, perPageIndex));
         }
       }
 
       const k = node.get(PDFName.of('K'));
-      const kids = k instanceof PDFArray ? k.asArray() : k === undefined ? [] : [k];
-      for (const kid of kids) if (kid instanceof PDFRef || kid instanceof PDFDict) visit(kid);
+      if (k !== undefined) visit(k, ownPage);
     };
 
-    visit(root);
+    visit(root, undefined);
 
     logger.info(
       `[PdfFigureStructTreeValidator] ${totalFigures} figure(s): ${withAlternate} with alternate, ` +
@@ -179,28 +245,30 @@ class PdfFigureStructTreeValidator {
     return covered;
   }
 
+  /**
+   * An /Alt or /ActualText entry that's PRESENT at all — even an explicit
+   * empty string, the PDF/UA-compliant way to mark decorative content —
+   * counts as having an alternate. Only a genuinely ABSENT entry (no /Alt
+   * and no /ActualText key at all) is missing one.
+   */
   private hasAlternate(elem: PDFDict): boolean {
     for (const key of ['ActualText', 'Alt'] as const) {
       const v = elem.get(PDFName.of(key));
-      if ((v instanceof PDFString || v instanceof PDFHexString) && v.decodeText().trim().length > 0) return true;
+      if (v instanceof PDFString || v instanceof PDFHexString) return true;
     }
     return false;
   }
 
   private buildIssue(
-    elem: PDFDict,
-    pageByRef: Map<string, PageInfo>,
+    pageInfo: PageInfo | undefined,
+    mcid: number | undefined,
     perPageIndex: Map<number, number>,
-    doc: ParsedPDF['pdfLibDoc'],
   ): AuditIssue {
-    const pgRef = elem.get(PDFName.of('Pg'));
-    const pageInfo = pgRef instanceof PDFRef ? pageByRef.get(pgRef.toString()) : undefined;
     const pageNumber = pageInfo?.pageNumber ?? 1;
 
     const positional = perPageIndex.get(pageNumber) ?? 0;
     perPageIndex.set(pageNumber, positional + 1);
 
-    const mcid = this.firstMcid(elem, doc);
     const element = mcid !== undefined ? `figure_p${pageNumber}_mc${mcid}` : `figure_p${pageNumber}_${positional}`;
 
     return {
@@ -208,7 +276,10 @@ class PdfFigureStructTreeValidator {
       source: 'pdf-figure-structtree',
       severity: 'critical',
       code: 'MATTERHORN-13-001',
-      message: `Figure on page ${pageNumber} has no alternative text`,
+      // Includes the element id specifically so multiple Figures on the same
+      // page produce distinct deduplication keys — see this file's own
+      // header comment (finding 5) for the real silent-drop bug this fixes.
+      message: `Figure "${element}" on page ${pageNumber} has no alternative text`,
       wcagCriteria: ['1.1.1'],
       location: `Page ${pageNumber}`,
       suggestion: 'Add descriptive alternative text to the figure. Alt text should convey the same information as the figure.',
@@ -220,17 +291,40 @@ class PdfFigureStructTreeValidator {
     };
   }
 
-  /** First MCID referenced by the element's /K (single number or first number in an array). */
-  private firstMcid(elem: PDFDict, doc: ParsedPDF['pdfLibDoc']): number | undefined {
+  /**
+   * Resolves a Figure's content reference: the MCID it's bound to (a bare
+   * integer, or the /MCID entry of an MCR dictionary — `<</Type /MCR /Pg
+   * ref /MCID n>>`, used when the referenced content genuinely lives on a
+   * different page than the Figure's own structural position) and the page
+   * that content is actually on. An MCR's own /Pg, when present, takes
+   * priority over the inherited page passed in from the traversal — that's
+   * the whole reason the MCR form exists. Falls back to the inherited page
+   * (from the Figure's own or an ancestor's /Pg) when /K carries no
+   * resolvable MCID at all.
+   */
+  private resolveContentRef(
+    elem: PDFDict,
+    inheritedPage: PageInfo | undefined,
+    doc: ParsedPDF['pdfLibDoc'],
+    pageInfoFor: (pgEntry: unknown) => PageInfo | undefined,
+  ): { pageInfo: PageInfo | undefined; mcid: number | undefined } {
     const k = elem.get(PDFName.of('K'));
-    if (k instanceof PDFNumber) return k.asNumber();
-    if (k instanceof PDFArray) {
-      for (const item of k.asArray()) {
-        const resolved = item instanceof PDFRef ? doc.context.lookup(item) : item;
-        if (resolved instanceof PDFNumber) return resolved.asNumber();
+    const items = k instanceof PDFArray ? k.asArray() : k === undefined ? [] : [k];
+
+    for (const raw of items) {
+      const item = raw instanceof PDFRef ? doc.context.lookup(raw) : raw;
+      if (item instanceof PDFNumber) {
+        return { pageInfo: inheritedPage, mcid: item.asNumber() };
+      }
+      if (item instanceof PDFDict) {
+        const mcidEntry = item.get(PDFName.of('MCID'));
+        if (mcidEntry instanceof PDFNumber) {
+          const pageInfo = pageInfoFor(item.get(PDFName.of('Pg'))) ?? inheritedPage;
+          return { pageInfo, mcid: mcidEntry.asNumber() };
+        }
       }
     }
-    return undefined;
+    return { pageInfo: inheritedPage, mcid: undefined };
   }
 
   private getStructTreeRoot(doc: ParsedPDF['pdfLibDoc']): PDFDict | undefined {

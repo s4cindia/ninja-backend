@@ -288,6 +288,84 @@ describe('setAltText — MCID-exact figure targeting', () => {
     expect(figureAlt).toBeNull();
   });
 
+  /**
+   * CodeRabbit/Codex finding, confirmed real: the positional fallback id
+   * pdf-figure-structtree.validator.ts emits when it can't resolve an MCID
+   * ("figure_p{page}_{index}") wasn't recognized by setAltText's mc-only
+   * regex at all -- it fell through to the unrelated img_p{page}_{index}
+   * regex below, which ALSO doesn't match "figure_p...", silently
+   * defaulting to page 1/index 0 and potentially overwriting an unrelated
+   * Figure's /Alt while still reporting success.
+   */
+  it('writes /Alt via the struct-tree-native positional id (figure_p{page}_{index}), not just the MCID form', async () => {
+    const src = await PDFDocument.create();
+    const page = src.addPage([400, 600]);
+    const font = await src.embedFont(StandardFonts.Helvetica);
+    page.drawText('mu', { x: 100, y: 450, size: 14, font });
+    page.drawText('sigma', { x: 100, y: 200, size: 14, font });
+    const doc = await PDFDocument.load(await src.save());
+
+    buildStructTreeFromZones(doc, [
+      { pageNumber: 1, bbox: { x: 80, y: 120, w: 240, h: 60 }, zoneType: 'figure' },
+      { pageNumber: 1, bbox: { x: 80, y: 370, w: 240, h: 60 }, zoneType: 'figure' },
+    ]);
+
+    // Strip the MCID binding from both Figures so only positional targeting
+    // can work — reproduces exactly the shape the validator's own
+    // positional fallback exists for (a Figure with no resolvable MCID).
+    const root = doc.context.lookup(doc.catalog.get(PDFName.of('StructTreeRoot'))) as PDFDict;
+    const figures: PDFDict[] = [];
+    const findFigures = (node: unknown): void => {
+      if (!(node instanceof PDFDict)) return;
+      if (node.get(PDFName.of('S'))?.toString() === '/Figure') figures.push(node);
+      const k = node.get(PDFName.of('K'));
+      const kids = k instanceof PDFArray ? k.asArray() : [k];
+      for (const kid of kids) if (kid instanceof PDFRef) findFigures(doc.context.lookup(kid));
+    };
+    findFigures(root);
+    expect(figures.length).toBe(2);
+    for (const f of figures) f.delete(PDFName.of('K'));
+
+    const res = await pdfModifierService.setAltText(doc, 'figure_p1_1', 'sigma, standard deviation');
+    expect(res.success).toBe(true);
+
+    const alts = figures.map(f => {
+      const a = f.get(PDFName.of('Alt'));
+      return a instanceof PDFString ? a.decodeText() : 'None';
+    });
+    expect(alts[1]).toBe('sigma, standard deviation');
+    expect(alts[0]).toBe('None'); // untouched
+  });
+
+  it('rejects an unrecognized figure_p-prefixed id rather than falling through to the image-based path and silently defaulting to page 1/index 0', async () => {
+    const src = await PDFDocument.create();
+    const page = src.addPage([400, 600]);
+    const font = await src.embedFont(StandardFonts.Helvetica);
+    page.drawText('mu', { x: 100, y: 450, size: 14, font });
+    const doc = await PDFDocument.load(await src.save());
+
+    buildStructTreeFromZones(doc, [{ pageNumber: 1, bbox: { x: 80, y: 120, w: 240, h: 60 }, zoneType: 'figure' }]);
+
+    const res = await pdfModifierService.setAltText(doc, 'figure_pXYZ_totally_wrong', 'should not apply');
+    expect(res.success).toBe(false);
+    expect(res.error).toContain('does not match the expected');
+
+    const root = doc.context.lookup(doc.catalog.get(PDFName.of('StructTreeRoot'))) as PDFDict;
+    let figureAlt: string | null = null;
+    const walk = (node: unknown): void => {
+      if (!(node instanceof PDFDict)) return;
+      if (node.get(PDFName.of('S'))?.toString() === '/Figure') {
+        const alt = node.get(PDFName.of('Alt'));
+        if (alt instanceof PDFString) figureAlt = alt.decodeText();
+      }
+      const k = node.get(PDFName.of('K'));
+      const kids = k instanceof PDFArray ? k.asArray() : [k];
+      for (const kid of kids) if (kid instanceof PDFRef) walk(doc.context.lookup(kid));
+    };
+    walk(root);
+    expect(figureAlt).toBeNull(); // the real figure on page 1 was left alone
+  });
+
   it('writes /ActualText onto a Formula element (MCID-exact)', async () => {
     const src = await PDFDocument.create();
     const page = src.addPage([400, 600]);

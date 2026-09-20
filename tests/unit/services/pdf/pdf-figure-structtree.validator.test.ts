@@ -158,4 +158,92 @@ describe('PdfFigureStructTreeValidator', () => {
 
     expect(result.issues).toHaveLength(1);
   });
+
+  // CodeRabbit/Codex findings on this validator's first version, confirmed
+  // real -- each test below reproduces the exact scenario and confirms it's
+  // fixed.
+
+  it('does not flag a Figure with an explicit empty /Alt -- the PDF/UA-compliant decorative marker, matching pdf-alttext.validator.ts\'s own image-path convention', async () => {
+    const { parsedPdf } = await buildTaggedDoc([{ mcid: 5, alt: '' }]);
+
+    const result = await pdfFigureStructTreeValidator.validate(parsedPdf);
+
+    expect(result.issues).toHaveLength(0);
+    expect(result.metadata.figuresWithAlternate).toBe(1);
+  });
+
+  it('includes the element id in the issue message, so multiple Figures on the same page get distinct deduplication keys (base-audit.service.ts\'s deduplicateIssues keys on message)', async () => {
+    const { parsedPdf } = await buildTaggedDoc([{ mcid: 531 }, { mcid: 547 }]);
+
+    const result = await pdfFigureStructTreeValidator.validate(parsedPdf);
+
+    expect(result.issues).toHaveLength(2);
+    const messages = result.issues.map(i => i.message);
+    expect(new Set(messages).size).toBe(2); // no two messages identical
+    expect(messages[0]).toContain('figure_p1_mc531');
+    expect(messages[1]).toContain('figure_p1_mc547');
+  });
+
+  it('recurses into an indirect /K reference that resolves to a PDFArray, not only a PDFDict (a real producer shape, including StructTreeRoot\'s own /K)', async () => {
+    const doc = await PDFDocument.create();
+    const page = doc.addPage([612, 792]);
+
+    const figureRef = doc.context.register(doc.context.obj({ S: PDFName.of('Figure'), Pg: page.ref, K: 5 }));
+    // An indirect /K on the Document node pointing at an ARRAY, not a dict --
+    // the exact shape the old `!(node instanceof PDFDict) return` bailed on.
+    const kidsArrayRef = doc.context.register(doc.context.obj([figureRef]));
+    const docNode = doc.context.obj({ S: PDFName.of('Document'), K: kidsArrayRef });
+    const docRef = doc.context.register(docNode);
+    const structTreeRoot = doc.context.obj({ Type: PDFName.of('StructTreeRoot'), K: [docRef] });
+    doc.catalog.set(PDFName.of('StructTreeRoot'), doc.context.register(structTreeRoot));
+
+    const parsedPdf = { pdfLibDoc: doc } as unknown as ParsedPDF;
+    const result = await pdfFigureStructTreeValidator.validate(parsedPdf);
+
+    expect(result.metadata.totalFigures).toBe(1);
+    expect(result.issues).toHaveLength(1);
+    expect(result.issues[0].element).toBe('figure_p1_mc5');
+  });
+
+  it('resolves the MCID and page from an MCR dictionary (/Type /MCR /Pg ref /MCID n), not only a bare integer /K', async () => {
+    const doc = await PDFDocument.create();
+    const page1 = doc.addPage([612, 792]);
+    const page2 = doc.addPage([612, 792]);
+
+    // The Figure's own structural position has no /Pg -- its real content
+    // lives on page2 via an MCR, which is what actually determines the page.
+    const mcr = doc.context.obj({ Type: PDFName.of('MCR'), Pg: page2.ref, MCID: 42 });
+    const figureRef = doc.context.register(doc.context.obj({ S: PDFName.of('Figure'), K: mcr }));
+    const docNode = doc.context.obj({ S: PDFName.of('Document'), Pg: page1.ref, K: [figureRef] });
+    const docRef = doc.context.register(docNode);
+    const structTreeRoot = doc.context.obj({ Type: PDFName.of('StructTreeRoot'), K: [docRef] });
+    doc.catalog.set(PDFName.of('StructTreeRoot'), doc.context.register(structTreeRoot));
+
+    const parsedPdf = { pdfLibDoc: doc } as unknown as ParsedPDF;
+    const result = await pdfFigureStructTreeValidator.validate(parsedPdf);
+
+    expect(result.issues).toHaveLength(1);
+    // Page 2 (from the MCR's own /Pg), not page 1 (the ancestor Document's /Pg).
+    expect(result.issues[0].pageNumber).toBe(2);
+    expect(result.issues[0].element).toBe('figure_p2_mc42');
+  });
+
+  it('inherits the page from an ancestor when the Figure itself has no direct /Pg', async () => {
+    const doc = await PDFDocument.create();
+    const page = doc.addPage([612, 792]);
+
+    // Figure has NO /Pg of its own -- must inherit from the Document ancestor.
+    const figureRef = doc.context.register(doc.context.obj({ S: PDFName.of('Figure'), K: 7 }));
+    const docNode = doc.context.obj({ S: PDFName.of('Document'), Pg: page.ref, K: [figureRef] });
+    const docRef = doc.context.register(docNode);
+    const structTreeRoot = doc.context.obj({ Type: PDFName.of('StructTreeRoot'), K: [docRef] });
+    doc.catalog.set(PDFName.of('StructTreeRoot'), doc.context.register(structTreeRoot));
+
+    const parsedPdf = { pdfLibDoc: doc } as unknown as ParsedPDF;
+    const result = await pdfFigureStructTreeValidator.validate(parsedPdf);
+
+    expect(result.issues).toHaveLength(1);
+    expect(result.issues[0].pageNumber).toBe(1);
+    expect(result.issues[0].element).toBe('figure_p1_mc7');
+  });
 });
