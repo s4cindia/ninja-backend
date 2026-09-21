@@ -82,7 +82,15 @@ describe('dispatchIssue: COLOR-CONTRAST without contrastData routes to invisible
     boundingBox: { x: 100, y: 200, width: 50, height: 8, pageWidth: 612, pageHeight: 792 },
   };
 
-  it('returns the deterministic invisible-text-artifact-fix suggestion, applying to the PDF when colorContrastMode is apply-to-pdf', async () => {
+  it('ALWAYS returns guidance-only, even when colorContrastMode is apply-to-pdf', async () => {
+    // CodeRabbit finding on PR #585, confirmed real: the SAME "no
+    // contrastData" shape also represents a genuinely different, unrelated
+    // problem -- an embedded-font rendering failure hiding REAL content,
+    // which pdf-contrast.validator.ts's own triage already marks 'manual'
+    // for exactly this reason. Auto-Artifact-tagging real content because
+    // its rendering is merely broken would be strictly worse than leaving
+    // it flagged, so this suggestion never auto-applies regardless of
+    // config, unlike the sibling color-contrast-fix.
     const parsed = { isTagged: true, pages: [] } as unknown as import('../../../../src/services/pdf/pdf-comprehensive-parser.service').PdfParseResult;
     const config = { colorContrastMode: 'apply-to-pdf' } as unknown as import('../../../../src/services/pdf/ai-analysis.service').AiRemediationConfig;
 
@@ -90,11 +98,12 @@ describe('dispatchIssue: COLOR-CONTRAST without contrastData routes to invisible
 
     expect(res).toBeTruthy();
     expect(res.suggestionType).toBe('invisible-text-artifact-fix');
-    expect(res.applyMode).toBe('apply-to-pdf');
+    expect(res.applyMode).toBe('guidance-only');
     expect(res.model).toBe('rule-based');
+    expect(res.requiresManualReview).toBe(true);
   });
 
-  it('downgrades to guidance-only when colorContrastMode is guidance-only, matching the sibling contrast fix\'s own convention', async () => {
+  it('stays guidance-only when colorContrastMode is already guidance-only', async () => {
     const parsed = { isTagged: true, pages: [] } as unknown as import('../../../../src/services/pdf/pdf-comprehensive-parser.service').PdfParseResult;
     const config = { colorContrastMode: 'guidance-only' } as unknown as import('../../../../src/services/pdf/ai-analysis.service').AiRemediationConfig;
 

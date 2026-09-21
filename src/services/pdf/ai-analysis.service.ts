@@ -1275,20 +1275,29 @@ class AiAnalysisService {
       // real foreground/background pair to report a ratio for. Confirmed
       // real on Math_Weir_PDF.pdf: 55 of 88 real COLOR-CONTRAST issues are
       // print-production slug-line text (Illustrator/InDesign job-tracking
-      // codes), never meant to be seen by ANY reader. The correct fix is
-      // Artifact-tagging (excluding it from the accessible reading order),
-      // not a color adjustment there's no real color to improve. Purely
-      // positional (contrast-content-stream.ts's own locateTextRun,
-      // already proven by pdf-contrast-writer.service.ts), so no AI call
-      // is needed at all -- deterministic like the other rule-based fixes.
+      // codes), never meant to be seen by ANY reader.
+      //
+      // ALWAYS guidance-only, regardless of colorContrastMode -- CodeRabbit
+      // finding on PR #585, confirmed real: the SAME "no contrastData"
+      // shape is also how pdf-contrast.validator.ts represents a genuinely
+      // different, unrelated problem -- an embedded-font rendering failure
+      // (broken/missing font data the renderer can't paint), which is real,
+      // announced content with a REAL defect that needs a font fix, not
+      // exclusion from the accessible tree. The validator's own triage
+      // already marks this disposition 'manual' for exactly this reason.
+      // Auto-Artifact-tagging real content because its rendering happens to
+      // be broken would be a strictly worse outcome than leaving it
+      // flagged -- silently hiding it from EVERY reader instead of
+      // surfacing the real rendering bug for a human to fix.
       if (!issue.contrastData) {
         return {
           suggestionType: 'invisible-text-artifact-fix',
-          guidance: 'This text has no ink color visually distinguishable from its background — it will be excluded from the accessible reading order (marked as /Artifact) rather than recolored.',
-          confidence: 1.0,
-          rationale: 'Deterministic fix — the text has no real, measurable color to improve; wraps the exact run in /Artifact BMC…EMC',
+          guidance: 'This text has no ink color visually distinguishable from its background. This is often print-production slug-line text (safe to mark /Artifact), but can also indicate a broken embedded font rendering REAL content — verify before applying.',
+          confidence: 0,
+          rationale: 'No real, measurable foreground color exists to report a ratio for — could be genuinely invisible tracking text, or a font-rendering failure hiding real content; always needs human confirmation before excluding it from the accessible tree',
           model: 'rule-based',
-          applyMode: config.colorContrastMode === 'apply-to-pdf' ? 'apply-to-pdf' : 'guidance-only',
+          applyMode: 'guidance-only',
+          requiresManualReview: true,
         };
       }
       return this.analyzeColorContrast(issue, contrastMatchByIssueId, config.colorContrastMode);
@@ -2980,7 +2989,7 @@ class AiAnalysisService {
             pagesRewrittenSincePreResolve.add(originalIssue.pageNumber);
           }
         } else if (suggestionType === 'invisible-text-artifact-fix') {
-          const results = pdfStructureWriterService.fixInvisibleTextArtifact(doc, [originalIssue]);
+          const results = await pdfStructureWriterService.fixInvisibleTextArtifact(doc, [originalIssue]);
           const r = results[0];
           modification = { success: r.success, description: r.after, error: r.error };
           // Rewrites the page's own content stream (splices in BMC/EMC),

@@ -350,9 +350,19 @@ export class PdfContrastValidator {
     const cw = canvas.width;
     const ch = canvas.height;
 
-    // Get text items (position + dimensions in PDF space)
-    const textContent = await pdfjsPage.getTextContent();
+    // Get text items (position + dimensions in PDF space). includeMarkedContent
+    // interleaves TextMarkedContent begin/end markers (each carrying the REAL
+    // tag name, e.g. "Artifact" or "Figure" -- confirmed live, not a synthetic
+    // MCID-only hint) among the TextItem entries, letting artifactTextItemIndices
+    // below exclude any text a fix has already marked /Artifact -- otherwise a
+    // pdf-structure-writer.service.ts fixInvisibleTextArtifact fix (or any
+    // other Artifact-tagging fix) would be invisible to THIS validator's own
+    // plain-geometry text scan, and Auto Mode's own re-audit would show zero
+    // progress for a fix that actually succeeded (CodeRabbit finding on
+    // PR #585, confirmed real).
+    const textContent = await pdfjsPage.getTextContent({ includeMarkedContent: true });
     const styles = textContent.styles as Record<string, { fontFamily?: string }> | undefined;
+    const artifactTextItemIndices = this.findArtifactTextItemIndices(textContent.items);
 
     const issues: AuditIssue[] = [];
     const usedCells = new Set<string>();
@@ -369,11 +379,16 @@ export class PdfContrastValidator {
     // too -- a 1-2 character word still physically occupies space that can
     // contaminate a neighboring line's background candidate.
     const allItemBoxes: Array<{ x: number; y: number; w: number; h: number }> = [];
-    for (const rawItem of textContent.items) {
-      if (!('str' in rawItem)) continue;
-      const it = rawItem as { transform: number[]; width?: number };
-      const itFontSize = this.textItemFontSize(it.transform);
-      allItemBoxes.push(this.computeItemCanvasBox(it.transform, it.width ?? 40, itFontSize, viewport.transform));
+    {
+      let boxItemIndex = -1;
+      for (const rawItem of textContent.items) {
+        if (!('str' in rawItem)) continue;
+        boxItemIndex++;
+        if (artifactTextItemIndices.has(boxItemIndex)) continue; // already-excluded content shouldn't shape neighbor-avoidance either
+        const it = rawItem as { transform: number[]; width?: number };
+        const itFontSize = this.textItemFontSize(it.transform);
+        allItemBoxes.push(this.computeItemCanvasBox(it.transform, it.width ?? 40, itFontSize, viewport.transform));
+      }
     }
 
     let textItemIndex = -1;
@@ -383,6 +398,10 @@ export class PdfContrastValidator {
       // TextItem (not TextMarkedContent which has no str field)
       if (!('str' in rawItem)) continue;
       textItemIndex++;
+      // Already marked /Artifact (e.g. by fixInvisibleTextArtifact) -- no
+      // longer real content to a screen reader, so no longer a contrast
+      // finding either, regardless of what pdfjs still renders/measures.
+      if (artifactTextItemIndices.has(textItemIndex)) continue;
       const item = rawItem as { str: string; transform: number[]; width?: number; height?: number; fontName?: string };
 
       const str = item.str ?? '';
@@ -559,6 +578,35 @@ export class PdfContrastValidator {
   }
 
   /**
+   * The 0-based indices (counting only real TextItem entries, matching
+   * this file's own textItemIndex convention) of every text item currently
+   * nested inside an /Artifact marked-content tag, from pdfjs's own
+   * includeMarkedContent output. Confirmed live: pdfjs reliably exposes
+   * the REAL tag name on each begin marker (e.g. `{type:
+   * 'beginMarkedContent', tag: 'Artifact'}` or `{type:
+   * 'beginMarkedContentProps', tag: 'Figure', id: '...'}`), not merely a
+   * synthetic MCID -- no struct-tree cross-referencing needed here.
+   */
+  private findArtifactTextItemIndices(
+    items: Array<{ type?: string; tag?: string; str?: string }>,
+  ): Set<number> {
+    const artifactIndices = new Set<number>();
+    const tagStack: string[] = [];
+    let index = -1;
+    for (const item of items) {
+      if (item.type === 'beginMarkedContent' || item.type === 'beginMarkedContentProps') {
+        tagStack.push(item.tag ?? '');
+      } else if (item.type === 'endMarkedContent') {
+        tagStack.pop();
+      } else if ('str' in item) {
+        index++;
+        if (tagStack.includes('Artifact')) artifactIndices.add(index);
+      }
+    }
+    return artifactIndices;
+  }
+
+  /**
    * Canvas-space axis-aligned bounding box for a text item's glyph run,
    * correct for any rotation angle -- not just itemWidth-along-canvasX by
    * fontSize-along-canvasY, which silently assumes unrotated horizontal
@@ -648,8 +696,15 @@ export class PdfContrastValidator {
    * background by far more than ZERO_INK_COLOR_TOLERANCE somewhere in its
    * box; a region where nothing was drawn on top of a flat fill has zero
    * variance at all.
+   *
+   * Also reused by pdf-structure-writer.service.ts's fixInvisibleTextArtifact
+   * to verify a relocated run still renders as invisible ink at its new
+   * position -- the exact same predicate this validator itself uses to
+   * decide "no detectable ink" in the first place, so a "yes, still
+   * uniform" answer here is guaranteed consistent with what a real re-audit
+   * would find.
    */
-  private isRegionUniform(
+  isRegionUniform(
     data: Uint8ClampedArray,
     x: number, y: number, w: number, h: number,
     cw: number, ch: number

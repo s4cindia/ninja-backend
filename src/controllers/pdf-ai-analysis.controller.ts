@@ -530,7 +530,7 @@ export class PdfAiAnalysisController {
         const r = results[0];
         modification = { success: r.success, description: r.after, error: r.error };
       } else if (suggestionType === 'invisible-text-artifact-fix') {
-        const results = pdfStructureWriterService.fixInvisibleTextArtifact(doc, [originalIssue]);
+        const results = await pdfStructureWriterService.fixInvisibleTextArtifact(doc, [originalIssue]);
         const r = results[0];
         modification = { success: r.success, description: r.after, error: r.error };
       } else if (suggestionType === 'pdfua-identifier') {
