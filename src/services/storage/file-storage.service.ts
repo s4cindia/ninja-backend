@@ -3,6 +3,7 @@ import * as path from 'path';
 import {
   PutObjectCommand,
   GetObjectCommand,
+  HeadObjectCommand,
   DeleteObjectCommand,
   DeleteObjectsCommand,
   ListObjectsV2Command,
@@ -47,6 +48,18 @@ async function s3GetBuffer(key: string): Promise<Buffer | null> {
 
 async function s3PutBuffer(key: string, buffer: Buffer): Promise<void> {
   await s3Client.send(new PutObjectCommand({ Bucket: config.s3Bucket, Key: key, Body: buffer }));
+}
+
+// HEAD, not GET -- an existence check must never pull a potentially large
+// (tens-of-MB) file body over the network just to answer a boolean.
+async function s3ObjectExists(key: string): Promise<boolean> {
+  try {
+    await s3Client.send(new HeadObjectCommand({ Bucket: config.s3Bucket, Key: key }));
+    return true;
+  } catch (error) {
+    if (isNotFoundError(error)) return false;
+    throw error;
+  }
 }
 
 class FileStorageService {
@@ -193,6 +206,46 @@ class FileStorageService {
       }
     }
     return null;
+  }
+
+  /**
+   * Whether a remediated file exists for this job, without downloading it.
+   * Same candidate-filename fallback as getRemediatedFile (plain name, then
+   * the `_remediated` suffix convention), but HEAD/fs.access only -- built
+   * for a job/analysis status response that may be polled repeatedly, where
+   * pulling a 50+MB PDF body just to answer "does one exist" would be
+   * wasteful. See getAnalysis's own use of this: the AiAnalysis table's
+   * `status: 'applied'` rows are intentionally pruned once an issue is
+   * resolved and no longer appears in the latest audit (correct for that
+   * table's own purpose), so a UI relying on "any row still says applied"
+   * to decide whether to offer a download loses that signal the moment a
+   * later round's re-audit confirms the fix worked -- exactly backwards.
+   * The remediated file's own presence in storage is the one signal that
+   * survives every round's pruning.
+   */
+  async remediatedFileExists(jobId: string, fileName: string): Promise<boolean> {
+    const sanitizedFileName = path.basename(fileName);
+    const ext = path.extname(sanitizedFileName);
+    const baseName = sanitizedFileName.slice(0, -ext.length);
+
+    const candidates = [
+      sanitizedFileName,
+      baseName.endsWith('_remediated') ? sanitizedFileName : `${baseName}_remediated${ext}`,
+    ];
+
+    for (const candidate of candidates) {
+      if (s3Service.isConfigured()) {
+        if (await s3ObjectExists(`${S3_PREFIX}/${jobId}/remediated/${candidate}`)) return true;
+        continue;
+      }
+      try {
+        await fs.access(path.join(STORAGE_BASE, jobId, 'remediated', candidate));
+        return true;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      }
+    }
+    return false;
   }
 
   /**

@@ -186,6 +186,17 @@ export class PdfAiAnalysisController {
             ? 'complete'
             : 'pending';
 
+      // Whether a remediated file exists in storage -- NOT derived from
+      // `suggestions.some(s => s.status === 'applied')`. AiAnalysis rows
+      // for a resolved issue are intentionally pruned once a later round's
+      // re-audit confirms it's gone (ai-analysis.service.ts's own
+      // analyzeJob), so that signal disappears the moment a fix is
+      // confirmed working -- exactly the case a "download the fixed PDF"
+      // affordance most needs to still be available. The remediated file's
+      // own presence in storage survives every round's pruning.
+      const fileName = (output.fileName as string | undefined) ?? 'document.pdf';
+      const hasRemediatedFile = await fileStorageService.remediatedFileExists(jobId, fileName);
+
       res.json({
         success: true,
         data: {
@@ -193,6 +204,7 @@ export class PdfAiAnalysisController {
           analyzed,
           status,
           stats,
+          hasRemediatedFile,
           guidanceAcknowledgment: (output.guidanceAcknowledgment as Record<string, unknown> | undefined) ?? null,
         },
       });
