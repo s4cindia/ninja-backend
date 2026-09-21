@@ -448,6 +448,56 @@ export function locateEnclosingTextObject(content: string, runStart: number): En
 }
 
 /**
+ * The CTM (scale+translate only, same axis-aligned-only convention as
+ * EnclosingTextObject) in effect immediately before byte offset `position`
+ * -- unlike locateEnclosingTextObject, `position` need not be inside a
+ * `BT…ET` block at all. Used by pdf-structure-writer.service.ts's
+ * fixInvisibleTextArtifact to confirm a text run being relocated out of a
+ * real tagged region has the SAME ambient transform at both its original
+ * position and the destination it's being moved to -- if they differ, the
+ * run's own absolute Tm coordinates would render at a different page
+ * position after the move, a real (if usually small) visual regression
+ * this fix must never silently risk. Returns null when a shear/rotation is
+ * in effect at `position` (see SHEAR_EPSILON's call site above for why
+ * that case is refused rather than compensated for).
+ */
+export function computeCtmAt(content: string, position: number): { a: number; d: number; e: number; f: number } | null {
+  const tokens = tokenize(content);
+  type Ctm = { a: number; d: number; e: number; f: number; sheared: boolean };
+  let ctm: Ctm = { a: 1, d: 1, e: 0, f: 0, sheared: false };
+  const ctmStack: Ctm[] = [];
+  const operands: Array<{ t: string; v: string; start: number; end: number }> = [];
+
+  for (const tk of tokens) {
+    if (tk.start >= position) break;
+    if (tk.t !== 'op') { operands.push(tk); continue; }
+    switch (tk.v) {
+      case 'q': ctmStack.push({ ...ctm }); break;
+      case 'Q': { const p = ctmStack.pop(); if (p) ctm = { ...p }; break; }
+      case 'cm': {
+        const a = num(operands[operands.length - 6]);
+        const b = num(operands[operands.length - 5]);
+        const c = num(operands[operands.length - 4]);
+        const d = num(operands[operands.length - 3]);
+        const e = num(operands[operands.length - 2]);
+        const f = num(operands[operands.length - 1]);
+        const thisOpSheared = Math.abs(b) > SHEAR_EPSILON || Math.abs(c) > SHEAR_EPSILON;
+        ctm = {
+          a: ctm.a * a, d: ctm.d * d, e: ctm.a * e + ctm.e, f: ctm.d * f + ctm.f,
+          sheared: ctm.sheared || thisOpSheared,
+        };
+        break;
+      }
+      default: break;
+    }
+    operands.length = 0;
+  }
+
+  if (ctm.sheared) return null;
+  return { a: ctm.a, d: ctm.d, e: ctm.e, f: ctm.f };
+}
+
+/**
  * Core of locateTextRun, operating on already-tokenized/already-walked
  * state so locateTextRunsForPage can reuse one tokenize()+findTextUnits()
  * pass across every target on a page instead of repeating both per issue.

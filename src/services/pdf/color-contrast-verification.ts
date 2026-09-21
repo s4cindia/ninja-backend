@@ -152,6 +152,61 @@ export async function verifyContrastInRegion(
 }
 
 /**
+ * Verifies a RELOCATED invisible-text-artifact fix specifically (pdf-
+ * structure-writer.service.ts's fixInvisibleTextArtifact, relocate path) --
+ * never use verifyContrastInRegion for this. That function measures a
+ * contrast RATIO between two derived summary colors, which stays low even
+ * when a real second color is present (see PdfContrastValidator.
+ * isRegionUniform's own doc comment for why the two checks are genuinely
+ * different questions) -- exactly the ambiguity this fix's whole safety
+ * case depends on resolving correctly: relocating a run to a new position
+ * with a wrong restored color could turn genuinely invisible ink into
+ * something visible with a still-low measured ratio (e.g. two similar
+ * mid-tones), which verifyContrastInRegion's pass/fail alone would not
+ * catch. isRegionUniform instead asks the exact same "is there a second
+ * color anywhere in this box at all" question PdfContrastValidator's own
+ * detection asks -- a true answer here is guaranteed consistent with what
+ * a real re-audit at this position would find.
+ */
+export async function verifyStillNoDetectableInk(
+  buffer: Buffer,
+  pageNumber: number,
+  boundingBox: { x: number; y: number; width: number; height: number }
+): Promise<boolean | null> {
+  let pdfjsDoc: pdfjsLib.PDFDocumentProxy | null = null;
+  try {
+    pdfjsDoc = await pdfjsLib.getDocument({ data: new Uint8Array(buffer) }).promise;
+    const page = await pdfjsDoc.getPage(pageNumber);
+    const viewport = page.getViewport({ scale: RENDER_SCALE });
+
+    const canvas = createCanvas(Math.ceil(viewport.width), Math.ceil(viewport.height));
+    const ctx = canvas.getContext('2d');
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await page.render({ canvas: canvas as any, canvasContext: ctx as any, viewport }).promise;
+
+    const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    const { data } = imgData;
+    const cw = canvas.width;
+    const ch = canvas.height;
+
+    // Same top-left-flip reversal as verifyContrastInRegion -- see its own
+    // doc comment for why this exactly reproduces the original detection's
+    // canvas-space anchor for an axis-aligned page.
+    const canvasX = Math.round(boundingBox.x * RENDER_SCALE);
+    const canvasY = Math.round(boundingBox.y * RENDER_SCALE);
+    const itemW = Math.max(10, Math.round(boundingBox.width * RENDER_SCALE));
+    const itemH = Math.max(6, Math.round(boundingBox.height * RENDER_SCALE));
+    const top = canvasY - itemH;
+
+    return pdfContrastValidator.isRegionUniform(data, canvasX, top, itemW, itemH, cw, ch);
+  } catch {
+    return null;
+  } finally {
+    if (pdfjsDoc) await pdfjsDoc.destroy();
+  }
+}
+
+/**
  * Verifies a BACKPLATE fix specifically -- never use verifyContrastInRegion
  * for this. Codex P1 finding on PR #575, confirmed live on Math_Weir_PDF.pdf:
  * verifyContrastInRegion's expectedBackgroundHex is only a soft hint for

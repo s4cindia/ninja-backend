@@ -72,8 +72,11 @@ import type { FixResult } from './pdf-structure-writer.service';
 // AI-analysis pipeline, Phase B3) checks before even offering this as a
 // suggestion. Matches the confidence bar Phase B3 is planned to require for
 // apply-to-pdf eligibility, but this module doesn't trust callers to have
-// applied it correctly.
-const MIN_APPLY_CONFIDENCE = 0.80;
+// applied it correctly. Exported so any OTHER writer that also calls
+// locateTextRun and mutates the matched span (e.g.
+// pdf-structure-writer.service.ts's fixInvisibleTextArtifact) enforces the
+// exact same bar, rather than risking a duplicated, silently-drifting copy.
+export const MIN_APPLY_CONFIDENCE = 0.80;
 
 // 21:1 is the theoretical maximum WCAG contrast ratio (pure black vs pure
 // white) — no fg/bg pair can reach it via a moderate lightness adjustment,

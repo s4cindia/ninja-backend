@@ -1269,6 +1269,37 @@ class AiAnalysisService {
 
     if (CONTRAST_CODES.has(code)) {
       if (config.colorContrastMode === 'disabled') return null;
+      // Text whose measured ink color exactly matches its background isn't
+      // a contrast-RATIO defect at all -- pdf-contrast.validator.ts never
+      // populates contrastData for this detection path, since there's no
+      // real foreground/background pair to report a ratio for. Confirmed
+      // real on Math_Weir_PDF.pdf: 55 of 88 real COLOR-CONTRAST issues are
+      // print-production slug-line text (Illustrator/InDesign job-tracking
+      // codes), never meant to be seen by ANY reader.
+      //
+      // ALWAYS guidance-only, regardless of colorContrastMode -- CodeRabbit
+      // finding on PR #585, confirmed real: the SAME "no contrastData"
+      // shape is also how pdf-contrast.validator.ts represents a genuinely
+      // different, unrelated problem -- an embedded-font rendering failure
+      // (broken/missing font data the renderer can't paint), which is real,
+      // announced content with a REAL defect that needs a font fix, not
+      // exclusion from the accessible tree. The validator's own triage
+      // already marks this disposition 'manual' for exactly this reason.
+      // Auto-Artifact-tagging real content because its rendering happens to
+      // be broken would be a strictly worse outcome than leaving it
+      // flagged -- silently hiding it from EVERY reader instead of
+      // surfacing the real rendering bug for a human to fix.
+      if (!issue.contrastData) {
+        return {
+          suggestionType: 'invisible-text-artifact-fix',
+          guidance: 'This text has no ink color visually distinguishable from its background. This is often print-production slug-line text (safe to mark /Artifact), but can also indicate a broken embedded font rendering REAL content — verify before applying.',
+          confidence: 0,
+          rationale: 'No real, measurable foreground color exists to report a ratio for — could be genuinely invisible tracking text, or a font-rendering failure hiding real content; always needs human confirmation before excluding it from the accessible tree',
+          model: 'rule-based',
+          applyMode: 'guidance-only',
+          requiresManualReview: true,
+        };
+      }
       return this.analyzeColorContrast(issue, contrastMatchByIssueId, config.colorContrastMode);
     }
 
@@ -2877,7 +2908,7 @@ class AiAnalysisService {
     // for repeat contrast fixes.
     const pagesRewrittenSincePreResolve = new Set<number>();
 
-    const STRUCTURE_WRITER_TYPES = new Set(['heading-fix', 'list-fix', 'table-header-fix', 'table-header-fix-column', 'table-header-scope-fix', 'table-artifact-fix', 'table-from-layout-fix', 'bookmark-generate', 'heading-multiple-h1-fix', 'pdfua-identifier', 'color-contrast-fix', 'alt-text-decorative', 'untagged-content-fix']);
+    const STRUCTURE_WRITER_TYPES = new Set(['heading-fix', 'list-fix', 'table-header-fix', 'table-header-fix-column', 'table-header-scope-fix', 'table-artifact-fix', 'table-from-layout-fix', 'bookmark-generate', 'heading-multiple-h1-fix', 'pdfua-identifier', 'color-contrast-fix', 'alt-text-decorative', 'untagged-content-fix', 'invisible-text-artifact-fix']);
 
     let applied = 0;
     let failed = 0;
@@ -2954,6 +2985,17 @@ class AiAnalysisService {
           const results = pdfStructureWriterService.fixUntaggedContent(doc, [originalIssue]);
           const r = results[0];
           modification = { success: r.success, description: r.after, error: r.error };
+          if (r.success && originalIssue.pageNumber !== undefined) {
+            pagesRewrittenSincePreResolve.add(originalIssue.pageNumber);
+          }
+        } else if (suggestionType === 'invisible-text-artifact-fix') {
+          const results = await pdfStructureWriterService.fixInvisibleTextArtifact(doc, [originalIssue]);
+          const r = results[0];
+          modification = { success: r.success, description: r.after, error: r.error };
+          // Rewrites the page's own content stream (splices in BMC/EMC),
+          // same as untagged-content-fix -- any LATER same-page contrast
+          // fix in this batch must re-resolve its own byte offsets rather
+          // than use ones computed against the pre-splice content.
           if (r.success && originalIssue.pageNumber !== undefined) {
             pagesRewrittenSincePreResolve.add(originalIssue.pageNumber);
           }

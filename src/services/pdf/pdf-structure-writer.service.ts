@@ -40,6 +40,10 @@ import {
 } from './table-content-tagger';
 import type { TableCell, TableInfo } from './structure-analyzer.service';
 import { locateXObjectInvocation, findNearestMcidForPosition } from './figure-content-tagger';
+import { locateTextRun, locateEnclosingTextObject, computeCtmAt, findPrecedingColor, type TextRunMatch } from './contrast-content-stream';
+import { MIN_APPLY_CONFIDENCE } from './pdf-contrast-writer.service';
+import { verifyStillNoDetectableInk } from './color-contrast-verification';
+import { tokenize } from '../zone-extractor/seam-c/content-stream';
 import type { ParsedPDF } from './pdf-parser.service';
 
 // ─── Public Types ─────────────────────────────────────────────────────────────
@@ -3236,6 +3240,426 @@ export class PdfStructureWriterService {
         after: `${count} region(s) marked as /Artifact`,
       };
     });
+  }
+
+  /**
+   * Matterhorn 01-005-adjacent fix: wraps a SPECIFIC text run — one whose
+   * measured ink color exactly matches its background
+   * (pdf-contrast.validator.ts's own "single uniform color" detection) —
+   * in /Artifact BMC … EMC, the same convention pdf-artifact-tagger.ts
+   * already established for untagged painted paths (BMC, not BDC, to
+   * avoid a strict validator looking up /Artifact in /Properties and
+   * failing with "Undefined property").
+   *
+   * Confirmed real on Math_Weir_PDF.pdf: 55 of 88 real COLOR-CONTRAST
+   * issues are print-production slug-line text — Illustrator/InDesign
+   * job-tracking codes like "E9472/Weir/F02.01/746848/mh-R1", embedded by
+   * the layout tool and never meant to be seen by ANY reader, sighted or
+   * assistive (one even sits INSIDE a real /Figure's own marked-content
+   * span, alongside the Figure's genuine image content). Distinguished
+   * from a real, measurable low-contrast defect by the ABSENCE of
+   * contrastData on the issue — pdf-contrast.validator.ts never populates
+   * it for this detection path, since there's no real foreground/
+   * background pair to report a ratio for. The correct fix isn't a
+   * contrast-ratio adjustment (there is no real ink color to improve) —
+   * it's excluding the run from the accessible content tree entirely,
+   * matching what a sighted reader already experiences: nothing.
+   *
+   * Locates the run the SAME way pdf-contrast-writer.service.ts's own
+   * fixColorContrast does — contrast-content-stream.ts's locateTextRun,
+   * from the issue's own boundingBox — reusing already-proven,
+   * live-validated infrastructure rather than a new detection pass.
+   */
+  async fixInvisibleTextArtifact(doc: PDFDocument, issues: AuditIssue[]): Promise<FixResult[]> {
+    const results: FixResult[] = [];
+    for (const issue of issues) {
+      results.push(await this.fixOneInvisibleTextArtifact(doc, issue));
+    }
+    return results;
+  }
+
+  private async fixOneInvisibleTextArtifact(doc: PDFDocument, issue: AuditIssue): Promise<FixResult> {
+    if (!issue.pageNumber || !issue.boundingBox) {
+      return { issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error: 'Issue has no pageNumber or boundingBox' };
+    }
+
+    let content: string | null;
+    try {
+      content = decodePageContent(doc, issue.pageNumber);
+    } catch (err) {
+      return {
+        issueId: issue.id, success: false, before: 'unknown', after: 'unknown',
+        error: `Could not decode page ${issue.pageNumber}: ${err instanceof Error ? err.message : String(err)}`,
+      };
+    }
+    if (!content) {
+      return { issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error: `Page ${issue.pageNumber} has no content stream` };
+    }
+
+    // Same {x, baselineY} derivation pdf-contrast-writer.service.ts's own
+    // fixColorContrast uses, for consistent, already-proven matching.
+    const target = { x: issue.boundingBox.x, baselineY: issue.boundingBox.pageHeight - issue.boundingBox.y };
+    const match = locateTextRun(content, target);
+    // Same safety gate pdf-contrast-writer.service.ts's own
+    // fixColorContrast enforces (CodeRabbit finding on PR #585, confirmed
+    // real): a near-equally-close runner-up, a mixed-color run, or a
+    // moderately-off-target low-confidence match is not safe to mutate --
+    // wrapping the WRONG run in Artifact would hide real content, not
+    // fix anything.
+    if (!match || match.ambiguous || match.confidence < MIN_APPLY_CONFIDENCE) {
+      return {
+        issueId: issue.id, success: false, before: 'invisible text run', after: 'unknown',
+        error: match
+          ? `Match too uncertain to safely apply (confidence ${match.confidence}${match.ambiguous ? ', ambiguous' : ''})`
+          : 'Could not locate the invisible text run on this page (already fixed, or its position no longer matches)',
+      };
+    }
+
+    // A run sitting at the page's top level (or nested only inside other
+    // /Artifact tags) can be wrapped in place -- no real content is being
+    // nested inside anything. Confirmed live on Math_Weir_PDF.pdf: this
+    // path alone resolves 0/55 real cases (see relocateAndWrapInvisibleText's
+    // own doc comment) -- every real invisible slug-line run sits inside a
+    // real /Figure's own tagged content instead.
+    const enclosingTag = this.findEnclosingRealTag(content, match.start);
+    if (!enclosingTag) {
+      const fixed = content.slice(0, match.start) + '/Artifact BMC ' + content.slice(match.start, match.end) + ' EMC ' + content.slice(match.end);
+      writePageContent(doc, issue.pageNumber, fixed);
+      return {
+        issueId: issue.id,
+        success: true,
+        before: 'invisible text run tagged as real content',
+        after: 'text run marked as /Artifact (excluded from assistive-technology reading order)',
+      };
+    }
+
+    return this.relocateAndWrapInvisibleText(doc, issue, content, match, enclosingTag);
+  }
+
+  /**
+   * Handles the run-is-nested-inside-real-tagged-content case
+   * fixOneInvisibleTextArtifact refuses to wrap in place (Matterhorn 01-003
+   * -- "Content marked as Artifact is present inside tagged content").
+   * Simply inserting `/Artifact BMC…EMC` around the run without moving it
+   * would still leave it byte-range-nested inside the enclosing real tag's
+   * own BDC…EMC span, the exact shape 01-003 flags -- confirmed real and
+   * universal on Math_Weir_PDF.pdf: ALL 55 real invisible-slug-line-text
+   * issues sit inside a /Figure's own marked-content span (the Illustrator/
+   * InDesign "Place" pipeline embeds print-production job-tracking text
+   * alongside the Figure's real image content, under ONE shared MCID), so
+   * refusing to relocate would mean 0/55 real yield -- the actual defect
+   * this fix exists to resolve would simply never be fixable.
+   *
+   * Instead: cuts the run's own self-contained text object (its enclosing
+   * `BT…ET` -- `q`/`Q` are illegal inside a text object per PDF32000-1:2008
+   * Annex A, so this never needs to touch surrounding graphics-state ops)
+   * out of its current position and re-inserts an /Artifact-wrapped copy
+   * immediately BEFORE the enclosing real tag's own BDC -- fully outside
+   * its tagged span, so the run is no longer "inside tagged content" at
+   * all. Three independent safety gates, each bailing (never guessing) to
+   * "needs struct-tree-level handling instead" on failure:
+   *
+   * 1. CTM match -- the ambient transform at the insertion point must equal
+   *    the one at the run's own original position (computeCtmAt), or the
+   *    run's absolute Tm coordinates would render at a different page
+   *    position after the move. A sheared/rotated transform at either
+   *    position also bails (computeCtmAt/locateEnclosingTextObject's own
+   *    convention).
+   * 2. Self-contained block -- the text object must contain no drawing/
+   *    graphics-state operator of its own beyond text-showing/positioning
+   *    (analyzeTextObjectForRelocation) -- true for every real Math_Weir
+   *    case (a self-contained `BT…ET`, sometimes sharing an OUTER `q…Q`
+   *    with unrelated sibling content like a decorative border stroke, but
+   *    never containing one itself).
+   * 3. Color preservation -- if the block doesn't set its own fill color,
+   *    the ambient color at its ORIGINAL position (findPrecedingColor,
+   *    same utility pdf-contrast-writer.service.ts's own restore logic
+   *    uses) is explicitly written into the relocated copy, wrapped in a
+   *    fresh `q…Q` so it can never leak into whatever follows at the new
+   *    position -- otherwise the run could render in whatever color
+   *    happens to be ambient at the destination instead of the one that
+   *    made it genuinely invisible.
+   *
+   * Even after all three gates pass, the result is re-rendered and
+   * verified (verifyStillNoDetectableInk) to still read as uniform,
+   * undetectable ink at its new position before being reported as success
+   * -- reverted otherwise. This is the only way to catch a wrong
+   * restored color or an unmodeled state dependency: once relocated, the
+   * run is /Artifact-tagged, so pdf-contrast.validator.ts's own Artifact-
+   * awareness (PR #585) means a re-audit will never inspect it again
+   * regardless of what it actually renders as.
+   */
+  private async relocateAndWrapInvisibleText(
+    doc: PDFDocument,
+    issue: AuditIssue,
+    content: string,
+    match: TextRunMatch,
+    enclosingTag: string,
+  ): Promise<FixResult> {
+    const pageNumber = issue.pageNumber!;
+    const fail = (error: string): FixResult => ({
+      issueId: issue.id, success: false, before: 'invisible text run', after: 'unknown',
+      error: `${error} Needs struct-tree-level handling instead.`,
+    });
+    const nested = `Run is nested inside a real /${enclosingTag} structure element's own content, and`;
+
+    const enclosing = locateEnclosingTextObject(content, match.start);
+    if (!enclosing) {
+      return fail(`${nested} its enclosing text object could not be safely characterized (missing BT, or a sheared/rotated transform in effect).`);
+    }
+
+    const outer = this.findOutermostRealTagBounds(content, match.start);
+    if (!outer || outer.bdcStart >= enclosing.btStart) {
+      return fail(`${nested} its enclosing tagged region's bounds could not be determined.`);
+    }
+
+    const destCtm = computeCtmAt(content, outer.bdcStart);
+    if (!destCtm || !this.ctmsMatch(enclosing.ctm, destCtm)) {
+      return fail(`${nested} the ambient transform there differs from (or could not be matched to) the transform at the only safe place to relocate it to -- relocating would risk rendering it at the wrong page position.`);
+    }
+
+    const analysis = this.analyzeTextObjectForRelocation(content, enclosing.btStart);
+    if (!analysis) {
+      return fail(`${nested} its enclosing text object isn't a simple, self-contained block safe to relocate (contains a graphics-state/drawing operator of its own, or an unbalanced BT/ET).`);
+    }
+
+    // The text object's own q…Q may establish a CLIP (e.g. `x y w h re W n`)
+    // that clips it out of view entirely -- confirmed real and live on
+    // Math_Weir_PDF.pdf: a run whose baseline sits just below its own clip
+    // rectangle's bottom edge renders as fully invisible black ink in its
+    // original position, but becomes plainly visible real text once
+    // relocated without that clip (caught by this method's own verify step
+    // below, on the very first live validation attempt -- see
+    // relocateAndWrapInvisibleText's own doc comment). findClipPreamble
+    // captures that clip (and any color op sitting alongside it) so it can
+    // be reproduced verbatim at the new position, not just the run's color.
+    const preamble = this.findClipPreamble(content, enclosing.btStart);
+    if (preamble === null) {
+      return fail(`${nested} the graphics state established between its enclosing q and its own BT (e.g. a non-rectangular clip, or another operator this fix doesn't recognize as safe to reproduce elsewhere) could not be safely characterized.`);
+    }
+
+    const { etEnd, hasOwnColor } = analysis;
+    const btStart = enclosing.btStart;
+    const PREAMBLE_COLOR_OPS = new Set(['k', 'K', 'rg', 'RG', 'g', 'G', 'sc', 'SC', 'scn', 'SCN']);
+    const preambleHasColor = tokenize(preamble).some((tk) => tk.t === 'op' && PREAMBLE_COLOR_OPS.has(tk.v));
+
+    let ambientColorOp = '';
+    if (!hasOwnColor && !preambleHasColor) {
+      const ambientColor = findPrecedingColor(content, btStart);
+      if (!ambientColor) {
+        return fail(`${nested} the ambient fill color to preserve when relocating it could not be determined (an untracked colorspace was last set).`);
+      }
+      ambientColorOp = `${ambientColor[0]} ${ambientColor[1]} ${ambientColor[2]} rg\n`;
+    }
+
+    const block = content.slice(btStart, etEnd); // always starts with the literal 'BT'
+    const wrapped = `/Artifact BMC\nq\n${preamble}${ambientColorOp}${block}\nQ\nEMC\n`;
+
+    const newContent =
+      content.slice(0, outer.bdcStart) +
+      wrapped +
+      content.slice(outer.bdcStart, btStart) +
+      content.slice(etEnd);
+
+    writePageContent(doc, pageNumber, newContent);
+
+    const verifyBuffer = Buffer.from(await doc.save());
+    const stillInvisible = await verifyStillNoDetectableInk(verifyBuffer, pageNumber, issue.boundingBox!);
+    if (!stillInvisible) {
+      writePageContent(doc, pageNumber, content); // revert to the pre-relocation content
+      return fail(`Relocating this run out of its enclosing /${enclosingTag} produced a different visual result than the original (its new position no longer renders as uniform, undetectable ink) -- reverted rather than risk introducing a new visible artifact.`);
+    }
+
+    return {
+      issueId: issue.id,
+      success: true,
+      before: `invisible text run nested inside a real /${enclosingTag} structure element's own content`,
+      after: `relocated outside the /${enclosingTag}'s tagged region and marked /Artifact (verified render unchanged)`,
+    };
+  }
+
+  private ctmsMatch(
+    a: { a: number; d: number; e: number; f: number },
+    b: { a: number; d: number; e: number; f: number },
+  ): boolean {
+    const EPS = 1e-6;
+    return Math.abs(a.a - b.a) < EPS && Math.abs(a.d - b.d) < EPS && Math.abs(a.e - b.e) < EPS && Math.abs(a.f - b.f) < EPS;
+  }
+
+  /**
+   * The byte range [bdcStart, emcEnd) of the OUTERMOST real (non-/Artifact)
+   * marked-content tag enclosing `position`, or null if none does. Unlike
+   * findEnclosingRealTag (which only needs the innermost tag's NAME to
+   * decide whether to bail at all), relocateAndWrapInvisibleText needs the
+   * full span of the widest real tag involved -- relocating past only the
+   * innermost one could still leave the run nested inside an OUTER real
+   * tag, if one exists.
+   */
+  private findOutermostRealTagBounds(content: string, position: number): { bdcStart: number; emcEnd: number; tag: string } | null {
+    const tokens = tokenize(content);
+    const stack: Array<{ tag: string; start: number }> = [];
+    const operands: string[] = [];
+    let dictDepth = 0;
+    let target: { tag: string; start: number; stackIndex: number } | null = null;
+    // The byte offset of this BDC/BMC's own FIRST operand (the tag name,
+    // e.g. `/Figure`) -- NOT the operator keyword's own offset, which sits
+    // AFTER the tag name and any properties dict in PDF's postfix syntax.
+    // Splicing at the operator's offset would leave the tag name itself
+    // behind, corrupting the content stream (confirmed live: produced
+    // `/Figure <</MCID 0>>/Artifact BMC ... EMC BDC` -- a stray, orphaned
+    // BDC with no operands at all).
+    let pendingStart: number | null = null;
+
+    for (const tk of tokens) {
+      if (dictDepth > 0) {
+        if (tk.t === '<<') dictDepth++;
+        else if (tk.t === '>>') dictDepth--;
+        continue;
+      }
+      if (tk.t === '<<') { dictDepth = 1; continue; }
+
+      if (target === null && tk.start >= position) {
+        const idx = stack.findIndex((f) => f.tag !== 'Artifact');
+        if (idx === -1) return null;
+        target = { tag: stack[idx].tag, start: stack[idx].start, stackIndex: idx };
+      }
+
+      if (tk.t !== 'op') {
+        if (pendingStart === null) pendingStart = tk.start;
+        operands.push(tk.v);
+        continue;
+      }
+      if (tk.v === 'BDC' || tk.v === 'BMC') {
+        stack.push({ tag: (operands[0] ?? '').replace(/^\//, ''), start: pendingStart ?? tk.start });
+      } else if (tk.v === 'EMC') {
+        stack.pop();
+        if (target !== null && stack.length === target.stackIndex) {
+          return { bdcStart: target.start, emcEnd: tk.end, tag: target.tag };
+        }
+      }
+      operands.length = 0;
+      pendingStart = null;
+    }
+    return null;
+  }
+
+  /**
+   * Validates that the text object starting at `btStart` is safe to
+   * relocate wholesale: finds its matching `ET` and confirms nothing
+   * between them is a graphics-state or drawing operator PDF32000-1:2008
+   * Annex A forbids inside a text object anyway (`q`/`Q`/`Do`/`sh`/`EI`/
+   * `cm`) -- a defensive check for a malformed document (pdfjs tolerates
+   * this silently per spliceColorFix's own doc comment; a stricter reader
+   * would not) rather than something expected on a well-formed one.
+   * Also reports whether the block sets its own fill color before its
+   * first text-showing op, so the caller knows whether an explicit
+   * ambient-color restore is needed. Returns null on an unbalanced
+   * BT/ET or a disallowed operator.
+   */
+  private analyzeTextObjectForRelocation(content: string, btStart: number): { etEnd: number; hasOwnColor: boolean } | null {
+    const tokens = tokenize(content);
+    const DISALLOWED_IN_TEXT_OBJECT = new Set(['q', 'Q', 'Do', 'sh', 'EI', 'cm']);
+    const FILL_COLOR_OPS = new Set(['rg', 'g', 'k', 'sc', 'scn']);
+    const TEXT_SHOW_OPS = new Set(['Tj', 'TJ', "'", '"']);
+
+    let depth = 0;
+    let hasOwnColor = false;
+    let sawTextShow = false;
+    for (const tk of tokens) {
+      if (tk.start < btStart) continue;
+      if (tk.t !== 'op') continue;
+      if (tk.v === 'BT') { depth++; continue; }
+      if (tk.v === 'ET') {
+        depth--;
+        if (depth === 0) return { etEnd: tk.end, hasOwnColor };
+        continue;
+      }
+      if (DISALLOWED_IN_TEXT_OBJECT.has(tk.v)) return null;
+      if (!sawTextShow && FILL_COLOR_OPS.has(tk.v)) hasOwnColor = true;
+      if (TEXT_SHOW_OPS.has(tk.v)) sawTextShow = true;
+    }
+    return null; // unbalanced BT/ET
+  }
+
+  /**
+   * The raw bytes between `btStart`'s immediately-enclosing `q` and
+   * `btStart` itself -- e.g. a clip-establishing `x y w h re W n` sequence
+   * -- or `''` when there's no enclosing `q` at all (nothing to preserve).
+   * Returns null when that gap contains anything outside a narrow, known-
+   * safe whitelist (a rectangular clip's own re, W, W-star, and n ops, a fill/stroke
+   * color op, or a `gs` ExtGState reference -- all position-independent,
+   * safe to reproduce verbatim at a relocated position) -- deliberately
+   * narrow: a non-rectangular clip path, a `cm`, another `q`, or anything
+   * else this fix doesn't specifically recognize bails rather than risk
+   * silently dropping or mischaracterizing state relocateAndWrapInvisibleText
+   * can't actually reproduce. `cm` in particular is excluded on purpose:
+   * that risk is already covered by this method's own CTM-match gate
+   * (computeCtmAt/ctmsMatch), not by this whitelist.
+   */
+  private findClipPreamble(content: string, btStart: number): string | null {
+    const tokens = tokenize(content);
+    const qStack: number[] = [];
+    for (const tk of tokens) {
+      if (tk.start >= btStart) break;
+      if (tk.t === 'op' && tk.v === 'q') qStack.push(tk.start);
+      else if (tk.t === 'op' && tk.v === 'Q') qStack.pop();
+    }
+    if (qStack.length === 0) return '';
+    const qStart = qStack[qStack.length - 1];
+    const preambleStart = qStart + 1; // right after the 'q' operator itself
+
+    const ALLOWED = new Set(['re', 'W', 'W*', 'n', 'k', 'K', 'rg', 'RG', 'g', 'G', 'sc', 'SC', 'scn', 'SCN', 'gs']);
+    for (const tk of tokens) {
+      if (tk.start < preambleStart || tk.start >= btStart) continue;
+      if (tk.t === 'op' && !ALLOWED.has(tk.v)) return null;
+    }
+    return content.slice(preambleStart, btStart);
+  }
+
+  /**
+   * The nearest enclosing REAL (non-/Artifact) marked-content tag name
+   * open at a given byte position, or null if the position is either at
+   * the page's top level or nested only inside /Artifact tags. Used by
+   * fixInvisibleTextArtifact to refuse creating a NESTED /Artifact when
+   * the target is already inside a real tagged element (Matterhorn 01-003
+   * territory — see that method's own doc comment).
+   *
+   * Reuses the same tokenizer mcid-bounding-box.ts already relies on, with
+   * the same dict-skipping technique for a BDC's own inline properties
+   * dict (so an inline `<</MCID n>>` never gets mistaken for operands of
+   * the BDC/BMC operator itself). Only tracks TAG NAMES and nesting depth
+   * here — no CTM or geometry needed for this purpose.
+   */
+  private findEnclosingRealTag(content: string, position: number): string | null {
+    const tokens = tokenize(content);
+    const stack: string[] = [];
+    const operands: string[] = [];
+    let dictDepth = 0;
+
+    for (const tk of tokens) {
+      if (tk.start >= position) break;
+
+      if (dictDepth > 0) {
+        if (tk.t === '<<') dictDepth++;
+        else if (tk.t === '>>') dictDepth--;
+        continue;
+      }
+      if (tk.t === '<<') { dictDepth = 1; continue; }
+
+      if (tk.t !== 'op') { operands.push(tk.v); continue; }
+
+      if (tk.v === 'BDC' || tk.v === 'BMC') {
+        stack.push((operands[0] ?? '').replace(/^\//, ''));
+      } else if (tk.v === 'EMC') {
+        stack.pop();
+      }
+      operands.length = 0;
+    }
+
+    for (let i = stack.length - 1; i >= 0; i--) {
+      if (stack[i] !== 'Artifact') return stack[i];
+    }
+    return null;
   }
 }
 

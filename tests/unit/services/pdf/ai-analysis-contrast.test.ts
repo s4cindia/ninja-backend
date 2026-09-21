@@ -69,6 +69,70 @@ describe('analyzeColorContrast', () => {
   });
 });
 
+describe('dispatchIssue: COLOR-CONTRAST without contrastData routes to invisible-text-artifact-fix, not analyzeColorContrast', () => {
+  // Confirmed real on Math_Weir_PDF.pdf: pdf-contrast.validator.ts never
+  // populates contrastData for its own "single uniform color" (genuinely
+  // invisible text) detection path -- there's no real foreground/
+  // background pair to report a ratio for. That absence is the exact
+  // signal dispatchIssue uses to route to the deterministic Artifact-
+  // tagging fix instead of a color-ratio suggestion.
+  const NO_CONTRAST_DATA_ISSUE: AuditIssue = {
+    ...BASE_ISSUE,
+    message: 'Text on page 3 has no visually distinguishable ink from its background',
+    boundingBox: { x: 100, y: 200, width: 50, height: 8, pageWidth: 612, pageHeight: 792 },
+  };
+
+  it('ALWAYS returns guidance-only, even when colorContrastMode is apply-to-pdf', async () => {
+    // CodeRabbit finding on PR #585, confirmed real: the SAME "no
+    // contrastData" shape also represents a genuinely different, unrelated
+    // problem -- an embedded-font rendering failure hiding REAL content,
+    // which pdf-contrast.validator.ts's own triage already marks 'manual'
+    // for exactly this reason. Auto-Artifact-tagging real content because
+    // its rendering is merely broken would be strictly worse than leaving
+    // it flagged, so this suggestion never auto-applies regardless of
+    // config, unlike the sibling color-contrast-fix.
+    const parsed = { isTagged: true, pages: [] } as unknown as import('../../../../src/services/pdf/pdf-comprehensive-parser.service').PdfParseResult;
+    const config = { colorContrastMode: 'apply-to-pdf' } as unknown as import('../../../../src/services/pdf/ai-analysis.service').AiRemediationConfig;
+
+    const res = await svc.dispatchIssue(NO_CONTRAST_DATA_ISSUE, parsed, config, new Map(), new Map(), new Map(), new Map());
+
+    expect(res).toBeTruthy();
+    expect(res.suggestionType).toBe('invisible-text-artifact-fix');
+    expect(res.applyMode).toBe('guidance-only');
+    expect(res.model).toBe('rule-based');
+    expect(res.requiresManualReview).toBe(true);
+  });
+
+  it('stays guidance-only when colorContrastMode is already guidance-only', async () => {
+    const parsed = { isTagged: true, pages: [] } as unknown as import('../../../../src/services/pdf/pdf-comprehensive-parser.service').PdfParseResult;
+    const config = { colorContrastMode: 'guidance-only' } as unknown as import('../../../../src/services/pdf/ai-analysis.service').AiRemediationConfig;
+
+    const res = await svc.dispatchIssue(NO_CONTRAST_DATA_ISSUE, parsed, config, new Map(), new Map(), new Map(), new Map());
+
+    expect(res.suggestionType).toBe('invisible-text-artifact-fix');
+    expect(res.applyMode).toBe('guidance-only');
+  });
+
+  it('returns null (respects the existing disabled gate) when colorContrastMode is disabled, same as any other contrast issue', async () => {
+    const parsed = { isTagged: true, pages: [] } as unknown as import('../../../../src/services/pdf/pdf-comprehensive-parser.service').PdfParseResult;
+    const config = { colorContrastMode: 'disabled' } as unknown as import('../../../../src/services/pdf/ai-analysis.service').AiRemediationConfig;
+
+    const res = await svc.dispatchIssue(NO_CONTRAST_DATA_ISSUE, parsed, config, new Map(), new Map(), new Map(), new Map());
+
+    expect(res).toBeNull();
+  });
+
+  it('still routes a REAL contrastData-bearing issue through analyzeColorContrast, not the new artifact fix', async () => {
+    const issueWithData: AuditIssue = { ...BASE_ISSUE, contrastData: { foreground: '#777777', background: '#ffffff', ratio: 2.1, requiredRatio: 4.5, isLargeText: false } };
+    const parsed = { isTagged: true, pages: [] } as unknown as import('../../../../src/services/pdf/pdf-comprehensive-parser.service').PdfParseResult;
+    const config = { colorContrastMode: 'apply-to-pdf' } as unknown as import('../../../../src/services/pdf/ai-analysis.service').AiRemediationConfig;
+
+    const res = await svc.dispatchIssue(issueWithData, parsed, config, new Map(), new Map(), new Map(), new Map());
+
+    expect(res.suggestionType).toBe('color-contrast');
+  });
+});
+
 describe('analyzeColorContrast — apply-to-pdf eligibility (Phase B3)', () => {
   async function buildDoc(x: number, y: number, size: number, rotate = 0): Promise<PDFDocument> {
     const src = await PDFDocument.create();
