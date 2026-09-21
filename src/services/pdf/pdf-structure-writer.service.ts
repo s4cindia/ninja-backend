@@ -1666,7 +1666,12 @@ export class PdfStructureWriterService {
    * guessed at, matching this codebase's own "bail rather than guess"
    * convention — those need Headers/IDs-based association instead, a
    * separate, larger undertaking. A table with a MIX (some fixable, some
-   * not) still reports success for the ones that could be fixed.
+   * not) still reports success for the ones that could be fixed. The one
+   * exception to "outside row 0/column 0 is always ambiguous": a row whose
+   * entire cell shape is TH and matches row 0's TH count exactly is a
+   * repeated column-header row (long-table readability convention, not a
+   * data row or a two-level header) — see the repeatedHeaderRowIndices
+   * comment below for the real data this was built from.
    */
   fixTableHeaderScope(
     doc: PDFDocument,
@@ -1713,6 +1718,26 @@ export class PdfStructureWriterService {
         const hasHeaderColumnBeyondRow0 = rowCells.slice(1).some(cells => cells[0]?.tag === 'TH');
         const hasHeaderRowBeyondCol0 = (rowCells[0] ?? []).slice(1).some(cell => cell.tag === 'TH');
 
+        // A later row whose ENTIRE cell shape is TH, matching row 0's own
+        // TH-cell count exactly, is the same column-header row repeated
+        // mid-table for long-table readability -- not a data row, and not
+        // a two-level group/sub-column header block either. Confirmed real
+        // on Math_Weir_PDF.pdf: 3 of its 5 remaining TABLE-HEADER-MISSING-
+        // SCOPE tables repeat their header row once (row 34) or twice
+        // (rows 34 and 68) every ~34 data rows, accounting for 27 of the
+        // 33 real missing-/Scope cells -- retagMultiLevelTableHeaders's
+        // group/sub-column detector correctly declines these since there's
+        // no group row above them, leaving them to fall through here.
+        const row0Cells = rowCells[0] ?? [];
+        const row0IsFullHeaderRow = row0Cells.length > 0 && row0Cells.every(c => c.tag === 'TH');
+        const repeatedHeaderRowIndices = new Set<number>();
+        if (row0IsFullHeaderRow) {
+          rowCells.forEach((cells, idx) => {
+            if (idx === 0 || cells.length !== row0Cells.length) return;
+            if (cells.every(c => c.tag === 'TH')) repeatedHeaderRowIndices.add(idx);
+          });
+        }
+
         let fixedCount = 0;
         let skippedCount = 0;
         rowCells.forEach((cells, rowIndex) => {
@@ -1722,13 +1747,20 @@ export class PdfStructureWriterService {
 
             const isHeaderRow = rowIndex === 0;
             const isHeaderCol = colIndex === 0;
-            if (!isHeaderRow && !isHeaderCol) { skippedCount++; return; }
+            // colIndex 0 is deliberately excluded here -- it's already
+            // covered by isHeaderCol above regardless of which row it's
+            // in, and giving it Column scope too would contradict that
+            // existing, already-correct handling.
+            const isRepeatedHeaderRow = colIndex !== 0 && repeatedHeaderRowIndices.has(rowIndex);
+            if (!isHeaderRow && !isHeaderCol && !isRepeatedHeaderRow) { skippedCount++; return; }
 
             let scope: 'Row' | 'Column' | 'Both';
             if (isHeaderRow && isHeaderCol) {
               scope = hasHeaderColumnBeyondRow0
                 ? (hasHeaderRowBeyondCol0 ? 'Both' : 'Row')
                 : 'Column';
+            } else if (isRepeatedHeaderRow) {
+              scope = 'Column';
             } else {
               scope = isHeaderRow ? 'Column' : 'Row';
             }
