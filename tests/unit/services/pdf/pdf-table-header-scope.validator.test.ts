@@ -269,8 +269,17 @@ describe('PdfTableHeaderScopeValidator', () => {
 
     const th1Ref = doc.context.register(doc.context.obj({ S: PDFName.of('TH'), Pg: page.ref, ID: doc.context.obj('h1') }));
     const th2Ref = doc.context.register(doc.context.obj({ S: PDFName.of('TH'), Pg: page.ref, ID: doc.context.obj('h2') }));
-    const td1Ref = doc.context.register(doc.context.obj({ S: PDFName.of('TD'), Pg: page.ref, Headers: [doc.context.obj('h1')] }));
-    const td2Ref = doc.context.register(doc.context.obj({ S: PDFName.of('TD'), Pg: page.ref, Headers: [doc.context.obj('h2')] }));
+    // /Headers is a TABLE ATTRIBUTE (ISO 32000-1 Table 337) -- lives inside
+    // /A under the /Table owner, exactly like /Scope/ColSpan/RowSpan, never
+    // as a direct entry on the cell dict itself (a real bug this test used
+    // to encode and pass against, until fixTableHeaderScope's own
+    // retagMultiLevelTableHeaders writer -- built correctly per spec --
+    // proved live that this exemption never actually fired for real
+    // Headers/IDs-tagged cells; see getHeadersIds's own doc comment).
+    const attr1Ref = doc.context.register(doc.context.obj({ O: PDFName.of('Table'), Headers: [doc.context.obj('h1')] }));
+    const attr2Ref = doc.context.register(doc.context.obj({ O: PDFName.of('Table'), Headers: [doc.context.obj('h2')] }));
+    const td1Ref = doc.context.register(doc.context.obj({ S: PDFName.of('TD'), Pg: page.ref, A: [attr1Ref] }));
+    const td2Ref = doc.context.register(doc.context.obj({ S: PDFName.of('TD'), Pg: page.ref, A: [attr2Ref] }));
     const tableRef = doc.context.register(doc.context.obj({
       S: PDFName.of('Table'), Pg: page.ref,
       K: [row(doc, [th1Ref, th2Ref]), row(doc, [td1Ref, td2Ref])],
@@ -284,5 +293,43 @@ describe('PdfTableHeaderScopeValidator', () => {
     expect(result.issues).toHaveLength(0);
     expect(result.metadata.totalThCells).toBe(0);
     expect(result.metadata.thCellsMissingScope).toBe(0);
+  });
+
+  it('does NOT exempt a table whose /Headers array is present but empty -- an empty array carries no real association', async () => {
+    // CodeRabbit finding on PR #584, confirmed real: the exemption used to
+    // fire the moment ANY cell had a /Headers ENTRY at all, regardless of
+    // whether it actually referenced anything.
+    const doc = await PDFDocument.create();
+    const page = doc.addPage([612, 792]);
+
+    const th1 = cell(doc, 'TH', page.ref);
+    const attrRef = doc.context.register(doc.context.obj({ O: PDFName.of('Table'), Headers: [] }));
+    const td1 = doc.context.register(doc.context.obj({ S: PDFName.of('TD'), Pg: page.ref, A: [attrRef] }));
+    const tableRef = doc.context.register(doc.context.obj({ S: PDFName.of('Table'), Pg: page.ref, K: [row(doc, [th1, td1])] }));
+    const docRef = doc.context.register(doc.context.obj({ S: PDFName.of('Document'), K: [tableRef] }));
+    doc.catalog.set(PDFName.of('StructTreeRoot'), doc.context.register(doc.context.obj({ Type: PDFName.of('StructTreeRoot'), K: [docRef] })));
+
+    const parsedPdf = { pdfLibDoc: doc } as unknown as ParsedPDF;
+    const result = await pdfTableHeaderScopeValidator.validate(parsedPdf);
+
+    expect(result.issues).toHaveLength(1); // still flagged -- not exempt
+    expect(result.metadata.thCellsMissingScope).toBe(1);
+  });
+
+  it('does NOT exempt a table whose /Headers array references an ID that doesn\'t exist anywhere in the table (a dangling reference)', async () => {
+    const doc = await PDFDocument.create();
+    const page = doc.addPage([612, 792]);
+
+    const th1 = cell(doc, 'TH', page.ref); // NO /ID at all
+    const attrRef = doc.context.register(doc.context.obj({ O: PDFName.of('Table'), Headers: [doc.context.obj('nonexistent-id')] }));
+    const td1 = doc.context.register(doc.context.obj({ S: PDFName.of('TD'), Pg: page.ref, A: [attrRef] }));
+    const tableRef = doc.context.register(doc.context.obj({ S: PDFName.of('Table'), Pg: page.ref, K: [row(doc, [th1, td1])] }));
+    const docRef = doc.context.register(doc.context.obj({ S: PDFName.of('Document'), K: [tableRef] }));
+    doc.catalog.set(PDFName.of('StructTreeRoot'), doc.context.register(doc.context.obj({ Type: PDFName.of('StructTreeRoot'), K: [docRef] })));
+
+    const parsedPdf = { pdfLibDoc: doc } as unknown as ParsedPDF;
+    const result = await pdfTableHeaderScopeValidator.validate(parsedPdf);
+
+    expect(result.issues).toHaveLength(1); // still flagged -- the reference resolves to nothing real
   });
 });

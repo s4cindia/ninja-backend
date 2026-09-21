@@ -1734,24 +1734,39 @@ export class PdfStructureWriterService {
           });
         });
 
-        if (fixedCount === 0) {
+        // Cells outside row 0/column 0 (skippedCount above) are exactly
+        // pdf-table-header-scope.validator.ts's own "genuinely multi-level
+        // header" case -- a Scope value can't correctly describe a cell
+        // that's neither the header row nor the header column. Attempt
+        // Headers/IDs-based association instead, Matterhorn 15-003's OTHER
+        // accepted organization: see retagMultiLevelTableHeaders's own doc
+        // comment for the real, recurring two-level shape this closes.
+        const headersIdsDataCells = skippedCount > 0
+          ? this.retagMultiLevelTableHeaders(doc, rowCells, issue.element ?? issue.id)
+          : 0;
+
+        if (fixedCount === 0 && headersIdsDataCells === 0) {
           results.push({
             issueId: issue.id, success: false,
             before: `${skippedCount} TH cell(s) missing /Scope`, after: 'unknown',
             error: skippedCount > 0
-              ? `All ${skippedCount} missing-/Scope TH cell(s) are outside row 0/column 0 — refusing to guess a scope for a multi-level header`
+              ? `All ${skippedCount} missing-/Scope TH cell(s) are outside row 0/column 0, and no recognizable multi-level header block was found to Headers/IDs-tag instead`
               : 'No TH cells missing /Scope found on this table (already fixed or moved)',
           });
           continue;
         }
 
+        const parts: string[] = [];
+        if (fixedCount > 0) parts.push(`${fixedCount} TH cell(s) now have /Scope`);
+        if (headersIdsDataCells > 0) parts.push(`${headersIdsDataCells} data cell(s) now have /Headers (multi-level header block)`);
+        const remainingUnhandled = skippedCount > 0 && headersIdsDataCells === 0 ? skippedCount : 0;
+        if (remainingUnhandled > 0) parts.push(`${remainingUnhandled} outside row 0/column 0 left unscoped`);
+
         results.push({
           issueId: issue.id,
           success: true,
           before: `${fixedCount + skippedCount} TH cell(s) missing /Scope`,
-          after: skippedCount > 0
-            ? `${fixedCount} TH cell(s) now have /Scope (${skippedCount} outside row 0/column 0 left unscoped)`
-            : `${fixedCount} TH cell(s) now have /Scope`,
+          after: parts.join('; '),
         });
       } catch (err) {
         results.push({
@@ -1763,6 +1778,265 @@ export class PdfStructureWriterService {
     }
 
     return results;
+  }
+
+  /**
+   * Retags a table's genuine two-level "group header + sub-column header"
+   * blocks with Headers/IDs association — Matterhorn 15-003's OTHER
+   * accepted table organization, alongside plain Scope — closing the exact
+   * gap fixTableHeaderScope's own "outside row 0/column 0" bail exists to
+   * document. Confirmed real on Math_Weir_PDF.pdf: every one of its 20
+   * residual tables (215 TH cells) shares ONE recurring shape — a corner
+   * plus a single group-header cell in one row, immediately followed by a
+   * row-label cell plus N sub-column-header cells in the next row —
+   * sometimes repeated multiple times within the SAME physical table for
+   * long-table readability (confirmed live: a 110-row table repeats this
+   * block three times, at rows 0-1/38-39/76-77, accounting for exactly its
+   * 32 real missing cells — 10+1+10+1+10).
+   *
+   * Scans the WHOLE table, not only row 0, since a repeated block can
+   * start anywhere. For each detected block: assigns a unique /ID to the
+   * row-label header, each group header, and each sub-column header
+   * (skipped if an /ID is already present — idempotent, safe to call
+   * again), then sets /Headers on every data cell between this block and
+   * the next one (or the table's end) to reference the row-label header's
+   * own ID plus the covering group header's ID and the specific
+   * sub-column header's ID for that cell's column. A column-0 data cell
+   * (the row's own label value, e.g. "Group A") references only the
+   * row-label header, mirroring what a plain Scope="Row" would mean for
+   * that same cell.
+   *
+   * Multiple group cells in one block are only handled when every one of
+   * them carries an explicit /ColSpan summing exactly to the sub-header
+   * count — otherwise the block is left entirely untouched rather than
+   * guessing an ambiguous split (see mapSubColumnsToGroups). Every real
+   * block found on Math_Weir_PDF.pdf has exactly one group cell, which
+   * trivially "spans" every sub-column with no ambiguity at all; the
+   * ColSpan path exists for a different document that might genuinely
+   * need it, not for anything observed here.
+   */
+  private retagMultiLevelTableHeaders(
+    doc: PDFDocument,
+    rowCells: Array<Array<{ dict: PDFDict; ref: PDFRef; tag: string }>>,
+    idPrefix: string,
+  ): number {
+    let taggedDataCells = 0;
+    let blockCounter = 0;
+    let i = 0;
+
+    while (i < rowCells.length - 1) {
+      const groupRow = rowCells[i];
+      const subRow = rowCells[i + 1];
+      const block = this.classifyHeaderBlock(groupRow, subRow, rowCells[i + 2]);
+      if (!block) { i++; continue; }
+
+      // Idempotent: a block already retagged has its row-label header's own /ID.
+      if (this.hasIdForFix(subRow[0].dict)) { i += 2; continue; }
+
+      const subToGroupIndex = this.mapSubColumnsToGroups(doc, groupRow, block);
+      if (!subToGroupIndex) { i += 2; continue; }
+
+      blockCounter++;
+      const idFor = (role: string) => `hdrid_${idPrefix}_${blockCounter}_${role}`;
+
+      const rowLabelId = this.writeIdAttributeForFix(subRow[0].dict, idFor('rowlabel'));
+      const groupIds = block.groupIndices.map((gi, k) => this.writeIdAttributeForFix(groupRow[gi].dict, idFor(`group${k}`)));
+      const subIds = block.subIndices.map((si, k) => this.writeIdAttributeForFix(subRow[si].dict, idFor(`sub${k}`)));
+
+      // This block's data range: rows after subRow, up to (not including)
+      // the next detected block, or the table's end.
+      let dataEnd = rowCells.length;
+      for (let j = i + 2; j < rowCells.length - 1; j++) {
+        if (this.classifyHeaderBlock(rowCells[j], rowCells[j + 1], rowCells[j + 2])) { dataEnd = j; break; }
+      }
+
+      for (let r = i + 2; r < dataEnd; r++) {
+        rowCells[r].forEach((cell, colIndex) => {
+          if (colIndex === 0) {
+            this.writeHeadersAttributeForFix(doc, cell.ref, [rowLabelId]);
+          } else {
+            const subPos = colIndex - 1;
+            if (subPos >= subIds.length) return; // a ragged row beyond the header's own shape — skip defensively
+            const headerIds = [rowLabelId, groupIds[subToGroupIndex[subPos]], subIds[subPos]];
+            this.writeHeadersAttributeForFix(doc, cell.ref, headerIds);
+          }
+          taggedDataCells++;
+        });
+      }
+
+      i = dataEnd;
+    }
+
+    return taggedDataCells;
+  }
+
+  /**
+   * True if (groupRow, subRow) looks like a genuine two-level header block:
+   * groupRow = [corner(TH), group-header(TH), ...], subRow = [row-label(TH),
+   * sub-column-header(TH), ...], with strictly fewer real group cells than
+   * real sub-column cells (equal counts would mean each "group" trivially
+   * covers exactly one sub-column — not a real hierarchy, and safer to
+   * leave alone than misclassify). When a first data row is available, its
+   * own cell count must match subRow's — a sanity check against misfiring
+   * on an unrelated pair of rows that merely both happen to start with TH.
+   */
+  private classifyHeaderBlock(
+    groupRow: Array<{ tag: string }> | undefined,
+    subRow: Array<{ tag: string }> | undefined,
+    firstDataRow: Array<{ tag: string }> | undefined,
+  ): { groupIndices: number[]; subIndices: number[] } | null {
+    if (!groupRow || !subRow) return null;
+    const groupThIndices = groupRow.map((c, idx) => (c.tag === 'TH' ? idx : -1)).filter(idx => idx >= 0);
+    const subThIndices = subRow.map((c, idx) => (c.tag === 'TH' ? idx : -1)).filter(idx => idx >= 0);
+
+    if (groupThIndices.length < 2 || groupThIndices[0] !== 0) return null;
+    if (subThIndices.length < 2 || subThIndices[0] !== 0) return null;
+
+    const groupIndices = groupThIndices.slice(1);
+    const subIndices = subThIndices.slice(1);
+    if (groupIndices.length >= subIndices.length) return null;
+
+    if (firstDataRow && firstDataRow.length !== subRow.length) return null;
+
+    return { groupIndices, subIndices };
+  }
+
+  /**
+   * Maps each real sub-column position (0-based) to the index (into
+   * block.groupIndices) of the group cell that covers it. A single group
+   * cell trivially covers every sub-column — the shape confirmed for every
+   * real block found on Math_Weir_PDF.pdf. Multiple group cells are only
+   * mapped when every one of them carries an explicit /ColSpan and those
+   * spans sum exactly to the sub-column count; any other multi-group case
+   * (missing ColSpan, or spans that don't add up) is genuinely ambiguous
+   * and returns null rather than guessing a split.
+   */
+  private mapSubColumnsToGroups(
+    doc: PDFDocument,
+    groupRow: Array<{ dict: PDFDict }>,
+    block: { groupIndices: number[]; subIndices: number[] },
+  ): number[] | null {
+    const subCount = block.subIndices.length;
+    if (block.groupIndices.length === 1) return new Array(subCount).fill(0);
+
+    const spans = block.groupIndices.map(gi => this.readColSpanForFix(doc, groupRow[gi].dict));
+    if (spans.some(sp => sp === null || sp <= 0)) return null;
+    const nonNullSpans = spans as number[];
+    const total = nonNullSpans.reduce((a, b) => a + b, 0);
+    if (total !== subCount) return null;
+
+    const mapping: number[] = [];
+    nonNullSpans.forEach((span, groupIdx) => {
+      for (let k = 0; k < span; k++) mapping.push(groupIdx);
+    });
+    return mapping;
+  }
+
+  /** The /ColSpan value from an element's Table-owner attribute dict, or null if absent. */
+  private readColSpanForFix(doc: PDFDocument, elem: PDFDict): number | null {
+    const aRaw = elem.get(PDFName.of('A'));
+    const a = aRaw instanceof PDFRef ? doc.context.lookup(aRaw) : aRaw;
+    const items = a instanceof PDFArray ? a.asArray() : a ? [a] : [];
+    for (const item of items) {
+      const resolved = item instanceof PDFRef ? doc.context.lookup(item) : item;
+      if (resolved instanceof PDFDict) {
+        const cs = resolved.get(PDFName.of('ColSpan'));
+        if (cs instanceof PDFNumber) return cs.asNumber();
+      }
+    }
+    return null;
+  }
+
+  /** True if the structure element already carries its own /ID (direct dict entry, not inside /A). */
+  private hasIdForFix(elem: PDFDict): boolean {
+    return elem.get(PDFName.of('ID')) !== undefined;
+  }
+
+  /**
+   * Writes /ID directly on the structure element (ISO 32000-1 §14.7.2 —
+   * NOT inside /A; /ID identifies the element itself, independent of any
+   * table attribute). Never overwrites an existing /ID, matching this
+   * method's own idempotency contract — and returns whichever id ends up
+   * in effect (the pre-existing one, decoded, if present; otherwise the
+   * newly written one), so a caller building a /Headers reference to this
+   * exact element always points at what's REALLY there. CodeRabbit finding
+   * on PR #584, confirmed real: a caller that instead used its own
+   * locally-generated id regardless of this method's own no-op decision
+   * would write a /Headers array referencing a value absent from the
+   * header cell it's supposed to describe — a dangling reference reported
+   * as a success.
+   */
+  private writeIdAttributeForFix(elem: PDFDict, id: string): string {
+    const existing = elem.get(PDFName.of('ID'));
+    // Decoded PLAIN TEXT, not existing.toString()'s bracketed PDF-syntax
+    // representation -- callers re-encode whatever this returns via
+    // PDFHexString.fromText for /Headers, and encoding an already-encoded
+    // string would double-encode it (a real bug caught by this method's
+    // own regression tests: every /Headers reference came out wrapped in
+    // an extra, spurious layer of hex).
+    if (existing instanceof PDFHexString || existing instanceof PDFString) return existing.decodeText();
+    if (existing !== undefined) return existing.toString();
+    elem.set(PDFName.of('ID'), PDFHexString.fromText(id));
+    return id;
+  }
+
+  /**
+   * Writes /Headers to the element's /A (attributes) array, inside the
+   * same Table-owner dict /Scope/ColSpan/RowSpan live in — mirroring
+   * writeScopeAttribute's own find-or-create logic exactly, just for a
+   * different key. Each header id is encoded as a hex string, matching
+   * writeIdAttributeForFix's own encoding — /Headers values must
+   * byte-for-byte match the referenced elements' own /ID.
+   */
+  private writeHeadersAttributeForFix(doc: PDFDocument, elementRef: PDFRef, headerIds: string[]): void {
+    const elem = doc.context.lookup(elementRef);
+    if (!(elem instanceof PDFDict)) return;
+    const headersArray = doc.context.obj(headerIds.map(id => PDFHexString.fromText(id)));
+
+    const aRaw = elem.get(PDFName.of('A'));
+    if (!aRaw) {
+      const attrRef = doc.context.register(doc.context.obj({ O: PDFName.of('Table'), Headers: headersArray }));
+      elem.set(PDFName.of('A'), doc.context.obj([attrRef]));
+      return;
+    }
+    if (aRaw instanceof PDFArray) {
+      for (const item of aRaw.asArray()) {
+        const obj = item instanceof PDFRef ? doc.context.lookup(item) : item;
+        if (obj instanceof PDFDict && obj.get(PDFName.of('O'))?.toString() === '/Table') {
+          obj.set(PDFName.of('Headers'), headersArray);
+          return;
+        }
+      }
+      aRaw.push(doc.context.register(doc.context.obj({ O: PDFName.of('Table'), Headers: headersArray })));
+      return;
+    }
+    if (aRaw instanceof PDFRef) {
+      const aObj = doc.context.lookup(aRaw);
+      if (aObj instanceof PDFDict && aObj.get(PDFName.of('O'))?.toString() === '/Table') {
+        aObj.set(PDFName.of('Headers'), headersArray);
+        return;
+      }
+      elem.set(PDFName.of('A'), doc.context.obj([aRaw, doc.context.register(doc.context.obj({ O: PDFName.of('Table'), Headers: headersArray }))]));
+      return;
+    }
+    // /A can also be a single direct dict (a legal singleton, not wrapped
+    // in an array or an indirect ref) -- CodeRabbit finding on PR #584,
+    // confirmed real: the previous fallback here unconditionally REPLACED
+    // /A with a brand-new Headers-only array, silently discarding whatever
+    // this direct dict already held (e.g. a real /RowSpan or /ColSpan, or
+    // another owner's attributes entirely). Mutate it in place when it's
+    // already the /Table owner, matching the PDFRef branch's own logic;
+    // otherwise wrap it alongside a new Headers-only dict rather than
+    // dropping it.
+    if (aRaw instanceof PDFDict) {
+      if (aRaw.get(PDFName.of('O'))?.toString() === '/Table') {
+        aRaw.set(PDFName.of('Headers'), headersArray);
+        return;
+      }
+      elem.set(PDFName.of('A'), doc.context.obj([aRaw, doc.context.register(doc.context.obj({ O: PDFName.of('Table'), Headers: headersArray }))]));
+      return;
+    }
+    elem.set(PDFName.of('A'), doc.context.obj([doc.context.register(doc.context.obj({ O: PDFName.of('Table'), Headers: headersArray }))]));
   }
 
   /** Every direct cell (TD or TH) of a row, in original /K order, tagged with which. */

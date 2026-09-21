@@ -7,7 +7,7 @@
  * zero with any /Scope.
  */
 import { describe, it, expect } from 'vitest';
-import { PDFDocument, PDFName, PDFRef, PDFDict, PDFArray } from 'pdf-lib';
+import { PDFDocument, PDFName, PDFRef, PDFDict, PDFArray, PDFHexString } from 'pdf-lib';
 import { pdfStructureWriterService } from '../../../../src/services/pdf/pdf-structure-writer.service';
 import type { AuditIssue } from '../../../../src/services/audit/base-audit.service';
 
@@ -29,6 +29,32 @@ function scopeOf(doc: PDFDocument, ref: PDFRef): string | undefined {
     if (resolved instanceof PDFDict) {
       const scope = resolved.get(PDFName.of('Scope'));
       if (scope) return scope.toString().replace(/^\//, '');
+    }
+  }
+  return undefined;
+}
+
+function cellWithColSpan(doc: PDFDocument, tag: 'TD' | 'TH', pageRef: PDFRef, colSpan: number): PDFRef {
+  const attrRef = doc.context.register(doc.context.obj({ O: PDFName.of('Table'), ColSpan: colSpan }));
+  return doc.context.register(doc.context.obj({ S: PDFName.of(tag), Pg: pageRef, A: [attrRef] }));
+}
+
+function idOf(doc: PDFDocument, ref: PDFRef): string | undefined {
+  const dict = doc.context.lookup(ref, PDFDict);
+  const id = dict.get(PDFName.of('ID'));
+  return id ? id.toString() : undefined;
+}
+
+function headersOf(doc: PDFDocument, ref: PDFRef): string[] | undefined {
+  const dict = doc.context.lookup(ref, PDFDict);
+  const aRaw = dict.get(PDFName.of('A'));
+  const a = aRaw instanceof PDFRef ? doc.context.lookup(aRaw) : aRaw;
+  const items = a instanceof PDFArray ? a.asArray() : a ? [a] : [];
+  for (const item of items) {
+    const resolved = item instanceof PDFRef ? doc.context.lookup(item) : item;
+    if (resolved instanceof PDFDict) {
+      const headers = resolved.get(PDFName.of('Headers'));
+      if (headers instanceof PDFArray) return headers.asArray().map(h => h.toString());
     }
   }
   return undefined;
@@ -205,5 +231,331 @@ describe('PdfStructureWriterService.fixTableHeaderScope', () => {
     expect(results[0].success).toBe(true);
     expect(scopeOf(doc, table2Th)).toBe('Column');
     expect(scopeOf(doc, table1Th)).toBeUndefined(); // untouched
+  });
+});
+
+describe('PdfStructureWriterService.fixTableHeaderScope -- multi-level header Headers/IDs retagging', () => {
+  it('Headers/IDs-tags a genuine two-level header block (corner+group row, row-label+sub-headers row), matching the real Math_Weir_PDF.pdf shape', async () => {
+    const doc = await PDFDocument.create();
+    const page = doc.addPage([612, 792]);
+
+    const corner = cell(doc, 'TH', page.ref);
+    const group = cell(doc, 'TH', page.ref);
+    const rowLabel = cell(doc, 'TH', page.ref);
+    const sub1 = cell(doc, 'TH', page.ref);
+    const sub2 = cell(doc, 'TH', page.ref);
+    const sub3 = cell(doc, 'TH', page.ref);
+    const dataRowLabel1 = cell(doc, 'TD', page.ref);
+    const data1a = cell(doc, 'TD', page.ref);
+    const data1b = cell(doc, 'TD', page.ref);
+    const data1c = cell(doc, 'TD', page.ref);
+
+    const tableRef = doc.context.register(doc.context.obj({
+      S: PDFName.of('Table'), Pg: page.ref,
+      K: [
+        row(doc, [corner, group]),
+        row(doc, [rowLabel, sub1, sub2, sub3]),
+        row(doc, [dataRowLabel1, data1a, data1b, data1c]),
+      ],
+    }));
+    const docRef = doc.context.register(doc.context.obj({ S: PDFName.of('Document'), K: [tableRef] }));
+    doc.catalog.set(PDFName.of('StructTreeRoot'), doc.context.register(doc.context.obj({ Type: PDFName.of('StructTreeRoot'), K: [docRef] })));
+
+    const results = pdfStructureWriterService.fixTableHeaderScope(doc, [issueFor('table_p1_0')]);
+
+    expect(results[0].success).toBe(true);
+    expect(results[0].after).toContain('data cell(s) now have /Headers');
+
+    // Corner + row-label still get plain Scope from the existing position-based pass.
+    expect(scopeOf(doc, corner)).toBe('Both');
+    expect(scopeOf(doc, rowLabel)).toBe('Row');
+
+    // The group and sub-headers now carry their own unique /ID.
+    const groupId = idOf(doc, group);
+    const sub1Id = idOf(doc, sub1);
+    const sub2Id = idOf(doc, sub2);
+    const sub3Id = idOf(doc, sub3);
+    const rowLabelId = idOf(doc, rowLabel);
+    expect([groupId, sub1Id, sub2Id, sub3Id, rowLabelId].every(id => !!id)).toBe(true);
+    expect(new Set([groupId, sub1Id, sub2Id, sub3Id, rowLabelId]).size).toBe(5); // all unique
+
+    // Column-0 data cell references only the row-label header.
+    expect(headersOf(doc, dataRowLabel1)).toEqual([rowLabelId]);
+    // Other data cells reference row-label + group + their own specific sub-column header.
+    expect(headersOf(doc, data1a)).toEqual([rowLabelId, groupId, sub1Id]);
+    expect(headersOf(doc, data1b)).toEqual([rowLabelId, groupId, sub2Id]);
+    expect(headersOf(doc, data1c)).toEqual([rowLabelId, groupId, sub3Id]);
+  });
+
+  it('retags multiple repeated header blocks within the SAME table, matching the real 110-row Math_Weir_PDF.pdf table (3 blocks, 32 cells)', async () => {
+    const doc = await PDFDocument.create();
+    const page = doc.addPage([612, 792]);
+
+    function buildBlock() {
+      const corner = cell(doc, 'TH', page.ref);
+      const group = cell(doc, 'TH', page.ref);
+      const rowLabel = cell(doc, 'TH', page.ref);
+      const subs = [cell(doc, 'TH', page.ref), cell(doc, 'TH', page.ref)];
+      const dataRows = [
+        row(doc, [cell(doc, 'TD', page.ref), cell(doc, 'TD', page.ref), cell(doc, 'TD', page.ref)]),
+        row(doc, [cell(doc, 'TD', page.ref), cell(doc, 'TD', page.ref), cell(doc, 'TD', page.ref)]),
+      ];
+      return {
+        headerRows: [row(doc, [corner, group]), row(doc, [rowLabel, ...subs])],
+        dataRows,
+        rowLabel, subs,
+      };
+    }
+
+    const block1 = buildBlock();
+    const block2 = buildBlock();
+    const block3 = buildBlock();
+
+    const tableRef = doc.context.register(doc.context.obj({
+      S: PDFName.of('Table'), Pg: page.ref,
+      K: [
+        ...block1.headerRows, ...block1.dataRows,
+        ...block2.headerRows, ...block2.dataRows,
+        ...block3.headerRows, ...block3.dataRows,
+      ],
+    }));
+    const docRef = doc.context.register(doc.context.obj({ S: PDFName.of('Document'), K: [tableRef] }));
+    doc.catalog.set(PDFName.of('StructTreeRoot'), doc.context.register(doc.context.obj({ Type: PDFName.of('StructTreeRoot'), K: [docRef] })));
+
+    const results = pdfStructureWriterService.fixTableHeaderScope(doc, [issueFor('table_p1_0')]);
+
+    expect(results[0].success).toBe(true);
+    // Each block's own row-label + 2 subs get a real /ID, independent of the others.
+    for (const block of [block1, block2, block3]) {
+      expect(idOf(doc, block.rowLabel)).toBeTruthy();
+      for (const sub of block.subs) expect(idOf(doc, sub)).toBeTruthy();
+    }
+    // IDs are unique ACROSS blocks too (not accidentally shared/reused).
+    const allIds = [block1, block2, block3].flatMap(b => [idOf(doc, b.rowLabel), ...b.subs.map(s => idOf(doc, s))]);
+    expect(new Set(allIds).size).toBe(allIds.length);
+  });
+
+  it('maps sub-columns to multiple group headers using explicit, matching /ColSpan', async () => {
+    const doc = await PDFDocument.create();
+    const page = doc.addPage([612, 792]);
+
+    const corner = cell(doc, 'TH', page.ref);
+    const group1 = cellWithColSpan(doc, 'TH', page.ref, 2);
+    const group2 = cellWithColSpan(doc, 'TH', page.ref, 2);
+    const rowLabel = cell(doc, 'TH', page.ref);
+    const sub1 = cell(doc, 'TH', page.ref);
+    const sub2 = cell(doc, 'TH', page.ref);
+    const sub3 = cell(doc, 'TH', page.ref);
+    const sub4 = cell(doc, 'TH', page.ref);
+    const dataLabel = cell(doc, 'TD', page.ref);
+    const d1 = cell(doc, 'TD', page.ref);
+    const d2 = cell(doc, 'TD', page.ref);
+    const d3 = cell(doc, 'TD', page.ref);
+    const d4 = cell(doc, 'TD', page.ref);
+
+    const tableRef = doc.context.register(doc.context.obj({
+      S: PDFName.of('Table'), Pg: page.ref,
+      K: [
+        row(doc, [corner, group1, group2]),
+        row(doc, [rowLabel, sub1, sub2, sub3, sub4]),
+        row(doc, [dataLabel, d1, d2, d3, d4]),
+      ],
+    }));
+    const docRef = doc.context.register(doc.context.obj({ S: PDFName.of('Document'), K: [tableRef] }));
+    doc.catalog.set(PDFName.of('StructTreeRoot'), doc.context.register(doc.context.obj({ Type: PDFName.of('StructTreeRoot'), K: [docRef] })));
+
+    pdfStructureWriterService.fixTableHeaderScope(doc, [issueFor('table_p1_0')]);
+
+    const group1Id = idOf(doc, group1);
+    const group2Id = idOf(doc, group2);
+    const rowLabelId = idOf(doc, rowLabel);
+    const sub1Id = idOf(doc, sub1);
+    const sub2Id = idOf(doc, sub2);
+    const sub3Id = idOf(doc, sub3);
+    const sub4Id = idOf(doc, sub4);
+
+    expect(headersOf(doc, d1)).toEqual([rowLabelId, group1Id, sub1Id]);
+    expect(headersOf(doc, d2)).toEqual([rowLabelId, group1Id, sub2Id]);
+    expect(headersOf(doc, d3)).toEqual([rowLabelId, group2Id, sub3Id]);
+    expect(headersOf(doc, d4)).toEqual([rowLabelId, group2Id, sub4Id]);
+  });
+
+  it('leaves a multi-group block untouched (no /Headers, no /ID) when ColSpan is missing or ambiguous, rather than guessing a split', async () => {
+    const doc = await PDFDocument.create();
+    const page = doc.addPage([612, 792]);
+
+    const corner = cell(doc, 'TH', page.ref);
+    const group1 = cell(doc, 'TH', page.ref); // no ColSpan
+    const group2 = cell(doc, 'TH', page.ref); // no ColSpan
+    const rowLabel = cell(doc, 'TH', page.ref);
+    const sub1 = cell(doc, 'TH', page.ref);
+    const sub2 = cell(doc, 'TH', page.ref);
+    const sub3 = cell(doc, 'TH', page.ref);
+    const dataLabel = cell(doc, 'TD', page.ref);
+    const d1 = cell(doc, 'TD', page.ref);
+    const d2 = cell(doc, 'TD', page.ref);
+    const d3 = cell(doc, 'TD', page.ref);
+
+    const tableRef = doc.context.register(doc.context.obj({
+      S: PDFName.of('Table'), Pg: page.ref,
+      K: [
+        row(doc, [corner, group1, group2]),
+        row(doc, [rowLabel, sub1, sub2, sub3]),
+        row(doc, [dataLabel, d1, d2, d3]),
+      ],
+    }));
+    const docRef = doc.context.register(doc.context.obj({ S: PDFName.of('Document'), K: [tableRef] }));
+    doc.catalog.set(PDFName.of('StructTreeRoot'), doc.context.register(doc.context.obj({ Type: PDFName.of('StructTreeRoot'), K: [docRef] })));
+
+    const results = pdfStructureWriterService.fixTableHeaderScope(doc, [issueFor('table_p1_0')]);
+
+    // Corner + row-label still get plain Scope (unaffected by the ambiguous group).
+    expect(scopeOf(doc, corner)).toBe('Both');
+    expect(scopeOf(doc, rowLabel)).toBe('Row');
+    // But no Headers/IDs anywhere -- correctly bailed rather than guessed.
+    expect(idOf(doc, sub1)).toBeUndefined();
+    expect(headersOf(doc, d1)).toBeUndefined();
+    expect(results[0].after).toContain('outside row 0/column 0 left unscoped');
+  });
+
+  it('does not classify a row pair with equal group/sub-header counts as a multi-level block (not a real hierarchy)', async () => {
+    const doc = await PDFDocument.create();
+    const page = doc.addPage([612, 792]);
+
+    const corner = cell(doc, 'TH', page.ref);
+    const group1 = cell(doc, 'TH', page.ref);
+    const group2 = cell(doc, 'TH', page.ref);
+    const rowLabel = cell(doc, 'TH', page.ref);
+    const sub1 = cell(doc, 'TH', page.ref);
+    const sub2 = cell(doc, 'TH', page.ref);
+
+    const tableRef = doc.context.register(doc.context.obj({
+      S: PDFName.of('Table'), Pg: page.ref,
+      K: [
+        row(doc, [corner, group1, group2]), // 2 real groups
+        row(doc, [rowLabel, sub1, sub2]), // 2 real sub-headers -- EQUAL count, not a real hierarchy
+      ],
+    }));
+    const docRef = doc.context.register(doc.context.obj({ S: PDFName.of('Document'), K: [tableRef] }));
+    doc.catalog.set(PDFName.of('StructTreeRoot'), doc.context.register(doc.context.obj({ Type: PDFName.of('StructTreeRoot'), K: [docRef] })));
+
+    pdfStructureWriterService.fixTableHeaderScope(doc, [issueFor('table_p1_0')]);
+
+    expect(idOf(doc, group1)).toBeUndefined();
+    expect(idOf(doc, sub1)).toBeUndefined();
+  });
+
+  it('is idempotent: calling fixTableHeaderScope twice does not double-tag or corrupt an already-retagged block', async () => {
+    const doc = await PDFDocument.create();
+    const page = doc.addPage([612, 792]);
+
+    const corner = cell(doc, 'TH', page.ref);
+    const group = cell(doc, 'TH', page.ref);
+    const rowLabel = cell(doc, 'TH', page.ref);
+    const sub1 = cell(doc, 'TH', page.ref);
+    const sub2 = cell(doc, 'TH', page.ref);
+    const dataLabel = cell(doc, 'TD', page.ref);
+    const d1 = cell(doc, 'TD', page.ref);
+    const d2 = cell(doc, 'TD', page.ref);
+
+    const tableRef = doc.context.register(doc.context.obj({
+      S: PDFName.of('Table'), Pg: page.ref,
+      K: [
+        row(doc, [corner, group]),
+        row(doc, [rowLabel, sub1, sub2]),
+        row(doc, [dataLabel, d1, d2]),
+      ],
+    }));
+    const docRef = doc.context.register(doc.context.obj({ S: PDFName.of('Document'), K: [tableRef] }));
+    doc.catalog.set(PDFName.of('StructTreeRoot'), doc.context.register(doc.context.obj({ Type: PDFName.of('StructTreeRoot'), K: [docRef] })));
+
+    pdfStructureWriterService.fixTableHeaderScope(doc, [issueFor('table_p1_0')]);
+    const idAfterFirst = idOf(doc, sub1);
+    const headersAfterFirst = headersOf(doc, d1);
+
+    pdfStructureWriterService.fixTableHeaderScope(doc, [issueFor('table_p1_0')]);
+
+    expect(idOf(doc, sub1)).toBe(idAfterFirst); // unchanged, not reassigned
+    expect(headersOf(doc, d1)).toEqual(headersAfterFirst); // unchanged, not duplicated
+  });
+
+  it('preserves an existing direct /A dict\'s own attributes (e.g. /RowSpan) when adding /Headers, rather than replacing /A outright', async () => {
+    const doc = await PDFDocument.create();
+    const page = doc.addPage([612, 792]);
+
+    const corner = cell(doc, 'TH', page.ref);
+    const group = cell(doc, 'TH', page.ref);
+    const rowLabel = cell(doc, 'TH', page.ref);
+    const sub1 = cell(doc, 'TH', page.ref);
+    const sub2 = cell(doc, 'TH', page.ref);
+    const dataLabel = cell(doc, 'TD', page.ref);
+    // d1's /A is a DIRECT dict (not wrapped in an array, not an indirect
+    // ref) that already carries a real /RowSpan -- a legal singleton /A
+    // value per spec, and the exact shape that used to get silently
+    // discarded.
+    const existingAttrs = doc.context.obj({ O: PDFName.of('Table'), RowSpan: 2 });
+    const d1 = doc.context.register(doc.context.obj({ S: PDFName.of('TD'), Pg: page.ref, A: existingAttrs }));
+    const d2 = cell(doc, 'TD', page.ref);
+
+    const tableRef = doc.context.register(doc.context.obj({
+      S: PDFName.of('Table'), Pg: page.ref,
+      K: [row(doc, [corner, group]), row(doc, [rowLabel, sub1, sub2]), row(doc, [dataLabel, d1, d2])],
+    }));
+    const docRef = doc.context.register(doc.context.obj({ S: PDFName.of('Document'), K: [tableRef] }));
+    doc.catalog.set(PDFName.of('StructTreeRoot'), doc.context.register(doc.context.obj({ Type: PDFName.of('StructTreeRoot'), K: [docRef] })));
+
+    pdfStructureWriterService.fixTableHeaderScope(doc, [issueFor('table_p1_0')]);
+
+    // /Headers got added...
+    expect(headersOf(doc, d1)).toBeDefined();
+    // ...but the pre-existing /RowSpan on the SAME direct dict must survive.
+    const d1Dict = doc.context.lookup(d1, PDFDict);
+    const aRaw = d1Dict.get(PDFName.of('A'));
+    const a = aRaw instanceof PDFRef ? doc.context.lookup(aRaw) : aRaw;
+    const items = a instanceof PDFArray ? a.asArray() : a ? [a] : [];
+    const rowSpanSurvived = items.some(item => {
+      const resolved = item instanceof PDFRef ? doc.context.lookup(item) : item;
+      return resolved instanceof PDFDict && resolved.get(PDFName.of('RowSpan'))?.toString() === '2';
+    });
+    expect(rowSpanSurvived).toBe(true);
+  });
+
+  it('reuses a header cell\'s own PRE-EXISTING /ID (from before this fix ran) rather than generating a dangling reference nothing on that cell actually carries', async () => {
+    const doc = await PDFDocument.create();
+    const page = doc.addPage([612, 792]);
+
+    const corner = cell(doc, 'TH', page.ref);
+    const group = cell(doc, 'TH', page.ref);
+    const rowLabel = cell(doc, 'TH', page.ref);
+    // sub1 ALREADY has a real /ID from some other, earlier mechanism --
+    // this fix must reference THAT id, not fabricate and reference a new
+    // one that would never actually appear on sub1's own dict. /ID is a
+    // byte string per ISO 32000-1 §14.7.2 (matching writeIdAttributeForFix's
+    // own PDFHexString encoding), not a name -- doc.context.obj(aJsString)
+    // would build a /Name instead, an unrealistic shape no real PDF's own
+    // /ID ever actually has.
+    const preExistingId = 'preexisting-id-123';
+    const sub1 = doc.context.register(doc.context.obj({ S: PDFName.of('TH'), Pg: page.ref, ID: PDFHexString.fromText(preExistingId) }));
+    const sub2 = cell(doc, 'TH', page.ref);
+    const dataLabel = cell(doc, 'TD', page.ref);
+    const d1 = cell(doc, 'TD', page.ref);
+    const d2 = cell(doc, 'TD', page.ref);
+
+    const tableRef = doc.context.register(doc.context.obj({
+      S: PDFName.of('Table'), Pg: page.ref,
+      K: [row(doc, [corner, group]), row(doc, [rowLabel, sub1, sub2]), row(doc, [dataLabel, d1, d2])],
+    }));
+    const docRef = doc.context.register(doc.context.obj({ S: PDFName.of('Document'), K: [tableRef] }));
+    doc.catalog.set(PDFName.of('StructTreeRoot'), doc.context.register(doc.context.obj({ Type: PDFName.of('StructTreeRoot'), K: [docRef] })));
+
+    pdfStructureWriterService.fixTableHeaderScope(doc, [issueFor('table_p1_0')]);
+
+    const actualSub1Id = idOf(doc, sub1);
+    expect(actualSub1Id).toBeDefined();
+    // The id on sub1's own dict never changed...
+    expect(idOf(doc, sub1)).toBe(actualSub1Id);
+    // ...and d1's /Headers reference must point at THAT real value, not a
+    // freshly fabricated one that doesn't exist anywhere on sub1.
+    expect(headersOf(doc, d1)).toContain(actualSub1Id);
   });
 });
