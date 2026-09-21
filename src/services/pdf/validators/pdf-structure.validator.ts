@@ -14,8 +14,21 @@ import { AuditIssue, IssueSeverity } from '../../audit/base-audit.service';
 import { structureAnalyzerService, DocumentStructure } from '../structure-analyzer.service';
 import { pdfParserService, ParsedPDF } from '../pdf-parser.service';
 import { decodePageContent } from '../pdf-content-stream-io';
-import { findUntaggedPathRuns } from '../pdf-artifact-tagger';
+import { findUntaggedPathRuns, type UntaggedPathRun } from '../pdf-artifact-tagger';
 import { logger } from '../../../lib/logger';
+
+// validateUntaggedContent's own recurring-decorative-curve refinement (see
+// that method's doc comment for the full reasoning): a curve-containing
+// untagged path run whose own normalized content recurs on at least this
+// many DISTINCT pages is treated as a confirmed decorative page-template
+// element (e.g. a repeated chapter-tab/badge shape), not a genuine one-off
+// illustration this check must protect. An absolute count, not a fraction
+// of document length -- a genuine recurring template element appears at
+// roughly the same rate regardless of how long the document is. Same
+// numeric value as pdf-contrast.validator.ts's own SUSPECT_PAGE_THRESHOLD
+// (reused for the same reasoning, not literally shared/imported -- the two
+// files solve unrelated problems).
+const RECURRING_SIGNATURE_THRESHOLD = 3;
 
 /**
  * Matterhorn Protocol checkpoint mapping
@@ -518,6 +531,15 @@ class PDFStructureValidator {
       return issues;
     }
 
+    // First pass: decode + detect once per page (runs cached for reuse
+    // below), and tally which pages each curve-containing run's own
+    // normalized content recurs on -- needed BEFORE classifying any single
+    // page, so an early occurrence of a genuinely recurring decorative
+    // shape is judged the same as a later one, against the document's full
+    // picture rather than only what's been seen so far.
+    const perPage: Array<{ pageNumber: number; runs: UntaggedPathRun[] }> = [];
+    const signaturePages = new Map<string, Set<number>>();
+
     for (let pageNumber = 1; pageNumber <= pageCount; pageNumber++) {
       let content: string | null;
       try {
@@ -530,7 +552,23 @@ class PDFStructureValidator {
 
       const runs = findUntaggedPathRuns(content);
       if (runs.length === 0) continue;
+      perPage.push({ pageNumber, runs });
 
+      for (const run of runs) {
+        if (!run.hasCurves) continue;
+        const signature = content.slice(run.start, run.end).replace(/\s+/g, ' ').trim();
+        if (!signaturePages.has(signature)) signaturePages.set(signature, new Set());
+        signaturePages.get(signature)!.add(pageNumber);
+      }
+    }
+
+    // Second pass: classify using the now-complete cross-page signature
+    // table. Re-decoding a page is only needed for the subset that has a
+    // curve-containing run at all (19 of 377 on the real document this was
+    // built against) -- cheap relative to caching every page's full
+    // content in memory for the whole document.
+    for (const { pageNumber, runs } of perPage) {
+      let content: string | null | undefined;
       // CodeRabbit finding, confirmed real: detecting a path is untagged
       // never proves it's decorative -- a tagged PDF can contain a genuine
       // untagged vector chart, map, diagram, or logo, and auto-artifacting
@@ -542,17 +580,41 @@ class PDFStructureValidator {
       // ai-analysis.service.ts) rather than only gating the specific
       // curved runs -- this keeps the writer's existing "fix every
       // untagged run on this page" contract simple and conservative.
-      const hasComplexRun = runs.some(r => r.hasCurves);
+      //
+      // Refinement, confirmed real and live: on THIS same document, every
+      // single one of the 38 real curve-containing runs (across 19 pages)
+      // is the EXACT SAME 110-byte shape -- a small filled rounded-
+      // rectangle corner, recurring identically at the same relative
+      // position on every affected page. That's the signature of a
+      // decorative page-template element (a chapter-tab/badge shape), not
+      // a one-off illustration -- yet the blanket "any curve blocks the
+      // whole page" rule above was keeping 38 legitimately-decorative
+      // straight-line crop-marks stuck in manual review too, just because
+      // they shared a page with it. A curve run whose own normalized
+      // content recurs on RECURRING_SIGNATURE_THRESHOLD+ DISTINCT pages is
+      // a confirmed recurring template element, not "might be a genuine
+      // one-off diagram" -- excluded from hasGenuinelyComplexRun below
+      // (and thus safe to auto-artifact along with the rest of the page's
+      // untagged runs), while a curve seen on fewer pages still keeps the
+      // full manual-review protection this whole check exists for.
+      const hasGenuinelyComplexRun = runs.some(run => {
+        if (!run.hasCurves) return false;
+        if (content === undefined) content = decodePageContent(parsedPdf.pdfLibDoc, pageNumber);
+        if (!content) return true; // couldn't re-decode -- stay conservative
+        const signature = content.slice(run.start, run.end).replace(/\s+/g, ' ').trim();
+        const pages = signaturePages.get(signature);
+        return !pages || pages.size < RECURRING_SIGNATURE_THRESHOLD;
+      });
 
       issues.push(this.createIssue({
         source: 'pdf-structure',
         severity: 'moderate',
-        code: hasComplexRun ? 'UNTAGGED-CONTENT-COMPLEX' : 'UNTAGGED-CONTENT',
+        code: hasGenuinelyComplexRun ? 'UNTAGGED-CONTENT-COMPLEX' : 'UNTAGGED-CONTENT',
         message: `${runs.length} vector-graphics region(s) on this page are neither tagged as real content nor marked as an artifact` +
-          (hasComplexRun ? ' (includes curved paths -- may be meaningful graphics, needs manual review)' : ''),
+          (hasGenuinelyComplexRun ? ' (includes curved paths -- may be meaningful graphics, needs manual review)' : ''),
         wcagCriteria: ['1.3.1'],
         location: `Page ${pageNumber}`,
-        suggestion: hasComplexRun
+        suggestion: hasGenuinelyComplexRun
           ? 'Review these vector graphics: mark them as PDF artifacts if decorative, or tag them as real content (e.g. Figure with alt text) if they convey information.'
           : 'Mark decorative vector graphics (crop marks, background shading) as PDF artifacts so assistive technology correctly skips them.',
         category: 'structure',
