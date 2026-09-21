@@ -7,7 +7,7 @@
  * zero with any /Scope.
  */
 import { describe, it, expect } from 'vitest';
-import { PDFDocument, PDFName, PDFRef, PDFDict, PDFArray } from 'pdf-lib';
+import { PDFDocument, PDFName, PDFRef, PDFDict, PDFArray, PDFHexString } from 'pdf-lib';
 import { pdfStructureWriterService } from '../../../../src/services/pdf/pdf-structure-writer.service';
 import type { AuditIssue } from '../../../../src/services/audit/base-audit.service';
 
@@ -477,5 +477,85 @@ describe('PdfStructureWriterService.fixTableHeaderScope -- multi-level header He
 
     expect(idOf(doc, sub1)).toBe(idAfterFirst); // unchanged, not reassigned
     expect(headersOf(doc, d1)).toEqual(headersAfterFirst); // unchanged, not duplicated
+  });
+
+  it('preserves an existing direct /A dict\'s own attributes (e.g. /RowSpan) when adding /Headers, rather than replacing /A outright', async () => {
+    const doc = await PDFDocument.create();
+    const page = doc.addPage([612, 792]);
+
+    const corner = cell(doc, 'TH', page.ref);
+    const group = cell(doc, 'TH', page.ref);
+    const rowLabel = cell(doc, 'TH', page.ref);
+    const sub1 = cell(doc, 'TH', page.ref);
+    const sub2 = cell(doc, 'TH', page.ref);
+    const dataLabel = cell(doc, 'TD', page.ref);
+    // d1's /A is a DIRECT dict (not wrapped in an array, not an indirect
+    // ref) that already carries a real /RowSpan -- a legal singleton /A
+    // value per spec, and the exact shape that used to get silently
+    // discarded.
+    const existingAttrs = doc.context.obj({ O: PDFName.of('Table'), RowSpan: 2 });
+    const d1 = doc.context.register(doc.context.obj({ S: PDFName.of('TD'), Pg: page.ref, A: existingAttrs }));
+    const d2 = cell(doc, 'TD', page.ref);
+
+    const tableRef = doc.context.register(doc.context.obj({
+      S: PDFName.of('Table'), Pg: page.ref,
+      K: [row(doc, [corner, group]), row(doc, [rowLabel, sub1, sub2]), row(doc, [dataLabel, d1, d2])],
+    }));
+    const docRef = doc.context.register(doc.context.obj({ S: PDFName.of('Document'), K: [tableRef] }));
+    doc.catalog.set(PDFName.of('StructTreeRoot'), doc.context.register(doc.context.obj({ Type: PDFName.of('StructTreeRoot'), K: [docRef] })));
+
+    pdfStructureWriterService.fixTableHeaderScope(doc, [issueFor('table_p1_0')]);
+
+    // /Headers got added...
+    expect(headersOf(doc, d1)).toBeDefined();
+    // ...but the pre-existing /RowSpan on the SAME direct dict must survive.
+    const d1Dict = doc.context.lookup(d1, PDFDict);
+    const aRaw = d1Dict.get(PDFName.of('A'));
+    const a = aRaw instanceof PDFRef ? doc.context.lookup(aRaw) : aRaw;
+    const items = a instanceof PDFArray ? a.asArray() : a ? [a] : [];
+    const rowSpanSurvived = items.some(item => {
+      const resolved = item instanceof PDFRef ? doc.context.lookup(item) : item;
+      return resolved instanceof PDFDict && resolved.get(PDFName.of('RowSpan'))?.toString() === '2';
+    });
+    expect(rowSpanSurvived).toBe(true);
+  });
+
+  it('reuses a header cell\'s own PRE-EXISTING /ID (from before this fix ran) rather than generating a dangling reference nothing on that cell actually carries', async () => {
+    const doc = await PDFDocument.create();
+    const page = doc.addPage([612, 792]);
+
+    const corner = cell(doc, 'TH', page.ref);
+    const group = cell(doc, 'TH', page.ref);
+    const rowLabel = cell(doc, 'TH', page.ref);
+    // sub1 ALREADY has a real /ID from some other, earlier mechanism --
+    // this fix must reference THAT id, not fabricate and reference a new
+    // one that would never actually appear on sub1's own dict. /ID is a
+    // byte string per ISO 32000-1 §14.7.2 (matching writeIdAttributeForFix's
+    // own PDFHexString encoding), not a name -- doc.context.obj(aJsString)
+    // would build a /Name instead, an unrealistic shape no real PDF's own
+    // /ID ever actually has.
+    const preExistingId = 'preexisting-id-123';
+    const sub1 = doc.context.register(doc.context.obj({ S: PDFName.of('TH'), Pg: page.ref, ID: PDFHexString.fromText(preExistingId) }));
+    const sub2 = cell(doc, 'TH', page.ref);
+    const dataLabel = cell(doc, 'TD', page.ref);
+    const d1 = cell(doc, 'TD', page.ref);
+    const d2 = cell(doc, 'TD', page.ref);
+
+    const tableRef = doc.context.register(doc.context.obj({
+      S: PDFName.of('Table'), Pg: page.ref,
+      K: [row(doc, [corner, group]), row(doc, [rowLabel, sub1, sub2]), row(doc, [dataLabel, d1, d2])],
+    }));
+    const docRef = doc.context.register(doc.context.obj({ S: PDFName.of('Document'), K: [tableRef] }));
+    doc.catalog.set(PDFName.of('StructTreeRoot'), doc.context.register(doc.context.obj({ Type: PDFName.of('StructTreeRoot'), K: [docRef] })));
+
+    pdfStructureWriterService.fixTableHeaderScope(doc, [issueFor('table_p1_0')]);
+
+    const actualSub1Id = idOf(doc, sub1);
+    expect(actualSub1Id).toBeDefined();
+    // The id on sub1's own dict never changed...
+    expect(idOf(doc, sub1)).toBe(actualSub1Id);
+    // ...and d1's /Headers reference must point at THAT real value, not a
+    // freshly fabricated one that doesn't exist anywhere on sub1.
+    expect(headersOf(doc, d1)).toContain(actualSub1Id);
   });
 });

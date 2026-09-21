@@ -148,16 +148,19 @@ class PdfTableHeaderScopeValidator {
    * attribute" -- a table that already associates its data cells to header
    * cells via /Headers (referencing a header cell's own /ID) is exempt,
    * regardless of whether any TH also happens to carry /Scope. Detected by
-   * the presence of a /Headers entry on ANY cell in the table (CodeRabbit
-   * finding on PR #582, confirmed real: without this, an already-accessible
-   * complex table using Headers/IDs would get a false-positive issue, and
-   * the writer's positional Scope guess could conflict with its deliberate
-   * ID associations).
+   * finding at least one /Headers entry whose reference actually resolves
+   * to a real /ID present somewhere in this SAME table (CodeRabbit finding
+   * on PR #584, confirmed real: the original version exempted the whole
+   * table the moment ANY cell carried a /Headers entry at all, even an
+   * empty array or one referencing an ID that doesn't exist anywhere in
+   * the table -- a partially tagged or malformed table would have silently
+   * hidden every one of its genuinely still-missing /Scope cells).
    */
   private findThCellsMissingScope(doc: ParsedPDF['pdfLibDoc'], table: PDFDict): { total: number; missing: number } {
     let total = 0;
     let missing = 0;
-    let usesHeadersIdOrganization = false;
+    const allIds = new Set<string>();
+    const headersArraysFound: string[][] = [];
     const seen = new Set<string>();
 
     const visitRow = (rowRef: unknown): void => {
@@ -183,7 +186,10 @@ class PdfTableHeaderScopeValidator {
       for (const cellRef of cellRefs) {
         const cell = cellRef instanceof PDFRef ? doc.context.lookup(cellRef) : cellRef;
         if (!(cell instanceof PDFDict)) continue;
-        if (this.hasHeadersAttribute(doc, cell)) usesHeadersIdOrganization = true;
+        const ownId = this.getOwnId(cell);
+        if (ownId) allIds.add(ownId);
+        const headerIds = this.getHeadersIds(doc, cell);
+        if (headerIds) headersArraysFound.push(headerIds);
         if (cell.get(PDFName.of('S'))?.toString().replace(/^\//, '') !== 'TH') continue;
         total++;
         if (!this.hasScopeAttribute(doc, cell)) missing++;
@@ -194,37 +200,57 @@ class PdfTableHeaderScopeValidator {
     const kids = k instanceof PDFArray ? k.asArray() : k === undefined ? [] : [k];
     for (const kid of kids) visitRow(kid);
 
+    const usesHeadersIdOrganization = headersArraysFound.some(
+      ids => ids.length > 0 && ids.some(id => allIds.has(id)),
+    );
     if (usesHeadersIdOrganization) return { total: 0, missing: 0 };
     return { total, missing };
   }
 
+  /** The element's own /ID (direct dict entry, ISO 32000-1 §14.7.2), decoded to a string, or undefined. */
+  private getOwnId(elem: PDFDict): string | undefined {
+    const id = elem.get(PDFName.of('ID'));
+    return id ? id.toString() : undefined;
+  }
+
   /**
-   * True if the element's /A (attributes) already carries a Table-owner
-   * dict with a /Headers entry -- per ISO 32000-1 Table 337, /Headers (like
-   * /Scope, /ColSpan, /RowSpan) is a TABLE ATTRIBUTE living inside /A under
-   * the /Table owner, never a direct entry on the structure element dict
-   * itself. A real, self-caught bug: this check originally read
-   * `cell.get('Headers')` directly, which pdf-structure-writer.service.ts's
-   * own retagMultiLevelTableHeaders (which correctly writes /Headers inside
-   * /A, matching writeScopeAttribute's own established pattern) could never
-   * satisfy -- live-validated on Math_Weir_PDF.pdf: 15 of 20 real tables
-   * got genuine /Headers written, yet every one still re-flagged as
-   * missing /Scope because this exemption never fired. Fixed to mirror
-   * hasScopeAttribute's own /A-array lookup exactly.
+   * The element's /Headers reference ids (from its /A Table-owner dict),
+   * decoded to strings, or null if the element carries no /Headers entry
+   * at all. Returns an empty array (not null) for a present-but-empty
+   * /Headers array, distinguishing "no entry" from "an entry with nothing
+   * in it" for the caller's own coverage check.
+   *
+   * Per ISO 32000-1 Table 337, /Headers (like /Scope, /ColSpan, /RowSpan)
+   * is a TABLE ATTRIBUTE living inside /A under the /Table owner, never a
+   * direct entry on the structure element dict itself. A real, self-caught
+   * bug: this check originally read `cell.get('Headers')` directly, which
+   * pdf-structure-writer.service.ts's own retagMultiLevelTableHeaders
+   * (which correctly writes /Headers inside /A) could never satisfy --
+   * live-validated on Math_Weir_PDF.pdf: 15 of 20 real tables got genuine
+   * /Headers written, yet every one still re-flagged as missing /Scope
+   * because this exemption never fired. Fixed to mirror hasScopeAttribute's
+   * own /A-array lookup exactly.
    */
-  private hasHeadersAttribute(doc: ParsedPDF['pdfLibDoc'], elem: PDFDict): boolean {
+  private getHeadersIds(doc: ParsedPDF['pdfLibDoc'], elem: PDFDict): string[] | null {
     const aRaw = elem.get(PDFName.of('A'));
     const a = aRaw instanceof PDFRef ? doc.context.lookup(aRaw) : aRaw;
-    const check = (d: unknown): boolean =>
-      d instanceof PDFDict && d.get(PDFName.of('O'))?.toString() === '/Table' && d.get(PDFName.of('Headers')) !== undefined;
-    if (check(a)) return true;
+    const extract = (d: unknown): string[] | null => {
+      if (!(d instanceof PDFDict) || d.get(PDFName.of('O'))?.toString() !== '/Table') return null;
+      const headers = d.get(PDFName.of('Headers'));
+      if (headers === undefined) return null;
+      if (!(headers instanceof PDFArray)) return [];
+      return headers.asArray().map(h => h.toString());
+    };
+    const direct = extract(a);
+    if (direct !== null) return direct;
     if (a instanceof PDFArray) {
       for (const item of a.asArray()) {
         const resolved = item instanceof PDFRef ? doc.context.lookup(item) : item;
-        if (check(resolved)) return true;
+        const found = extract(resolved);
+        if (found !== null) return found;
       }
     }
-    return false;
+    return null;
   }
 
   /**

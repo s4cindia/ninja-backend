@@ -1839,19 +1839,9 @@ export class PdfStructureWriterService {
       blockCounter++;
       const idFor = (role: string) => `hdrid_${idPrefix}_${blockCounter}_${role}`;
 
-      const rowLabelId = idFor('rowlabel');
-      this.writeIdAttributeForFix(subRow[0].dict, rowLabelId);
-
-      const groupIds = block.groupIndices.map((gi, k) => {
-        const id = idFor(`group${k}`);
-        this.writeIdAttributeForFix(groupRow[gi].dict, id);
-        return id;
-      });
-      const subIds = block.subIndices.map((si, k) => {
-        const id = idFor(`sub${k}`);
-        this.writeIdAttributeForFix(subRow[si].dict, id);
-        return id;
-      });
+      const rowLabelId = this.writeIdAttributeForFix(subRow[0].dict, idFor('rowlabel'));
+      const groupIds = block.groupIndices.map((gi, k) => this.writeIdAttributeForFix(groupRow[gi].dict, idFor(`group${k}`)));
+      const subIds = block.subIndices.map((si, k) => this.writeIdAttributeForFix(subRow[si].dict, idFor(`sub${k}`)));
 
       // This block's data range: rows after subRow, up to (not including)
       // the next detected block, or the table's end.
@@ -1966,11 +1956,28 @@ export class PdfStructureWriterService {
    * Writes /ID directly on the structure element (ISO 32000-1 §14.7.2 —
    * NOT inside /A; /ID identifies the element itself, independent of any
    * table attribute). Never overwrites an existing /ID, matching this
-   * method's own idempotency contract.
+   * method's own idempotency contract — and returns whichever id ends up
+   * in effect (the pre-existing one, decoded, if present; otherwise the
+   * newly written one), so a caller building a /Headers reference to this
+   * exact element always points at what's REALLY there. CodeRabbit finding
+   * on PR #584, confirmed real: a caller that instead used its own
+   * locally-generated id regardless of this method's own no-op decision
+   * would write a /Headers array referencing a value absent from the
+   * header cell it's supposed to describe — a dangling reference reported
+   * as a success.
    */
-  private writeIdAttributeForFix(elem: PDFDict, id: string): void {
-    if (elem.get(PDFName.of('ID')) !== undefined) return;
+  private writeIdAttributeForFix(elem: PDFDict, id: string): string {
+    const existing = elem.get(PDFName.of('ID'));
+    // Decoded PLAIN TEXT, not existing.toString()'s bracketed PDF-syntax
+    // representation -- callers re-encode whatever this returns via
+    // PDFHexString.fromText for /Headers, and encoding an already-encoded
+    // string would double-encode it (a real bug caught by this method's
+    // own regression tests: every /Headers reference came out wrapped in
+    // an extra, spurious layer of hex).
+    if (existing instanceof PDFHexString || existing instanceof PDFString) return existing.decodeText();
+    if (existing !== undefined) return existing.toString();
     elem.set(PDFName.of('ID'), PDFHexString.fromText(id));
+    return id;
   }
 
   /**
@@ -2007,6 +2014,23 @@ export class PdfStructureWriterService {
       const aObj = doc.context.lookup(aRaw);
       if (aObj instanceof PDFDict && aObj.get(PDFName.of('O'))?.toString() === '/Table') {
         aObj.set(PDFName.of('Headers'), headersArray);
+        return;
+      }
+      elem.set(PDFName.of('A'), doc.context.obj([aRaw, doc.context.register(doc.context.obj({ O: PDFName.of('Table'), Headers: headersArray }))]));
+      return;
+    }
+    // /A can also be a single direct dict (a legal singleton, not wrapped
+    // in an array or an indirect ref) -- CodeRabbit finding on PR #584,
+    // confirmed real: the previous fallback here unconditionally REPLACED
+    // /A with a brand-new Headers-only array, silently discarding whatever
+    // this direct dict already held (e.g. a real /RowSpan or /ColSpan, or
+    // another owner's attributes entirely). Mutate it in place when it's
+    // already the /Table owner, matching the PDFRef branch's own logic;
+    // otherwise wrap it alongside a new Headers-only dict rather than
+    // dropping it.
+    if (aRaw instanceof PDFDict) {
+      if (aRaw.get(PDFName.of('O'))?.toString() === '/Table') {
+        aRaw.set(PDFName.of('Headers'), headersArray);
         return;
       }
       elem.set(PDFName.of('A'), doc.context.obj([aRaw, doc.context.register(doc.context.obj({ O: PDFName.of('Table'), Headers: headersArray }))]));
