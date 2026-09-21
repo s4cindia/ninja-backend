@@ -167,6 +167,74 @@ describe('PdfStructureWriterService.fixTableHeaderScope', () => {
     expect(scopeOf(doc, middleTh)).toBeUndefined();
   });
 
+  it('writes scope="Column" to a repeated header row mid-table (same TH shape as row 0), matching the real Math_Weir_PDF.pdf long-table pattern', async () => {
+    const doc = await PDFDocument.create();
+    const page = doc.addPage([612, 792]);
+
+    const headerRow0 = [cell(doc, 'TH', page.ref), cell(doc, 'TH', page.ref), cell(doc, 'TH', page.ref)];
+    const dataRow1 = [cell(doc, 'TD', page.ref), cell(doc, 'TD', page.ref), cell(doc, 'TD', page.ref)];
+    // The repeated header row's own column-0 cell already gets Scope="Row"
+    // from the plain isHeaderCol rule (any column-0 TH, any row) -- only
+    // its non-col0 cells (repeatedCol1, repeatedCol2) are the genuinely
+    // new case under test here.
+    const repeatedHeaderCol0 = cell(doc, 'TH', page.ref);
+    const repeatedCol1 = cell(doc, 'TH', page.ref);
+    const repeatedCol2 = cell(doc, 'TH', page.ref);
+    const dataRow2 = [cell(doc, 'TD', page.ref), cell(doc, 'TD', page.ref), cell(doc, 'TD', page.ref)];
+
+    const tableRef = doc.context.register(doc.context.obj({
+      S: PDFName.of('Table'), Pg: page.ref,
+      K: [
+        row(doc, headerRow0),
+        row(doc, dataRow1),
+        row(doc, [repeatedHeaderCol0, repeatedCol1, repeatedCol2]),
+        row(doc, dataRow2),
+      ],
+    }));
+    const docRef = doc.context.register(doc.context.obj({ S: PDFName.of('Document'), K: [tableRef] }));
+    doc.catalog.set(PDFName.of('StructTreeRoot'), doc.context.register(doc.context.obj({ Type: PDFName.of('StructTreeRoot'), K: [docRef] })));
+
+    const results = pdfStructureWriterService.fixTableHeaderScope(doc, [issueFor('table_p1_0')]);
+
+    expect(results[0].success).toBe(true);
+    expect(results[0].after).not.toContain('outside row 0/column 0 left unscoped');
+    expect(scopeOf(doc, headerRow0[1])).toBe('Column');
+    expect(scopeOf(doc, repeatedCol1)).toBe('Column');
+    expect(scopeOf(doc, repeatedCol2)).toBe('Column');
+    expect(scopeOf(doc, repeatedHeaderCol0)).toBe('Row');
+  });
+
+  it('does NOT treat a row with the same cell count as row 0 but only PARTIAL TH coverage as a repeated header row', async () => {
+    const doc = await PDFDocument.create();
+    const page = doc.addPage([612, 792]);
+
+    const headerRow0 = [cell(doc, 'TH', page.ref), cell(doc, 'TH', page.ref), cell(doc, 'TH', page.ref)];
+    // Same cell count as row 0, but the middle cell is TD, not TH -- a
+    // genuine data row that happens to be table-width, not a repeated
+    // header. Only col 0 (a real TH) should get scope, via the ordinary
+    // isHeaderCol rule -- the OTHER TH here (col 2) must be left unscoped
+    // since this row doesn't qualify as a repeat of row 0.
+    const notARepeatCol0 = cell(doc, 'TH', page.ref);
+    const notARepeatCol1 = cell(doc, 'TD', page.ref);
+    const notARepeatCol2 = cell(doc, 'TH', page.ref);
+
+    const tableRef = doc.context.register(doc.context.obj({
+      S: PDFName.of('Table'), Pg: page.ref,
+      K: [
+        row(doc, headerRow0),
+        row(doc, [notARepeatCol0, notARepeatCol1, notARepeatCol2]),
+      ],
+    }));
+    const docRef = doc.context.register(doc.context.obj({ S: PDFName.of('Document'), K: [tableRef] }));
+    doc.catalog.set(PDFName.of('StructTreeRoot'), doc.context.register(doc.context.obj({ Type: PDFName.of('StructTreeRoot'), K: [docRef] })));
+
+    const results = pdfStructureWriterService.fixTableHeaderScope(doc, [issueFor('table_p1_0')]);
+
+    expect(results[0].after).toContain('outside row 0/column 0 left unscoped');
+    expect(scopeOf(doc, notARepeatCol0)).toBe('Row');
+    expect(scopeOf(doc, notARepeatCol2)).toBeUndefined();
+  });
+
   it('skips a TH that already has /Scope, touching only cells missing one', async () => {
     const doc = await PDFDocument.create();
     const page = doc.addPage([612, 792]);
