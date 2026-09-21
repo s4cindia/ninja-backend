@@ -3661,6 +3661,211 @@ export class PdfStructureWriterService {
     }
     return null;
   }
+
+  /**
+   * Deterministically extracts alt text for a Figure whose entire content
+   * is a SINGLE, self-contained text-showing glyph -- e.g. a lone italic
+   * variable letter ("V", "d") typeset as its own inline /Figure rather
+   * than real paragraph text (an InDesign "PlacedGraphic" convention for
+   * embedded math notation). Confirmed real and live on Math_Weir_PDF.pdf:
+   * 219 of 437 struct-tree-only missing-alt Figures (50.1%) are exactly
+   * this shape -- always exactly one Tj/TJ call, always exactly one
+   * printable-ASCII character once non-printable bytes are excluded.
+   *
+   * Deliberately narrow: only succeeds when the Figure's marked-content
+   * span contains EXACTLY ONE text-showing operator (Tj/TJ/'/"), and the
+   * decoded literal-string content -- after dropping bytes outside the
+   * printable ASCII range 0x20-0x7E, which are almost certainly a custom
+   * symbol font's own remapped glyphs (fraction bars, brackets, drawn via
+   * octal-escaped control-range byte values like \037) rather than real
+   * characters this can interpret without that font's own Differences
+   * array -- is non-empty. Hex-encoded strings (a composite/CID font,
+   * confirmed real as a co-occurring prefix glyph alongside the readable
+   * one in every single-glyph case sampled) are skipped entirely, never
+   * guessed at, for the same reason.
+   *
+   * A Figure with MULTIPLE text-show calls (confirmed real and equally
+   * common -- 218 of 437, a multi-part formula like "negative likelihood
+   * ratio" + subscripted table-cell variables "C"/"AC"/"D"/"BD", where
+   * naive concatenation loses the formula's own structure and reads as
+   * confusing run-on text) is refused rather than guessed at -- that class
+   * needs a different, structure-aware approach, not this one.
+   *
+   * Also refuses when the span contains an XObject invocation (`Do`), a
+   * shading (`sh`), or an inline image (`EI`) -- confirmed real and live:
+   * page 1's cover-image Figure (MCID 0) has a real embedded image
+   * (`/Im0 Do`) AND an UNRELATED, still-uncorrected invisible print-
+   * production slug line ("E9472/Weir/Front_cover_inside/746841/mh-R1")
+   * both inside the same marked-content span -- exactly one readable
+   * text-show call, which would otherwise pass every check above and
+   * silently become the COVER IMAGE's own alt text. A Figure containing a
+   * real embedded image needs a real (image-based) description, never
+   * text that merely happens to share its span.
+   *
+   * Deliberately does NOT exclude plain path-painting operators
+   * (fill/stroke) the way pdf-artifact-tagger.ts's own PATH_PAINT_OPS
+   * check does for a DIFFERENT purpose -- confirmed real and live: a small
+   * stroked line segment directly above the letter is the overline bar for
+   * "X̄" (sample mean notation, a font without a precomposed combining-
+   * overline glyph draws it as its own short vector stroke), a completely
+   * legitimate part of THIS SAME glyph's own visual representation, not
+   * unrelated content -- excluding it dropped real yield from 220 to 58 on
+   * the very first live check. `Do`/`sh`/`EI` are categorically different:
+   * each embeds or invokes a genuinely separate, substantial visual object
+   * a plain stroke/fill of a handful of coordinates never does.
+   *
+   * `content` must already be decoded (decodePageContent); `mcid`
+   * identifies the specific Figure by its own marked-content span. Returns
+   * null when the shape doesn't qualify or the MCID can't be found --
+   * callers should fall back to the existing AI-vision alt-text path, not
+   * treat null as a hard failure.
+   */
+  extractSingleGlyphAltText(content: string, mcid: number): string | null {
+    const span = this.findMarkedContentSpanForMcid(content, mcid);
+    if (!span) return null;
+
+    const DRAWING_OPS = new Set(['Do', 'sh', 'EI']);
+    const tokens = tokenize(content);
+    // Counts only text-show ops that carry at least one READABLE (literal-
+    // string) operand -- a purely hex-encoded Tj (a composite/CID font's
+    // own prefix glyph, confirmed real and common alongside a readable one
+    // in the same Figure, e.g. a decorative lead-in glyph before an italic
+    // variable letter) is silently skipped for content and does NOT count
+    // against the "exactly one fragment" constraint below; only multiple
+    // READABLE fragments (the confirmed multi-part-formula shape) refuse.
+    let readableTextShowCount = 0;
+    let extracted: string | null = null;
+    let pendingStrings: Array<{ t: string; v: string }> = [];
+
+    for (const tk of tokens) {
+      if (tk.start < span.start || tk.start >= span.end) continue;
+      if (tk.t === 'op' && DRAWING_OPS.has(tk.v)) return null;
+      if (tk.t === 's' || tk.t === 'h') {
+        pendingStrings.push({ t: tk.t, v: content.slice(tk.start, tk.end) });
+        continue;
+      }
+      if (tk.t === '[') { pendingStrings = []; continue; }
+      if (tk.t !== 'op') continue;
+      if (tk.v === 'Tj' || tk.v === 'TJ' || tk.v === "'" || tk.v === '"') {
+        const hasReadable = pendingStrings.some(s => s.t === 's');
+        if (hasReadable) {
+          readableTextShowCount++;
+          if (readableTextShowCount > 1) return null; // more than one readable fragment -- not this fix's shape
+          let text = '';
+          for (const s of pendingStrings) {
+            if (s.t !== 's') continue; // hex/composite-font glyph -- can't interpret without its ToUnicode CMap, skip
+            text += this.decodePrintableAsciiOnly(s.v);
+          }
+          extracted = text;
+        }
+        pendingStrings = [];
+      } else {
+        pendingStrings = [];
+      }
+    }
+
+    if (readableTextShowCount !== 1 || extracted === null) return null;
+    const trimmed = extracted.trim();
+    return trimmed.length > 0 ? trimmed : null;
+  }
+
+  /**
+   * The byte range [start, end) of the marked-content span (BDC…EMC)
+   * carrying a specific /MCID value, searched across the whole `content`
+   * string -- unlike this file's other findXAtPosition-style helpers,
+   * there's no anchor position to search from here; the caller only knows
+   * the MCID it's looking for. Same dict-skip/pendingStart technique as
+   * findOutermostRealTagBounds (a BDC's own inline properties dict must
+   * never be mistaken for its operands).
+   */
+  private findMarkedContentSpanForMcid(content: string, mcid: number): { start: number; end: number } | null {
+    const tokens = tokenize(content);
+    const operands: Array<{ t: string; v: string; start: number; end: number }> = [];
+    let dictDepth = 0;
+    let dictMcid: number | null = null;
+    let pendingStart: number | null = null;
+
+    for (const tk of tokens) {
+      if (dictDepth > 0) {
+        if (tk.t === '<<') dictDepth++;
+        else if (tk.t === '>>') dictDepth--;
+        else if (dictDepth === 1 && tk.t === 'n' && operands.length && operands[operands.length - 1].v === '/MCID') {
+          dictMcid = parseInt(tk.v, 10);
+        } else if (dictDepth === 1) {
+          operands.push(tk);
+        }
+        continue;
+      }
+      if (tk.t === '<<') { dictDepth = 1; dictMcid = null; continue; }
+
+      if (tk.t !== 'op') {
+        if (pendingStart === null) pendingStart = tk.start;
+        operands.push(tk);
+        continue;
+      }
+      if ((tk.v === 'BDC' || tk.v === 'BMC') && dictMcid === mcid) {
+        const bdcStart = pendingStart ?? tk.start;
+        let depth = 1;
+        for (const inner of tokens) {
+          if (inner.start <= tk.start) continue;
+          if (inner.t !== 'op') continue;
+          if (inner.v === 'BDC' || inner.v === 'BMC') depth++;
+          else if (inner.v === 'EMC') { depth--; if (depth === 0) return { start: bdcStart, end: inner.end }; }
+        }
+        return null; // unbalanced -- no matching EMC found
+      }
+      operands.length = 0;
+      dictMcid = null;
+      pendingStart = null;
+    }
+    return null;
+  }
+
+  /**
+   * Decodes a PDF literal-string token's raw source text (including
+   * surrounding parens and any backslash escapes -- PDF32000-1:2008
+   * 7.3.4.2) into its printable-ASCII-only content, dropping any byte
+   * outside 0x20-0x7E. Handles octal escapes (\ddd, 1-3 digits) explicitly
+   * -- confirmed real and necessary live: a naive single-char-escape-only
+   * decoder mangles \037 into the literal digit characters "0", "3", "7"
+   * instead of the single control-range byte 0x1F it actually represents,
+   * which this method would then correctly drop as non-printable instead
+   * of leaking as garbage digits into the assembled alt text.
+   *
+   * Dropping non-printable bytes outright (rather than keeping them) is
+   * deliberate: a custom symbol/math font's own Encoding/Differences array
+   * can remap ANY byte value to ANY glyph (fraction bars, brackets, sized
+   * to fit the surrounding formula), and this method has no access to that
+   * font's own table -- keeping them would silently fabricate characters
+   * that were never really there.
+   */
+  private decodePrintableAsciiOnly(raw: string): string {
+    const inner = raw.slice(1, -1); // strip surrounding ( )
+    let out = '';
+    for (let i = 0; i < inner.length; i++) {
+      let byte: number;
+      if (inner[i] === '\\' && i + 1 < inner.length) {
+        const c = inner[i + 1];
+        if (c >= '0' && c <= '7') {
+          let oct = c;
+          let j = i + 2;
+          for (let k = 0; k < 2 && j < inner.length && inner[j] >= '0' && inner[j] <= '7'; k++, j++) oct += inner[j];
+          byte = parseInt(oct, 8) & 0xff;
+          i = j - 1;
+        } else if (c === 'n') { byte = 10; i++; }
+        else if (c === 'r') { byte = 13; i++; }
+        else if (c === 't') { byte = 9; i++; }
+        else if (c === 'b') { byte = 8; i++; }
+        else if (c === 'f') { byte = 12; i++; }
+        else if (c === '\n') { i++; continue; } // line continuation, no byte
+        else { byte = c.charCodeAt(0); i++; } // \), \(, \\, or any other escaped char -> itself
+      } else {
+        byte = inner.charCodeAt(i);
+      }
+      if (byte >= 0x20 && byte <= 0x7e) out += String.fromCharCode(byte);
+    }
+    return out;
+  }
 }
 
 export const pdfStructureWriterService = new PdfStructureWriterService();

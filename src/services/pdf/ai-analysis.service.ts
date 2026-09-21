@@ -23,6 +23,7 @@ import { fileStorageService } from '../storage/file-storage.service';
 import type { PDFDocument } from 'pdf-lib';
 import { pdfModifierService } from './pdf-modifier.service';
 import { pdfStructureWriterService, type FixResult } from './pdf-structure-writer.service';
+import { decodePageContent } from './pdf-content-stream-io';
 import { pdfContrastWriterService, resolveColorContrastTargets } from './pdf-contrast-writer.service';
 import { remediationCycleHistoryService } from './remediation-cycle-history.service';
 import { AppError } from '../../utils/app-error';
@@ -1053,6 +1054,37 @@ class AiAnalysisService {
     const page = issue.pageNumber ? parsed.pages[issue.pageNumber - 1] : undefined;
 
     if (ALT_TEXT_MISSING_CODES.has(code)) {
+      // pdf-figure-structtree.validator.ts's own struct-tree-walk issues
+      // (not the image-extraction path) carry a "figure_p{page}_mc{mcid}"
+      // element id directly naming the Figure's own MCID -- try the
+      // deterministic single-glyph extraction first, before the AI-vision
+      // path below. Confirmed real and live on Math_Weir_PDF.pdf: 219 of
+      // 437 missing-alt Figures (50.1%) are a lone inline math variable
+      // ("V", "X", "d") typeset as its own Figure rather than a photo or
+      // diagram -- an AI vision model has nothing meaningful to describe in
+      // an 8x11-point crop of a single letter, which is exactly why these
+      // survive Auto Mode's existing image-based path untouched round after
+      // round. See extractSingleGlyphAltText's own doc comment for the full
+      // reasoning, including why it separately refuses a Figure that also
+      // contains a real embedded image (Do/sh/EI) sharing the same span.
+      const figureMc = issue.element ? /^figure_p(\d+)_mc(\d+)$/.exec(issue.element) : null;
+      if (figureMc && parsed.parsedPdf) {
+        const mcid = parseInt(figureMc[2], 10);
+        const content = decodePageContent(parsed.parsedPdf.pdfLibDoc, issue.pageNumber!);
+        const glyphAlt = content ? pdfStructureWriterService.extractSingleGlyphAltText(content, mcid) : null;
+        if (glyphAlt !== null) {
+          return {
+            suggestionType: 'alt-text-glyph',
+            value: glyphAlt,
+            guidance: `This figure is a single inline character ("${glyphAlt}") rather than a photo or diagram -- its alt text is read directly from its own glyph.`,
+            confidence: 1.0,
+            rationale: 'Deterministic fix -- extracts the Figure\'s own literal text-show content when it is exactly one printable character with no embedded image sharing its span, never inferred by AI',
+            model: 'rule-based',
+            applyMode: 'apply-to-pdf',
+          };
+        }
+      }
+
       const img = issue.element ? imageById.get(issue.element) : undefined;
       const imgWithBase64 = img?.base64 ? img : await this.fallbackToPageRender(img, issue, parsed, pageRenderCache);
       if (!imgWithBase64) return null;
@@ -3013,7 +3045,7 @@ class AiAnalysisService {
         } else if (suggestionType === 'alt-text-decorative') {
           // Hardcoded '' rather than the stored value -- matches applyAll/applySuggestion.
           modification = await pdfModifierService.setAltText(doc, elementId, '');
-        } else if (suggestionType === 'alt-text' || suggestionType === 'alt-text-improvement') {
+        } else if (suggestionType === 'alt-text' || suggestionType === 'alt-text-improvement' || suggestionType === 'alt-text-glyph') {
           modification = await pdfModifierService.setAltText(doc, elementId, value!);
         } else if (suggestionType === 'table-summary') {
           modification = await pdfModifierService.setTableSummary(doc, elementId, value!);

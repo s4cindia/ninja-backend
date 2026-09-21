@@ -580,6 +580,14 @@ export class PdfAiAnalysisController {
           // path rather than duplicated).
           await aiAnalysisService.ensureFigureForImages(doc, pdfBuffer, fileName, [elementId]);
           modification = await pdfModifierService.setAltText(doc, elementId, value);
+        } else if (suggestionType === 'alt-text-glyph') {
+          // Unlike alt-text/alt-text-improvement, this suggestion only ever
+          // exists for a Figure pdf-figure-structtree.validator.ts's own
+          // struct-tree walk already found -- the element is guaranteed to
+          // exist already, so skip ensureFigureForImages's own (otherwise
+          // pointless for a figure_p-prefixed id) full document re-parse +
+          // image-extraction pass entirely.
+          modification = await pdfModifierService.setAltText(doc, elementId, value);
         } else if (suggestionType === 'table-summary') {
           modification = await pdfModifierService.setTableSummary(doc, elementId, value);
         } else if (suggestionType === 'formula-actualtext') {
