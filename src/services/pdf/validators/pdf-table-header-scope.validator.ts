@@ -183,7 +183,7 @@ class PdfTableHeaderScopeValidator {
       for (const cellRef of cellRefs) {
         const cell = cellRef instanceof PDFRef ? doc.context.lookup(cellRef) : cellRef;
         if (!(cell instanceof PDFDict)) continue;
-        if (cell.get(PDFName.of('Headers')) !== undefined) usesHeadersIdOrganization = true;
+        if (this.hasHeadersAttribute(doc, cell)) usesHeadersIdOrganization = true;
         if (cell.get(PDFName.of('S'))?.toString().replace(/^\//, '') !== 'TH') continue;
         total++;
         if (!this.hasScopeAttribute(doc, cell)) missing++;
@@ -196,6 +196,35 @@ class PdfTableHeaderScopeValidator {
 
     if (usesHeadersIdOrganization) return { total: 0, missing: 0 };
     return { total, missing };
+  }
+
+  /**
+   * True if the element's /A (attributes) already carries a Table-owner
+   * dict with a /Headers entry -- per ISO 32000-1 Table 337, /Headers (like
+   * /Scope, /ColSpan, /RowSpan) is a TABLE ATTRIBUTE living inside /A under
+   * the /Table owner, never a direct entry on the structure element dict
+   * itself. A real, self-caught bug: this check originally read
+   * `cell.get('Headers')` directly, which pdf-structure-writer.service.ts's
+   * own retagMultiLevelTableHeaders (which correctly writes /Headers inside
+   * /A, matching writeScopeAttribute's own established pattern) could never
+   * satisfy -- live-validated on Math_Weir_PDF.pdf: 15 of 20 real tables
+   * got genuine /Headers written, yet every one still re-flagged as
+   * missing /Scope because this exemption never fired. Fixed to mirror
+   * hasScopeAttribute's own /A-array lookup exactly.
+   */
+  private hasHeadersAttribute(doc: ParsedPDF['pdfLibDoc'], elem: PDFDict): boolean {
+    const aRaw = elem.get(PDFName.of('A'));
+    const a = aRaw instanceof PDFRef ? doc.context.lookup(aRaw) : aRaw;
+    const check = (d: unknown): boolean =>
+      d instanceof PDFDict && d.get(PDFName.of('O'))?.toString() === '/Table' && d.get(PDFName.of('Headers')) !== undefined;
+    if (check(a)) return true;
+    if (a instanceof PDFArray) {
+      for (const item of a.asArray()) {
+        const resolved = item instanceof PDFRef ? doc.context.lookup(item) : item;
+        if (check(resolved)) return true;
+      }
+    }
+    return false;
   }
 
   /**

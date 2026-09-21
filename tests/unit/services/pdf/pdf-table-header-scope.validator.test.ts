@@ -269,8 +269,17 @@ describe('PdfTableHeaderScopeValidator', () => {
 
     const th1Ref = doc.context.register(doc.context.obj({ S: PDFName.of('TH'), Pg: page.ref, ID: doc.context.obj('h1') }));
     const th2Ref = doc.context.register(doc.context.obj({ S: PDFName.of('TH'), Pg: page.ref, ID: doc.context.obj('h2') }));
-    const td1Ref = doc.context.register(doc.context.obj({ S: PDFName.of('TD'), Pg: page.ref, Headers: [doc.context.obj('h1')] }));
-    const td2Ref = doc.context.register(doc.context.obj({ S: PDFName.of('TD'), Pg: page.ref, Headers: [doc.context.obj('h2')] }));
+    // /Headers is a TABLE ATTRIBUTE (ISO 32000-1 Table 337) -- lives inside
+    // /A under the /Table owner, exactly like /Scope/ColSpan/RowSpan, never
+    // as a direct entry on the cell dict itself (a real bug this test used
+    // to encode and pass against, until fixTableHeaderScope's own
+    // retagMultiLevelTableHeaders writer -- built correctly per spec --
+    // proved live that this exemption never actually fired for real
+    // Headers/IDs-tagged cells; see hasHeadersAttribute's own doc comment).
+    const attr1Ref = doc.context.register(doc.context.obj({ O: PDFName.of('Table'), Headers: [doc.context.obj('h1')] }));
+    const attr2Ref = doc.context.register(doc.context.obj({ O: PDFName.of('Table'), Headers: [doc.context.obj('h2')] }));
+    const td1Ref = doc.context.register(doc.context.obj({ S: PDFName.of('TD'), Pg: page.ref, A: [attr1Ref] }));
+    const td2Ref = doc.context.register(doc.context.obj({ S: PDFName.of('TD'), Pg: page.ref, A: [attr2Ref] }));
     const tableRef = doc.context.register(doc.context.obj({
       S: PDFName.of('Table'), Pg: page.ref,
       K: [row(doc, [th1Ref, th2Ref]), row(doc, [td1Ref, td2Ref])],
