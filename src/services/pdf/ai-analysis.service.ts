@@ -1080,7 +1080,13 @@ class AiAnalysisService {
             confidence: 1.0,
             rationale: 'Deterministic fix -- extracts the Figure\'s own literal text-show content when it is exactly one printable character with no embedded image sharing its span, never inferred by AI',
             model: 'rule-based',
-            applyMode: 'apply-to-pdf',
+            // CodeRabbit finding on PR #587, confirmed real: this
+            // unconditionally returned 'apply-to-pdf', ignoring
+            // config.altTextMode entirely -- a tenant/request configured
+            // for guidance-only alt text would still get this deterministic
+            // suggestion auto-applied. Mirrors the same wouldAutoApply-style
+            // check table-header-scope-fix's own call site already uses.
+            applyMode: config.altTextMode === 'guidance-only' ? 'guidance-only' : 'apply-to-pdf',
           };
         }
       }

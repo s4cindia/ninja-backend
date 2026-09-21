@@ -70,6 +70,27 @@ describe('dispatchIssue: MATTERHORN-13-001 tries alt-text-glyph before the AI-vi
     expect(res.confidence).toBe(1.0);
   });
 
+  /**
+   * CodeRabbit finding on PR #587, confirmed real: the suggestion
+   * originally hardcoded applyMode: 'apply-to-pdf' unconditionally,
+   * ignoring config.altTextMode entirely -- a tenant/request configured
+   * for guidance-only alt text would still get this deterministic
+   * suggestion auto-applied.
+   */
+  it('falls back to guidance-only when altTextMode is guidance-only, still returning the extracted glyph as its value', async () => {
+    const content = `/Figure <</MCID 0 >>BDC\nBT\n(V)Tj\nET\nEMC\n`;
+    const doc = await docWithPageContent(content);
+    const parsed = { isTagged: true, pages: [], parsedPdf: { pdfLibDoc: doc } } as unknown as PdfParseResult;
+    const guidanceOnlyConfig: AiRemediationConfig = { ...CONFIG, altTextMode: 'guidance-only' };
+
+    const res = await svc.dispatchIssue(issueFor('figure_p1_mc0'), parsed, guidanceOnlyConfig, new Map(), new Map(), new Map());
+
+    expect(res).not.toBeNull();
+    expect(res.suggestionType).toBe('alt-text-glyph');
+    expect(res.value).toBe('V');
+    expect(res.applyMode).toBe('guidance-only');
+  });
+
   it('falls through to the image-based path (returns null with no image available) for a Figure sharing its span with a real embedded image', async () => {
     const content = `/Figure <</MCID 0 >>BDC\nBT\n(slug line text)Tj\nET\nq\n/Im0 Do\nQ\nEMC\n`;
     const doc = await docWithPageContent(content);

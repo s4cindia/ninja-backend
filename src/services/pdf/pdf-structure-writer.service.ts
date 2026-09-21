@@ -3766,7 +3766,15 @@ export class PdfStructureWriterService {
 
     if (readableTextShowCount !== 1 || extracted === null) return null;
     const trimmed = extracted.trim();
-    return trimmed.length > 0 ? trimmed : null;
+    // CodeRabbit finding on PR #587, confirmed real (though not a live
+    // regression -- every one of the 219 real cases already validated
+    // against Math_Weir_PDF.pdf is exactly one character): this method's
+    // own name and doc comment promise a SINGLE glyph, but only checked
+    // "non-empty," not "exactly one character" -- a 2+-character fragment
+    // (a short run of body text this method has no way to distinguish from
+    // a genuine multi-character symbol) would have silently qualified.
+    // Tightened to match the documented contract exactly.
+    return trimmed.length === 1 ? trimmed : null;
   }
 
   /**

@@ -79,6 +79,11 @@ EMC
     expect(pdfStructureWriterService.extractSingleGlyphAltText(content, 0)).toBeNull();
   });
 
+  it('refuses a single text-show fragment that decodes to more than one character (CodeRabbit finding: the method promises a single GLYPH, not just a non-empty fragment)', () => {
+    const content = `/Figure <</MCID 6 >>BDC\nBT\n(V2)Tj\nET\nEMC\n`;
+    expect(pdfStructureWriterService.extractSingleGlyphAltText(content, 6)).toBeNull();
+  });
+
   it('refuses a Figure with multiple readable text-show fragments (the confirmed real multi-part-formula shape)', () => {
     const content = `/Figure <</MCID 1 >>BDC
 /PlacedGraphic /MC0 BDC
