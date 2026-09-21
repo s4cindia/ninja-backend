@@ -40,6 +40,7 @@ import {
 } from './table-content-tagger';
 import type { TableCell, TableInfo } from './structure-analyzer.service';
 import { locateXObjectInvocation, findNearestMcidForPosition } from './figure-content-tagger';
+import { locateTextRun } from './contrast-content-stream';
 import type { ParsedPDF } from './pdf-parser.service';
 
 // ─── Public Types ─────────────────────────────────────────────────────────────
@@ -3234,6 +3235,75 @@ export class PdfStructureWriterService {
         success: true,
         before: `${count} untagged vector-graphics region(s)`,
         after: `${count} region(s) marked as /Artifact`,
+      };
+    });
+  }
+
+  /**
+   * Matterhorn 01-005-adjacent fix: wraps a SPECIFIC text run — one whose
+   * measured ink color exactly matches its background
+   * (pdf-contrast.validator.ts's own "single uniform color" detection) —
+   * in /Artifact BMC … EMC, the same convention pdf-artifact-tagger.ts
+   * already established for untagged painted paths (BMC, not BDC, to
+   * avoid a strict validator looking up /Artifact in /Properties and
+   * failing with "Undefined property").
+   *
+   * Confirmed real on Math_Weir_PDF.pdf: 55 of 88 real COLOR-CONTRAST
+   * issues are print-production slug-line text — Illustrator/InDesign
+   * job-tracking codes like "E9472/Weir/F02.01/746848/mh-R1", embedded by
+   * the layout tool and never meant to be seen by ANY reader, sighted or
+   * assistive (one even sits INSIDE a real /Figure's own marked-content
+   * span, alongside the Figure's genuine image content). Distinguished
+   * from a real, measurable low-contrast defect by the ABSENCE of
+   * contrastData on the issue — pdf-contrast.validator.ts never populates
+   * it for this detection path, since there's no real foreground/
+   * background pair to report a ratio for. The correct fix isn't a
+   * contrast-ratio adjustment (there is no real ink color to improve) —
+   * it's excluding the run from the accessible content tree entirely,
+   * matching what a sighted reader already experiences: nothing.
+   *
+   * Locates the run the SAME way pdf-contrast-writer.service.ts's own
+   * fixColorContrast does — contrast-content-stream.ts's locateTextRun,
+   * from the issue's own boundingBox — reusing already-proven,
+   * live-validated infrastructure rather than a new detection pass.
+   */
+  fixInvisibleTextArtifact(doc: PDFDocument, issues: AuditIssue[]): FixResult[] {
+    return issues.map((issue) => {
+      if (!issue.pageNumber || !issue.boundingBox) {
+        return { issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error: 'Issue has no pageNumber or boundingBox' };
+      }
+
+      let content: string | null;
+      try {
+        content = decodePageContent(doc, issue.pageNumber);
+      } catch (err) {
+        return {
+          issueId: issue.id, success: false, before: 'unknown', after: 'unknown',
+          error: `Could not decode page ${issue.pageNumber}: ${err instanceof Error ? err.message : String(err)}`,
+        };
+      }
+      if (!content) {
+        return { issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error: `Page ${issue.pageNumber} has no content stream` };
+      }
+
+      // Same {x, baselineY} derivation pdf-contrast-writer.service.ts's own
+      // fixColorContrast uses, for consistent, already-proven matching.
+      const target = { x: issue.boundingBox.x, baselineY: issue.boundingBox.pageHeight - issue.boundingBox.y };
+      const match = locateTextRun(content, target);
+      if (!match) {
+        return {
+          issueId: issue.id, success: false, before: 'invisible text run', after: 'unknown',
+          error: 'Could not locate the invisible text run on this page (already fixed, or its position no longer matches)',
+        };
+      }
+
+      const fixed = content.slice(0, match.start) + '/Artifact BMC ' + content.slice(match.start, match.end) + ' EMC ' + content.slice(match.end);
+      writePageContent(doc, issue.pageNumber, fixed);
+      return {
+        issueId: issue.id,
+        success: true,
+        before: 'invisible text run tagged as real content',
+        after: 'text run marked as /Artifact (excluded from assistive-technology reading order)',
       };
     });
   }

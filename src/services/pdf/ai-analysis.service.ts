@@ -1269,6 +1269,28 @@ class AiAnalysisService {
 
     if (CONTRAST_CODES.has(code)) {
       if (config.colorContrastMode === 'disabled') return null;
+      // Text whose measured ink color exactly matches its background isn't
+      // a contrast-RATIO defect at all -- pdf-contrast.validator.ts never
+      // populates contrastData for this detection path, since there's no
+      // real foreground/background pair to report a ratio for. Confirmed
+      // real on Math_Weir_PDF.pdf: 55 of 88 real COLOR-CONTRAST issues are
+      // print-production slug-line text (Illustrator/InDesign job-tracking
+      // codes), never meant to be seen by ANY reader. The correct fix is
+      // Artifact-tagging (excluding it from the accessible reading order),
+      // not a color adjustment there's no real color to improve. Purely
+      // positional (contrast-content-stream.ts's own locateTextRun,
+      // already proven by pdf-contrast-writer.service.ts), so no AI call
+      // is needed at all -- deterministic like the other rule-based fixes.
+      if (!issue.contrastData) {
+        return {
+          suggestionType: 'invisible-text-artifact-fix',
+          guidance: 'This text has no ink color visually distinguishable from its background — it will be excluded from the accessible reading order (marked as /Artifact) rather than recolored.',
+          confidence: 1.0,
+          rationale: 'Deterministic fix — the text has no real, measurable color to improve; wraps the exact run in /Artifact BMC…EMC',
+          model: 'rule-based',
+          applyMode: config.colorContrastMode === 'apply-to-pdf' ? 'apply-to-pdf' : 'guidance-only',
+        };
+      }
       return this.analyzeColorContrast(issue, contrastMatchByIssueId, config.colorContrastMode);
     }
 
@@ -2877,7 +2899,7 @@ class AiAnalysisService {
     // for repeat contrast fixes.
     const pagesRewrittenSincePreResolve = new Set<number>();
 
-    const STRUCTURE_WRITER_TYPES = new Set(['heading-fix', 'list-fix', 'table-header-fix', 'table-header-fix-column', 'table-header-scope-fix', 'table-artifact-fix', 'table-from-layout-fix', 'bookmark-generate', 'heading-multiple-h1-fix', 'pdfua-identifier', 'color-contrast-fix', 'alt-text-decorative', 'untagged-content-fix']);
+    const STRUCTURE_WRITER_TYPES = new Set(['heading-fix', 'list-fix', 'table-header-fix', 'table-header-fix-column', 'table-header-scope-fix', 'table-artifact-fix', 'table-from-layout-fix', 'bookmark-generate', 'heading-multiple-h1-fix', 'pdfua-identifier', 'color-contrast-fix', 'alt-text-decorative', 'untagged-content-fix', 'invisible-text-artifact-fix']);
 
     let applied = 0;
     let failed = 0;
@@ -2954,6 +2976,17 @@ class AiAnalysisService {
           const results = pdfStructureWriterService.fixUntaggedContent(doc, [originalIssue]);
           const r = results[0];
           modification = { success: r.success, description: r.after, error: r.error };
+          if (r.success && originalIssue.pageNumber !== undefined) {
+            pagesRewrittenSincePreResolve.add(originalIssue.pageNumber);
+          }
+        } else if (suggestionType === 'invisible-text-artifact-fix') {
+          const results = pdfStructureWriterService.fixInvisibleTextArtifact(doc, [originalIssue]);
+          const r = results[0];
+          modification = { success: r.success, description: r.after, error: r.error };
+          // Rewrites the page's own content stream (splices in BMC/EMC),
+          // same as untagged-content-fix -- any LATER same-page contrast
+          // fix in this batch must re-resolve its own byte offsets rather
+          // than use ones computed against the pre-splice content.
           if (r.success && originalIssue.pageNumber !== undefined) {
             pagesRewrittenSincePreResolve.add(originalIssue.pageNumber);
           }

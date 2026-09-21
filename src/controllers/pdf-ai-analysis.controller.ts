@@ -529,6 +529,10 @@ export class PdfAiAnalysisController {
         const results = pdfStructureWriterService.fixUntaggedContent(doc, [originalIssue]);
         const r = results[0];
         modification = { success: r.success, description: r.after, error: r.error };
+      } else if (suggestionType === 'invisible-text-artifact-fix') {
+        const results = pdfStructureWriterService.fixInvisibleTextArtifact(doc, [originalIssue]);
+        const r = results[0];
+        modification = { success: r.success, description: r.after, error: r.error };
       } else if (suggestionType === 'pdfua-identifier') {
         modification = await pdfModifierService.writePdfUaIdentifier(doc);
       } else if (suggestionType === 'color-contrast-fix') {
