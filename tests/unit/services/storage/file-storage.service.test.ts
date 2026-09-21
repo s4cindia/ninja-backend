@@ -157,6 +157,38 @@ describe('FileStorageService — S3 mode', () => {
     expect(buffer).toBeNull();
   });
 
+  it('remediatedFileExists returns true via a HEAD request, without fetching the body', async () => {
+    vi.mocked(s3Client.send).mockResolvedValueOnce({} as any);
+    const exists = await fileStorageService.remediatedFileExists('job-1', 'doc.pdf');
+    expect(exists).toBe(true);
+    const call = vi.mocked(s3Client.send).mock.calls[0][0] as any;
+    expect(call.input.Key).toBe('job-storage/job-1/remediated/doc.pdf');
+    expect(call.constructor.name).toBe('HeadObjectCommand');
+  });
+
+  it('remediatedFileExists falls back to the _remediated suffix convention', async () => {
+    vi.mocked(s3Client.send)
+      .mockRejectedValueOnce(notFoundError('NotFound'))
+      .mockResolvedValueOnce({} as any);
+
+    const exists = await fileStorageService.remediatedFileExists('job-1', 'doc.pdf');
+
+    expect(exists).toBe(true);
+    const secondCall = vi.mocked(s3Client.send).mock.calls[1][0] as any;
+    expect(secondCall.input.Key).toBe('job-storage/job-1/remediated/doc_remediated.pdf');
+  });
+
+  it('remediatedFileExists returns false when neither candidate exists', async () => {
+    vi.mocked(s3Client.send).mockRejectedValue(notFoundError('NotFound'));
+    const exists = await fileStorageService.remediatedFileExists('job-1', 'doc.pdf');
+    expect(exists).toBe(false);
+  });
+
+  it('remediatedFileExists rethrows a non-not-found error', async () => {
+    vi.mocked(s3Client.send).mockRejectedValue(new Error('AccessDenied'));
+    await expect(fileStorageService.remediatedFileExists('job-1', 'doc.pdf')).rejects.toThrow('AccessDenied');
+  });
+
   it('downloadFile fetches an S3 key returned by an earlier saveFile/saveRemediatedFile call', async () => {
     vi.mocked(s3Client.send).mockResolvedValue({ Body: asyncIterableOf(Buffer.from('fixed')) } as any);
     const buffer = await fileStorageService.downloadFile('job-storage/job-1/remediated/doc.pdf');
@@ -206,5 +238,29 @@ describe('FileStorageService — local-disk fallback (S3 not configured)', () =>
     vi.mocked(fs.rm).mockResolvedValue(undefined);
     await fileStorageService.deleteJobFiles('job-1');
     expect(fs.rm).toHaveBeenCalledWith(expect.stringContaining('job-1'), { recursive: true, force: true });
+  });
+
+  it('remediatedFileExists returns true when the plain filename is accessible on disk', async () => {
+    vi.mocked(fs.access).mockResolvedValue(undefined);
+    const exists = await fileStorageService.remediatedFileExists('job-1', 'doc.pdf');
+    expect(exists).toBe(true);
+    expect(fs.access).toHaveBeenCalledWith(expect.stringContaining('doc.pdf'));
+  });
+
+  it('remediatedFileExists falls back to the _remediated suffix convention on disk', async () => {
+    vi.mocked(fs.access)
+      .mockRejectedValueOnce(enoent())
+      .mockResolvedValueOnce(undefined);
+
+    const exists = await fileStorageService.remediatedFileExists('job-1', 'doc.pdf');
+
+    expect(exists).toBe(true);
+    expect(fs.access).toHaveBeenNthCalledWith(2, expect.stringContaining('doc_remediated.pdf'));
+  });
+
+  it('remediatedFileExists returns false when neither candidate exists on disk', async () => {
+    vi.mocked(fs.access).mockRejectedValue(enoent());
+    const exists = await fileStorageService.remediatedFileExists('job-1', 'doc.pdf');
+    expect(exists).toBe(false);
   });
 });
