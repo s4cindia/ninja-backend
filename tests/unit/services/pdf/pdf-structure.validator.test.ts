@@ -232,6 +232,81 @@ describe('PDFStructureValidator', () => {
 
       expect(result.issues.find(i => i.code === 'UNTAGGED-CONTENT')).toBeUndefined();
     });
+
+    describe('recurring decorative curve refinement', () => {
+      // A byte-identical curve run repeated across `curvePageCount` pages
+      // (a decorative page-template shape, e.g. a chapter-tab corner
+      // badge), each also carrying an unrelated straight-line run.
+      const CURVE = '0 0 m\n5 0 5 5 0 5 c\nS\n';
+      const STRAIGHT = '20 20 m\n30 30 l\nS\n';
+
+      async function docWithRepeatedCurvePages(curvePageCount: number, totalPages: number): Promise<ParsedPDF['pdfLibDoc']> {
+        const doc = await PDFDocument.create();
+        for (let i = 0; i < totalPages; i++) {
+          doc.addPage([612, 792]);
+          const content = i < curvePageCount ? `${CURVE}${STRAIGHT}` : STRAIGHT;
+          writePageContent(doc, i + 1, content);
+        }
+        return doc;
+      }
+
+      function mockSetup(pdfLibDoc: ParsedPDF['pdfLibDoc']) {
+        const mockParsedPdf = { ...createMockParsedPdf({ isTagged: true, hasLanguage: true, hasTitle: true }), pdfLibDoc };
+        const mockStructure = createMockStructure({
+          isTaggedPDF: true, hasProperHeadingHierarchy: true, hasDocumentLanguage: true, hasLogicalReadingOrder: true,
+        });
+        vi.mocked(pdfParserService.parse).mockResolvedValue(mockParsedPdf);
+        vi.mocked(pdfParserService.close).mockResolvedValue(undefined);
+        vi.mocked(structureAnalyzerService.analyzeStructure).mockResolvedValue(mockStructure);
+      }
+
+      it('still routes to UNTAGGED-CONTENT-COMPLEX when the same curve recurs on fewer than the recurrence threshold', async () => {
+        // 2 occurrences -- below RECURRING_SIGNATURE_THRESHOLD (3).
+        const pdfLibDoc = await docWithRepeatedCurvePages(2, 2);
+        mockSetup(pdfLibDoc);
+
+        const result = await pdfStructureValidator.validateFromFile('/path/to/test.pdf');
+
+        expect(result.issues.filter(i => i.code === 'UNTAGGED-CONTENT-COMPLEX')).toHaveLength(2);
+        expect(result.issues.find(i => i.code === 'UNTAGGED-CONTENT')).toBeUndefined();
+      });
+
+      it('routes to plain auto-fixable UNTAGGED-CONTENT once the same curve recurs on at least the recurrence threshold -- including its FIRST occurrence', async () => {
+        // 3 occurrences -- exactly RECURRING_SIGNATURE_THRESHOLD, confirmed
+        // decorative. The two-pass design means even the first page (which
+        // alone has no way to know it'll recur) gets the same treatment as
+        // the third, not just pages seen after the threshold is reached.
+        const pdfLibDoc = await docWithRepeatedCurvePages(3, 3);
+        mockSetup(pdfLibDoc);
+
+        const result = await pdfStructureValidator.validateFromFile('/path/to/test.pdf');
+
+        expect(result.issues.filter(i => i.code === 'UNTAGGED-CONTENT-COMPLEX')).toHaveLength(0);
+        const plainIssues = result.issues.filter(i => i.code === 'UNTAGGED-CONTENT');
+        expect(plainIssues).toHaveLength(3);
+        expect(plainIssues.map(i => i.pageNumber).sort()).toEqual([1, 2, 3]);
+      });
+
+      it('does not let a recurring curve on some pages exempt a DIFFERENT, only-seen-once curve elsewhere in the same document', async () => {
+        const doc = await PDFDocument.create();
+        // 3 pages with the recurring decorative curve.
+        for (let i = 0; i < 3; i++) {
+          doc.addPage([612, 792]);
+          writePageContent(doc, i + 1, `${CURVE}${STRAIGHT}`);
+        }
+        // A 4th page with a DIFFERENT, one-off curve shape.
+        doc.addPage([612, 792]);
+        writePageContent(doc, 4, '0 0 m\n99 1 99 99 1 99 c\nS\n');
+        mockSetup(doc);
+
+        const result = await pdfStructureValidator.validateFromFile('/path/to/test.pdf');
+
+        expect(result.issues.filter(i => i.code === 'UNTAGGED-CONTENT')).toHaveLength(3);
+        const complexIssues = result.issues.filter(i => i.code === 'UNTAGGED-CONTENT-COMPLEX');
+        expect(complexIssues).toHaveLength(1);
+        expect(complexIssues[0].pageNumber).toBe(4);
+      });
+    });
   });
 
   describe('heading validation', () => {
