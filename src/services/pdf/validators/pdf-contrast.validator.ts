@@ -378,13 +378,21 @@ export class PdfContrastValidator {
     // method's otherTextBoxes doc comment). Includes short/skipped items
     // too -- a 1-2 character word still physically occupies space that can
     // contaminate a neighboring line's background candidate.
-    const allItemBoxes: Array<{ x: number; y: number; w: number; h: number }> = [];
+    // A `null` slot (rather than omitting the entry) keeps this array
+    // index-aligned with textItemIndex below -- CodeRabbit finding on
+    // PR #585, confirmed real: omitting artifact slots entirely shifted
+    // every LATER item's own box left by one per preceding artifact,
+    // so otherTextBoxes' "exclude my own index" filter removed some
+    // unrelated later item's box instead of this one's, leaving this
+    // item's own real box in the neighbor-avoidance set to wrongly
+    // self-disqualify a correctly-positioned background candidate.
+    const allItemBoxes: Array<{ x: number; y: number; w: number; h: number } | null> = [];
     {
       let boxItemIndex = -1;
       for (const rawItem of textContent.items) {
         if (!('str' in rawItem)) continue;
         boxItemIndex++;
-        if (artifactTextItemIndices.has(boxItemIndex)) continue; // already-excluded content shouldn't shape neighbor-avoidance either
+        if (artifactTextItemIndices.has(boxItemIndex)) { allItemBoxes.push(null); continue; } // already-excluded content shouldn't shape neighbor-avoidance either
         const it = rawItem as { transform: number[]; width?: number };
         const itFontSize = this.textItemFontSize(it.transform);
         allItemBoxes.push(this.computeItemCanvasBox(it.transform, it.width ?? 40, itFontSize, viewport.transform));
@@ -442,7 +450,9 @@ export class PdfContrastValidator {
       // like a page-template element rather than genuine background.
       // otherTextBoxes excludes this item's own entry so a candidate that
       // (correctly) sits just outside our own box is never self-disqualified.
-      const otherTextBoxes = allItemBoxes.filter((_, i) => i !== textItemIndex);
+      const otherTextBoxes = allItemBoxes.filter(
+        (b, i): b is { x: number; y: number; w: number; h: number } => b !== null && i !== textItemIndex
+      );
       const bgSample = this.sampleBackgroundRobust(data, canvasX, top, itemW, itemH, cw, ch, undefined, this.backgroundSignatureCounts, otherTextBoxes);
       if (!bgSample) continue;
       const bgColor = bgSample.color;
