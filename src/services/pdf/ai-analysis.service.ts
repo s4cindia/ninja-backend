@@ -23,6 +23,7 @@ import { fileStorageService } from '../storage/file-storage.service';
 import type { PDFDocument } from 'pdf-lib';
 import { pdfModifierService } from './pdf-modifier.service';
 import { pdfStructureWriterService, type FixResult } from './pdf-structure-writer.service';
+import { fontToUnicodeService } from './font-tounicode.service';
 import { decodePageContent } from './pdf-content-stream-io';
 import { pdfContrastWriterService, resolveColorContrastTargets } from './pdf-contrast-writer.service';
 import { remediationCycleHistoryService } from './remediation-cycle-history.service';
@@ -178,6 +179,14 @@ const LINK_CODES = new Set(['LINK-NOT-DESCRIPTIVE', 'LINK-URL-AS-TEXT', 'LINK-GE
 const FORM_CODES = new Set(['FORM-FIELD-NO-LABEL', 'FORM-FIELD-MISSING-TOOLTIP']);
 const BOOKMARK_CODES = new Set(['BOOKMARK-MISSING', 'BOOKMARK-INSUFFICIENT', 'BOOKMARK-GENERIC-TEXT']);
 const PDFUA_IDENTIFIER_CODES = new Set(['PDFUA-IDENTIFIER-MISSING', 'MATTERHORN-06-002']);
+// pdf-font-tounicode.validator.ts's own real finding: a simple font
+// (Type1/TrueType/MMType1/Type3) actually used on some page carries no
+// /ToUnicode CMap at all -- Matterhorn CP10-001. One document-level issue
+// covers the whole document, matching PDFUA_IDENTIFIER_CODES's own "one
+// deterministic whole-document fix" convention -- the underlying synthesis
+// (fontToUnicodeService.synthesizeToUnicode) already handles every
+// affected font in a single call.
+const FONT_TOUNICODE_MISSING_CODES = new Set(['FONT-TOUNICODE-MISSING']);
 const UNTAGGED_CONTENT_CODES = new Set(['UNTAGGED-CONTENT', 'MATTERHORN-01-005']);
 // pdf-figure-caption-tree.validator.ts's own real finding: a Figure
 // caption tagged in the content stream and correctly ParentTree-cross-
@@ -1414,6 +1423,17 @@ class AiAnalysisService {
         guidance: 'PDF/UA-1 identifier (pdfuaid:part=1) will be written to the XMP metadata stream.',
         confidence: 1.0,
         rationale: 'Deterministic fix — adds pdfuaid:part=1 to XMP metadata to declare PDF/UA-1 conformance',
+        model: 'rule-based',
+        applyMode: 'apply-to-pdf',
+      };
+    }
+
+    if (FONT_TOUNICODE_MISSING_CODES.has(code)) {
+      return {
+        suggestionType: 'font-tounicode-synthesis-fix',
+        guidance: 'A /ToUnicode CMap will be synthesized for every font missing one, from its own /Encoding where possible.',
+        confidence: 1.0,
+        rationale: 'Deterministic fix — derives each missing code\'s Unicode value from the font\'s own /Encoding (Differences or base encoding), falling back to a Private-Use-Area mapping only when no real value can be derived, so every character remains machine-readable',
         model: 'rule-based',
         applyMode: 'apply-to-pdf',
       };
@@ -3088,7 +3108,7 @@ class AiAnalysisService {
     // for repeat contrast fixes.
     const pagesRewrittenSincePreResolve = new Set<number>();
 
-    const STRUCTURE_WRITER_TYPES = new Set(['heading-fix', 'list-fix', 'table-header-fix', 'table-header-fix-column', 'table-header-scope-fix', 'table-artifact-fix', 'table-from-layout-fix', 'bookmark-generate', 'heading-multiple-h1-fix', 'pdfua-identifier', 'color-contrast-fix', 'alt-text-decorative', 'untagged-content-fix', 'invisible-text-artifact-fix', 'figure-caption-reattach-fix', 'inline-figure-reattach-fix']);
+    const STRUCTURE_WRITER_TYPES = new Set(['heading-fix', 'list-fix', 'table-header-fix', 'table-header-fix-column', 'table-header-scope-fix', 'table-artifact-fix', 'table-from-layout-fix', 'bookmark-generate', 'heading-multiple-h1-fix', 'pdfua-identifier', 'color-contrast-fix', 'alt-text-decorative', 'untagged-content-fix', 'invisible-text-artifact-fix', 'figure-caption-reattach-fix', 'inline-figure-reattach-fix', 'font-tounicode-synthesis-fix']);
 
     let applied = 0;
     let failed = 0;
@@ -3193,6 +3213,16 @@ class AiAnalysisService {
           }
         } else if (suggestionType === 'pdfua-identifier') {
           modification = await pdfModifierService.writePdfUaIdentifier(doc);
+        } else if (suggestionType === 'font-tounicode-synthesis-fix') {
+          // Whole-document, same as pdfua-identifier above -- one call
+          // covers every affected font regardless of which issue triggered it.
+          const r = fontToUnicodeService.synthesizeToUnicode(doc);
+          modification = {
+            success: true,
+            description: r.fontsProcessed > 0
+              ? `Synthesized /ToUnicode for ${r.fontsProcessed} font(s) (${r.codesMapped} code(s) mapped, ${r.puaFallback} Private-Use-Area fallback)`
+              : 'No fonts needed a synthesized /ToUnicode',
+          };
         } else if (suggestionType === 'color-contrast-fix') {
           if (originalIssue.pageNumber !== undefined && pagesRewrittenSincePreResolve.has(originalIssue.pageNumber)) {
             preResolvedContrastMatches = resolveColorContrastTargets(doc, colorContrastIssues);

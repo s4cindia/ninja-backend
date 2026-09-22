@@ -16,6 +16,7 @@ import { adobeAutoTagService } from '../services/pdf/adobe-autotag.service';
 import { fileStorageService } from '../services/storage/file-storage.service';
 import { pdfModifierService } from '../services/pdf/pdf-modifier.service';
 import { pdfStructureWriterService } from '../services/pdf/pdf-structure-writer.service';
+import { fontToUnicodeService } from '../services/pdf/font-tounicode.service';
 import { pdfContrastWriterService, resolveColorContrastTargets } from '../services/pdf/pdf-contrast-writer.service';
 import { pdfReauditService } from '../services/pdf/pdf-reaudit.service';
 import { pdfComprehensiveParserService } from '../services/pdf/pdf-comprehensive-parser.service';
@@ -555,6 +556,14 @@ export class PdfAiAnalysisController {
         modification = { success: r.success, description: r.after, error: r.error };
       } else if (suggestionType === 'pdfua-identifier') {
         modification = await pdfModifierService.writePdfUaIdentifier(doc);
+      } else if (suggestionType === 'font-tounicode-synthesis-fix') {
+        const r = fontToUnicodeService.synthesizeToUnicode(doc);
+        modification = {
+          success: true,
+          description: r.fontsProcessed > 0
+            ? `Synthesized /ToUnicode for ${r.fontsProcessed} font(s) (${r.codesMapped} code(s) mapped, ${r.puaFallback} Private-Use-Area fallback)`
+            : 'No fonts needed a synthesized /ToUnicode',
+        };
       } else if (suggestionType === 'color-contrast-fix') {
         // Resolved from ALL sibling contrast issues on the audit report, not
         // just this one -- CodeRabbit finding on PR #563, confirmed real:

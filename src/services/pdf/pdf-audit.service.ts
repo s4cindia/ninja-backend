@@ -24,6 +24,7 @@ import { pdfFormulaValidator } from './validators/pdf-formula.validator';
 import { pdfFigureStructTreeValidator } from './validators/pdf-figure-structtree.validator';
 import { pdfFigureCaptionTreeValidator } from './validators/pdf-figure-caption-tree.validator';
 import { pdfInlineFigureTreeValidator } from './validators/pdf-inline-figure-tree.validator';
+import { pdfFontToUnicodeValidator } from './validators/pdf-font-tounicode.validator';
 import { pdfTableHeaderScopeValidator } from './validators/pdf-table-header-scope.validator';
 import { pdfStructureValidator } from './validators/pdf-structure.validator';
 import { pdfLinkValidator } from './validators/pdf-link.validator';
@@ -381,6 +382,26 @@ class PdfAuditService extends BaseAuditService<PdfParseResult, PdfValidationResu
           const errorMessage = error instanceof Error ? error.message : 'Unknown error';
           logger.error(`[PdfAudit] PdfInlineFigureTreeValidator failed:`, error);
           result.validatorErrors.push({ validator: 'PdfInlineFigureTreeValidator', error: errorMessage });
+        }
+      }
+
+      // 1d. Font ToUnicode Coverage Validator (Matterhorn CP10-001) -- see
+      // that validator's own header comment for the real, confirmed
+      // 705-of-1080-font defect this catches on Math_Weir_PDF.pdf (round 7
+      // PAC report, 858 "cannot be mapped to Unicode" findings) that this
+      // codebase's own font-tounicode.service.ts already has a proven fix
+      // for, just never dispatched for an already-tagged document.
+      if (willRunStructure) {
+        try {
+          logger.info(`[PdfAudit] Running PdfFontToUnicodeValidator...`);
+          const fontToUnicodeResult = await pdfFontToUnicodeValidator.validate(parsed.parsedPdf);
+          result.structureIssues.push(...fontToUnicodeResult.issues);
+          result.issues.push(...fontToUnicodeResult.issues);
+          logger.info(`[PdfAudit] PdfFontToUnicodeValidator found ${fontToUnicodeResult.issues.length} issue(s)`);
+        } catch (error) {
+          const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+          logger.error(`[PdfAudit] PdfFontToUnicodeValidator failed:`, error);
+          result.validatorErrors.push({ validator: 'PdfFontToUnicodeValidator', error: errorMessage });
         }
       }
 
