@@ -4044,6 +4044,213 @@ export class PdfStructureWriterService {
     }
     return out;
   }
+
+  /**
+   * Resolves the ParentTree "page array" (the flat list of MCID -> real-
+   * content-or-StructElem entries for one page) for a given page number,
+   * handling BOTH shapes confirmed real across this codebase's own
+   * documents: a flat /Nums array on /ParentTree itself (Math_Kim), and a
+   * hierarchical /Kids number tree with per-node /Limits ranges
+   * (Math_Weir_PDF.pdf) -- unlike resolveParentTreeNumsArray (used by
+   * extendParentTree to WRITE a new entry), which deliberately bails on the
+   * hierarchical shape since no confirmed-real case needed writing into one
+   * yet, this is READ-ONLY and a genuinely different, simpler need: locating
+   * an EXISTING entry, not adding a new one. Returns null (never throws) on
+   * any resolution failure -- callers already expect a possibly-missing
+   * page array.
+   */
+  private resolveParentTreePageArray(doc: PDFDocument, pageNumber: number): PDFArray | null {
+    const page = doc.getPage(pageNumber - 1);
+    const structParentsRaw = page.node.get(PDFName.of('StructParents'));
+    const structParents = structParentsRaw instanceof PDFRef ? doc.context.lookup(structParentsRaw) : structParentsRaw;
+    if (!(structParents instanceof PDFNumber)) return null;
+    const pageKey = structParents.asNumber();
+
+    const structRoot = this.getStructTreeRoot(doc);
+    if (!structRoot) return null;
+    const parentTreeRaw = structRoot.get(PDFName.of('ParentTree'));
+    const parentTreeDict = parentTreeRaw instanceof PDFRef ? doc.context.lookup(parentTreeRaw) : parentTreeRaw;
+    if (!(parentTreeDict instanceof PDFDict)) return null;
+
+    const findInNode = (node: PDFDict): PDFArray | null => {
+      const numsRaw = node.get(PDFName.of('Nums'));
+      if (numsRaw) {
+        const numsArr = numsRaw instanceof PDFRef ? doc.context.lookup(numsRaw) : numsRaw;
+        if (!(numsArr instanceof PDFArray)) return null;
+        const raw = numsArr.asArray();
+        for (let i = 0; i < raw.length; i += 2) {
+          const keyEntry = raw[i];
+          const key = keyEntry instanceof PDFNumber ? keyEntry.asNumber() : null;
+          if (key !== pageKey) continue;
+          const valRaw = raw[i + 1];
+          const val = valRaw instanceof PDFRef ? doc.context.lookup(valRaw) : valRaw;
+          return val instanceof PDFArray ? val : null;
+        }
+        return null;
+      }
+      const kidsRaw = node.get(PDFName.of('Kids'));
+      if (!kidsRaw) return null;
+      const kids = kidsRaw instanceof PDFRef ? doc.context.lookup(kidsRaw) : kidsRaw;
+      if (!(kids instanceof PDFArray)) return null;
+      for (const kidRef of kids.asArray()) {
+        const kid = kidRef instanceof PDFRef ? doc.context.lookup(kidRef) : kidRef;
+        if (!(kid instanceof PDFDict)) continue;
+        const limitsRaw = kid.get(PDFName.of('Limits'));
+        const limits = limitsRaw instanceof PDFRef ? doc.context.lookup(limitsRaw) : limitsRaw;
+        if (limits instanceof PDFArray) {
+          const bounds = limits.asArray();
+          const lo = bounds[0] instanceof PDFNumber ? (bounds[0] as PDFNumber).asNumber() : null;
+          const hi = bounds[1] instanceof PDFNumber ? (bounds[1] as PDFNumber).asNumber() : null;
+          if (lo !== null && hi !== null && (pageKey < lo || pageKey > hi)) continue;
+        }
+        const found = findInNode(kid);
+        if (found) return found;
+      }
+      return null;
+    };
+    return findInNode(parentTreeDict);
+  }
+
+  /**
+   * Reattaches a figure caption's /Story wrapper into the structure tree --
+   * see pdf-figure-caption-tree.validator.ts's own header comment for the
+   * real defect this fixes (confirmed on Math_Weir_PDF.pdf: 66 of 75 real
+   * /fc caption StructElems tagged in the content stream and correctly
+   * cross-referenced in /ParentTree, but never linked into any parent's /K
+   * array -- invisible to any top-down reader). Every one of the 66 real
+   * cases shares one exact shape, verified before writing this fix rather
+   * than assumed:
+   *
+   *   [[grandparent, K: array, multiple children]]
+   *     -> [Sect, K: bare (single child), P: grandparent]
+   *          -> [Figure]
+   *     -> ... (the /fc's own /Story wrapper belongs HERE, right after Sect)
+   *
+   * i.e. the /Figure immediately preceding the caption (by MCID, on the
+   * SAME page) is always wrapped in its own single-child /Sect, and that
+   * /Sect always has a real /P pointing at a genuine multi-child container
+   * -- the correct reattachment point, confirmed identical across all 66
+   * real cases rather than merely assumed from the first few. Uses
+   * insertIntoKidsAfter (already-established anchor-relative insertion) to
+   * splice the /Story in immediately after its Figure's /Sect, preserving
+   * reading-order proximity, then sets the /Story's own /P (missing
+   * entirely on every real case) to the grandparent.
+   *
+   * Bails (does not guess) when: the element id doesn't resolve to a real
+   * /fc at the expected position (the document changed since the issue was
+   * generated), the /fc's own /P doesn't point at a real /Story, no
+   * /Figure precedes the caption on the same page, that Figure's own
+   * parent isn't a single-child wrapper, or that wrapper has no real /P of
+   * its own -- each a genuinely different document shape this fix hasn't
+   * been verified against, matching this file's established convention.
+   */
+  reattachFigureCaption(doc: PDFDocument, issues: AuditIssue[]): FixResult[] {
+    const results: FixResult[] = [];
+
+    for (const issue of issues) {
+      try {
+        const m = /^caption_p(\d+)_mc(\d+)$/.exec(issue.element ?? '');
+        if (!m) {
+          results.push({ issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error: `Unrecognized element id "${issue.element}"` });
+          continue;
+        }
+        const pageNumber = parseInt(m[1], 10);
+        const captionMcid = parseInt(m[2], 10);
+
+        const pageArr = this.resolveParentTreePageArray(doc, pageNumber);
+        if (!pageArr) {
+          results.push({ issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error: `No ParentTree page array found for page ${pageNumber}` });
+          continue;
+        }
+        const pageArrRaw = pageArr.asArray();
+
+        const fcEntry = pageArrRaw[captionMcid];
+        if (!(fcEntry instanceof PDFRef)) {
+          results.push({ issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error: `No real StructElem at MCID ${captionMcid} on page ${pageNumber}` });
+          continue;
+        }
+        const fcDict = doc.context.lookup(fcEntry, PDFDict);
+        const fcType = fcDict?.get(PDFName.of('S'))?.toString().replace(/^\//, '');
+        if (fcType !== 'fc') {
+          results.push({ issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error: `MCID ${captionMcid} on page ${pageNumber} is not a /fc caption (found /${fcType})` });
+          continue;
+        }
+
+        const storyPRaw = fcDict!.get(PDFName.of('P'));
+        if (!(storyPRaw instanceof PDFRef)) {
+          results.push({ issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error: 'Caption /fc has no /P pointing at its /Story wrapper' });
+          continue;
+        }
+        const storyRef = storyPRaw;
+        const storyDict = doc.context.lookup(storyRef, PDFDict);
+        const storyType = storyDict?.get(PDFName.of('S'))?.toString().replace(/^\//, '');
+        if (!storyDict || storyType !== 'Story') {
+          results.push({ issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error: `Caption's /P does not resolve to a real /Story (found /${storyType})` });
+          continue;
+        }
+
+        // Nearest preceding /Figure on the SAME page, by MCID.
+        let bestFigureMcid = -1;
+        let bestFigureRef: PDFRef | null = null;
+        for (let i = 0; i < Math.min(captionMcid, pageArrRaw.length); i++) {
+          const entry = pageArrRaw[i];
+          if (!(entry instanceof PDFRef)) continue;
+          const resolved = doc.context.lookup(entry);
+          if (!(resolved instanceof PDFDict)) continue;
+          if (resolved.get(PDFName.of('S'))?.toString() !== '/Figure') continue;
+          if (i > bestFigureMcid) { bestFigureMcid = i; bestFigureRef = entry; }
+        }
+        if (!bestFigureRef) {
+          results.push({ issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error: `No preceding /Figure found on page ${pageNumber} to anchor the caption near` });
+          continue;
+        }
+
+        const figureDict = doc.context.lookup(bestFigureRef, PDFDict);
+        const sectPRaw = figureDict?.get(PDFName.of('P'));
+        if (!(sectPRaw instanceof PDFRef)) {
+          results.push({ issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error: 'Preceding /Figure has no /P of its own' });
+          continue;
+        }
+        const sectRef = sectPRaw;
+        const sectDict = doc.context.lookup(sectRef, PDFDict);
+        if (!sectDict) {
+          results.push({ issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error: 'Figure\'s /P does not resolve to a real dictionary' });
+          continue;
+        }
+
+        // Confirmed real shape: the Figure's own direct parent has EXACTLY
+        // one child (itself) -- a genuinely different (already multi-
+        // child) parent shape hasn't been verified against real data.
+        const sectK = sectDict.get(PDFName.of('K'));
+        const sectKResolved = sectK instanceof PDFRef ? doc.context.lookup(sectK) : sectK;
+        if (sectKResolved instanceof PDFArray) {
+          results.push({ issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error: 'Figure\'s parent already has multiple children -- unverified shape, declining rather than guessing' });
+          continue;
+        }
+
+        const grandparentPRaw = sectDict.get(PDFName.of('P'));
+        if (!(grandparentPRaw instanceof PDFRef)) {
+          results.push({ issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error: 'Figure\'s single-child parent has no /P of its own' });
+          continue;
+        }
+        const grandparentRef = grandparentPRaw;
+
+        this.insertIntoKidsAfter(doc, grandparentRef, sectRef, storyRef);
+        storyDict.set(PDFName.of('P'), grandparentRef);
+
+        results.push({
+          issueId: issue.id,
+          success: true,
+          before: 'disconnected from the structure tree',
+          after: `reattached as a sibling immediately after its figure's /Sect wrapper (${sectRef.toString()}) under ${grandparentRef.toString()}`,
+        });
+      } catch (err) {
+        results.push({ issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error: err instanceof Error ? err.message : String(err) });
+      }
+    }
+
+    return results;
+  }
 }
 
 export const pdfStructureWriterService = new PdfStructureWriterService();

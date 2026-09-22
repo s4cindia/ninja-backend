@@ -22,6 +22,7 @@ import { pdfAltTextValidator } from './validators/pdf-alttext.validator';
 import { pdfTableValidator, TABLE_LIKELY_FORMULA_CODE } from './validators/pdf-table.validator';
 import { pdfFormulaValidator } from './validators/pdf-formula.validator';
 import { pdfFigureStructTreeValidator } from './validators/pdf-figure-structtree.validator';
+import { pdfFigureCaptionTreeValidator } from './validators/pdf-figure-caption-tree.validator';
 import { pdfTableHeaderScopeValidator } from './validators/pdf-table-header-scope.validator';
 import { pdfStructureValidator } from './validators/pdf-structure.validator';
 import { pdfLinkValidator } from './validators/pdf-link.validator';
@@ -334,6 +335,29 @@ class PdfAuditService extends BaseAuditService<PdfParseResult, PdfValidationResu
           logger.error(`[PdfAudit] PdfStructureValidator failed:`, error);
           result.validatorErrors.push({ validator: 'PdfStructureValidator', error: errorMessage });
           onValidatorComplete?.('Structure & Tags', 0, ++completedValidators, totalValidators, structureStart);
+        }
+      }
+
+      // 1b. Figure-Caption Tree-Reachability Validator (structure-tree
+      // walk for /fc caption elements that exist and are correctly
+      // ParentTree-cross-referenced but never linked into any parent's /K
+      // array -- see that validator's own header comment for the real,
+      // 88%-of-captions defect this catches on Math_Weir_PDF.pdf that no
+      // other structural check in this codebase can see. Gated on
+      // willRunStructure, same as PdfStructureValidator above -- this is a
+      // structure/tagging concern, not an alt-text one, even though its
+      // subject is a Figure's own caption.
+      if (willRunStructure) {
+        try {
+          logger.info(`[PdfAudit] Running PdfFigureCaptionTreeValidator...`);
+          const captionTreeResult = await pdfFigureCaptionTreeValidator.validate(parsed.parsedPdf);
+          result.structureIssues.push(...captionTreeResult.issues);
+          result.issues.push(...captionTreeResult.issues);
+          logger.info(`[PdfAudit] PdfFigureCaptionTreeValidator found ${captionTreeResult.issues.length} issues`);
+        } catch (error) {
+          const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+          logger.error(`[PdfAudit] PdfFigureCaptionTreeValidator failed:`, error);
+          result.validatorErrors.push({ validator: 'PdfFigureCaptionTreeValidator', error: errorMessage });
         }
       }
 

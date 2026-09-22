@@ -179,6 +179,12 @@ const FORM_CODES = new Set(['FORM-FIELD-NO-LABEL', 'FORM-FIELD-MISSING-TOOLTIP']
 const BOOKMARK_CODES = new Set(['BOOKMARK-MISSING', 'BOOKMARK-INSUFFICIENT', 'BOOKMARK-GENERIC-TEXT']);
 const PDFUA_IDENTIFIER_CODES = new Set(['PDFUA-IDENTIFIER-MISSING', 'MATTERHORN-06-002']);
 const UNTAGGED_CONTENT_CODES = new Set(['UNTAGGED-CONTENT', 'MATTERHORN-01-005']);
+// pdf-figure-caption-tree.validator.ts's own real finding: a Figure
+// caption tagged in the content stream and correctly ParentTree-cross-
+// referenced, but never linked into any parent's /K array -- invisible to
+// a top-down reader. See that validator's header comment for the full
+// root cause (confirmed real: 66/75 real captions on Math_Weir_PDF.pdf).
+const FIGURE_CAPTION_DISCONNECTED_CODES = new Set(['FIGURE-CAPTION-DISCONNECTED']);
 const UNTAGGED_CONTENT_COMPLEX_CODES = new Set(['UNTAGGED-CONTENT-COMPLEX']);
 const TABLE_HEADER_SCOPE_CODES = new Set(['TABLE-HEADER-MISSING-SCOPE']);
 
@@ -1418,6 +1424,17 @@ class AiAnalysisService {
         guidance: 'Untagged decorative vector graphics on this page will be marked as PDF artifacts.',
         confidence: 1.0,
         rationale: 'Deterministic fix — wraps untagged painted-path regions in /Artifact BMC…EMC, never touches path geometry or colors',
+        model: 'rule-based',
+        applyMode: 'apply-to-pdf',
+      };
+    }
+
+    if (FIGURE_CAPTION_DISCONNECTED_CODES.has(code)) {
+      return {
+        suggestionType: 'figure-caption-reattach-fix',
+        guidance: 'This figure caption is tagged but not reachable from the structure tree — it will be reattached as a sibling of its figure.',
+        confidence: 1.0,
+        rationale: 'Deterministic fix — reattaches the caption\'s existing /Story wrapper into its already-established anchor point (its figure\'s own parent), never creates new content or MCIDs',
         model: 'rule-based',
         applyMode: 'apply-to-pdf',
       };
@@ -3054,7 +3071,7 @@ class AiAnalysisService {
     // for repeat contrast fixes.
     const pagesRewrittenSincePreResolve = new Set<number>();
 
-    const STRUCTURE_WRITER_TYPES = new Set(['heading-fix', 'list-fix', 'table-header-fix', 'table-header-fix-column', 'table-header-scope-fix', 'table-artifact-fix', 'table-from-layout-fix', 'bookmark-generate', 'heading-multiple-h1-fix', 'pdfua-identifier', 'color-contrast-fix', 'alt-text-decorative', 'untagged-content-fix', 'invisible-text-artifact-fix']);
+    const STRUCTURE_WRITER_TYPES = new Set(['heading-fix', 'list-fix', 'table-header-fix', 'table-header-fix-column', 'table-header-scope-fix', 'table-artifact-fix', 'table-from-layout-fix', 'bookmark-generate', 'heading-multiple-h1-fix', 'pdfua-identifier', 'color-contrast-fix', 'alt-text-decorative', 'untagged-content-fix', 'invisible-text-artifact-fix', 'figure-caption-reattach-fix']);
 
     let applied = 0;
     let failed = 0;
@@ -3134,6 +3151,13 @@ class AiAnalysisService {
           if (r.success && originalIssue.pageNumber !== undefined) {
             pagesRewrittenSincePreResolve.add(originalIssue.pageNumber);
           }
+        } else if (suggestionType === 'figure-caption-reattach-fix') {
+          // Struct-tree-only (no content-stream bytes touched) -- doesn't
+          // need pagesRewrittenSincePreResolve tracking the way untagged-
+          // content-fix/invisible-text-artifact-fix do.
+          const results = pdfStructureWriterService.reattachFigureCaption(doc, [originalIssue]);
+          const r = results[0];
+          modification = { success: r.success, description: r.after, error: r.error };
         } else if (suggestionType === 'invisible-text-artifact-fix') {
           const results = await pdfStructureWriterService.fixInvisibleTextArtifact(doc, [originalIssue]);
           const r = results[0];
