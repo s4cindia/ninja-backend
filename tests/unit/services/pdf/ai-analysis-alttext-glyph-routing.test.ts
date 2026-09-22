@@ -2,19 +2,24 @@
  * Regression coverage for dispatchIssue's alt-text-glyph pre-check: a
  * MATTERHORN-13-001 issue from pdf-figure-structtree.validator.ts's own
  * struct-tree walk (identified by its "figure_p{page}_mc{mcid}" element
- * id) tries the deterministic single-glyph extraction FIRST, before
- * falling through to the existing image-based AI-vision path. Confirmed
- * real and live on Math_Weir_PDF.pdf: 219 of 437 missing-alt Figures
- * (50.1%) are a lone inline math variable ("V", "X", "d") an AI vision
- * model has nothing meaningful to describe in an 8x11-point crop of.
+ * id) tries the deterministic single-glyph extraction FIRST, then the
+ * text-transcript-based multi-fragment path, before falling through to
+ * the existing image-based AI-vision path. Confirmed real and live on
+ * Math_Weir_PDF.pdf: roughly half of struct-tree-only missing-alt Figures
+ * are a lone inline math variable ("V", "X", "d") the glyph path handles
+ * with zero AI cost; most of the other half are a genuine multi-fragment
+ * inline math expression the transcript path handles instead -- an AI
+ * vision model has nothing meaningful to describe in an 8x11-point crop
+ * of either shape.
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import { PDFDocument } from 'pdf-lib';
 import { aiAnalysisService } from '../../../../src/services/pdf/ai-analysis.service';
 import type { AiRemediationConfig } from '../../../../src/services/pdf/ai-analysis.service';
 import type { AuditIssue } from '../../../../src/services/audit/base-audit.service';
 import type { PdfParseResult } from '../../../../src/services/pdf/pdf-comprehensive-parser.service';
 import { writePageContent } from '../../../../src/services/pdf/pdf-content-stream-io';
+import { geminiService } from '../../../../src/services/ai/gemini.service';
 
 // dispatchIssue is private; exercise via cast, same pattern as
 // ai-analysis-table-not-tagged-routing.test.ts.
@@ -55,6 +60,10 @@ async function docWithPageContent(content: string): Promise<PDFDocument> {
 }
 
 describe('dispatchIssue: MATTERHORN-13-001 tries alt-text-glyph before the AI-vision path', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   it('returns a deterministic alt-text-glyph suggestion for a qualifying single-glyph Figure, with no AI call', async () => {
     const content = `/Figure <</MCID 0 >>BDC\nBT\n(V)Tj\nET\nEMC\n`;
     const doc = await docWithPageContent(content);
@@ -104,13 +113,55 @@ describe('dispatchIssue: MATTERHORN-13-001 tries alt-text-glyph before the AI-vi
     expect(res).toBeNull();
   });
 
-  it('falls through to the image-based path for a Figure with multiple readable text-show fragments (a formula)', async () => {
+  it('tries the transcript-based path for a Figure with multiple readable text-show fragments (a formula), before ever reaching image-vision', async () => {
     const content = `/Figure <</MCID 0 >>BDC\nBT\n(negative likelihood ratio)Tj\n0 Tc 1 0 Td\n(C)Tj\nET\nEMC\n`;
     const doc = await docWithPageContent(content);
     const parsed = { isTagged: true, pages: [], parsedPdf: { pdfLibDoc: doc } } as unknown as PdfParseResult;
+    const spy = vi.spyOn(geminiService, 'generateWithSchema').mockResolvedValue({
+      data: { altText: 'Negative likelihood ratio, C', confidence: 0.6, rationale: 'Drafted from a text transcript' },
+      usage: { promptTokens: 50, completionTokens: 20 },
+      attempts: 1,
+    } as never);
 
     const res = await svc.dispatchIssue(issueFor('figure_p1_mc0'), parsed, CONFIG, new Map(), new Map(), new Map());
 
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(res).not.toBeNull();
+    expect(res.suggestionType).toBe('alt-text-formula-transcript');
+    expect(res.value).toBe('Negative likelihood ratio, C');
+    expect(res.applyMode).toBe('apply-to-pdf');
+    expect(res.model).toBe('gemini-flash');
+  });
+
+  it('falls back to guidance-only for the transcript path when altTextMode is guidance-only', async () => {
+    const content = `/Figure <</MCID 0 >>BDC\nBT\n(negative likelihood ratio)Tj\n0 Tc 1 0 Td\n(C)Tj\nET\nEMC\n`;
+    const doc = await docWithPageContent(content);
+    const parsed = { isTagged: true, pages: [], parsedPdf: { pdfLibDoc: doc } } as unknown as PdfParseResult;
+    const guidanceOnlyConfig: AiRemediationConfig = { ...CONFIG, altTextMode: 'guidance-only' };
+    vi.spyOn(geminiService, 'generateWithSchema').mockResolvedValue({
+      data: { altText: 'Negative likelihood ratio, C', confidence: 0.6, rationale: 'Drafted from a text transcript' },
+      usage: { promptTokens: 50, completionTokens: 20 },
+      attempts: 1,
+    } as never);
+
+    const res = await svc.dispatchIssue(issueFor('figure_p1_mc0'), parsed, guidanceOnlyConfig, new Map(), new Map(), new Map());
+
+    expect(res).not.toBeNull();
+    expect(res.applyMode).toBe('guidance-only');
+    expect(res.guidance).toContain('Negative likelihood ratio, C');
+  });
+
+  it('falls through to the image-based path (returns null) when the transcript-based Gemini call fails', async () => {
+    const content = `/Figure <</MCID 0 >>BDC\nBT\n(negative likelihood ratio)Tj\n0 Tc 1 0 Td\n(C)Tj\nET\nEMC\n`;
+    const doc = await docWithPageContent(content);
+    const parsed = { isTagged: true, pages: [], parsedPdf: { pdfLibDoc: doc } } as unknown as PdfParseResult;
+    vi.spyOn(geminiService, 'generateWithSchema').mockRejectedValue(new Error('Exhausted 3 attempt(s): MAX_TOKENS'));
+
+    const res = await svc.dispatchIssue(issueFor('figure_p1_mc0'), parsed, CONFIG, new Map(), new Map(), new Map());
+
+    // No image registered in imageById and no page to render from
+    // pageRenderCache -- same existing fallback-to-null contract as the
+    // other "nothing else can help" cases in this file.
     expect(res).toBeNull();
   });
 

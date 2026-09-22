@@ -3810,6 +3810,144 @@ export class PdfStructureWriterService {
   }
 
   /**
+   * Builds a compact, position-annotated text transcript of a Figure's own
+   * marked-content span, for the ~50% of real missing-alt-text Figures that
+   * are NOT extractSingleGlyphAltText's single-glyph shape but a genuine
+   * multi-fragment inline math expression -- confirmed real on
+   * Math_Weir_PDF.pdf: subscripted/superscripted statistical notation built
+   * from several small Tj/TJ runs, mixed with undecodable custom-symbol-
+   * font operator glyphs (SymbolMT, subset-remapped to generic glyph IDs
+   * like /g184 with no ToUnicode and no semantic glyph name -- confirmed
+   * via direct /Differences inspection, a deterministic per-glyph decode is
+   * not possible) and, on a real fraction of cases, a hand-drawn filled-
+   * path shape (most often a radical/fraction bar/overline).
+   *
+   * NOT a rendering-accurate reconstruction -- deliberately coarse, since
+   * the goal is giving a text-only AI model useful structural hints, not
+   * claiming exact operator identity (which decodePrintableAsciiOnly
+   * already can't recover for undecodable glyphs regardless). Each text-
+   * show fragment is tagged with one of four labels from two independent,
+   * honestly-scoped signals rather than one falsely-precise unified
+   * position:
+   *   - "raised"/"lowered": this fragment's own Td/TD y-offset, accumulated
+   *     since the most recent Tm (which resets the reference to 0 -- matches
+   *     the observed real shape of one Tm per sub-expression cluster, small
+   *     Td walks between its own fragments), exceeds a small threshold.
+   *   - "smaller-script": Y offset alone didn't clear the threshold, but
+   *     this fragment's enclosing Tm uses a meaningfully smaller font scale
+   *     than the span's own first Tm (ratio < 0.85) -- the OTHER real shape,
+   *     a fresh absolute-position Tm per fragment rather than Td deltas,
+   *     where a shrunken font size is the clearer signal than Y position.
+   *   - "main": neither signal fired.
+   * A hex-only (composite/CID font) fragment becomes the literal token
+   * "[symbol]" rather than being silently dropped, the same honest-about-
+   * uncertainty choice extractSingleGlyphAltText makes for the ones it
+   * skips.
+   *
+   * `content` must already be decoded (decodePageContent); `mcid`
+   * identifies the specific Figure by its own marked-content span. Returns
+   * null when the span can't be found, contains no text-show output at
+   * all, or shares its span with a real embedded image/shading (same
+   * DRAWING_OPS refusal extractSingleGlyphAltText uses, for the same
+   * reason -- never describe unrelated co-located content as this
+   * Figure's own).
+   */
+  buildFormulaTranscript(content: string, mcid: number): string | null {
+    const span = this.findMarkedContentSpanForMcid(content, mcid);
+    if (!span) return null;
+
+    const DRAWING_OPS = new Set(['Do', 'sh', 'EI']);
+    const FILL_OPS = new Set(['f', 'F', 'f*']);
+    const Y_THRESHOLD = 0.3;
+    const SCALE_RATIO_THRESHOLD = 0.85;
+
+    const tokens = tokenize(content);
+    const fragments: string[] = [];
+    let hasDrawnPath = false;
+    let baselineScale: number | null = null;
+    let curScale: number | null = null;
+    let curY = 0;
+    let numOperands: number[] = [];
+    let pendingStrings: Array<{ t: string; v: string }> = [];
+
+    for (const tk of tokens) {
+      if (tk.start < span.start || tk.start >= span.end) continue;
+
+      if (tk.t === 'n') { numOperands.push(parseFloat(tk.v)); continue; }
+      if (tk.t === 's' || tk.t === 'h') {
+        pendingStrings.push({ t: tk.t, v: content.slice(tk.start, tk.end) });
+        continue;
+      }
+      if (tk.t !== 'op') continue;
+
+      const op = tk.v;
+      if (DRAWING_OPS.has(op)) return null;
+      if (FILL_OPS.has(op)) hasDrawnPath = true;
+
+      if (op === 'Tm') {
+        // a b c d e f -- d is the font-relevant scale for the common
+        // (non-rotated, non-skewed) case every real sample here uses.
+        const d = numOperands[3];
+        if (typeof d === 'number' && !Number.isNaN(d)) {
+          if (baselineScale === null) baselineScale = d;
+          curScale = d;
+        }
+        curY = 0;
+        numOperands = [];
+        pendingStrings = [];
+        continue;
+      }
+      if (op === 'Td' || op === 'TD') {
+        const ty = numOperands[numOperands.length - 1];
+        if (typeof ty === 'number' && !Number.isNaN(ty)) curY += ty;
+        numOperands = [];
+        continue;
+      }
+
+      if (op === 'Tj' || op === 'TJ' || op === "'" || op === '"') {
+        // CodeRabbit finding, confirmed real: a single TJ array can mix
+        // readable and hex operands (e.g. `[(V) <0037> (X)]TJ`) -- the
+        // previous version concatenated all readable text into one string
+        // and only tracked hex PRESENCE as a boolean, so a hex operand
+        // sitting between two readable ones silently vanished (no [symbol]
+        // marker at all) whenever ANY readable text existed in the same
+        // array. Building one display token per operand, in source order,
+        // preserves both the text and the marker.
+        const parts: string[] = [];
+        for (const s of pendingStrings) {
+          if (s.t === 's') {
+            const decoded = this.decodePrintableAsciiOnly(s.v).trim();
+            if (decoded.length > 0) parts.push(`"${decoded}"`);
+          } else {
+            parts.push('[symbol]');
+          }
+        }
+        if (parts.length > 0) {
+          const isSmaller = baselineScale !== null && curScale !== null && curScale / baselineScale < SCALE_RATIO_THRESHOLD;
+          const label = curY > Y_THRESHOLD ? 'raised'
+            : curY < -Y_THRESHOLD ? 'lowered'
+            : isSmaller ? 'smaller-script'
+            : 'main';
+          fragments.push(`[${label}] ${parts.join(' ')}`);
+        }
+        pendingStrings = [];
+        numOperands = [];
+        continue;
+      }
+
+      pendingStrings = [];
+      numOperands = [];
+    }
+
+    if (fragments.length === 0) return null;
+
+    const header = hasDrawnPath
+      ? 'Transcript of an inline mathematical expression (this figure also contains a drawn line or curve, possibly a radical, fraction bar, or overline):'
+      : 'Transcript of an inline mathematical expression:';
+    return `${header}\n${fragments.join('\n')}`;
+  }
+
+  /**
    * The byte range [start, end) of the marked-content span (BDC…EMC)
    * carrying a specific /MCID value, searched across the whole `content`
    * string -- unlike this file's other findXAtPosition-style helpers,
