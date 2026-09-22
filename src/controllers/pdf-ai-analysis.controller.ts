@@ -546,6 +546,10 @@ export class PdfAiAnalysisController {
         const results = pdfStructureWriterService.reattachFigureCaption(doc, [originalIssue]);
         const r = results[0];
         modification = { success: r.success, description: r.after, error: r.error };
+      } else if (suggestionType === 'inline-figure-reattach-fix') {
+        const results = pdfStructureWriterService.reattachInlineFigure(doc, [originalIssue]);
+        const r = results[0];
+        modification = { success: r.success, description: r.after, error: r.error };
       } else if (suggestionType === 'invisible-text-artifact-fix') {
         const results = await pdfStructureWriterService.fixInvisibleTextArtifact(doc, [originalIssue]);
         const r = results[0];
