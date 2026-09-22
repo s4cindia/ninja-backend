@@ -4475,6 +4475,205 @@ export class PdfStructureWriterService {
 
     return results;
   }
+
+  /**
+   * Splices `newRef` into `containerRef`'s own /K array immediately after
+   * the bare MCID number `afterMcid` -- the flat-sequence counterpart to
+   * insertIntoKidsAfter (which positions relative to a sibling REF's own
+   * identity, not a bare MCID value living directly in the array). Throws
+   * (never guesses) if containerRef doesn't resolve to a dict, its /K
+   * isn't an array, or afterMcid isn't found as a bare number entry in it.
+   */
+  private insertIntoKidsAfterMcid(doc: PDFDocument, containerRef: PDFRef, afterMcid: number, newRef: PDFRef): void {
+    const container = doc.context.lookup(containerRef);
+    if (!(container instanceof PDFDict)) {
+      throw new Error('insertIntoKidsAfterMcid: container does not resolve to a dictionary');
+    }
+    const k = container.get(PDFName.of('K'));
+    if (!(k instanceof PDFArray)) {
+      throw new Error('insertIntoKidsAfterMcid: container /K is not an array -- cannot position relative to a sibling MCID');
+    }
+    const arr = k.asArray();
+    const idx = arr.findIndex(item => item instanceof PDFNumber && item.asNumber() === afterMcid);
+    if (idx === -1) {
+      throw new Error('insertIntoKidsAfterMcid: afterMcid not found as a bare MCID entry in container /K array');
+    }
+    k.insert(idx + 1, newRef);
+  }
+
+  /**
+   * Reattaches a small inline /Figure struct element (e.g. an inline math
+   * or symbol glyph embedded mid-caption) that's correctly MCID-tagged and
+   * ParentTree-cross-referenced but was never linked into any parent's /K
+   * array -- the same disconnection SHAPE as reattachFigureCaption's own
+   * /fc-caption case, but structurally simpler: no multi-level Sect/Story
+   * climb needed. Confirmed real on Math_Weir_PDF.pdf (round 7 PAC report,
+   * pages 73/136/137): all 8 real cases sit inside an already-correct,
+   * flat /fc caption /K array (bare MCID numbers interleaved with nested
+   * /Span refs, in strict left-to-right reading order) with an exact
+   * one-slot gap at the disconnected Figure's own MCID position.
+   *
+   * Requires BOTH the MCID immediately before and immediately after the
+   * gap to resolve (via /ParentTree) to the SAME containing struct
+   * element -- confirmed the real, exact shape on all 8 cases -- and that
+   * container's own /K array to have a bare-number entry at mcid-1 to
+   * splice after. Declines (never guesses) when either neighbor is
+   * missing, the two neighbors belong to different containers, or the
+   * container's own /K array doesn't have the expected bare MCID entry to
+   * anchor on.
+   */
+  reattachInlineFigure(doc: PDFDocument, issues: AuditIssue[]): FixResult[] {
+    const results: FixResult[] = [];
+
+    for (const issue of issues) {
+      try {
+        const m = /^figure_p(\d+)_mc(\d+)$/.exec(issue.element ?? '');
+        if (!m) { results.push({ issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error: `Unrecognized element id "${issue.element}"` }); continue; }
+        const pageNumber = parseInt(m[1], 10);
+        const figureMcid = parseInt(m[2], 10);
+
+        const pageArr = this.resolveParentTreePageArray(doc, pageNumber);
+        if (!pageArr) { results.push({ issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error: `No ParentTree page array found for page ${pageNumber}` }); continue; }
+        const pageArrRaw = pageArr.asArray();
+
+        const figureEntry = pageArrRaw[figureMcid];
+        if (!(figureEntry instanceof PDFRef)) { results.push({ issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error: `No struct element found at MCID ${figureMcid} on page ${pageNumber}` }); continue; }
+        const figureDict = doc.context.lookup(figureEntry, PDFDict);
+        const figureType = figureDict?.get(PDFName.of('S'))?.toString().replace(/^\//, '');
+        if (figureType !== 'Figure') { results.push({ issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error: `Struct element at MCID ${figureMcid} is /${figureType}, not /Figure` }); continue; }
+
+        // Derive the natural reattachment point from this MCID's own left
+        // and right neighbors FIRST, independent of the figure's own /P
+        // state -- both the idempotency check and the "complete a
+        // half-made link" path below need to compare against this same,
+        // independently verified target (CodeRabbit finding on PR #594,
+        // confirmed real: the original version only ever consulted /P in
+        // isolation).
+        let containerRef: PDFRef | null = null;
+        let neighborError: string | null = null;
+        if (figureMcid === 0 || figureMcid + 1 >= pageArrRaw.length) {
+          neighborError = 'No left and/or right MCID neighbor on this page to anchor reattachment';
+        } else {
+          const leftEntry = pageArrRaw[figureMcid - 1];
+          const rightEntry = pageArrRaw[figureMcid + 1];
+          if (!(leftEntry instanceof PDFRef) || !(rightEntry instanceof PDFRef)) {
+            neighborError = 'Left or right MCID neighbor does not resolve to a real struct element';
+          } else if (leftEntry.objectNumber !== rightEntry.objectNumber) {
+            neighborError = 'Left and right MCID neighbors belong to different containers -- ambiguous reattachment point';
+          } else {
+            containerRef = leftEntry;
+          }
+        }
+
+        const existingP = figureDict!.get(PDFName.of('P'));
+        if (existingP instanceof PDFRef) {
+          const parentDict = doc.context.lookup(existingP, PDFDict);
+          const parentK = parentDict?.get(PDFName.of('K'));
+          const parentKids = parentK instanceof PDFArray ? parentK.asArray() : [];
+          const alreadyLinked = parentKids.some(item => item instanceof PDFRef && item.objectNumber === figureEntry.objectNumber);
+
+          if (alreadyLinked) {
+            // A reciprocal /P <-> /K link only actually fixes reachability
+            // if the parent ITSELF is reachable from the structure tree
+            // root -- two orphaned elements pointing at each other would
+            // otherwise report false success, and a subsequent re-audit
+            // would still find the figure disconnected (CodeRabbit finding
+            // on PR #594, confirmed real risk).
+            if (this.isReachableFromRoot(doc, existingP)) {
+              results.push({ issueId: issue.id, success: true, before: 'already attached', after: `already attached under ${existingP.toString()}` });
+            } else {
+              results.push({ issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error: 'Figure\'s /P and that parent\'s own /K reference each other, but the parent itself is not reachable from the structure tree root -- not actually fixed' });
+            }
+            continue;
+          }
+
+          // /P set but not linked back. Only proceed if it names the SAME
+          // container this figure's own MCID neighbors independently
+          // derive -- completing a half-made link is safe there (CodeRabbit
+          // finding on PR #594, confirmed real: declining outright here was
+          // needlessly conservative when the verified anchor point already
+          // agrees with the existing /P). Anything else remains an
+          // unexpected state this declines rather than guesses.
+          if (!containerRef || existingP.objectNumber !== containerRef.objectNumber) {
+            results.push({ issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error: 'Figure already has a /P, but that parent\'s own /K does not reference it back, and it does not match this figure\'s own natural reattachment point -- declining rather than guessing' });
+            continue;
+          }
+        } else if (!containerRef) {
+          results.push({ issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error: neighborError! });
+          continue;
+        }
+
+        // Safety check, CodeRabbit finding on PR #594, confirmed real: the
+        // container's own /K array must actually list its bare MCID
+        // entries in ascending order for a "found mcid-1, insert right
+        // after it" positional splice to mean anything -- an out-of-order
+        // array (e.g. [2, 0] with this figure at MCID 1) would otherwise
+        // splice into a position that doesn't reflect real reading order.
+        const finalContainerRef = containerRef;
+        const containerDict = doc.context.lookup(finalContainerRef, PDFDict);
+        const containerK = containerDict?.get(PDFName.of('K'));
+        if (!(containerK instanceof PDFArray)) {
+          results.push({ issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error: 'Container /K is not an array' });
+          continue;
+        }
+        const bareNumbers = containerK.asArray()
+          .filter((item): item is PDFNumber => item instanceof PDFNumber)
+          .map(n => n.asNumber());
+        const isAscending = bareNumbers.every((n, i) => i === 0 || n > bareNumbers[i - 1]);
+        if (!isAscending) {
+          results.push({ issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error: 'Container /K array\'s own bare MCID entries are not in ascending order -- cannot safely determine a positional insertion point' });
+          continue;
+        }
+
+        this.insertIntoKidsAfterMcid(doc, finalContainerRef, figureMcid - 1, figureEntry);
+        figureDict!.set(PDFName.of('P'), finalContainerRef);
+
+        results.push({
+          issueId: issue.id,
+          success: true,
+          before: 'disconnected from the structure tree',
+          after: `reattached into ${finalContainerRef.toString()}'s own /K array, immediately after MCID ${figureMcid - 1}`,
+        });
+      } catch (err) {
+        results.push({ issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error: err instanceof Error ? err.message : String(err) });
+      }
+    }
+
+    return results;
+  }
+
+  /**
+   * True if `targetRef` is reachable via a top-down /K walk from
+   * /StructTreeRoot -- the same traversal a screen reader or compliance
+   * checker uses, and the same check pdf-inline-figure-tree.validator.ts's
+   * own `reachable` set performs. Used by reattachInlineFigure's own
+   * idempotency check (see its own doc comment for the CodeRabbit finding
+   * this closes): a reciprocal /P <-> /K link between a figure and its
+   * parent is not a real fix if the parent itself is still disconnected.
+   */
+  private isReachableFromRoot(doc: PDFDocument, targetRef: PDFRef): boolean {
+    const structRoot = this.getStructTreeRoot(doc);
+    if (!structRoot) return false;
+    const targetKey = targetRef.toString();
+    const seen = new Set<string>();
+    const visit = (nodeRef: unknown): boolean => {
+      if (nodeRef instanceof PDFRef) {
+        const key = nodeRef.toString();
+        if (key === targetKey) return true;
+        if (seen.has(key)) return false;
+        seen.add(key);
+      }
+      const node = nodeRef instanceof PDFRef ? doc.context.lookup(nodeRef) : nodeRef;
+      if (node instanceof PDFArray) {
+        return node.asArray().some(item => visit(item));
+      }
+      if (!(node instanceof PDFDict)) return false;
+      const k = node.get(PDFName.of('K'));
+      if (k === undefined) return false;
+      return visit(k);
+    };
+    return visit(structRoot.get(PDFName.of('K')));
+  }
 }
 
 export const pdfStructureWriterService = new PdfStructureWriterService();
