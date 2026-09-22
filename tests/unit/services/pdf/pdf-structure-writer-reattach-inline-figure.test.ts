@@ -121,15 +121,46 @@ describe('PdfStructureWriterService.reattachInlineFigure', () => {
     expect(occurrences).toBe(1);
   });
 
-  it('declines when the figure already has a /P but that parent does not reference it back', async () => {
-    const { doc, figureRef, captionRef } = await buildDoc({ connected: false, figureMcid: 2 });
-    // Simulate an unexpected state: /P set, but never actually added to that parent's /K.
-    doc.context.lookup(figureRef, PDFDict).set(PDFName.of('P'), captionRef);
+  it('declines when the figure already has a /P pointing at an unrelated element that does not reference it back and does not match the derived container', async () => {
+    const { doc, figureRef } = await buildDoc({ connected: false, figureMcid: 2 });
+    const unrelatedRef = doc.context.register(doc.context.obj({ S: PDFName.of('P'), K: [] }));
+    doc.context.lookup(figureRef, PDFDict).set(PDFName.of('P'), unrelatedRef);
 
     const results = pdfStructureWriterService.reattachInlineFigure(doc, [issueFor('figure_p1_mc2')]);
 
     expect(results[0].success).toBe(false);
     expect(results[0].error).toContain('does not reference it back');
+  });
+
+  it('completes a half-made link when /P already names the verified container but that container\'s own /K does not yet reference it back, rather than declining', async () => {
+    const { doc, figureRef, captionRef } = await buildDoc({ connected: false, figureMcid: 2 });
+    // /P set to the SAME container the left/right MCID neighbors
+    // independently derive, but never actually added to that container's
+    // own /K -- a half-made link, not an unrelated/unexpected state.
+    doc.context.lookup(figureRef, PDFDict).set(PDFName.of('P'), captionRef);
+
+    const results = pdfStructureWriterService.reattachInlineFigure(doc, [issueFor('figure_p1_mc2')]);
+
+    expect(results[0].success).toBe(true);
+    expect(results[0].after).toContain('immediately after MCID 1');
+    const kids = kidsOf(doc, captionRef);
+    const figureIdx = kids.findIndex(k => k instanceof PDFRef && k.objectNumber === figureRef.objectNumber);
+    expect(figureIdx).toBe(2);
+  });
+
+  it('declines the idempotency short-circuit when the figure and its parent reference each other, but the parent itself is not reachable from the structure tree root', async () => {
+    const { doc, figureRef } = await buildDoc({ connected: false, figureMcid: 2 });
+    // An orphaned parent: references the figure back, and the figure
+    // points at it, but this parent is never itself linked into any
+    // reachable ancestor -- a reciprocal link between two disconnected
+    // elements, not a real fix.
+    const orphanParentRef = doc.context.register(doc.context.obj({ S: PDFName.of('fc'), K: [figureRef] }));
+    doc.context.lookup(figureRef, PDFDict).set(PDFName.of('P'), orphanParentRef);
+
+    const results = pdfStructureWriterService.reattachInlineFigure(doc, [issueFor('figure_p1_mc2')]);
+
+    expect(results[0].success).toBe(false);
+    expect(results[0].error).toContain('not reachable from the structure tree root');
   });
 
   it('declines when there is no left MCID neighbor to anchor reattachment', async () => {
@@ -148,6 +179,33 @@ describe('PdfStructureWriterService.reattachInlineFigure', () => {
 
     expect(results[0].success).toBe(false);
     expect(results[0].error).toContain('different containers');
+  });
+
+  it('declines when the container\'s own /K array bare MCID entries are not in ascending order, rather than trusting a positional match blindly', async () => {
+    const doc = await PDFDocument.create();
+    const page = doc.addPage([612, 792]);
+    page.node.set(PDFName.of('StructParents'), doc.context.obj(0));
+
+    const figureRef = doc.context.register(doc.context.obj({ S: PDFName.of('Figure'), Pg: page.ref, K: 1 }));
+    // Out-of-order /K: [2, 0] -- CodeRabbit's own real counterexample.
+    const containerRef = doc.context.register(doc.context.obj({ S: PDFName.of('fc'), Pg: page.ref, K: [2, 0] }));
+
+    const docNode = doc.context.obj({ S: PDFName.of('Document'), K: [containerRef] });
+    const docRef = doc.context.register(docNode);
+    doc.context.lookup(containerRef, PDFDict).set(PDFName.of('P'), docRef);
+
+    const structTreeRootRef = doc.context.register(doc.context.obj({ Type: PDFName.of('StructTreeRoot'), K: [docRef] }));
+    // ParentTree: mcid 0 and mcid 2 both resolve to containerRef (same
+    // container either side), mcid 1 is the disconnected figure.
+    const pageArr = doc.context.obj([containerRef, figureRef, containerRef]);
+    const parentTree = doc.context.obj({ Nums: [0, pageArr] });
+    doc.context.lookup(structTreeRootRef, PDFDict).set(PDFName.of('ParentTree'), parentTree);
+    doc.catalog.set(PDFName.of('StructTreeRoot'), structTreeRootRef);
+
+    const results = pdfStructureWriterService.reattachInlineFigure(doc, [issueFor('figure_p1_mc1')]);
+
+    expect(results[0].success).toBe(false);
+    expect(results[0].error).toContain('not in ascending order');
   });
 
   it('fails cleanly when the element id does not match the expected format', async () => {

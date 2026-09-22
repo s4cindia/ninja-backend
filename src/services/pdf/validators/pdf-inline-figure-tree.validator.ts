@@ -112,13 +112,40 @@ class PdfInlineFigureTreeValidator {
             if (reachable.has(key)) continue; // correctly connected -- nothing to report
 
             const pgRaw = resolved.get(PDFName.of('Pg'));
-            const page = pgRaw instanceof PDFRef ? pageByRef.get(pgRaw.toString()) : undefined;
+            let page = pgRaw instanceof PDFRef ? pageByRef.get(pgRaw.toString()) : undefined;
             const kRaw = resolved.get(PDFName.of('K'));
             const mcids: number[] = [];
+            // Collects a bare MCID number OR the standard MCR dict form
+            // (<</Type /MCR /Pg ... /MCID ...>>, ISO 32000-1 §14.7.4.2) --
+            // CodeRabbit finding on PR #594, confirmed real gap: the
+            // original version only read bare numbers, silently skipping
+            // any Figure using the MCR form (already explicitly supported
+            // by pdf-figure-structtree.validator.ts's own resolveContentRef
+            // for the SAME shape). Falls back to an MCR entry's own /Pg
+            // when the Figure's own direct /Pg is absent. Deliberately does
+            // NOT chase page inheritance from an ancestor struct element --
+            // that needs a top-down walk carrying an inherited-page value
+            // down through /K (resolveContentRef's own approach), a
+            // fundamentally different shape from this bottom-up /ParentTree
+            // walk; no real case found on Math_Weir_PDF.pdf needs it.
+            const collectFromItem = (raw: unknown): void => {
+              const item = raw instanceof PDFRef ? doc.context.lookup(raw) : raw;
+              if (item instanceof PDFNumber) { mcids.push(item.asNumber()); return; }
+              if (item instanceof PDFDict) {
+                const mcidEntry = item.get(PDFName.of('MCID'));
+                if (mcidEntry instanceof PDFNumber) {
+                  mcids.push(mcidEntry.asNumber());
+                  if (page === undefined) {
+                    const mcrPg = item.get(PDFName.of('Pg'));
+                    if (mcrPg instanceof PDFRef) page = pageByRef.get(mcrPg.toString());
+                  }
+                }
+              }
+            };
             if (kRaw instanceof PDFArray) {
-              for (const item of kRaw.asArray()) if (item instanceof PDFNumber) mcids.push(item.asNumber());
-            } else if (kRaw instanceof PDFNumber) {
-              mcids.push(kRaw.asNumber());
+              for (const item of kRaw.asArray()) collectFromItem(item);
+            } else if (kRaw !== undefined) {
+              collectFromItem(kRaw);
             }
             // No resolvable page/MCID means no way to build a re-locatable
             // element id for the writer to act on later -- skip rather
