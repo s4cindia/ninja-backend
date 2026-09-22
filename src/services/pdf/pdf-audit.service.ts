@@ -23,6 +23,7 @@ import { pdfTableValidator, TABLE_LIKELY_FORMULA_CODE } from './validators/pdf-t
 import { pdfFormulaValidator } from './validators/pdf-formula.validator';
 import { pdfFigureStructTreeValidator } from './validators/pdf-figure-structtree.validator';
 import { pdfFigureCaptionTreeValidator } from './validators/pdf-figure-caption-tree.validator';
+import { pdfInlineFigureTreeValidator } from './validators/pdf-inline-figure-tree.validator';
 import { pdfTableHeaderScopeValidator } from './validators/pdf-table-header-scope.validator';
 import { pdfStructureValidator } from './validators/pdf-structure.validator';
 import { pdfLinkValidator } from './validators/pdf-link.validator';
@@ -358,6 +359,28 @@ class PdfAuditService extends BaseAuditService<PdfParseResult, PdfValidationResu
           const errorMessage = error instanceof Error ? error.message : 'Unknown error';
           logger.error(`[PdfAudit] PdfFigureCaptionTreeValidator failed:`, error);
           result.validatorErrors.push({ validator: 'PdfFigureCaptionTreeValidator', error: errorMessage });
+        }
+      }
+
+      // 1c. Inline-Figure Tree-Reachability Validator (same disconnection
+      // shape as PdfFigureCaptionTreeValidator above, but for small inline
+      // /Figure elements -- e.g. an inline math/symbol glyph embedded
+      // mid-caption -- rather than a whole /fc caption's own /Story
+      // wrapper. See that validator's own header comment for the real
+      // 8-figure defect this catches on Math_Weir_PDF.pdf (round 7 PAC
+      // report, pages 73/136/137) that no other structural check in this
+      // codebase can see.
+      if (willRunStructure) {
+        try {
+          logger.info(`[PdfAudit] Running PdfInlineFigureTreeValidator...`);
+          const inlineFigureTreeResult = await pdfInlineFigureTreeValidator.validate(parsed.parsedPdf);
+          result.structureIssues.push(...inlineFigureTreeResult.issues);
+          result.issues.push(...inlineFigureTreeResult.issues);
+          logger.info(`[PdfAudit] PdfInlineFigureTreeValidator found ${inlineFigureTreeResult.issues.length} issues`);
+        } catch (error) {
+          const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+          logger.error(`[PdfAudit] PdfInlineFigureTreeValidator failed:`, error);
+          result.validatorErrors.push({ validator: 'PdfInlineFigureTreeValidator', error: errorMessage });
         }
       }
 

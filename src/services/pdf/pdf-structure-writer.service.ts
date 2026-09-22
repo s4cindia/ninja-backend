@@ -4475,6 +4475,123 @@ export class PdfStructureWriterService {
 
     return results;
   }
+
+  /**
+   * Splices `newRef` into `containerRef`'s own /K array immediately after
+   * the bare MCID number `afterMcid` -- the flat-sequence counterpart to
+   * insertIntoKidsAfter (which positions relative to a sibling REF's own
+   * identity, not a bare MCID value living directly in the array). Throws
+   * (never guesses) if containerRef doesn't resolve to a dict, its /K
+   * isn't an array, or afterMcid isn't found as a bare number entry in it.
+   */
+  private insertIntoKidsAfterMcid(doc: PDFDocument, containerRef: PDFRef, afterMcid: number, newRef: PDFRef): void {
+    const container = doc.context.lookup(containerRef);
+    if (!(container instanceof PDFDict)) {
+      throw new Error('insertIntoKidsAfterMcid: container does not resolve to a dictionary');
+    }
+    const k = container.get(PDFName.of('K'));
+    if (!(k instanceof PDFArray)) {
+      throw new Error('insertIntoKidsAfterMcid: container /K is not an array -- cannot position relative to a sibling MCID');
+    }
+    const arr = k.asArray();
+    const idx = arr.findIndex(item => item instanceof PDFNumber && item.asNumber() === afterMcid);
+    if (idx === -1) {
+      throw new Error('insertIntoKidsAfterMcid: afterMcid not found as a bare MCID entry in container /K array');
+    }
+    k.insert(idx + 1, newRef);
+  }
+
+  /**
+   * Reattaches a small inline /Figure struct element (e.g. an inline math
+   * or symbol glyph embedded mid-caption) that's correctly MCID-tagged and
+   * ParentTree-cross-referenced but was never linked into any parent's /K
+   * array -- the same disconnection SHAPE as reattachFigureCaption's own
+   * /fc-caption case, but structurally simpler: no multi-level Sect/Story
+   * climb needed. Confirmed real on Math_Weir_PDF.pdf (round 7 PAC report,
+   * pages 73/136/137): all 8 real cases sit inside an already-correct,
+   * flat /fc caption /K array (bare MCID numbers interleaved with nested
+   * /Span refs, in strict left-to-right reading order) with an exact
+   * one-slot gap at the disconnected Figure's own MCID position.
+   *
+   * Requires BOTH the MCID immediately before and immediately after the
+   * gap to resolve (via /ParentTree) to the SAME containing struct
+   * element -- confirmed the real, exact shape on all 8 cases -- and that
+   * container's own /K array to have a bare-number entry at mcid-1 to
+   * splice after. Declines (never guesses) when either neighbor is
+   * missing, the two neighbors belong to different containers, or the
+   * container's own /K array doesn't have the expected bare MCID entry to
+   * anchor on.
+   */
+  reattachInlineFigure(doc: PDFDocument, issues: AuditIssue[]): FixResult[] {
+    const results: FixResult[] = [];
+
+    for (const issue of issues) {
+      try {
+        const m = /^figure_p(\d+)_mc(\d+)$/.exec(issue.element ?? '');
+        if (!m) { results.push({ issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error: `Unrecognized element id "${issue.element}"` }); continue; }
+        const pageNumber = parseInt(m[1], 10);
+        const figureMcid = parseInt(m[2], 10);
+
+        const pageArr = this.resolveParentTreePageArray(doc, pageNumber);
+        if (!pageArr) { results.push({ issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error: `No ParentTree page array found for page ${pageNumber}` }); continue; }
+        const pageArrRaw = pageArr.asArray();
+
+        const figureEntry = pageArrRaw[figureMcid];
+        if (!(figureEntry instanceof PDFRef)) { results.push({ issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error: `No struct element found at MCID ${figureMcid} on page ${pageNumber}` }); continue; }
+        const figureDict = doc.context.lookup(figureEntry, PDFDict);
+        const figureType = figureDict?.get(PDFName.of('S'))?.toString().replace(/^\//, '');
+        if (figureType !== 'Figure') { results.push({ issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error: `Struct element at MCID ${figureMcid} is /${figureType}, not /Figure` }); continue; }
+
+        // Idempotency: already has a real /P whose own /K references it
+        // back? Treat as already fixed. A /P that does NOT reference it
+        // back is an unexpected, unrecognized state -- decline rather
+        // than overwrite it with a guess.
+        const existingP = figureDict!.get(PDFName.of('P'));
+        if (existingP instanceof PDFRef) {
+          const parentDict = doc.context.lookup(existingP, PDFDict);
+          const parentK = parentDict?.get(PDFName.of('K'));
+          const parentKids = parentK instanceof PDFArray ? parentK.asArray() : [];
+          const alreadyLinked = parentKids.some(item => item instanceof PDFRef && item.objectNumber === figureEntry.objectNumber);
+          if (alreadyLinked) {
+            results.push({ issueId: issue.id, success: true, before: 'already attached', after: `already attached under ${existingP.toString()}` });
+            continue;
+          }
+          results.push({ issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error: 'Figure already has a /P, but that parent\'s own /K does not reference it back -- declining rather than guessing' });
+          continue;
+        }
+
+        if (figureMcid === 0 || figureMcid + 1 >= pageArrRaw.length) {
+          results.push({ issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error: 'No left and/or right MCID neighbor on this page to anchor reattachment' });
+          continue;
+        }
+        const leftEntry = pageArrRaw[figureMcid - 1];
+        const rightEntry = pageArrRaw[figureMcid + 1];
+        if (!(leftEntry instanceof PDFRef) || !(rightEntry instanceof PDFRef)) {
+          results.push({ issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error: 'Left or right MCID neighbor does not resolve to a real struct element' });
+          continue;
+        }
+        if (leftEntry.objectNumber !== rightEntry.objectNumber) {
+          results.push({ issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error: 'Left and right MCID neighbors belong to different containers -- ambiguous reattachment point' });
+          continue;
+        }
+
+        const containerRef = leftEntry;
+        this.insertIntoKidsAfterMcid(doc, containerRef, figureMcid - 1, figureEntry);
+        figureDict!.set(PDFName.of('P'), containerRef);
+
+        results.push({
+          issueId: issue.id,
+          success: true,
+          before: 'disconnected from the structure tree',
+          after: `reattached into ${containerRef.toString()}'s own /K array, immediately after MCID ${figureMcid - 1}`,
+        });
+      } catch (err) {
+        results.push({ issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error: err instanceof Error ? err.message : String(err) });
+      }
+    }
+
+    return results;
+  }
 }
 
 export const pdfStructureWriterService = new PdfStructureWriterService();

@@ -185,6 +185,12 @@ const UNTAGGED_CONTENT_CODES = new Set(['UNTAGGED-CONTENT', 'MATTERHORN-01-005']
 // a top-down reader. See that validator's header comment for the full
 // root cause (confirmed real: 66/75 real captions on Math_Weir_PDF.pdf).
 const FIGURE_CAPTION_DISCONNECTED_CODES = new Set(['FIGURE-CAPTION-DISCONNECTED']);
+// Same disconnection shape as FIGURE_CAPTION_DISCONNECTED_CODES above, but
+// for a small inline /Figure (e.g. an inline math/symbol glyph embedded
+// mid-caption) rather than a whole /fc caption's own /Story wrapper -- see
+// pdf-inline-figure-tree.validator.ts's header comment for the real
+// 8-figure defect this catches on Math_Weir_PDF.pdf (round 7 PAC report).
+const INLINE_FIGURE_DISCONNECTED_CODES = new Set(['INLINE-FIGURE-DISCONNECTED']);
 const UNTAGGED_CONTENT_COMPLEX_CODES = new Set(['UNTAGGED-CONTENT-COMPLEX']);
 const TABLE_HEADER_SCOPE_CODES = new Set(['TABLE-HEADER-MISSING-SCOPE']);
 
@@ -1435,6 +1441,17 @@ class AiAnalysisService {
         guidance: 'This figure caption is tagged but not reachable from the structure tree — it will be reattached as a sibling of its figure.',
         confidence: 1.0,
         rationale: 'Deterministic fix — reattaches the caption\'s existing /Story wrapper into its already-established anchor point (its figure\'s own parent), never creates new content or MCIDs',
+        model: 'rule-based',
+        applyMode: 'apply-to-pdf',
+      };
+    }
+
+    if (INLINE_FIGURE_DISCONNECTED_CODES.has(code)) {
+      return {
+        suggestionType: 'inline-figure-reattach-fix',
+        guidance: 'This inline figure is tagged but not reachable from the structure tree — it will be reattached into its enclosing caption at its natural reading-order position.',
+        confidence: 1.0,
+        rationale: 'Deterministic fix — splices the figure\'s existing struct element into the exact one-slot gap in its enclosing caption\'s own /K array, never creates new content or MCIDs',
         model: 'rule-based',
         applyMode: 'apply-to-pdf',
       };
@@ -3071,7 +3088,7 @@ class AiAnalysisService {
     // for repeat contrast fixes.
     const pagesRewrittenSincePreResolve = new Set<number>();
 
-    const STRUCTURE_WRITER_TYPES = new Set(['heading-fix', 'list-fix', 'table-header-fix', 'table-header-fix-column', 'table-header-scope-fix', 'table-artifact-fix', 'table-from-layout-fix', 'bookmark-generate', 'heading-multiple-h1-fix', 'pdfua-identifier', 'color-contrast-fix', 'alt-text-decorative', 'untagged-content-fix', 'invisible-text-artifact-fix', 'figure-caption-reattach-fix']);
+    const STRUCTURE_WRITER_TYPES = new Set(['heading-fix', 'list-fix', 'table-header-fix', 'table-header-fix-column', 'table-header-scope-fix', 'table-artifact-fix', 'table-from-layout-fix', 'bookmark-generate', 'heading-multiple-h1-fix', 'pdfua-identifier', 'color-contrast-fix', 'alt-text-decorative', 'untagged-content-fix', 'invisible-text-artifact-fix', 'figure-caption-reattach-fix', 'inline-figure-reattach-fix']);
 
     let applied = 0;
     let failed = 0;
@@ -3156,6 +3173,11 @@ class AiAnalysisService {
           // need pagesRewrittenSincePreResolve tracking the way untagged-
           // content-fix/invisible-text-artifact-fix do.
           const results = pdfStructureWriterService.reattachFigureCaption(doc, [originalIssue]);
+          const r = results[0];
+          modification = { success: r.success, description: r.after, error: r.error };
+        } else if (suggestionType === 'inline-figure-reattach-fix') {
+          // Struct-tree-only, same as figure-caption-reattach-fix above.
+          const results = pdfStructureWriterService.reattachInlineFigure(doc, [originalIssue]);
           const r = results[0];
           modification = { success: r.success, description: r.after, error: r.error };
         } else if (suggestionType === 'invisible-text-artifact-fix') {
