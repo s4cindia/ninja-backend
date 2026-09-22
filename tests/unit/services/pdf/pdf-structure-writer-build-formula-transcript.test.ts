@@ -81,6 +81,13 @@ EMC
     expect(transcript).toContain('[main] "X"');
   });
 
+  it('preserves BOTH the readable text and a [symbol] marker, in source order, when a single TJ array mixes literal and hex operands (CodeRabbit finding: the hex operand used to silently vanish whenever any readable text shared its array)', () => {
+    const content = `/Figure <</MCID 0 >>BDC\nBT\n[(V) <0037> (X)]TJ\nET\nEMC\n`;
+    const transcript = pdfStructureWriterService.buildFormulaTranscript(content, 0);
+
+    expect(transcript).toContain('[main] "V" [symbol] "X"');
+  });
+
   it('notes a drawn line/curve in the header when the span contains a fill operator, without claiming to know what it is', () => {
     const content = `/Figure <</MCID 0 >>BDC
 q

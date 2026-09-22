@@ -3905,21 +3905,30 @@ export class PdfStructureWriterService {
       }
 
       if (op === 'Tj' || op === 'TJ' || op === "'" || op === '"') {
-        let text = '';
-        let sawHex = false;
+        // CodeRabbit finding, confirmed real: a single TJ array can mix
+        // readable and hex operands (e.g. `[(V) <0037> (X)]TJ`) -- the
+        // previous version concatenated all readable text into one string
+        // and only tracked hex PRESENCE as a boolean, so a hex operand
+        // sitting between two readable ones silently vanished (no [symbol]
+        // marker at all) whenever ANY readable text existed in the same
+        // array. Building one display token per operand, in source order,
+        // preserves both the text and the marker.
+        const parts: string[] = [];
         for (const s of pendingStrings) {
-          if (s.t === 's') text += this.decodePrintableAsciiOnly(s.v);
-          else sawHex = true;
+          if (s.t === 's') {
+            const decoded = this.decodePrintableAsciiOnly(s.v).trim();
+            if (decoded.length > 0) parts.push(`"${decoded}"`);
+          } else {
+            parts.push('[symbol]');
+          }
         }
-        const trimmed = text.trim();
-        const display = trimmed.length > 0 ? `"${trimmed}"` : (sawHex ? '[symbol]' : null);
-        if (display) {
+        if (parts.length > 0) {
           const isSmaller = baselineScale !== null && curScale !== null && curScale / baselineScale < SCALE_RATIO_THRESHOLD;
           const label = curY > Y_THRESHOLD ? 'raised'
             : curY < -Y_THRESHOLD ? 'lowered'
             : isSmaller ? 'smaller-script'
             : 'main';
-          fragments.push(`[${label}] ${display}`);
+          fragments.push(`[${label}] ${parts.join(' ')}`);
         }
         pendingStrings = [];
         numOperands = [];
