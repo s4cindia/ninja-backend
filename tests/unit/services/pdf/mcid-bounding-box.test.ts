@@ -196,4 +196,30 @@ describe('locateMcidBoundingBoxes', () => {
 
     expect(box).toEqual({ minX: 0, minY: 0, maxX: 50, maxY: 0 });
   });
+
+  describe('allowSinglePointBoxes option', () => {
+    it('returns a true single-point box when allowSinglePointBoxes is true, instead of discarding it', () => {
+      const content = '<</MCID 1>>BDC q 1 0 0 1 100 200 cm BT 9 0 0 9 0 0 Tm (x)Tj ET Q EMC';
+
+      const box = locateMcidBoundingBoxes(content, new Set([1]), { allowSinglePointBoxes: true }).get(1);
+
+      expect(box).toEqual({ minX: 100, minY: 200, maxX: 100, maxY: 200 });
+    });
+
+    it('defaults to false, preserving the existing discard-single-point behavior for every caller that omits the option', () => {
+      const content = '<</MCID 1>>BDC q 1 0 0 1 100 200 cm BT 9 0 0 9 0 0 Tm (x)Tj ET Q EMC';
+
+      const box = locateMcidBoundingBoxes(content, new Set([1])).get(1);
+
+      expect(box).toBeUndefined();
+    });
+
+    it('still discards a genuinely empty span (no geometry at all) even with allowSinglePointBoxes true', () => {
+      const content = '<</MCID 1>>BDC EMC';
+
+      const box = locateMcidBoundingBoxes(content, new Set([1]), { allowSinglePointBoxes: true }).get(1);
+
+      expect(box).toBeUndefined();
+    });
+  });
 });

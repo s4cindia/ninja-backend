@@ -30,6 +30,7 @@ import {
 import { AuditIssue } from '../audit/base-audit.service';
 import { logger } from '../../lib/logger';
 import { pageContentMcids, decodePageContent, writePageContent } from './pdf-content-stream-io';
+import { locateMcidBoundingBoxes } from './mcid-bounding-box';
 import { tagUntaggedPaintedPaths } from './pdf-artifact-tagger';
 import {
   matchCellRanges,
@@ -1778,7 +1779,7 @@ export class PdfStructureWriterService {
         // accepted organization: see retagMultiLevelTableHeaders's own doc
         // comment for the real, recurring two-level shape this closes.
         const headersIdsDataCells = skippedCount > 0
-          ? this.retagMultiLevelTableHeaders(doc, rowCells, issue.element ?? issue.id)
+          ? this.retagMultiLevelTableHeaders(doc, rowCells, issue.element ?? issue.id, issue.pageNumber)
           : 0;
 
         if (fixedCount === 0 && headersIdsDataCells === 0) {
@@ -1844,22 +1845,22 @@ export class PdfStructureWriterService {
    *
    * Multiple group cells in one block are only handled when every one of
    * them carries an explicit /ColSpan summing exactly to the sub-header
-   * count, OR none of them carry /ColSpan at all and the sub-column count
-   * divides evenly across the groups (a uniform left-to-right split is
-   * assumed in that case — see mapSubColumnsToGroups); any other shape
-   * (a partial mix, or spans that don't add up) is genuinely ambiguous and
-   * the block is left entirely untouched rather than guessing. Confirmed
-   * real on Math_Weir_PDF.pdf: most blocks have exactly one group cell,
-   * which trivially "spans" every sub-column with no ambiguity at all;
-   * table_p269_0 ("TABLE 16.4", 3 groups — "Good"/"Average"/"Poor" — each
-   * covering an "Observed"/"Expected" pair, no /ColSpan on any of them) is
-   * the even-split case, verified against the table's own rendered text to
-   * be an exact, unambiguous 2-2-2 split.
+   * count, OR none of them carry /ColSpan at all — in which case real
+   * group boundaries are established from each header cell's own on-page
+   * geometry instead (see mapSubColumnsToGroupsByGeometry); any other
+   * shape (a partial mix, or spans that don't add up) is genuinely
+   * ambiguous and the block is left entirely untouched rather than
+   * guessing. Confirmed real on Math_Weir_PDF.pdf: most blocks have
+   * exactly one group cell, which trivially "spans" every sub-column with
+   * no ambiguity at all; table_p269_0 ("TABLE 16.4", 3 groups —
+   * "Good"/"Average"/"Poor" — each covering an "Observed"/"Expected" pair,
+   * no /ColSpan on any of them) is the geometry-resolved case.
    */
   private retagMultiLevelTableHeaders(
     doc: PDFDocument,
     rowCells: Array<Array<{ dict: PDFDict; ref: PDFRef; tag: string }>>,
     idPrefix: string,
+    pageNumber: number | undefined,
   ): number {
     let taggedDataCells = 0;
     let blockCounter = 0;
@@ -1874,7 +1875,7 @@ export class PdfStructureWriterService {
       // Idempotent: a block already retagged has its row-label header's own /ID.
       if (this.hasIdForFix(subRow[0].dict)) { i += 2; continue; }
 
-      const subToGroupIndex = this.mapSubColumnsToGroups(doc, groupRow, block);
+      const subToGroupIndex = this.mapSubColumnsToGroups(doc, pageNumber, groupRow, subRow, block);
       if (!subToGroupIndex) { i += 2; continue; }
 
       blockCounter++;
@@ -1950,22 +1951,29 @@ export class PdfStructureWriterService {
    * mapped in one of two ways:
    *   1. Every group cell carries an explicit /ColSpan and those spans sum
    *      exactly to the sub-column count — used verbatim.
-   *   2. NO group cell carries /ColSpan at all, and the sub-column count
-   *      divides evenly across the groups — a uniform left-to-right split
-   *      is assumed (each group covers subCount/groupCount consecutive
-   *      sub-columns, in order). Confirmed real on Math_Weir_PDF.pdf's
-   *      table_p269_0: 3 groups ("Good"/"Average"/"Poor"), 6 sub-columns
-   *      ("Observed"/"Expected" ×3), no /ColSpan anywhere — verified
-   *      against the table's own rendered text to be an exact 2-2-2 split,
-   *      not an assumption made blind.
+   *   2. NO group cell carries /ColSpan at all — real, evidence-based group
+   *      boundaries are established from each header cell's own on-page
+   *      geometry instead (see mapSubColumnsToGroupsByGeometry). CodeRabbit
+   *      finding on PR #593, confirmed real: an earlier version of this
+   *      inferred an even split purely from divisibility (subCount %
+   *      groupCount === 0) with no positional evidence at all — a table
+   *      with, say, 1 and 3 real sub-columns under two groups would also
+   *      pass that check and get an incorrect 2-2 split reported as
+   *      success. Confirmed real on Math_Weir_PDF.pdf's table_p269_0: 3
+   *      groups ("Good"/"Average"/"Poor"), 6 sub-columns ("Observed"/
+   *      "Expected" ×3), no /ColSpan anywhere — the geometry path resolves
+   *      it correctly using each header's own rendered X-position, not an
+   *      assumption about the count alone.
    * Any other shape (a partial mix of some group cells carrying /ColSpan
-   * and others not, spans that don't add up, or an uneven division with no
-   * /ColSpan to disambiguate it) is genuinely ambiguous and returns null
-   * rather than guessing a split.
+   * and others not, spans that don't add up, or geometry that can't be
+   * located or doesn't cleanly partition) is genuinely ambiguous and
+   * returns null rather than guessing a split.
    */
   private mapSubColumnsToGroups(
     doc: PDFDocument,
+    pageNumber: number | undefined,
     groupRow: Array<{ dict: PDFDict }>,
+    subRow: Array<{ dict: PDFDict }>,
     block: { groupIndices: number[]; subIndices: number[] },
   ): number[] | null {
     const subCount = block.subIndices.length;
@@ -1985,16 +1993,138 @@ export class PdfStructureWriterService {
       return mapping;
     }
 
-    if (spans.every(sp => sp === null) && subCount % groupCount === 0) {
-      const perGroup = subCount / groupCount;
-      const mapping: number[] = [];
-      for (let groupIdx = 0; groupIdx < groupCount; groupIdx++) {
-        for (let k = 0; k < perGroup; k++) mapping.push(groupIdx);
-      }
-      return mapping;
+    if (spans.every(sp => sp === null)) {
+      return this.mapSubColumnsToGroupsByGeometry(doc, pageNumber, groupRow, subRow, block);
     }
 
     return null;
+  }
+
+  /**
+   * Establishes real group-to-subcolumn boundaries from each header cell's
+   * own on-page geometry (via mcid-bounding-box.ts's locateMcidBoundingBoxes)
+   * when no /ColSpan is present to declare them explicitly — replaces a
+   * blind divisibility guess with real evidence (see mapSubColumnsToGroups's
+   * own doc comment for the CodeRabbit finding this closes). Each
+   * sub-column is assigned to whichever group header's own real X center is
+   * CLOSEST (nearest-neighbor by absolute distance) — not "the nearest
+   * group to its left," which was this method's first, incorrect attempt:
+   * confirmed real on Math_Weir_PDF.pdf's table_p269_0 that a group header
+   * (e.g. "Average") is CENTERED over its own two sub-columns, so its own
+   * anchor sits numerically BETWEEN its "Observed" and "Expected"
+   * sub-headers, not to the left of both — a "nearest to the left" rule
+   * mis-assigned every group's own FIRST sub-column to the PREVIOUS group
+   * instead (live-caught before merge via a full re-audit round trip, not
+   * assumed correct from "success: true" alone). Nearest-by-distance is the
+   * correct general rule regardless of whether a producer left-aligns,
+   * centers, or right-aligns its group-header text over its sub-columns.
+   *
+   * Declines (returns null) whenever the evidence is incomplete rather
+   * than guessing: the page's content stream can't be decoded, any header
+   * cell carries no locatable MCID geometry at all, the resulting
+   * assignment leaves any group with zero sub-columns (a real group must
+   * cover at least one), or the assignment isn't monotonically
+   * non-decreasing left to right (a sub-column assigned to an EARLIER
+   * group than the one before it means the struct tree's own /K order
+   * doesn't match real reading order — too unusual a shape to trust).
+   */
+  private mapSubColumnsToGroupsByGeometry(
+    doc: PDFDocument,
+    pageNumber: number | undefined,
+    groupRow: Array<{ dict: PDFDict }>,
+    subRow: Array<{ dict: PDFDict }>,
+    block: { groupIndices: number[]; subIndices: number[] },
+  ): number[] | null {
+    if (pageNumber === undefined) return null;
+    const content = decodePageContent(doc, pageNumber);
+    if (!content) return null;
+
+    const groupMcids = block.groupIndices.map(gi => this.collectCellMcids(doc, groupRow[gi].dict));
+    const subMcids = block.subIndices.map(si => this.collectCellMcids(doc, subRow[si].dict));
+
+    const allMcids = new Set<number>();
+    for (const list of [...groupMcids, ...subMcids]) for (const m of list) allMcids.add(m);
+    if (allMcids.size === 0) return null;
+
+    // allowSinglePointBoxes: true -- these header cells are almost always a
+    // single short word (e.g. "Good", "Observed") with no accompanying
+    // leader line or clip rect, so their own real content IS a true single
+    // point in practice. Only an X position is needed here to order cells
+    // relative to each other, not a real croppable area.
+    const boxes = locateMcidBoundingBoxes(content, allMcids, { allowSinglePointBoxes: true });
+
+    const mergedXCenter = (mcids: number[]): number | null => {
+      let minX = Infinity, maxX = -Infinity, found = false;
+      for (const m of mcids) {
+        const box = boxes.get(m);
+        if (!box) continue;
+        found = true;
+        if (box.minX < minX) minX = box.minX;
+        if (box.maxX > maxX) maxX = box.maxX;
+      }
+      return found ? (minX + maxX) / 2 : null;
+    };
+
+    const groupCenters = groupMcids.map(mergedXCenter);
+    const subCenters = subMcids.map(mergedXCenter);
+    if (groupCenters.some(c => c === null) || subCenters.some(c => c === null)) return null;
+
+    const mapping: number[] = [];
+    const assignedCount = new Array(block.groupIndices.length).fill(0);
+    for (const subCenter of subCenters as number[]) {
+      let bestIdx = 0;
+      let bestDist = Infinity;
+      (groupCenters as number[]).forEach((groupCenter, idx) => {
+        const dist = Math.abs(groupCenter - subCenter);
+        if (dist < bestDist) { bestDist = dist; bestIdx = idx; }
+      });
+      mapping.push(bestIdx);
+      assignedCount[bestIdx]++;
+    }
+
+    if (assignedCount.some(c => c === 0)) return null;
+    for (let i = 1; i < mapping.length; i++) {
+      if (mapping[i] < mapping[i - 1]) return null;
+    }
+
+    return mapping;
+  }
+
+  /**
+   * All numeric MCIDs reachable from a struct element's own /K — bare
+   * numbers, array entries, MCR dict /MCID values (resolving indirect
+   * refs, mirroring structElemHasMcid's own resolution), AND, up to
+   * `maxDepth` levels, a nested CHILD STRUCT ELEMENT's own /K. Confirmed
+   * real and necessary on Math_Weir_PDF.pdf's table_p269_0: a header TH
+   * cell's own /K is not a bare MCID at all, but a ref to an InDesign
+   * `/tsp` ("text span") struct element one level down, whose OWN /K is
+   * the real MCID -- an earlier version of this method that only looked at
+   * the cell's own /K found zero geometry for every real header cell in
+   * this table, silently declining the whole multi-level-header retagging
+   * this was built for. Depth-limited (not unbounded) purely as a
+   * defensive bound against a malformed or cyclic tree; every real sample
+   * seen is a single level of /tsp nesting.
+   */
+  private collectCellMcids(doc: PDFDocument, cell: PDFDict, maxDepth = 4): number[] {
+    const mcids: number[] = [];
+    const visit = (item: unknown, depth: number): void => {
+      if (depth <= 0) return;
+      const resolved = item instanceof PDFRef ? doc.context.lookup(item) : item;
+      if (resolved instanceof PDFNumber) { mcids.push(resolved.asNumber()); return; }
+      if (resolved instanceof PDFArray) {
+        for (const entry of resolved.asArray()) visit(entry, depth);
+        return;
+      }
+      if (resolved instanceof PDFDict) {
+        const mRaw = resolved.get(PDFName.of('MCID'));
+        const m = mRaw instanceof PDFRef ? doc.context.lookup(mRaw) : mRaw;
+        if (m instanceof PDFNumber) { mcids.push(m.asNumber()); return; }
+        const nestedK = resolved.get(PDFName.of('K'));
+        if (nestedK !== undefined) visit(nestedK, depth - 1);
+      }
+    };
+    visit(cell.get(PDFName.of('K')), maxDepth);
+    return mcids;
   }
 
   /** The /ColSpan value from an element's Table-owner attribute dict, or null if absent. */

@@ -9,7 +9,12 @@
 import { describe, it, expect } from 'vitest';
 import { PDFDocument, PDFName, PDFRef, PDFDict, PDFArray, PDFHexString } from 'pdf-lib';
 import { pdfStructureWriterService } from '../../../../src/services/pdf/pdf-structure-writer.service';
+import { writePageContent } from '../../../../src/services/pdf/pdf-content-stream-io';
 import type { AuditIssue } from '../../../../src/services/audit/base-audit.service';
+
+function cellWithMcid(doc: PDFDocument, tag: 'TD' | 'TH', pageRef: PDFRef, mcid: number): PDFRef {
+  return doc.context.register(doc.context.obj({ S: PDFName.of(tag), Pg: pageRef, K: mcid }));
+}
 
 function cell(doc: PDFDocument, tag: 'TD' | 'TH', pageRef: PDFRef): PDFRef {
   return doc.context.register(doc.context.obj({ S: PDFName.of(tag), Pg: pageRef }));
@@ -60,7 +65,7 @@ function headersOf(doc: PDFDocument, ref: PDFRef): string[] | undefined {
   return undefined;
 }
 
-function issueFor(elementId: string): AuditIssue {
+function issueFor(elementId: string, pageNumber = 1): AuditIssue {
   return {
     id: `issue-${elementId}`,
     source: 'pdf-table-header-scope',
@@ -72,6 +77,7 @@ function issueFor(elementId: string): AuditIssue {
     suggestion: 'Add a Scope attribute',
     category: 'table',
     element: elementId,
+    pageNumber,
   } as AuditIssue;
 }
 
@@ -448,16 +454,21 @@ describe('PdfStructureWriterService.fixTableHeaderScope -- multi-level header He
     expect(headersOf(doc, d4)).toEqual([rowLabelId, group2Id, sub4Id]);
   });
 
-  it('maps sub-columns to multiple group headers via an even left-to-right split when NO group cell carries /ColSpan at all, matching the real Math_Weir_PDF.pdf table_p269_0 shape (3 groups, 6 sub-columns)', async () => {
+  it('maps sub-columns to multiple group headers via real on-page geometry when NO group cell carries /ColSpan at all, matching the real Math_Weir_PDF.pdf table_p269_0 shape (3 groups, 6 sub-columns)', async () => {
     const doc = await PDFDocument.create();
     const page = doc.addPage([612, 792]);
 
-    const corner = cell(doc, 'TH', page.ref);
-    const group1 = cell(doc, 'TH', page.ref); // "Good" -- no ColSpan
-    const group2 = cell(doc, 'TH', page.ref); // "Average" -- no ColSpan
-    const group3 = cell(doc, 'TH', page.ref); // "Poor" -- no ColSpan
-    const rowLabel = cell(doc, 'TH', page.ref);
-    const subs = [cell(doc, 'TH', page.ref), cell(doc, 'TH', page.ref), cell(doc, 'TH', page.ref), cell(doc, 'TH', page.ref), cell(doc, 'TH', page.ref), cell(doc, 'TH', page.ref)]; // Observed/Expected x3
+    const corner = cellWithMcid(doc, 'TH', page.ref, 0);
+    const group1 = cellWithMcid(doc, 'TH', page.ref, 1); // "Good" -- no ColSpan
+    const group2 = cellWithMcid(doc, 'TH', page.ref, 2); // "Average" -- no ColSpan
+    const group3 = cellWithMcid(doc, 'TH', page.ref, 3); // "Poor" -- no ColSpan
+    const rowLabel = cellWithMcid(doc, 'TH', page.ref, 4);
+    // Observed/Expected x3, each pair positioned under its own group.
+    const subs = [
+      cellWithMcid(doc, 'TH', page.ref, 5), cellWithMcid(doc, 'TH', page.ref, 6),
+      cellWithMcid(doc, 'TH', page.ref, 7), cellWithMcid(doc, 'TH', page.ref, 8),
+      cellWithMcid(doc, 'TH', page.ref, 9), cellWithMcid(doc, 'TH', page.ref, 10),
+    ];
     const dataLabel = cell(doc, 'TD', page.ref);
     const data = [cell(doc, 'TD', page.ref), cell(doc, 'TD', page.ref), cell(doc, 'TD', page.ref), cell(doc, 'TD', page.ref), cell(doc, 'TD', page.ref), cell(doc, 'TD', page.ref)];
 
@@ -472,6 +483,29 @@ describe('PdfStructureWriterService.fixTableHeaderScope -- multi-level header He
     const docRef = doc.context.register(doc.context.obj({ S: PDFName.of('Document'), K: [tableRef] }));
     doc.catalog.set(PDFName.of('StructTreeRoot'), doc.context.register(doc.context.obj({ Type: PDFName.of('StructTreeRoot'), K: [docRef] })));
 
+    // Single-POINT positions (0-width `re`), directly modeled on the real,
+    // confirmed X coordinates from Math_Weir_PDF.pdf's table_p269_0: each
+    // group header's own text anchor sits CENTERED over its own pair of
+    // sub-columns (e.g. "Average" at x=331 sits BETWEEN its own "Observed"
+    // at x=299 and "Expected" at x=357), never at or before its own first
+    // sub-column's own position. A wide, spanning box for the group cells
+    // here (instead of a real single point) would pass even under a naive
+    // "nearest group to the left" rule and fail to catch the real bug this
+    // regression guards -- see mapSubColumnsToGroupsByGeometry's own doc
+    // comment.
+    writePageContent(
+      doc, 1,
+      '<</MCID 1>>BDC 224 700 0 0 re EMC ' + // "Good"
+      '<</MCID 2>>BDC 332 700 0 0 re EMC ' + // "Average"
+      '<</MCID 3>>BDC 454 700 0 0 re EMC ' + // "Poor"
+      '<</MCID 5>>BDC 185 680 0 0 re EMC ' + // "Observed" (Good)
+      '<</MCID 6>>BDC 243 680 0 0 re EMC ' + // "Expected" (Good)
+      '<</MCID 7>>BDC 299 680 0 0 re EMC ' + // "Observed" (Average)
+      '<</MCID 8>>BDC 357 680 0 0 re EMC ' + // "Expected" (Average)
+      '<</MCID 9>>BDC 413 680 0 0 re EMC ' + // "Observed" (Poor)
+      '<</MCID 10>>BDC 471 680 0 0 re EMC', // "Expected" (Poor)
+    );
+
     const results = pdfStructureWriterService.fixTableHeaderScope(doc, [issueFor('table_p1_0')]);
 
     expect(results[0].success).toBe(true);
@@ -481,10 +515,12 @@ describe('PdfStructureWriterService.fixTableHeaderScope -- multi-level header He
     const rowLabelId = idOf(doc, rowLabel);
     const subIds = subs.map(s => idOf(doc, s));
 
-    // First pair (Observed/Expected) -> group1 ("Good").
+    // First pair (Observed/Expected) -> group1 ("Good"), by real X position.
     expect(headersOf(doc, data[0])).toEqual([rowLabelId, group1Id, subIds[0]]);
     expect(headersOf(doc, data[1])).toEqual([rowLabelId, group1Id, subIds[1]]);
-    // Second pair -> group2 ("Average").
+    // Second pair -> group2 ("Average") -- NOT group1, even though "Average"'s
+    // own anchor (332) sits to the RIGHT of "Observed" (299), because it's
+    // the CLOSEST group center, not the nearest-to-the-left one.
     expect(headersOf(doc, data[2])).toEqual([rowLabelId, group2Id, subIds[2]]);
     expect(headersOf(doc, data[3])).toEqual([rowLabelId, group2Id, subIds[3]]);
     // Third pair -> group3 ("Poor").
@@ -492,32 +528,79 @@ describe('PdfStructureWriterService.fixTableHeaderScope -- multi-level header He
     expect(headersOf(doc, data[5])).toEqual([rowLabelId, group3Id, subIds[5]]);
   });
 
-  it('declines the even-split fallback when the sub-column count does NOT divide evenly across the groups', async () => {
+  it('declines the geometry fallback (no /Headers, no /ID) when no group or sub-column cell has any locatable MCID geometry, even if the count divides evenly -- CodeRabbit finding on PR #593: divisibility alone is not real evidence', async () => {
     const doc = await PDFDocument.create();
     const page = doc.addPage([612, 792]);
 
+    // 4 sub-columns / 2 groups divides evenly (2 each) -- but with NO page
+    // content stream and NO MCIDs on any cell, there is zero real geometry
+    // to confirm that split, or any other. Must decline, not assume even.
     const corner = cell(doc, 'TH', page.ref);
-    const group1 = cell(doc, 'TH', page.ref); // no ColSpan
-    const group2 = cell(doc, 'TH', page.ref); // no ColSpan
+    const group1 = cell(doc, 'TH', page.ref);
+    const group2 = cell(doc, 'TH', page.ref);
     const rowLabel = cell(doc, 'TH', page.ref);
     const sub1 = cell(doc, 'TH', page.ref);
     const sub2 = cell(doc, 'TH', page.ref);
-    const sub3 = cell(doc, 'TH', page.ref); // 3 sub-columns / 2 groups -- doesn't divide evenly
+    const sub3 = cell(doc, 'TH', page.ref);
+    const sub4 = cell(doc, 'TH', page.ref);
     const dataLabel = cell(doc, 'TD', page.ref);
     const d1 = cell(doc, 'TD', page.ref);
     const d2 = cell(doc, 'TD', page.ref);
     const d3 = cell(doc, 'TD', page.ref);
+    const d4 = cell(doc, 'TD', page.ref);
 
     const tableRef = doc.context.register(doc.context.obj({
       S: PDFName.of('Table'), Pg: page.ref,
       K: [
         row(doc, [corner, group1, group2]),
-        row(doc, [rowLabel, sub1, sub2, sub3]),
-        row(doc, [dataLabel, d1, d2, d3]),
+        row(doc, [rowLabel, sub1, sub2, sub3, sub4]),
+        row(doc, [dataLabel, d1, d2, d3, d4]),
       ],
     }));
     const docRef = doc.context.register(doc.context.obj({ S: PDFName.of('Document'), K: [tableRef] }));
     doc.catalog.set(PDFName.of('StructTreeRoot'), doc.context.register(doc.context.obj({ Type: PDFName.of('StructTreeRoot'), K: [docRef] })));
+
+    pdfStructureWriterService.fixTableHeaderScope(doc, [issueFor('table_p1_0')]);
+
+    expect(idOf(doc, sub1)).toBeUndefined();
+    expect(headersOf(doc, d1)).toBeUndefined();
+  });
+
+  it('declines the geometry fallback when the real X positions would leave a group with zero assigned sub-columns, rather than guessing a partition', async () => {
+    const doc = await PDFDocument.create();
+    const page = doc.addPage([612, 792]);
+
+    const corner = cellWithMcid(doc, 'TH', page.ref, 0);
+    const group1 = cellWithMcid(doc, 'TH', page.ref, 1); // x: 100-150
+    const group2 = cellWithMcid(doc, 'TH', page.ref, 2); // x: 200-250
+    const rowLabel = cellWithMcid(doc, 'TH', page.ref, 3);
+    // Both sub-columns' real X position falls under group1 only --
+    // group2 would end up covering zero sub-columns, which must decline
+    // rather than force an assignment.
+    const sub1 = cellWithMcid(doc, 'TH', page.ref, 4);
+    const sub2 = cellWithMcid(doc, 'TH', page.ref, 5);
+    const dataLabel = cell(doc, 'TD', page.ref);
+    const d1 = cell(doc, 'TD', page.ref);
+    const d2 = cell(doc, 'TD', page.ref);
+
+    const tableRef = doc.context.register(doc.context.obj({
+      S: PDFName.of('Table'), Pg: page.ref,
+      K: [
+        row(doc, [corner, group1, group2]),
+        row(doc, [rowLabel, sub1, sub2]),
+        row(doc, [dataLabel, d1, d2]),
+      ],
+    }));
+    const docRef = doc.context.register(doc.context.obj({ S: PDFName.of('Document'), K: [tableRef] }));
+    doc.catalog.set(PDFName.of('StructTreeRoot'), doc.context.register(doc.context.obj({ Type: PDFName.of('StructTreeRoot'), K: [docRef] })));
+
+    writePageContent(
+      doc, 1,
+      '<</MCID 1>>BDC 100 700 50 10 re EMC ' +
+      '<</MCID 2>>BDC 200 700 50 10 re EMC ' +
+      '<</MCID 4>>BDC 100 680 15 10 re EMC ' +
+      '<</MCID 5>>BDC 120 680 15 10 re EMC',
+    );
 
     pdfStructureWriterService.fixTableHeaderScope(doc, [issueFor('table_p1_0')]);
 
