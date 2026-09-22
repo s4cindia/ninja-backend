@@ -112,18 +112,42 @@ export function resolveColorSpaceInfo(context: PDFContext, csObj: unknown): Colo
 }
 
 /**
+ * Resolves a stream's effective /Filter name, unwrapping a /Filter array
+ * to its single element when it has exactly one -- confirmed real on a
+ * live document: `/Filter [/FlateDecode]` (a legal, spec-equivalent way
+ * to write a single filter, some producers always emit an array even for
+ * one entry). Comparing a raw `.toString()` against a bare Name directly,
+ * as this file previously did in two places, silently treated this shape
+ * as an unrecognized/unsupported filter -- the image's format was never
+ * detected and it was never decompressed at all. A genuine multi-element
+ * chain (e.g. `[/ASCII85Decode /DCTDecode]`) is deliberately NOT resolved
+ * here -- that's still an unimplemented-decoder case, not a trivial
+ * wrapping one, and stays declined rather than guessed at.
+ */
+function resolveSingleFilterName(context: PDFContext, filterEntry: unknown): string | undefined {
+  const resolved = filterEntry instanceof PDFRef ? context.lookup(filterEntry) : filterEntry;
+  if (resolved === undefined) return undefined;
+  if (resolved instanceof PDFArray) {
+    return resolved.size() === 1 ? resolved.get(0)?.toString() : undefined;
+  }
+  return resolved.toString();
+}
+
+/**
  * Applies the stream's own /Filter, if any, to produce genuinely raw bytes
  * -- PDFRawStream.contents/PDFStream.getContents() deliberately return the
  * stream's stored (still-encoded) bytes, not decoded pixel data. Handles
  * exactly the filters confirmed real in the same survey (none, or plain
- * FlateDecode); declines (returns null) for anything else rather than
- * guessing at an unimplemented decoder (e.g. LZWDecode, a filter array).
+ * FlateDecode, whether written as a bare Name or a single-element array --
+ * see resolveSingleFilterName); declines (returns null) for anything else
+ * rather than guessing at an unimplemented decoder (e.g. LZWDecode, a
+ * genuine multi-filter chain).
  */
 export function decodeStreamBytes(xObject: PDFRawStream | PDFStream): Uint8Array | null {
   const raw = xObject instanceof PDFRawStream ? xObject.contents : xObject.getContents();
-  const filter = xObject.dict.get(PDFName.of('Filter'));
-  if (filter === undefined) return raw;
-  const filterName = filter.toString();
+  const filterEntry = xObject.dict.get(PDFName.of('Filter'));
+  if (filterEntry === undefined) return raw;
+  const filterName = resolveSingleFilterName(xObject.dict.context, filterEntry);
   if (filterName !== '/FlateDecode') return null;
 
   let inflated: Uint8Array;
@@ -697,7 +721,15 @@ class ImageExtractorService {
       const height = dict.get(PDFName.of('Height'))?.toString() || '0';
       const bitsPerComponent = dict.get(PDFName.of('BitsPerComponent'))?.toString() || '8';
       const colorSpace = dict.get(PDFName.of('ColorSpace'))?.toString() || '/DeviceRGB';
-      const filter = dict.get(PDFName.of('Filter'))?.toString() || '';
+      // resolveSingleFilterName unwraps the confirmed-real /Filter
+      // [/FlateDecode] shape to a clean '/FlateDecode' so the exact-match
+      // check below fires; a genuine multi-element chain falls back to the
+      // raw resolved value's own .toString() (still readable via the
+      // .includes() substring checks below for a recognized filter name
+      // anywhere in the chain, same as before this fix).
+      const filterEntry = dict.get(PDFName.of('Filter'));
+      const resolvedFilterEntry = filterEntry instanceof PDFRef ? dict.context.lookup(filterEntry) : filterEntry;
+      const filter = resolveSingleFilterName(dict.context, filterEntry) ?? resolvedFilterEntry?.toString() ?? '';
 
       let format: ImageInfo['format'] = 'unknown';
       let mimeType = 'image/unknown';

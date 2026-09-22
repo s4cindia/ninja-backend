@@ -129,6 +129,35 @@ describe('decodeStreamBytes', () => {
     expect(decodeStreamBytes(stream)).toBeNull();
   });
 
+  // Real, previously-undiscovered bug found live against Math_Weir_PDF.pdf:
+  // /Filter [/FlateDecode] (a legal, spec-equivalent single-element array
+  // some producers always emit even for one filter) was compared against
+  // the bare Name '/FlateDecode' via a raw .toString(), which produced
+  // "[ /FlateDecode ]" and never matched -- the image was silently treated
+  // as an unsupported format and never decompressed at all.
+  describe('array-wrapped /Filter (CodeRabbit/live-data finding)', () => {
+    async function buildRawStreamWithFilterArray(contents: Uint8Array, filterNames: string[]): Promise<PDFRawStream> {
+      const doc = await PDFDocument.create();
+      const dict = doc.context.obj({
+        Filter: filterNames.map((f) => PDFName.of(f)),
+      });
+      return PDFRawStream.of(dict, contents);
+    }
+
+    it('inflates real FlateDecode-compressed bytes when /Filter is a single-element array', async () => {
+      const original = Uint8Array.from(Buffer.from('hello world, this is real pixel-ish data'));
+      const compressed = zlib.deflateSync(Buffer.from(original));
+      const stream = await buildRawStreamWithFilterArray(compressed, ['FlateDecode']);
+      const decoded = decodeStreamBytes(stream);
+      expect(Buffer.from(decoded!).toString()).toBe(Buffer.from(original).toString());
+    });
+
+    it('still declines (returns null) a genuine multi-filter chain rather than guessing', async () => {
+      const stream = await buildRawStreamWithFilterArray(Uint8Array.from([1, 2, 3]), ['ASCII85Decode', 'FlateDecode']);
+      expect(decodeStreamBytes(stream)).toBeNull();
+    });
+  });
+
   it('declines malformed FlateDecode data rather than throwing', async () => {
     const stream = await buildRawStream(Uint8Array.from([0xff, 0xff, 0xff, 0xff]), 'FlateDecode');
     expect(decodeStreamBytes(stream)).toBeNull();
