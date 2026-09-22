@@ -1844,12 +1844,17 @@ export class PdfStructureWriterService {
    *
    * Multiple group cells in one block are only handled when every one of
    * them carries an explicit /ColSpan summing exactly to the sub-header
-   * count — otherwise the block is left entirely untouched rather than
-   * guessing an ambiguous split (see mapSubColumnsToGroups). Every real
-   * block found on Math_Weir_PDF.pdf has exactly one group cell, which
-   * trivially "spans" every sub-column with no ambiguity at all; the
-   * ColSpan path exists for a different document that might genuinely
-   * need it, not for anything observed here.
+   * count, OR none of them carry /ColSpan at all and the sub-column count
+   * divides evenly across the groups (a uniform left-to-right split is
+   * assumed in that case — see mapSubColumnsToGroups); any other shape
+   * (a partial mix, or spans that don't add up) is genuinely ambiguous and
+   * the block is left entirely untouched rather than guessing. Confirmed
+   * real on Math_Weir_PDF.pdf: most blocks have exactly one group cell,
+   * which trivially "spans" every sub-column with no ambiguity at all;
+   * table_p269_0 ("TABLE 16.4", 3 groups — "Good"/"Average"/"Poor" — each
+   * covering an "Observed"/"Expected" pair, no /ColSpan on any of them) is
+   * the even-split case, verified against the table's own rendered text to
+   * be an exact, unambiguous 2-2-2 split.
    */
   private retagMultiLevelTableHeaders(
     doc: PDFDocument,
@@ -1940,12 +1945,23 @@ export class PdfStructureWriterService {
   /**
    * Maps each real sub-column position (0-based) to the index (into
    * block.groupIndices) of the group cell that covers it. A single group
-   * cell trivially covers every sub-column — the shape confirmed for every
-   * real block found on Math_Weir_PDF.pdf. Multiple group cells are only
-   * mapped when every one of them carries an explicit /ColSpan and those
-   * spans sum exactly to the sub-column count; any other multi-group case
-   * (missing ColSpan, or spans that don't add up) is genuinely ambiguous
-   * and returns null rather than guessing a split.
+   * cell trivially covers every sub-column — the shape confirmed for most
+   * real blocks found on Math_Weir_PDF.pdf. Multiple group cells are
+   * mapped in one of two ways:
+   *   1. Every group cell carries an explicit /ColSpan and those spans sum
+   *      exactly to the sub-column count — used verbatim.
+   *   2. NO group cell carries /ColSpan at all, and the sub-column count
+   *      divides evenly across the groups — a uniform left-to-right split
+   *      is assumed (each group covers subCount/groupCount consecutive
+   *      sub-columns, in order). Confirmed real on Math_Weir_PDF.pdf's
+   *      table_p269_0: 3 groups ("Good"/"Average"/"Poor"), 6 sub-columns
+   *      ("Observed"/"Expected" ×3), no /ColSpan anywhere — verified
+   *      against the table's own rendered text to be an exact 2-2-2 split,
+   *      not an assumption made blind.
+   * Any other shape (a partial mix of some group cells carrying /ColSpan
+   * and others not, spans that don't add up, or an uneven division with no
+   * /ColSpan to disambiguate it) is genuinely ambiguous and returns null
+   * rather than guessing a split.
    */
   private mapSubColumnsToGroups(
     doc: PDFDocument,
@@ -1953,19 +1969,32 @@ export class PdfStructureWriterService {
     block: { groupIndices: number[]; subIndices: number[] },
   ): number[] | null {
     const subCount = block.subIndices.length;
-    if (block.groupIndices.length === 1) return new Array(subCount).fill(0);
+    const groupCount = block.groupIndices.length;
+    if (groupCount === 1) return new Array(subCount).fill(0);
 
     const spans = block.groupIndices.map(gi => this.readColSpanForFix(doc, groupRow[gi].dict));
-    if (spans.some(sp => sp === null || sp <= 0)) return null;
-    const nonNullSpans = spans as number[];
-    const total = nonNullSpans.reduce((a, b) => a + b, 0);
-    if (total !== subCount) return null;
 
-    const mapping: number[] = [];
-    nonNullSpans.forEach((span, groupIdx) => {
-      for (let k = 0; k < span; k++) mapping.push(groupIdx);
-    });
-    return mapping;
+    if (spans.every(sp => sp !== null && sp > 0)) {
+      const nonNullSpans = spans as number[];
+      const total = nonNullSpans.reduce((a, b) => a + b, 0);
+      if (total !== subCount) return null;
+      const mapping: number[] = [];
+      nonNullSpans.forEach((span, groupIdx) => {
+        for (let k = 0; k < span; k++) mapping.push(groupIdx);
+      });
+      return mapping;
+    }
+
+    if (spans.every(sp => sp === null) && subCount % groupCount === 0) {
+      const perGroup = subCount / groupCount;
+      const mapping: number[] = [];
+      for (let groupIdx = 0; groupIdx < groupCount; groupIdx++) {
+        for (let k = 0; k < perGroup; k++) mapping.push(groupIdx);
+      }
+      return mapping;
+    }
+
+    return null;
   }
 
   /** The /ColSpan value from an element's Table-owner attribute dict, or null if absent. */

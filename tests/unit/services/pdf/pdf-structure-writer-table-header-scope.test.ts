@@ -448,6 +448,118 @@ describe('PdfStructureWriterService.fixTableHeaderScope -- multi-level header He
     expect(headersOf(doc, d4)).toEqual([rowLabelId, group2Id, sub4Id]);
   });
 
+  it('maps sub-columns to multiple group headers via an even left-to-right split when NO group cell carries /ColSpan at all, matching the real Math_Weir_PDF.pdf table_p269_0 shape (3 groups, 6 sub-columns)', async () => {
+    const doc = await PDFDocument.create();
+    const page = doc.addPage([612, 792]);
+
+    const corner = cell(doc, 'TH', page.ref);
+    const group1 = cell(doc, 'TH', page.ref); // "Good" -- no ColSpan
+    const group2 = cell(doc, 'TH', page.ref); // "Average" -- no ColSpan
+    const group3 = cell(doc, 'TH', page.ref); // "Poor" -- no ColSpan
+    const rowLabel = cell(doc, 'TH', page.ref);
+    const subs = [cell(doc, 'TH', page.ref), cell(doc, 'TH', page.ref), cell(doc, 'TH', page.ref), cell(doc, 'TH', page.ref), cell(doc, 'TH', page.ref), cell(doc, 'TH', page.ref)]; // Observed/Expected x3
+    const dataLabel = cell(doc, 'TD', page.ref);
+    const data = [cell(doc, 'TD', page.ref), cell(doc, 'TD', page.ref), cell(doc, 'TD', page.ref), cell(doc, 'TD', page.ref), cell(doc, 'TD', page.ref), cell(doc, 'TD', page.ref)];
+
+    const tableRef = doc.context.register(doc.context.obj({
+      S: PDFName.of('Table'), Pg: page.ref,
+      K: [
+        row(doc, [corner, group1, group2, group3]),
+        row(doc, [rowLabel, ...subs]),
+        row(doc, [dataLabel, ...data]),
+      ],
+    }));
+    const docRef = doc.context.register(doc.context.obj({ S: PDFName.of('Document'), K: [tableRef] }));
+    doc.catalog.set(PDFName.of('StructTreeRoot'), doc.context.register(doc.context.obj({ Type: PDFName.of('StructTreeRoot'), K: [docRef] })));
+
+    const results = pdfStructureWriterService.fixTableHeaderScope(doc, [issueFor('table_p1_0')]);
+
+    expect(results[0].success).toBe(true);
+    const group1Id = idOf(doc, group1);
+    const group2Id = idOf(doc, group2);
+    const group3Id = idOf(doc, group3);
+    const rowLabelId = idOf(doc, rowLabel);
+    const subIds = subs.map(s => idOf(doc, s));
+
+    // First pair (Observed/Expected) -> group1 ("Good").
+    expect(headersOf(doc, data[0])).toEqual([rowLabelId, group1Id, subIds[0]]);
+    expect(headersOf(doc, data[1])).toEqual([rowLabelId, group1Id, subIds[1]]);
+    // Second pair -> group2 ("Average").
+    expect(headersOf(doc, data[2])).toEqual([rowLabelId, group2Id, subIds[2]]);
+    expect(headersOf(doc, data[3])).toEqual([rowLabelId, group2Id, subIds[3]]);
+    // Third pair -> group3 ("Poor").
+    expect(headersOf(doc, data[4])).toEqual([rowLabelId, group3Id, subIds[4]]);
+    expect(headersOf(doc, data[5])).toEqual([rowLabelId, group3Id, subIds[5]]);
+  });
+
+  it('declines the even-split fallback when the sub-column count does NOT divide evenly across the groups', async () => {
+    const doc = await PDFDocument.create();
+    const page = doc.addPage([612, 792]);
+
+    const corner = cell(doc, 'TH', page.ref);
+    const group1 = cell(doc, 'TH', page.ref); // no ColSpan
+    const group2 = cell(doc, 'TH', page.ref); // no ColSpan
+    const rowLabel = cell(doc, 'TH', page.ref);
+    const sub1 = cell(doc, 'TH', page.ref);
+    const sub2 = cell(doc, 'TH', page.ref);
+    const sub3 = cell(doc, 'TH', page.ref); // 3 sub-columns / 2 groups -- doesn't divide evenly
+    const dataLabel = cell(doc, 'TD', page.ref);
+    const d1 = cell(doc, 'TD', page.ref);
+    const d2 = cell(doc, 'TD', page.ref);
+    const d3 = cell(doc, 'TD', page.ref);
+
+    const tableRef = doc.context.register(doc.context.obj({
+      S: PDFName.of('Table'), Pg: page.ref,
+      K: [
+        row(doc, [corner, group1, group2]),
+        row(doc, [rowLabel, sub1, sub2, sub3]),
+        row(doc, [dataLabel, d1, d2, d3]),
+      ],
+    }));
+    const docRef = doc.context.register(doc.context.obj({ S: PDFName.of('Document'), K: [tableRef] }));
+    doc.catalog.set(PDFName.of('StructTreeRoot'), doc.context.register(doc.context.obj({ Type: PDFName.of('StructTreeRoot'), K: [docRef] })));
+
+    pdfStructureWriterService.fixTableHeaderScope(doc, [issueFor('table_p1_0')]);
+
+    expect(idOf(doc, sub1)).toBeUndefined();
+    expect(headersOf(doc, d1)).toBeUndefined();
+  });
+
+  it('declines the even-split fallback when only SOME group cells carry /ColSpan (a partial mix), rather than guessing which rule applies', async () => {
+    const doc = await PDFDocument.create();
+    const page = doc.addPage([612, 792]);
+
+    const corner = cell(doc, 'TH', page.ref);
+    const group1 = cellWithColSpan(doc, 'TH', page.ref, 2); // has ColSpan
+    const group2 = cell(doc, 'TH', page.ref); // no ColSpan
+    const rowLabel = cell(doc, 'TH', page.ref);
+    const sub1 = cell(doc, 'TH', page.ref);
+    const sub2 = cell(doc, 'TH', page.ref);
+    const sub3 = cell(doc, 'TH', page.ref);
+    const sub4 = cell(doc, 'TH', page.ref);
+    const dataLabel = cell(doc, 'TD', page.ref);
+    const d1 = cell(doc, 'TD', page.ref);
+    const d2 = cell(doc, 'TD', page.ref);
+    const d3 = cell(doc, 'TD', page.ref);
+    const d4 = cell(doc, 'TD', page.ref);
+
+    const tableRef = doc.context.register(doc.context.obj({
+      S: PDFName.of('Table'), Pg: page.ref,
+      K: [
+        row(doc, [corner, group1, group2]),
+        row(doc, [rowLabel, sub1, sub2, sub3, sub4]),
+        row(doc, [dataLabel, d1, d2, d3, d4]),
+      ],
+    }));
+    const docRef = doc.context.register(doc.context.obj({ S: PDFName.of('Document'), K: [tableRef] }));
+    doc.catalog.set(PDFName.of('StructTreeRoot'), doc.context.register(doc.context.obj({ Type: PDFName.of('StructTreeRoot'), K: [docRef] })));
+
+    pdfStructureWriterService.fixTableHeaderScope(doc, [issueFor('table_p1_0')]);
+
+    expect(idOf(doc, sub1)).toBeUndefined();
+    expect(headersOf(doc, d1)).toBeUndefined();
+  });
+
   it('leaves a multi-group block untouched (no /Headers, no /ID) when ColSpan is missing or ambiguous, rather than guessing a split', async () => {
     const doc = await PDFDocument.create();
     const page = doc.addPage([612, 792]);
