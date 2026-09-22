@@ -126,7 +126,7 @@ export function resolveColorSpaceInfo(context: PDFContext, csObj: unknown): Colo
  */
 function resolveSingleFilterName(context: PDFContext, filterEntry: unknown): string | undefined {
   const resolved = filterEntry instanceof PDFRef ? context.lookup(filterEntry) : filterEntry;
-  if (resolved === undefined) return undefined;
+  if (resolved === undefined || resolved === null) return undefined;
   if (resolved instanceof PDFArray) {
     return resolved.size() === 1 ? resolved.get(0)?.toString() : undefined;
   }
