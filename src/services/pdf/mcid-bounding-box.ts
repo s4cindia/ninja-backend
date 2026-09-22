@@ -92,13 +92,32 @@ const num = (t: Token | undefined): number => (t && t.t === 'n' ? parseFloat(t.v
  * page's tokenized content stream. See this file's own header comment for
  * why a single continuous CTM/marked-content walk (not a per-figure
  * restart) is required for correctness.
+ *
+ * `options.allowSinglePointBoxes` (default false, preserving every
+ * existing caller's behavior exactly): when true, a span whose only
+ * content is a single text anchor with no accompanying path/clip-rect
+ * geometry (a true single point, minX===maxX AND minY===maxY) is still
+ * returned instead of discarded. Added for pdf-structure-writer.service.ts's
+ * own mapSubColumnsToGroupsByGeometry, which only needs a reliable X
+ * position to order short, single-word table-header cells (e.g. "Good",
+ * "Observed") relative to each other -- confirmed real on
+ * Math_Weir_PDF.pdf's table_p269_0, where every one of its real header
+ * cells is exactly this shape (a single Tj, no leader line or clip rect),
+ * and the default (area-requiring) behavior silently discarded every one
+ * of them. The default stays false because the ORIGINAL caller
+ * (pdf-figure-structtree.validator.ts, via ai-analysis.service.ts's
+ * cropBase64Region) needs a real croppable area, not just a point -- a
+ * true single point there would silently become a useless few-pixel crop
+ * instead of correctly falling back to the whole-page render.
  */
 export function locateMcidBoundingBoxes(
   content: string,
   targetMcids: ReadonlySet<number>,
+  options?: { allowSinglePointBoxes?: boolean },
 ): Map<number, DeviceBoundingBox> {
   const results = new Map<number, DeviceBoundingBox>();
   if (targetMcids.size === 0) return results;
+  const allowSinglePointBoxes = options?.allowSinglePointBoxes ?? false;
   const tokens = tokenize(content);
 
   type Ctm = { a: number; b: number; c: number; d: number; e: number; f: number };
@@ -150,7 +169,7 @@ export function locateMcidBoundingBoxes(
     if (
       activeMcid !== null &&
       curMinX <= curMaxX && curMinY <= curMaxY &&
-      (curMaxX > curMinX || curMaxY > curMinY)
+      (allowSinglePointBoxes || curMaxX > curMinX || curMaxY > curMinY)
     ) {
       results.set(activeMcid, { minX: curMinX, minY: curMinY, maxX: curMaxX, maxY: curMaxY });
     }
