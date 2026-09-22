@@ -888,8 +888,14 @@ class PdfAuditService extends BaseAuditService<PdfParseResult, PdfValidationResu
     const results: MatterhornCheckResult[] = [];
 
     // Matterhorn 01: Tagged PDF
+    // CodeRabbit finding on PR #592, confirmed real: this filter didn't
+    // include matterhornCheckpoint '01-005' at all -- both
+    // FIGURE-CAPTION-DISCONNECTED (this PR) and the pre-existing
+    // UNTAGGED-CONTENT (PR #588) issues carry that checkpoint but neither
+    // code string, so a document with either (or both) could still show
+    // checkpoint 01 as passing.
     const untaggedIssues = validation.structureIssues.filter(
-      i => i.code === 'MATTERHORN-01-004' || i.code === 'PDF-UNTAGGED'
+      i => i.code === 'MATTERHORN-01-004' || i.code === 'PDF-UNTAGGED' || i.matterhornCheckpoint === '01-005'
     );
     const isTagged = untaggedIssues.length === 0;
     results.push({

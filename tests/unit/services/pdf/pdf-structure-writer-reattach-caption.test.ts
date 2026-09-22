@@ -99,6 +99,77 @@ describe('PdfStructureWriterService.reattachFigureCaption', () => {
     expect((entries[sectIdx + 1] as PDFRef).objectNumber).toBe(storyRef.objectNumber);
   });
 
+  it('is idempotent: succeeds without duplicating when the /Story is already exactly where the fix would place it', async () => {
+    const { doc, grandparentRef, sectRef, storyRef } = await buildDisconnectedCaptionDoc();
+
+    // Pre-attach the Story in the correct position by hand, simulating an
+    // earlier successful run, then issue the SAME disconnected-caption
+    // issue again (a stale re-dispatch without a fresh audit in between).
+    const gpDict = doc.context.lookup(grandparentRef, PDFDict);
+    const kArr = gpDict.get(PDFName.of('K')) as PDFArray;
+    kArr.push(storyRef);
+    doc.context.lookup(storyRef, PDFDict).set(PDFName.of('P'), grandparentRef);
+
+    const results = pdfStructureWriterService.reattachFigureCaption(doc, [issueFor('caption_p1_mc1')]);
+
+    expect(results[0].success).toBe(true);
+    expect(results[0].before).toBe('already attached');
+    const entries = (gpDict.get(PDFName.of('K')) as PDFArray).asArray();
+    const storyOccurrences = entries.filter(e => e instanceof PDFRef && e.objectNumber === storyRef.objectNumber);
+    expect(storyOccurrences).toHaveLength(1); // not duplicated
+    const sectIdx = entries.findIndex(e => e instanceof PDFRef && e.objectNumber === sectRef.objectNumber);
+    expect((entries[sectIdx + 1] as PDFRef).objectNumber).toBe(storyRef.objectNumber);
+  });
+
+  it('declines rather than guesses when the /Story is already attached somewhere unexpected', async () => {
+    const { doc, grandparentRef, storyRef } = await buildDisconnectedCaptionDoc();
+
+    // Attach the Story to the grandparent, but NOT in the correct position
+    // (prepended instead of placed right after the Sect) and with a /P
+    // that happens to already be set -- an inconsistent shape this fix
+    // should refuse to silently "fix up" by moving it.
+    const gpDict = doc.context.lookup(grandparentRef, PDFDict);
+    const kArr = gpDict.get(PDFName.of('K')) as PDFArray;
+    kArr.insert(0, storyRef);
+    doc.context.lookup(storyRef, PDFDict).set(PDFName.of('P'), grandparentRef);
+
+    const results = pdfStructureWriterService.reattachFigureCaption(doc, [issueFor('caption_p1_mc1')]);
+
+    expect(results[0].success).toBe(false);
+    expect(results[0].error).toContain('unexpected position');
+  });
+
+  it('accepts a /Story whose /K is an array wrapping multiple /fc children (a real two-part-caption shape), not only a bare single ref', async () => {
+    const { doc, grandparentRef, sectRef, storyRef, fcRef } = await buildDisconnectedCaptionDoc();
+
+    // A second /fc paragraph, e.g. a continuation line of the same caption
+    // -- confirmed real: 7/66 live disconnected captions have this exact
+    // two-child /Story shape.
+    const otherFcRef = doc.context.register(doc.context.obj({ S: PDFName.of('fc'), K: 2 }));
+    doc.context.lookup(storyRef, PDFDict).set(PDFName.of('K'), doc.context.obj([fcRef, otherFcRef]));
+
+    const results = pdfStructureWriterService.reattachFigureCaption(doc, [issueFor('caption_p1_mc1')]);
+
+    expect(results[0].success).toBe(true);
+    const gpDict = doc.context.lookup(grandparentRef, PDFDict);
+    const entries = (gpDict.get(PDFName.of('K')) as PDFArray).asArray();
+    const sectIdx = entries.findIndex(e => e instanceof PDFRef && e.objectNumber === sectRef.objectNumber);
+    expect((entries[sectIdx + 1] as PDFRef).objectNumber).toBe(storyRef.objectNumber);
+  });
+
+  it('declines rather than guesses when the /Story\'s own /K does not point back at the /fc it supposedly wraps', async () => {
+    const { doc, storyRef } = await buildDisconnectedCaptionDoc();
+
+    // Corrupt the Story -> fc link: point /K at some unrelated ref instead.
+    const bogusRef = doc.context.register(doc.context.obj({ S: PDFName.of('P') }));
+    doc.context.lookup(storyRef, PDFDict).set(PDFName.of('K'), bogusRef);
+
+    const results = pdfStructureWriterService.reattachFigureCaption(doc, [issueFor('caption_p1_mc1')]);
+
+    expect(results[0].success).toBe(false);
+    expect(results[0].error).toContain('does not reference this /fc back');
+  });
+
   it('fails cleanly with an unrecognized element id', async () => {
     const doc = await PDFDocument.create();
     const results = pdfStructureWriterService.reattachFigureCaption(doc, [issueFor('not-a-caption-id')]);
