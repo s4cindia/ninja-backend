@@ -101,6 +101,15 @@ export function hexToUnitRgb(hex: string): [number, number, number] {
   ];
 }
 
+// Inverse of hexToUnitRgb — needed to feed originalRgb (the text run's own
+// TRUE color, from findPrecedingColor) into computeCompliantColor, which
+// takes hex strings. See the backplate color computation below for why
+// this must be the run's real color, not cd.foreground.
+function unitRgbToHex([r, g, b]: [number, number, number]): string {
+  const toByte = (n: number) => Math.max(0, Math.min(255, Math.round(n * 255))).toString(16).padStart(2, '0');
+  return `#${toByte(r)}${toByte(g)}${toByte(b)}`;
+}
+
 /**
  * Pure string splice implementing the class doc comment's apply+restore
  * strategy for one run. `run` is the run's own [start,end) span;
@@ -369,7 +378,39 @@ export class PdfContrastWriterService {
     // in practice -- the gate's real job is still guarding case 1.
     if (verification && (!verification.passes || verification.uncertain) && verification.variance <= BUSY_VARIANCE_THRESHOLD) {
       const enclosing = locateEnclosingTextObject(content, match.start);
-      const backplateColorHex = computeCompliantColor(cd.background, cd.foreground, EXTREME_TARGET_RATIO).color;
+      // Contrast against the text run's own TRUE displayed color -- NOT
+      // cd.foreground. cd.foreground is the audit's own sampled estimate,
+      // which can be flatly wrong for text whose real ink color visually
+      // blends with its cell's fill (a validator "same-surface" sampling
+      // failure, not a real fg/bg pair): confirmed live on Math_Weir_PDF.pdf,
+      // where several stuck backplate cases are genuinely WHITE row-header
+      // text on a gray cell (each has its own explicit white `k`/`g`/`rg`
+      // op -- a real, decent-contrast design, not a defect) that the audit
+      // had misreported as e.g. fg=bg=#707176. Trusting cd.foreground there
+      // computes a backplate color chosen to contrast against the WRONG
+      // (gray) foreground, which resolves to white -- the same color as
+      // the text's own real (correctly preserved, unchanged) white ink,
+      // guaranteeing an invisible result no matter how the rect itself is
+      // drawn. Deriving from what's actually in the stream instead makes
+      // this the same category of fix as PR #569's restore-color
+      // correction.
+      //
+      // Priority: restoreColorOverride (locateTextRunsForPage's own
+      // already-correct "true final color" for a multi-op run, when the
+      // pre-resolved batch path populated it) > this run's own single
+      // internal fill op, evaluated just PAST it so findPrecedingColor
+      // picks it up as current (internalFillColorOp is only ever set for
+      // exactly one op — see its own doc comment — so a multi-op run
+      // without restoreColorOverride falls through to originalRgb below,
+      // same as a run with no internal op at all: both correctly mean
+      // "nothing of this run's own overrides the ambient color").
+      const trueTextRgb =
+        match.restoreColorOverride ??
+        (match.internalFillColorOp ? findPrecedingColor(content, match.internalFillColorOp.end) : originalRgb);
+      if (!trueTextRgb) {
+        return { issueId: issue.id, success: false, before, after: 'unknown', error: 'Could not determine the text run\'s true color for backplate contrast' };
+      }
+      const backplateColorHex = computeCompliantColor(cd.background, unitRgbToHex(trueTextRgb), EXTREME_TARGET_RATIO).color;
       const rect = computeBackplateRect(boundingBox);
       const spliced = enclosing ? spliceBackplate(content, enclosing, rect, hexToUnitRgb(backplateColorHex)) : null;
 
