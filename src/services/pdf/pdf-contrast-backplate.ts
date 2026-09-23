@@ -54,6 +54,32 @@ const TIER0_ABOVE_CANVAS_PX = 5;
 const TIER0_RIGHT_GAP_CANVAS_PX = 4;
 const TIER0_RIGHT_WIDTH_CANVAS_PX = 6;
 
+// Confirmed live on Math_Weir_PDF.pdf: sizing topPad/rightPad to EXACTLY
+// the tier-0 probe distance (no margin) still leaves a real fix stuck.
+// sampleBackgroundRobust checks "above" BEFORE "right" (candidates[0]
+// before candidates[1]) and picks the FIRST candidate whose variance reads
+// as flat -- it does not compare candidates against each other for which
+// is MORE flat. The rendered rect's own top edge anti-aliases into
+// whatever sits just outside it (Skia softens a hard rectangle edge over
+// roughly a pixel, regardless of how precisely the edge coordinate is
+// computed), so the "above" strip -- sized to sit immediately flush
+// against that edge with zero clearance -- samples a blended color (e.g.
+// measured live: #1a1a1a, variance 0.0073) that is NOT the backplate's own
+// flat color, but still reads as "flat enough" (comfortably under
+// FLAT_VARIANCE_THRESHOLD's 0.02) and wins outright over the genuinely
+// perfectly-flat (variance 0) "right" candidate purely by array order. A
+// caller re-auditing the fixed document from scratch then measures this
+// wrong, blended color as the "background" and the run's own true ink as
+// "foreground" against it -- a real contrast failure reading despite the
+// backplate rendering correctly (confirmed by direct pixel sampling: the
+// probed region is a clean ~91% two-color split of the backplate's exact
+// color and the text's exact ink color, with the antialiased edge being a
+// small minority of pixels). This margin pushes the rect's edge far enough
+// past each probe's own near edge that the probe strip sits entirely
+// inside the rect's solidly-covered interior, leaving any antialiasing
+// blend on the OUTSIDE of the probe instead of inside it.
+const PROBE_ANTIALIAS_MARGIN_CANVAS_PX = 2;
+
 // CodeRabbit finding on PR #545: a descender (g, p, y, j, q) extends below
 // the baseline, but the rect's bottom edge previously sat exactly AT the
 // baseline — those pixels stayed outside the backplate, still rendered
@@ -105,8 +131,8 @@ export function computeBackplateRect(boundingBox: {
   const width = Math.max(boundingBox.width, MIN_CANVAS_WIDTH_PX / RENDER_SCALE);
   const height = Math.max(boundingBox.height, MIN_CANVAS_HEIGHT_PX / RENDER_SCALE);
 
-  const topPad = TIER0_ABOVE_CANVAS_PX / RENDER_SCALE;
-  const rightPad = (TIER0_RIGHT_GAP_CANVAS_PX + TIER0_RIGHT_WIDTH_CANVAS_PX) / RENDER_SCALE;
+  const topPad = (TIER0_ABOVE_CANVAS_PX + PROBE_ANTIALIAS_MARGIN_CANVAS_PX) / RENDER_SCALE;
+  const rightPad = (TIER0_RIGHT_GAP_CANVAS_PX + TIER0_RIGHT_WIDTH_CANVAS_PX + PROBE_ANTIALIAS_MARGIN_CANVAS_PX) / RENDER_SCALE;
   const descentPad = height * DESCENDER_PADDING_FRACTION;
 
   return {

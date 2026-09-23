@@ -13,10 +13,15 @@ describe('computeBackplateRect', () => {
     // descender pad (30% of height) so the rect's bottom edge extends
     // below the baseline rather than sitting exactly on it.
     expect(rect.y).toBeCloseTo(700 - 250 - 14 * 0.3);
-    // Width grows by the tier-0 right-probe's own gap+width (4+6 canvas px).
-    expect(rect.width).toBeCloseTo(80 + 10 / RENDER_SCALE);
-    // Height grows by the tier-0 above-probe (5 canvas px) plus the descender pad.
-    expect(rect.height).toBeCloseTo(14 + 5 / RENDER_SCALE + 14 * 0.3);
+    // Width grows by the tier-0 right-probe's own gap+width (4+6 canvas px)
+    // plus a 2px anti-aliasing safety margin (real bug, confirmed live on
+    // Math_Weir_PDF.pdf -- see PROBE_ANTIALIAS_MARGIN_CANVAS_PX's own doc
+    // comment: sizing to the exact probe distance still let the rendered
+    // rect's own anti-aliased edge leak into the probe's sampled strip).
+    expect(rect.width).toBeCloseTo(80 + 12 / RENDER_SCALE);
+    // Height grows by the tier-0 above-probe (5 canvas px) plus the same
+    // 2px margin, plus the descender pad.
+    expect(rect.height).toBeCloseTo(14 + 7 / RENDER_SCALE + 14 * 0.3);
   });
 
   it("pads width/height up to the verification step's own canvas-space minimums plus tier-0 probe coverage, never down", () => {
@@ -26,14 +31,32 @@ describe('computeBackplateRect', () => {
     // would leave contaminated edge pixels visible to the re-verify step.
     const rect = computeBackplateRect({ x: 0, y: 100, width: 1, height: 1, pageHeight: 200 });
     const flooredHeight = 6 / RENDER_SCALE;
-    expect(rect.width).toBeCloseTo((10 + 10) / RENDER_SCALE);
-    expect(rect.height).toBeCloseTo(flooredHeight + 5 / RENDER_SCALE + flooredHeight * 0.3);
+    expect(rect.width).toBeCloseTo((10 + 12) / RENDER_SCALE);
+    expect(rect.height).toBeCloseTo(flooredHeight + 7 / RENDER_SCALE + flooredHeight * 0.3);
   });
 
   it('still adds tier-0 probe coverage and descender padding when width/height already exceed the minimums', () => {
     const rect = computeBackplateRect({ x: 0, y: 100, width: 200, height: 20, pageHeight: 200 });
-    expect(rect.width).toBeCloseTo(200 + 10 / RENDER_SCALE);
-    expect(rect.height).toBeCloseTo(20 + 5 / RENDER_SCALE + 20 * 0.3);
+    expect(rect.width).toBeCloseTo(200 + 12 / RENDER_SCALE);
+    expect(rect.height).toBeCloseTo(20 + 7 / RENDER_SCALE + 20 * 0.3);
+  });
+
+  // Real, live-confirmed regression (not a synthetic worry): a rect padded
+  // to EXACTLY the tier-0 probe distance (the pre-existing PR #545
+  // behavior) still left a fresh, independent re-audit reporting the fix as
+  // failing, because sampleBackgroundRobust's "above" probe sits flush
+  // against the rect's own top edge with zero clearance, and a rendered
+  // rectangle's edge is anti-aliased regardless of how precisely its
+  // coordinate is computed -- the probe's own strip samples that blend
+  // instead of the backplate's true flat color. This test pins the padding
+  // to strictly exceed the exact probe distance, so a future edit can't
+  // silently regress back to the exact (insufficient) match.
+  it('pads strictly beyond the exact tier-0 probe distance, not just up to it, to absorb rendered-edge anti-aliasing', () => {
+    const rect = computeBackplateRect({ x: 100, y: 250, width: 80, height: 14, pageHeight: 700 });
+    const exactAboveProbePad = 5 / RENDER_SCALE;
+    const exactRightProbePad = 10 / RENDER_SCALE;
+    expect(rect.height - 14 - 14 * 0.3).toBeGreaterThan(exactAboveProbePad);
+    expect(rect.width - 80).toBeGreaterThan(exactRightProbePad);
   });
 });
 
