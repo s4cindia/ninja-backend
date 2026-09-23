@@ -55,6 +55,22 @@ export const VERAPDF_MATTERHORN_MAP: ReadonlyMap<string, string> = new Map<strin
   ['1:7.21.4.1-1', '31-009'],   // font program not embedded
   ['1:7.21.7-1', '31-027'],     // font missing ToUnicode
 
+  // VALIDATED against real veraPDF 1.30.2 MRR output, captured live against
+  // Math_Weir_PDF.pdf (132 real failing checks) and trimmed into
+  // tests/fixtures/pdf/verapdf-output/cp31-charset-incomplete.xml — see
+  // that file's own note on provenance (derived from a real document's
+  // real output, not a purpose-built minimal fixture PDF, since no ready
+  // corpus fixture for this specific condition was found). Real
+  // description text: "If the FontDescriptor dictionary of an embedded
+  // Type 1 font contains a CharSet string, then it shall list the
+  // character names of all glyphs present in the font program" — this is
+  // Matterhorn 31-012 exactly ("at least one of the glyphs present in the
+  // font program is not listed in the CharSet string"), not to be confused
+  // with 31-013 (the INVERSE case: a glyph listed in CharSet that's NOT
+  // present in the font program — a real, separate veraPDF rule, clause
+  // "7.21.4.2" testNumber "2", not yet validated/added here).
+  ['1:7.21.4.2-1', '31-012'],   // Type1 font CharSet omits a glyph present in the font program
+
   //
   // ── Not yet validated — no fixture PDF built for these yet ────────────────
   // CP01 (§7.1 Artefacts), CP07 (§7.3 ViewerPreferences/DisplayDocTitle):
@@ -63,6 +79,29 @@ export const VERAPDF_MATTERHORN_MAP: ReadonlyMap<string, string> = new Map<strin
   // share the same section value, so it can't disambiguate them; the CP06
   // guess above was also wrong until checked against real output).
   //
+  // Real findings observed live against Math_Weir_PDF.pdf, deliberately
+  // NOT added below without more research (see this session's own
+  // reconnaissance notes):
+  //   - clause="7.3" testNumber="1" (real text: Figure tags need Alt/
+  //     replacement text) shares its section with BOTH Matterhorn 13-001
+  //     and 13-002 (same "07-001/07-002 can't disambiguate" trap) — likely
+  //     13-001, but would only be a redundant fallback (Ninja's own
+  //     alt-text validator already reports 13-001), not new coverage, so
+  //     not worth the disambiguation work yet.
+  //   - clause="7.1" testNumber="9" (real text: "Metadata stream... shall
+  //     contain a dc:title entry") shares its section with 07-001/07-002,
+  //     but its real subject (XMP dc:title) doesn't semantically match
+  //     either (both are about the DisplayDocTitle viewer-preference flag,
+  //     not the metadata title itself) — needs real research into which
+  //     Matterhorn condition (likely a CP06 metadata one) actually covers
+  //     dc:title presence before adding anything.
+  //   - clause="7.2" testNumber="20" ("LI element may contain only Lbl and
+  //     LBody elements") and testNumber="42" ("Table rows shall have the
+  //     same number of columns") only correspond to Matterhorn conditions
+  //     marked HUMAN-only (16-003's neighbors, 15-004) in matterhorn-1.1.
+  //     data.ts — mapping to a HUMAN condition wouldn't add machine
+  //     coverage under the TESTABLE_CONDITIONS framework, so these aren't
+  //     candidates for this table at all, regardless of text match quality.
 ]);
 
 /**
