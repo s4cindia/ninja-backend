@@ -86,6 +86,17 @@ export interface TextRunMatch {
    * than this fix's own scope.
    */
   restoreColorOverride?: [number, number, number];
+  /**
+   * Device-space anchor position (this run's own first show op), present
+   * only when the run was found via `findSiblingRuns` -- a position-matched
+   * run (plain `locateTextRun`/`locateTextRunsForPage`) already has the
+   * caller's own target x/baselineY for this purpose, so leaving these
+   * undefined there is deliberate, not an oversight. A caller building a
+   * boundingBox to fix/verify a sibling run (which has no audit-supplied
+   * bbox of its own) anchors it here.
+   */
+  anchorX?: number;
+  anchorY?: number;
 }
 
 interface TextUnit {
@@ -565,6 +576,80 @@ export function locateTextRun(
   const tokens = tokenize(content);
   const units = findTextUnits(tokens);
   return locateTextRunFromUnits(tokens, units, target, tolerancePt);
+}
+
+/**
+ * Finds up to `maxSiblings` text runs immediately AFTER `afterRun`, in
+ * document order, within the SAME enclosing `BT...ET` text object. Used
+ * when a run located by POSITION isn't actually the one with a real
+ * contrast defect (see pdf-contrast-writer.service.ts's own caller for the
+ * real incident this addresses): pdfjs's own `getTextContent()` coalesces
+ * adjacent same-line `Tj`/`TJ` calls into ONE logical text item for
+ * detection purposes, regardless of internal content-stream color-operator
+ * boundaries between them (confirmed live: a "8 749 47" table cell is one
+ * pdfjs item combining a near-white "8" and pure-black "749"/"47", and the
+ * validator's own pixel sampling across that whole item's bbox produces one
+ * meaningless BLENDED color, e.g. #262626 -- neither segment's real color).
+ * The audit issue's own target position always anchors to the FIRST
+ * segment ("8"), which `locateTextRun` then correctly, unambiguously finds
+ * as its OWN narrow run (a `Td` between "8" and "749" already ends the run
+ * right there, by this module's own run-boundary rules) -- but that segment
+ * usually isn't the one that's actually low-contrast. This function finds
+ * the SIBLING runs the audit's own item-level blending hid, so a caller can
+ * check each one's own true color and fix whichever genuinely fails.
+ *
+ * Each returned TextRunMatch carries `anchorX`/`anchorY` (always present
+ * here, unlike a position-matched run) so a caller can build a bounding box
+ * for a run the original audit issue never described. `confidence` is
+ * always 1 and `ambiguous` reflects only whether the sibling itself has a
+ * mixed-color internal structure (its own `internalFillColorOp` is set only
+ * when exactly one exists, same convention as `locateTextRun`) -- these
+ * runs are found by structural adjacency, not position-distance, so the
+ * distance-based confidence/ambiguity model doesn't apply.
+ */
+export function findSiblingRuns(
+  content: string,
+  afterRun: TextRunMatch,
+  maxSiblings = 8
+): TextRunMatch[] {
+  const enclosing = locateEnclosingTextObject(content, afterRun.start);
+  if (!enclosing) return [];
+
+  const tokens = tokenize(content);
+  const units = findTextUnits(tokens);
+  const result: TextRunMatch[] = [];
+
+  for (const u of units) {
+    if (u.start < afterRun.end) continue;
+    const unitEnclosing = locateEnclosingTextObject(content, u.start);
+    // Units are in document order (findTextUnits appends as it scans), so
+    // the first one outside the original text object means every
+    // subsequent unit is too -- safe to stop rather than skip.
+    if (!unitEnclosing || unitEnclosing.btStart !== enclosing.btStart) break;
+    if (u.anchorX === null || u.anchorY === null) continue;
+
+    const ops = findFillColorOps(tokens, u.start, u.lastShowEnd!);
+    let restoreColorOverride: [number, number, number] | undefined;
+    if (ops.length > 0) {
+      const finalColor = parseFillColorOpToRgb(content, ops[ops.length - 1]);
+      if (finalColor !== null) restoreColorOverride = finalColor;
+    }
+
+    result.push({
+      start: u.start,
+      end: u.end,
+      confidence: 1,
+      ambiguous: ops.length > 1,
+      internalFillColorOp: ops.length === 1 ? ops[0] : undefined,
+      lastShowEnd: u.lastShowEnd!,
+      restoreColorOverride,
+      anchorX: u.anchorX,
+      anchorY: u.anchorY,
+    });
+    if (result.length >= maxSiblings) break;
+  }
+
+  return result;
 }
 
 /**

@@ -61,7 +61,7 @@ import { PDFDocument } from 'pdf-lib';
 import { AuditIssue } from '../audit/base-audit.service';
 import { logger } from '../../lib/logger';
 import { decodePageContent, writePageContent } from './pdf-content-stream-io';
-import { locateTextRun, locateTextRunsForPage, locateEnclosingTextObject, findPrecedingColor, type TextRunMatch, type PageContrastTarget } from './contrast-content-stream';
+import { locateTextRun, locateTextRunsForPage, locateEnclosingTextObject, findPrecedingColor, findSiblingRuns, type TextRunMatch, type PageContrastTarget } from './contrast-content-stream';
 import { computeCompliantColor } from './color-contrast-correction';
 import { verifyContrastInRegion, verifyBackplateContrast } from './color-contrast-verification';
 import { computeBackplateRect, spliceBackplate } from './pdf-contrast-backplate';
@@ -109,6 +109,48 @@ function unitRgbToHex([r, g, b]: [number, number, number]): string {
   const toByte = (n: number) => Math.max(0, Math.min(255, Math.round(n * 255))).toString(16).padStart(2, '0');
   return `#${toByte(r)}${toByte(g)}${toByte(b)}`;
 }
+
+// A run's own TRUE displayed color, deriving from what's actually in the
+// content stream rather than any caller-supplied estimate — same priority
+// order as the backplate tier's own trueTextRgb computation (see
+// fixOneRun's own doc comment): restoreColorOverride (already-correct
+// "true final color" for a multi-op run, when the caller's own batch
+// resolution populated it) > this run's single internal fill op, evaluated
+// just PAST it so findPrecedingColor picks it up as current > the ambient
+// color in effect before the run starts, when it sets no color of its own.
+function trueColorOfRun(content: string, run: TextRunMatch): [number, number, number] | null {
+  if (run.restoreColorOverride) return run.restoreColorOverride;
+  if (run.internalFillColorOp) return findPrecedingColor(content, run.internalFillColorOp.end);
+  return findPrecedingColor(content, run.start);
+}
+
+// True when `trueColor` genuinely fails to clear `cd.requiredRatio` against
+// `cd.background` — i.e. there's a REAL defect here, not just what the
+// audit's own (possibly wrong) cd.foreground estimate claims. Reuses
+// computeCompliantColor's own "already compliant" signal (direction:
+// 'none' when the color already clears the target with its own safety
+// margin) rather than re-deriving contrast-ratio math a second time.
+function genuinelyFailsContrast(
+  trueColor: [number, number, number],
+  cd: NonNullable<AuditIssue['contrastData']>
+): boolean {
+  return computeCompliantColor(unitRgbToHex(trueColor), cd.background, cd.requiredRatio).direction !== 'none';
+}
+
+function colorDistance(a: [number, number, number], b: [number, number, number]): number {
+  return Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
+}
+
+// Same distance metric and threshold pdf-contrast.validator.ts's own
+// sampleDark uses to decide a sampled foreground is too close to the
+// background to trust (SAME_SURFACE_COLOR_DISTANCE = 30, on a 0-255 byte
+// scale) -- reused here, converted to this file's 0-1 unit-RGB scale, as
+// the bar for "the audit's own cd.foreground doesn't actually match what's
+// really in the matched run." That's a real, structural signal this run's
+// detection was unreliable (the same same-surface sampling failure, or
+// pdfjs's own item-level color blending across multiple content-stream
+// segments), not a coincidence -- see findSiblingRuns' own doc comment.
+const DETECTION_MISMATCH_THRESHOLD = 30 / 255;
 
 /**
  * Pure string splice implementing the class doc comment's apply+restore
@@ -286,6 +328,144 @@ export class PdfContrastWriterService {
       };
     }
 
+    // Try the existing, unchanged single-run escalation (moderate ->
+    // extreme -> backplate) against the audit-matched position FIRST --
+    // fixOneRun below is byte-for-byte the same logic this file always
+    // had. Every existing success path, including the backplate tier's
+    // own trueTextRgb-based color computation (PR #596), stays completely
+    // unchanged and gets zero exposure to the sibling logic below.
+    const primaryResult = await this.fixOneRun(issue.id, doc, pageNumber, match, boundingBox, cd, before);
+
+    // A run located by POSITION isn't always the one that's actually
+    // low-contrast. pdfjs's own text-item merging coalesces adjacent
+    // same-line Tj/TJ calls into ONE logical item for detection purposes,
+    // regardless of internal content-stream color-operator boundaries
+    // between them -- confirmed live on Math_Weir_PDF.pdf: a "8 749 47"
+    // table cell (near-white "8" then genuinely low-contrast black
+    // "749"/"47") is one pdfjs item, and the validator's own pixel
+    // sampling across that whole item's bbox produces one meaningless
+    // BLENDED cd.foreground (#262626, matching neither segment's real
+    // color). The audit's own target position always anchors to the FIRST
+    // segment, which locateTextRun then correctly, unambiguously finds as
+    // its OWN narrow run (a Td between "8" and "749" already ends the run
+    // right there, by this module's own run-boundary rules) -- but that
+    // segment usually isn't the one with the real defect.
+    //
+    // Whether to ALSO check sibling runs for that kind of hidden defect:
+    // only when cd.foreground doesn't actually match what's really in the
+    // matched run (trueColorOfRun, evaluated against the ORIGINAL,
+    // pre-fix content -- not primaryResult's own possibly-mutated state).
+    // That mismatch is the real, structural signal detection was
+    // unreliable for this run. When it DOES match, primaryResult above --
+    // success or failure -- is already trustworthy on its own terms;
+    // skip the extra decode/find/check work for the overwhelming majority
+    // of runs where detection was accurate, rather than adding risk or
+    // cost for no benefit.
+    const matchTrueColor = trueColorOfRun(content, match);
+    const detectionUnreliableForThisRun =
+      matchTrueColor !== null &&
+      colorDistance(matchTrueColor, hexToUnitRgb(cd.foreground)) >= DETECTION_MISMATCH_THRESHOLD;
+
+    if (!detectionUnreliableForThisRun) {
+      return primaryResult;
+    }
+
+    // Detection looks unreliable for this run -- check siblings in the
+    // same text object for a genuine, independently-verifiable defect the
+    // audit's own blending hid, in ADDITION to (never instead of)
+    // primaryResult above. Re-resolves siblings FRESH before each fix
+    // attempt (never a single precomputed list) so a successful fix's own
+    // byte-offset shift never leaves a later attempt using stale
+    // positions -- the same discipline pagesRewrittenSincePreResolve
+    // enforces at the batch level (PR #563), applied here within a single
+    // issue's own multi-segment fix. A sibling already fixed in a prior
+    // iteration naturally stops appearing as "genuinely failing" on the
+    // next re-scan (its true color changed), so no separate already-fixed
+    // tracking is needed either.
+    const fixedDescriptions: string[] = [];
+    const MAX_SIBLING_FIX_ATTEMPTS = 8;
+    for (let attempt = 0; attempt < MAX_SIBLING_FIX_ATTEMPTS; attempt++) {
+      const freshContent = decodePageContent(doc, pageNumber);
+      if (freshContent === null) break;
+      const siblings = findSiblingRuns(freshContent, match, MAX_SIBLING_FIX_ATTEMPTS);
+      const nextFailingIndex = siblings.findIndex(sibling => {
+        const trueColor = trueColorOfRun(freshContent, sibling);
+        return trueColor !== null && genuinelyFailsContrast(trueColor, cd);
+      });
+      if (nextFailingIndex === -1) break;
+
+      const sibling = siblings[nextFailingIndex];
+      // Width bounded by the NEXT sibling's own anchor when one exists --
+      // a real, data-derived width from this run's own siblings, not a
+      // guess. Floors at boundingBox.height (never thinner than the text
+      // is tall) and falls back to the original issue's own width when
+      // this is the last/only sibling in range.
+      const nextAnchorX = siblings[nextFailingIndex + 1]?.anchorX;
+      const estimatedWidth =
+        nextAnchorX !== undefined && sibling.anchorX !== undefined
+          ? Math.max(nextAnchorX - sibling.anchorX, boundingBox.height)
+          : boundingBox.width;
+      const siblingBoundingBox = {
+        x: sibling.anchorX!,
+        y: boundingBox.pageHeight - sibling.anchorY!,
+        width: estimatedWidth,
+        height: boundingBox.height,
+        pageWidth: boundingBox.pageWidth,
+        pageHeight: boundingBox.pageHeight,
+      };
+      const result = await this.fixOneRun(issue.id, doc, pageNumber, sibling, siblingBoundingBox, cd, before);
+      if (!result.success) break; // this sibling's true color won't change by retrying — stop rather than looping
+      fixedDescriptions.push(result.after);
+    }
+
+    if (fixedDescriptions.length === 0) {
+      // Nothing extra found or fixed -- primaryResult stands, completely
+      // unchanged, whether it succeeded or failed.
+      return primaryResult;
+    }
+
+    if (primaryResult.success) {
+      return {
+        issueId: issue.id,
+        success: true,
+        before,
+        after: `${primaryResult.after}; also fixed ${fixedDescriptions.length} sibling run(s) the audit's own ` +
+          `item-level color blending hid: ${fixedDescriptions.join('; ')}`,
+      };
+    }
+    return {
+      issueId: issue.id,
+      success: true,
+      before,
+      after: `fixed ${fixedDescriptions.length} sibling run(s) the audit's own item-level color blending hid ` +
+        `(the originally-flagged position's own fix did not independently verify: ${primaryResult.error}): ` +
+        `${fixedDescriptions.join('; ')}`,
+    };
+  }
+
+  /**
+   * Applies the existing moderate → extreme → backplate escalation to ONE
+   * specific run + boundingBox pair. Extracted unchanged from what used to
+   * be fixColorContrast's own single-run body (this module's original,
+   * well-tested behavior) so it's callable both for the primary
+   * position-matched run (the common case, unchanged) and for a sibling
+   * run findSiblingRuns finds (see fixColorContrast's own doc comment for
+   * why that's sometimes the REAL fix target instead).
+   */
+  private async fixOneRun(
+    issueId: string,
+    doc: PDFDocument,
+    pageNumber: number,
+    match: TextRunMatch,
+    boundingBox: NonNullable<AuditIssue['boundingBox']>,
+    cd: NonNullable<AuditIssue['contrastData']>,
+    before: string,
+  ): Promise<FixResult> {
+    const content = decodePageContent(doc, pageNumber);
+    if (content === null) {
+      return { issueId, success: false, before, after: 'unknown', error: 'Could not decode page content stream' };
+    }
+
     // The color to restore after this fix is whatever was ACTUALLY active
     // immediately before it -- not this run's own reported/measured color
     // (cd.foreground) or even its own true final color
@@ -297,7 +477,7 @@ export class PdfContrastWriterService {
     const originalRgb = findPrecedingColor(content, fixInsertionPoint);
     if (!originalRgb) {
       return {
-        issueId: issue.id,
+        issueId,
         success: false,
         before,
         after: 'unknown',
@@ -408,7 +588,7 @@ export class PdfContrastWriterService {
         match.restoreColorOverride ??
         (match.internalFillColorOp ? findPrecedingColor(content, match.internalFillColorOp.end) : originalRgb);
       if (!trueTextRgb) {
-        return { issueId: issue.id, success: false, before, after: 'unknown', error: 'Could not determine the text run\'s true color for backplate contrast' };
+        return { issueId, success: false, before, after: 'unknown', error: 'Could not determine the text run\'s true color for backplate contrast' };
       }
       const backplateColorHex = computeCompliantColor(cd.background, unitRgbToHex(trueTextRgb), EXTREME_TARGET_RATIO).color;
       const rect = computeBackplateRect(boundingBox);
@@ -430,7 +610,7 @@ export class PdfContrastWriterService {
             `(${backplateVerification.ratio}:1) on page ${pageNumber}`
           );
           return {
-            issueId: issue.id,
+            issueId,
             success: true,
             before,
             after: `backplate ${backplateColorHex} behind original text (verified ${backplateVerification.ratio}:1)`,
@@ -461,7 +641,7 @@ export class PdfContrastWriterService {
           'like a photo or gradient) — skipping rather than risking a false pass/fail; likely needs manual review'
         : `Fix did not verify even after escalating to ${appliedColor} ` +
           `(measured ${verification?.ratio ?? 'unknown'}:1, required ${cd.requiredRatio}:1)`;
-      return { issueId: issue.id, success: false, before, after: 'unknown', error };
+      return { issueId, success: false, before, after: 'unknown', error };
     }
 
     logger.info(
@@ -470,7 +650,7 @@ export class PdfContrastWriterService {
     );
 
     return {
-      issueId: issue.id,
+      issueId,
       success: true,
       before,
       after: `${appliedColor} on ${cd.background} (verified ${verification.ratio}:1)`,
