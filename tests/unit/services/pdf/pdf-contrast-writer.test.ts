@@ -420,6 +420,52 @@ describe('PdfContrastWriterService.fixColorContrast', () => {
     expect(parseFloat(b)).toBeLessThan(0.5);
   });
 
+  // Real-world incident, confirmed live on Math_Weir_PDF.pdf: pdfjs's own
+  // text-item merging coalesces "8", "749", "47" (three separate
+  // content-stream runs, each its own Td-delimited span) into ONE logical
+  // item for detection, producing a single meaningless BLENDED
+  // cd.foreground (#262626) that matches neither "8"'s real near-white ink
+  // nor "749"'s real near-black ink. The audit's own position always
+  // anchors to "8" -- fixing only that segment (this file's original,
+  // unchanged behavior) leaves the genuinely low-contrast "749" untouched.
+  // fixColorContrast must ALSO find and fix that sibling run.
+  it("fixes a genuinely-failing SIBLING run when the matched run's own true color already passes -- the real 'Text: \"8 749 47\"' pattern", async () => {
+    vi.mocked(verifyContrastInRegion).mockResolvedValue({ ratio: 21, passes: true, foreground: '#ffffff', background: '#707176', uncertain: false, variance: 0 });
+
+    const src = await PDFDocument.create();
+    src.addPage([500, 700]);
+    const doc = await PDFDocument.load(await src.save());
+    // "8" is near-white (its own true color already clears 4.5:1 against
+    // #707176); "749", a separate Td-delimited run in the SAME text
+    // object, is near-black on the SAME background -- genuinely failing.
+    const content = `BT
+1 0 0 1 50 150 Tm
+1 1 1 rg
+(8) Tj
+10 0 Td
+0.15 0.15 0.15 rg
+(749) Tj
+ET
+`;
+    writePageContent(doc, 1, content);
+
+    // The audit's own (wrong) blended detection: anchors to "8"'s position
+    // but reports a foreground that matches neither segment's real color.
+    const issue = contrastIssue({
+      boundingBox: { x: 50, y: 700 - 150, width: 40, height: 14, pageWidth: 500, pageHeight: 700 },
+      contrastData: { foreground: '#262626', background: '#707176', ratio: 3.12, requiredRatio: 4.5, isLargeText: false },
+    });
+
+    const result = await pdfContrastWriterService.fixColorContrast(doc, issue);
+    expect(result.success).toBe(true);
+    expect(result.after).toContain('also fixed 1 sibling run');
+
+    const finalContent = decodePageContent(doc, 1)!;
+    // "749"'s own internal fill op must have changed -- the sibling fix
+    // actually landed, not just a claim in the result message.
+    expect(finalContent).not.toContain('0.15 0.15 0.15 rg');
+  });
+
   it('draws a backplate when the background is flat and known but too mid-luminance for text-color escalation alone', async () => {
     // Real Math_Weir_PDF.pdf finding (PR #575): a confidently-FLAT medium
     // gray background (e.g. #9b9c9f) caps even pure-black text's
