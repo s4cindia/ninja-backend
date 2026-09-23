@@ -114,6 +114,16 @@ interface TextUnit {
    * setup for whatever the NEXT run shows, not this one's own color.
    */
   lastShowEnd: number | null;
+  /**
+   * The text line matrix's own Y-scale (|tlmD|) in effect when this run's
+   * first show op fired -- a reliable proxy for the run's rendered font
+   * size (Tm's a/d directly encode effective size for a unit-size font
+   * resource, the near-universal case; confirmed real: `10 0 0 10 Tm`
+   * ordinary text vs. `5.83 0 0 5.83 Tm` a subscript). Used only to gate
+   * locateTextRunFromUnits' proximity-ambiguity check against a nearby
+   * subscript/superscript glyph -- see SUBSCRIPT_SCALE_RATIO_THRESHOLD.
+   */
+  scaleY: number;
 }
 
 const num = (t: { t: string; v: string } | undefined): number => (t && t.t === 'n' ? parseFloat(t.v) : 0);
@@ -132,6 +142,24 @@ const AMBIGUITY_MARGIN = 4;
 
 // A CONFIDENCE step subtracted when a match is otherwise usable but ambiguous.
 const AMBIGUITY_PENALTY = 0.2;
+
+// Below this ratio (smaller run's own scaleY / larger run's), a nearby
+// runner-up is treated as a subscript/superscript glyph attached to the
+// SAME semantic unit as the best match, not a genuinely separate competing
+// candidate -- exempted from the proximity-ambiguity penalty above.
+//
+// Real incident, confirmed live on Math_Weir_PDF.pdf: statistical notation
+// like "H₀ true"/"B₁ (1 time/wk)" renders each subscript ("0"/"1") as its
+// own tiny run positioned just before the following word, close enough to
+// trigger AMBIGUITY_MARGIN even though there's no genuine ambiguity about
+// which run a contrast issue targets -- the subscript is never itself a
+// plausible alternate target. Measured scale ratio in BOTH real cases:
+// 5.83/10 = 0.583 and 5.247/9 = 0.583 exactly -- a standard subscript-scale
+// convention, not a coincidence. 0.75 sits with real margin above that
+// (comfortably exempts genuine subscripts) and below 1.0 (a genuine
+// same-size collision, e.g. two ordinary adjacent table-column values,
+// keeps the existing ambiguity behavior completely unchanged).
+const SUBSCRIPT_SCALE_RATIO_THRESHOLD = 0.75;
 
 // Fill-color operators only (lowercase — sets the color Tj actually renders
 // with under the default, near-universal fill text-rendering mode). Stroke
@@ -240,12 +268,13 @@ function findTextUnits(tokens: Token[]): TextUnit[] {
   let runAnchorX: number | null = null;
   let runAnchorY: number | null = null;
   let runLastShowEnd: number | null = null;
+  let runScaleY = 1;
 
   const deviceX = (tE: number): number => ctm.a * tE + ctm.e;
   const deviceY = (tF: number): number => ctm.d * tF + ctm.f;
 
   const flushRun = (endPos: number): void => {
-    if (runHasShow) units.push({ start: runStart, end: endPos, anchorX: runAnchorX, anchorY: runAnchorY, lastShowEnd: runLastShowEnd });
+    if (runHasShow) units.push({ start: runStart, end: endPos, anchorX: runAnchorX, anchorY: runAnchorY, lastShowEnd: runLastShowEnd, scaleY: runScaleY });
     runHasShow = false;
     runAnchorX = null;
     runAnchorY = null;
@@ -333,7 +362,7 @@ function findTextUnits(tokens: Token[]): TextUnit[] {
         tmF -= tlmD * tld;
         break;
       case 'Tj': case 'TJ': {
-        if (!runHasShow) { runAnchorX = deviceX(tmE); runAnchorY = deviceY(tmF); runHasShow = true; }
+        if (!runHasShow) { runAnchorX = deviceX(tmE); runAnchorY = deviceY(tmF); runScaleY = Math.abs(tlmD); runHasShow = true; }
         runLastShowEnd = tk.end;
         break;
       }
@@ -359,6 +388,7 @@ function findTextUnits(tokens: Token[]): TextUnit[] {
         tmF -= tlmD * tld;
         runAnchorX = deviceX(tmE);
         runAnchorY = deviceY(tmF);
+        runScaleY = Math.abs(tlmD);
         runHasShow = true;
         runLastShowEnd = tk.end;
         break;
@@ -529,7 +559,10 @@ function locateTextRunFromUnits(
 
   const best = candidates[0];
   const runnerUp = candidates[1];
-  const proximityAmbiguous = !!runnerUp && (runnerUp.dist - best.dist) <= AMBIGUITY_MARGIN;
+  const scaleRatio = runnerUp ? Math.min(best.scaleY, runnerUp.scaleY) / Math.max(best.scaleY, runnerUp.scaleY) : 1;
+  const runnerUpIsSubscriptLike = scaleRatio <= SUBSCRIPT_SCALE_RATIO_THRESHOLD;
+  const proximityAmbiguous =
+    !!runnerUp && (runnerUp.dist - best.dist) <= AMBIGUITY_MARGIN && !runnerUpIsSubscriptLike;
 
   // Search only up to the run's own LAST show op, not its full [start,end) --
   // content between the last show and the run's end boundary is graphics-

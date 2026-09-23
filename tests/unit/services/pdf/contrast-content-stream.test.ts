@@ -64,6 +64,51 @@ q BT 1 0 0 1 50 148 Tm <42> Tj ET Q
     expect(match!.confidence).toBeCloseTo(0.75); // 0.95 tier - 0.2 ambiguity penalty
   });
 
+  // Real incident, confirmed live on Math_Weir_PDF.pdf: statistical notation
+  // like "H0 true" (H with a subscript 0) renders the subscript as its own
+  // tiny run positioned just before the following word -- close enough to
+  // trigger the plain proximity-ambiguity check above even though the
+  // subscript is never a plausible alternate target for a contrast issue
+  // about "true". The subscript's own scale (5.83 of a 10pt run, matching
+  // the real document exactly) is far enough below the main run's own scale
+  // to be recognized and exempted.
+  it('does not flag ambiguous when a close runner-up is a much-smaller subscript-scale glyph', () => {
+    // Subscript "0" at (47,148), scale 5.83; main run "true" at (50,150),
+    // scale 10 -- 3.6pt apart, within the 4pt margin.
+    const content = `BT
+5.83 0 0 5.83 47 148 Tm
+<30> Tj
+ET
+BT
+10 0 0 10 50 150 Tm
+<74727565> Tj
+ET
+`;
+    const match = locateTextRun(content, { x: 50, baselineY: 150 });
+    expect(match).toBeTruthy();
+    expect(match!.ambiguous).toBe(false);
+    expect(match!.confidence).toBe(0.95);
+  });
+
+  // Counter-example: two candidates at genuinely different scales but NOT a
+  // subscript pattern (both comfortably above SUBSCRIPT_SCALE_RATIO_THRESHOLD)
+  // must still be flagged ambiguous -- the exemption is narrow, not "any
+  // scale difference at all suppresses ambiguity".
+  it('still flags ambiguous when a close runner-up is only slightly smaller (not subscript-scale)', () => {
+    const content = `BT
+9 0 0 9 47 148 Tm
+<41> Tj
+ET
+BT
+10 0 0 10 50 150 Tm
+<42> Tj
+ET
+`;
+    const match = locateTextRun(content, { x: 50, baselineY: 150 });
+    expect(match).toBeTruthy();
+    expect(match!.ambiguous).toBe(true);
+  });
+
   it('does not flag ambiguous when candidates are well separated', () => {
     const match = locateTextRun(twoLineStream, { x: 50, baselineY: 150 });
     expect(match!.ambiguous).toBe(false);
