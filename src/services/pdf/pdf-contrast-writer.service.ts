@@ -118,7 +118,7 @@ function unitRgbToHex([r, g, b]: [number, number, number]): string {
 // resolution populated it) > this run's single internal fill op, evaluated
 // just PAST it so findPrecedingColor picks it up as current > the ambient
 // color in effect before the run starts, when it sets no color of its own.
-function trueColorOfRun(content: string, run: TextRunMatch): [number, number, number] | null {
+export function trueColorOfRun(content: string, run: TextRunMatch): [number, number, number] | null {
   if (run.restoreColorOverride) return run.restoreColorOverride;
   if (run.internalFillColorOp) return findPrecedingColor(content, run.internalFillColorOp.end);
   return findPrecedingColor(content, run.start);
@@ -130,7 +130,7 @@ function trueColorOfRun(content: string, run: TextRunMatch): [number, number, nu
 // computeCompliantColor's own "already compliant" signal (direction:
 // 'none' when the color already clears the target with its own safety
 // margin) rather than re-deriving contrast-ratio math a second time.
-function genuinelyFailsContrast(
+export function genuinelyFailsContrast(
   trueColor: [number, number, number],
   cd: NonNullable<AuditIssue['contrastData']>
 ): boolean {
