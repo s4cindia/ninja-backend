@@ -352,8 +352,72 @@ describe('PdfContrastWriterService.fixColorContrast', () => {
     expect(result.after).toContain('verified 18:1');
 
     const content = decodePageContent(doc, 1)!;
-    expect(content).toContain(' re\nf\nQ'); // the backplate's own fill sequence landed in the page
+    expect(content).toContain(' re\nf\n'); // the backplate's own fill sequence landed in the page
     expect(content).toContain('Tj'); // original text-show op still present, untouched
+    // The backplate's own inserted snippet (fill through its restore rg,
+    // right before the enclosing BT) has no q/Q of its own -- see
+    // spliceBackplate's own doc comment for why. Scoped to just that
+    // snippet since realPdfWithText's own pdf-lib-drawn text carries its
+    // OWN pre-existing, unrelated q/Q pair.
+    const reIdx = content.indexOf(' re\nf\n');
+    const btIdx = content.indexOf('BT', reIdx);
+    const snippet = content.slice(reIdx, btIdx);
+    expect(snippet).not.toContain('q');
+    expect(snippet).not.toContain('Q');
+  });
+
+  // Real-world incident, confirmed live on Math_Weir_PDF.pdf: several
+  // stuck backplate cases turned out to be white text on a gray table
+  // cell (a real, decent-contrast design, e.g. a row-header label) that
+  // the ORIGINAL AUDIT had mis-sampled as some mid-gray fg/bg pair (a
+  // validator "same-surface" sampling failure -- sampleDark's darkest-N%
+  // percentile landing on anti-aliased edge pixels instead of the true
+  // solid fill, not a real fg/bg pair). Trusting that wrong cd.foreground
+  // for the backplate's OWN color computes a backplate chosen to contrast
+  // against the WRONG color -- which resolves to white, coincidentally the
+  // SAME as the text's own real (correctly unchanged) white ink,
+  // guaranteeing an invisible result no matter how well the rect itself
+  // renders. The backplate color must be computed against the run's own
+  // TRUE color (from the content stream itself, findPrecedingColor-style),
+  // not cd.foreground.
+  it("computes the backplate color against the text run's own true color, not a wrong cd.foreground", async () => {
+    vi.mocked(verifyContrastInRegion).mockResolvedValue({ ratio: 1, passes: false, foreground: '#707176', background: '#707176', uncertain: false, variance: 0 });
+    vi.mocked(verifyBackplateContrast).mockResolvedValue({ ratio: 21, passes: true, foreground: '#000000', background: '#000000', uncertain: false, variance: 0 });
+
+    const src = await PDFDocument.create();
+    src.addPage([500, 700]);
+    const doc = await PDFDocument.load(await src.save());
+    // The run's OWN internal color is white (1 1 1 rg) -- its true,
+    // correctly-rendered color, matching the real Math_Weir_PDF.pdf shape
+    // (a white row-header label on a solid gray cell).
+    const content = `BT\n1 0 0 1 50 450 Tm\n1 1 1 rg\n(Whole) Tj\nET`;
+    writePageContent(doc, 1, content);
+
+    // The audit's own (wrong) detection: reports fg=bg=#707176, the classic
+    // same-surface degenerate signature -- NOT the run's true white color.
+    const issue = contrastIssue({
+      boundingBox: { x: 50, y: 700 - 450, width: 40, height: 14, pageWidth: 500, pageHeight: 700 },
+      contrastData: { foreground: '#707176', background: '#707176', ratio: 1, requiredRatio: 4.5, isLargeText: false },
+    });
+
+    const result = await pdfContrastWriterService.fixColorContrast(doc, issue);
+    expect(result.success).toBe(true);
+
+    const finalContent = decodePageContent(doc, 1)!;
+    const reIdx = finalContent.indexOf(' re\nf\n');
+    expect(reIdx).toBeGreaterThanOrEqual(0);
+    // The backplate's own fill color -- the LAST "r g b rg" op before its
+    // `re`/`f` -- must be BLACK (the correct choice to contrast against the
+    // run's true white ink), not white, which is what computeCompliantColor
+    // would pick if fed the wrong cd.foreground (#707176) instead.
+    const beforeRe = finalContent.slice(0, reIdx);
+    const fillColorMatches = [...beforeRe.matchAll(/([\d.]+) ([\d.]+) ([\d.]+) rg/g)];
+    const lastFillColor = fillColorMatches[fillColorMatches.length - 1];
+    expect(lastFillColor).toBeTruthy();
+    const [, r, g, b] = lastFillColor!;
+    expect(parseFloat(r)).toBeLessThan(0.5);
+    expect(parseFloat(g)).toBeLessThan(0.5);
+    expect(parseFloat(b)).toBeLessThan(0.5);
   });
 
   it('draws a backplate when the background is flat and known but too mid-luminance for text-color escalation alone', async () => {
