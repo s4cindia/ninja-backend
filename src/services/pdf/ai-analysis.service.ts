@@ -175,6 +175,49 @@ const LANGUAGE_CODES = new Set(['MATTERHORN-11-001', 'LANGUAGE-MISSING']);
 // applyApprovedSuggestions uses to correctly batch resolveColorContrastTargets
 // (see that call site's own doc comment -- CodeRabbit finding on PR #563).
 export const CONTRAST_CODES = new Set(['COLOR-CONTRAST', 'CONTRAST-RATIO']);
+
+// A "no contrastData" COLOR-CONTRAST issue (pdf-contrast.validator.ts's
+// isRegionUniform path) is ambiguous by design -- see that dispatch
+// branch's own doc comment for the real, CodeRabbit-caught risk (PR #585):
+// the SAME signal can mean either genuine print-production slug-line text
+// (safe to Artifact-tag) or a broken/missing embedded font subset that
+// renders as zero ink in THIS validator's own pipeline while rendering
+// fine, as real content, in an actual reader -- auto-hiding that from
+// every screen-reader user would be strictly worse than leaving it
+// flagged. That ambiguity is real and this pattern doesn't resolve it in
+// general; it only recognizes ONE specific, mechanically-shaped case
+// confidently enough to auto-apply.
+//
+// Confirmed on Math_Weir_PDF.pdf: all 55 real no-contrastData issues on
+// this document are Illustrator/InDesign job-tracking slug lines --
+// <job>/<author>/<figure-or-section-id>/<numeric-asset-id>/<revision>,
+// e.g. "E9472/Weir/F02.01/746848/mh-R1" -- a standard prepress convention
+// (this is a typesetting vendor's own codebase, per package.json's
+// "author": "S4Carlisle"; the shape is generic to the industry, not
+// specific to this one book). This regex requires the WHOLE string to be
+// exactly that shape (5 slash-separated segments, no spaces or natural-
+// language punctuation anywhere) -- real prose, a byline, or a photo
+// credit ("Photo: Jane Doe/Getty Images") never matches this strictly,
+// since real sentences contain spaces. A false NEGATIVE (a genuine slug
+// line in some other shape) just falls through to the existing, safe
+// guidance-only path unchanged; a false POSITIVE would require a human-
+// authored, space-free string that coincidentally forms 5 slash-separated
+// alphanumeric segments, which real book content essentially never does.
+const PRINT_PRODUCTION_SLUG_LINE_RE = /^[A-Za-z0-9]+\/[A-Za-z]+\/[A-Za-z0-9_.]+\/\d+\/[A-Za-z0-9-]+$/;
+
+// Extracts the quoted text pdf-contrast.validator.ts's own
+// `Text: "${str}", rendered as a single uniform color (...)` context
+// message embeds, and tests it against the slug-line shape above. Parses
+// this file's own producer-controlled message format (not user input) --
+// if that format ever changes, the regex simply stops matching and this
+// falls back to the existing safe guidance-only behavior, never to an
+// unsafe auto-apply.
+function looksLikePrintProductionSlugLine(context: string | undefined): boolean {
+  if (!context) return false;
+  const match = /^Text: "([^"]*)"/.exec(context);
+  if (!match) return false;
+  return PRINT_PRODUCTION_SLUG_LINE_RE.test(match[1]);
+}
 const LINK_CODES = new Set(['LINK-NOT-DESCRIPTIVE', 'LINK-URL-AS-TEXT', 'LINK-GENERIC-TEXT']);
 const FORM_CODES = new Set(['FORM-FIELD-NO-LABEL', 'FORM-FIELD-MISSING-TOOLTIP']);
 const BOOKMARK_CODES = new Set(['BOOKMARK-MISSING', 'BOOKMARK-INSUFFICIENT', 'BOOKMARK-GENERIC-TEXT']);
@@ -1387,6 +1430,22 @@ class AiAnalysisService {
       // flagged -- silently hiding it from EVERY reader instead of
       // surfacing the real rendering bug for a human to fix.
       if (!issue.contrastData) {
+        // Narrow, confident exception to the guidance-only default above:
+        // see PRINT_PRODUCTION_SLUG_LINE_RE's own doc comment for exactly
+        // what this does and doesn't resolve. Still gated on
+        // colorContrastMode, same as every other apply-to-pdf contrast
+        // path -- an operator who wants zero auto-applied contrast changes
+        // still gets that.
+        if (config.colorContrastMode === 'apply-to-pdf' && looksLikePrintProductionSlugLine(issue.context)) {
+          return {
+            suggestionType: 'invisible-text-artifact-fix',
+            guidance: 'This text matches a standard print-production slug-line shape (job/author/figure-id/asset-id/revision, e.g. "E9472/Weir/F02.01/746848/mh-R1") and has no ink color visually distinguishable from its background — marking it /Artifact excludes it from the accessible tree, matching what every reader already experiences.',
+            confidence: 0.9,
+            rationale: 'Text content matches the mechanical print-production slug-line shape exactly (5 slash-separated segments, no natural-language spacing) -- confidently distinguishable from a broken-font rendering failure, which would show real prose/sentence content instead',
+            model: 'rule-based',
+            applyMode: 'apply-to-pdf',
+          };
+        }
         return {
           suggestionType: 'invisible-text-artifact-fix',
           guidance: 'This text has no ink color visually distinguishable from its background. This is often print-production slug-line text (safe to mark /Artifact), but can also indicate a broken embedded font rendering REAL content — verify before applying.',

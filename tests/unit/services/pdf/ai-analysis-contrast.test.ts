@@ -82,15 +82,16 @@ describe('dispatchIssue: COLOR-CONTRAST without contrastData routes to invisible
     boundingBox: { x: 100, y: 200, width: 50, height: 8, pageWidth: 612, pageHeight: 792 },
   };
 
-  it('ALWAYS returns guidance-only, even when colorContrastMode is apply-to-pdf', async () => {
+  it('returns guidance-only when colorContrastMode is apply-to-pdf but the text does not look like a print-production slug line', async () => {
     // CodeRabbit finding on PR #585, confirmed real: the SAME "no
     // contrastData" shape also represents a genuinely different, unrelated
     // problem -- an embedded-font rendering failure hiding REAL content,
     // which pdf-contrast.validator.ts's own triage already marks 'manual'
     // for exactly this reason. Auto-Artifact-tagging real content because
     // its rendering is merely broken would be strictly worse than leaving
-    // it flagged, so this suggestion never auto-applies regardless of
-    // config, unlike the sibling color-contrast-fix.
+    // it flagged. NO_CONTRAST_DATA_ISSUE has no `context` at all here, so
+    // the narrow slug-line exception (see PRINT_PRODUCTION_SLUG_LINE_RE's
+    // own doc comment) can't possibly match -- this stays guidance-only.
     const parsed = { isTagged: true, pages: [] } as unknown as import('../../../../src/services/pdf/pdf-comprehensive-parser.service').PdfParseResult;
     const config = { colorContrastMode: 'apply-to-pdf' } as unknown as import('../../../../src/services/pdf/ai-analysis.service').AiRemediationConfig;
 
@@ -100,6 +101,57 @@ describe('dispatchIssue: COLOR-CONTRAST without contrastData routes to invisible
     expect(res.suggestionType).toBe('invisible-text-artifact-fix');
     expect(res.applyMode).toBe('guidance-only');
     expect(res.model).toBe('rule-based');
+    expect(res.requiresManualReview).toBe(true);
+  });
+
+  it('auto-applies when the text matches the print-production slug-line shape AND colorContrastMode is apply-to-pdf', async () => {
+    // Real Math_Weir_PDF.pdf shape: all 55 real no-contrastData issues on
+    // that document were confirmed to be exactly this -- see
+    // PRINT_PRODUCTION_SLUG_LINE_RE's own doc comment.
+    const slugLineIssue: AuditIssue = {
+      ...NO_CONTRAST_DATA_ISSUE,
+      context: 'Text: "E9472/Weir/F02.01/746848/mh-R1", rendered as a single uniform color (#ffffff)',
+    };
+    const parsed = { isTagged: true, pages: [] } as unknown as import('../../../../src/services/pdf/pdf-comprehensive-parser.service').PdfParseResult;
+    const config = { colorContrastMode: 'apply-to-pdf' } as unknown as import('../../../../src/services/pdf/ai-analysis.service').AiRemediationConfig;
+
+    const res = await svc.dispatchIssue(slugLineIssue, parsed, config, new Map(), new Map(), new Map(), new Map());
+
+    expect(res).toBeTruthy();
+    expect(res.suggestionType).toBe('invisible-text-artifact-fix');
+    expect(res.applyMode).toBe('apply-to-pdf');
+    expect(res.requiresManualReview).toBeUndefined();
+  });
+
+  it('does NOT auto-apply a slug-line-shaped text when colorContrastMode is guidance-only', async () => {
+    // The slug-line exception is still gated on colorContrastMode, same as
+    // every other apply-to-pdf contrast path.
+    const slugLineIssue: AuditIssue = {
+      ...NO_CONTRAST_DATA_ISSUE,
+      context: 'Text: "E9472/Weir/F02.01/746848/mh-R1", rendered as a single uniform color (#ffffff)',
+    };
+    const parsed = { isTagged: true, pages: [] } as unknown as import('../../../../src/services/pdf/pdf-comprehensive-parser.service').PdfParseResult;
+    const config = { colorContrastMode: 'guidance-only' } as unknown as import('../../../../src/services/pdf/ai-analysis.service').AiRemediationConfig;
+
+    const res = await svc.dispatchIssue(slugLineIssue, parsed, config, new Map(), new Map(), new Map(), new Map());
+
+    expect(res.applyMode).toBe('guidance-only');
+  });
+
+  it('does NOT auto-apply real prose that happens to have no contrastData (a byline/credit, not a slug line)', async () => {
+    // A real, meaningful sentence never matches the strict slash-separated
+    // shape -- confirms the pattern doesn't overreach into genuinely
+    // ambiguous content just because apply-to-pdf is on.
+    const bylineIssue: AuditIssue = {
+      ...NO_CONTRAST_DATA_ISSUE,
+      context: 'Text: "Photo courtesy of Jane Doe / Getty Images", rendered as a single uniform color (#ffffff)',
+    };
+    const parsed = { isTagged: true, pages: [] } as unknown as import('../../../../src/services/pdf/pdf-comprehensive-parser.service').PdfParseResult;
+    const config = { colorContrastMode: 'apply-to-pdf' } as unknown as import('../../../../src/services/pdf/ai-analysis.service').AiRemediationConfig;
+
+    const res = await svc.dispatchIssue(bylineIssue, parsed, config, new Map(), new Map(), new Map(), new Map());
+
+    expect(res.applyMode).toBe('guidance-only');
     expect(res.requiresManualReview).toBe(true);
   });
 
