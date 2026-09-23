@@ -19,6 +19,7 @@
  */
 
 import type { EnclosingTextObject } from './contrast-content-stream';
+import { findPrecedingColor } from './contrast-content-stream';
 import { RENDER_SCALE } from './color-contrast-verification';
 
 export interface BackplateRect {
@@ -122,16 +123,41 @@ export function computeBackplateRect(boundingBox: {
 }
 
 /**
- * Inserts a filled-rectangle sequence before `enclosing.btStart`, wrapped in
- * its own `q [inverse-CTM] cm ... Q` so `rect`'s coordinates can be plain
- * device-space PDF points regardless of whatever transform is already
- * ambient at that point in the content stream (the same axis-aligned-only
- * assumption — scale + translate, no rotation/skew — already governing
- * every other CTM computation in this subsystem).
+ * Inserts a filled-rectangle sequence before `enclosing.btStart`. `rect`'s
+ * coordinates can be plain device-space PDF points regardless of whatever
+ * transform is already ambient at that point in the content stream, by
+ * bracketing the draw with `cm [inverse-CTM]` then, after painting, `cm
+ * [CTM]` again to put the ambient transform back — the same axis-aligned-
+ * only assumption (scale + translate, no rotation/skew) already governing
+ * every other CTM computation in this subsystem. Fill color is restored the
+ * same way: an explicit `rg` back to whatever `findPrecedingColor` finds
+ * genuinely ambient at the insertion point, not a graphics-state pop.
+ *
+ * Deliberately does NOT use `q`/`Q` to scope the color/CTM change, even
+ * though `q [inverse-CTM] cm ... Q` is the more obvious way to write this
+ * and *is* legal here (the insertion sits before `BT`, never inside it —
+ * unlike the PDF32000-1:2008 Annex A violation this module's sibling,
+ * spliceColorFix, hit and fixed in PR #569). Confirmed live on
+ * Math_Weir_PDF.pdf: a `q`/`Q`-bracketed rectangle insertion here reliably
+ * makes the text run immediately following the inserted `Q` render
+ * completely invisible in pdfjs-dist's canvas backend — reproduced across 6
+ * real stuck contrast issues, bisected down to the `q`/`Q` pair itself
+ * (not the color, not the CTM math, not the path-construction operator
+ * choice (`re` vs `m`/`l`/`h`), not an XObject-vs-inline formulation, and
+ * not a leftover clip — 5 of the 6 real cases have no clip operator
+ * anywhere nearby). The exact upstream pdfjs-dist/canvas mechanism wasn't
+ * chased further; the explicit-restore form below was verified empirically
+ * (same real cases, same render pipeline) to make the text render
+ * correctly, and matches this codebase's own established precedent
+ * (findPrecedingColor's doc comment) of preferring a spec-legal, verified-
+ * safe explicit restore over a graphics-state stack op whenever the two
+ * are otherwise equivalent.
  *
  * Returns null (rather than guessing) when `enclosing.ctm` has a collapsed
- * axis (a or d is 0) — the matrix isn't invertible, and this subsystem's
- * whole convention is to bail rather than draw something wrong.
+ * axis (a or d is 0) — the matrix isn't invertible — or when
+ * findPrecedingColor can't determine the genuinely ambient restore color
+ * (an untracked `sc`/`scn` colorspace) — this subsystem's whole convention
+ * is to bail rather than draw or restore something wrong.
  */
 export function spliceBackplate(
   content: string,
@@ -142,17 +168,27 @@ export function spliceBackplate(
   const { a, d, e, f } = enclosing.ctm;
   if (a === 0 || d === 0) return null;
 
+  const restoreRgb = findPrecedingColor(content, enclosing.btStart);
+  if (!restoreRgb) return null;
+
   const invA = 1 / a;
   const invD = 1 / d;
   const invE = -e / a;
   const invF = -f / d;
+  const isIdentity = a === 1 && d === 1 && e === 0 && f === 0;
 
   const [r, g, b] = colorRgb;
+  const [rr, rgVal, rb] = restoreRgb;
+  const cancelCm = isIdentity ? '' : `${invA} 0 0 ${invD} ${invE} ${invF} cm\n`;
+  const restoreCm = isIdentity ? '' : `${a} 0 0 ${d} ${e} ${f} cm\n`;
+
   const snippet =
-    `\nq\n${invA} 0 0 ${invD} ${invE} ${invF} cm\n` +
+    `\n${cancelCm}` +
     `${r} ${g} ${b} rg\n` +
     `${rect.x} ${rect.y} ${rect.width} ${rect.height} re\n` +
-    `f\nQ\n`;
+    `f\n` +
+    `${rr} ${rgVal} ${rb} rg\n` +
+    `${restoreCm}`;
 
   return content.slice(0, enclosing.btStart) + snippet + content.slice(enclosing.btStart);
 }

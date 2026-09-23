@@ -352,8 +352,18 @@ describe('PdfContrastWriterService.fixColorContrast', () => {
     expect(result.after).toContain('verified 18:1');
 
     const content = decodePageContent(doc, 1)!;
-    expect(content).toContain(' re\nf\nQ'); // the backplate's own fill sequence landed in the page
+    expect(content).toContain(' re\nf\n'); // the backplate's own fill sequence landed in the page
     expect(content).toContain('Tj'); // original text-show op still present, untouched
+    // The backplate's own inserted snippet (fill through its restore rg,
+    // right before the enclosing BT) has no q/Q of its own -- see
+    // spliceBackplate's own doc comment for why. Scoped to just that
+    // snippet since realPdfWithText's own pdf-lib-drawn text carries its
+    // OWN pre-existing, unrelated q/Q pair.
+    const reIdx = content.indexOf(' re\nf\n');
+    const btIdx = content.indexOf('BT', reIdx);
+    const snippet = content.slice(reIdx, btIdx);
+    expect(snippet).not.toContain('q');
+    expect(snippet).not.toContain('Q');
   });
 
   it('draws a backplate when the background is flat and known but too mid-luminance for text-color escalation alone', async () => {

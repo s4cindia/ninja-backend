@@ -40,7 +40,13 @@ describe('computeBackplateRect', () => {
 describe('spliceBackplate', () => {
   const rect = { x: 10, y: 20, width: 30, height: 40 };
 
-  it('inserts a q/cm/rg/re/f/Q sequence immediately before the enclosing BT', () => {
+  it('inserts an rg/re/f/rg sequence immediately before the enclosing BT, with NO q/Q', () => {
+    // Regression test for a real, live-confirmed bug on Math_Weir_PDF.pdf:
+    // a q/Q-bracketed rectangle insertion here reliably made the text run
+    // immediately after the inserted Q render completely invisible in
+    // pdfjs-dist's canvas backend (bisected to the q/Q pair itself, not
+    // the color, CTM math, or path-construction operator choice). See this
+    // function's own doc comment.
     const content = 'BEFORE\nBT\n<41> Tj\nET\nAFTER';
     const btStart = content.indexOf('BT');
     const result = spliceBackplate(content, { btStart, ctm: { a: 1, d: 1, e: 0, f: 0 } }, rect, [1, 1, 1]);
@@ -49,28 +55,66 @@ describe('spliceBackplate', () => {
     expect(result!.startsWith('BEFORE\n')).toBe(true);
     expect(result!.endsWith('BT\n<41> Tj\nET\nAFTER')).toBe(true);
     const inserted = result!.slice('BEFORE\n'.length, result!.indexOf('BT\n<41>'));
-    expect(inserted).toContain('q');
-    expect(inserted).toContain('1 0 0 1 0 0 cm'); // identity CTM -> identity inverse
+
+    // No graphics-state save/restore at all.
+    expect(/(^|\s)q(\s|$)/.test(inserted)).toBe(false);
+    expect(/(^|\s)Q(\s|$)/.test(inserted)).toBe(false);
+    // Identity CTM -> no cm op needed at all (not even a no-op one).
+    expect(inserted).not.toContain('cm');
+
     expect(inserted).toContain('1 1 1 rg');
     expect(inserted).toContain('10 20 30 40 re');
     expect(inserted).toContain('f');
-    expect(inserted).toContain('Q');
-    // q/cm/rg/re/f/Q must appear in that relative order.
-    const order = ['q', 'cm', 'rg', 're', 'f', 'Q'].map(tok => inserted.indexOf(tok));
-    for (let i = 1; i < order.length; i++) expect(order[i]).toBeGreaterThan(order[i - 1]);
+    // Explicit restore back to the genuinely ambient color (nothing
+    // precedes the insertion point here, so findPrecedingColor's own
+    // "unset" fallback is pure black).
+    expect(inserted).toContain('0 0 0 rg');
+
+    // rg/re/f must appear in that relative order, with the restore rg
+    // strictly after the fill.
+    const fillRgIdx = inserted.indexOf('1 1 1 rg');
+    const reIdx = inserted.indexOf('10 20 30 40 re');
+    const fIdx = inserted.indexOf('f', reIdx);
+    const restoreRgIdx = inserted.indexOf('0 0 0 rg');
+    expect(reIdx).toBeGreaterThan(fillRgIdx);
+    expect(fIdx).toBeGreaterThan(reIdx);
+    expect(restoreRgIdx).toBeGreaterThan(fIdx);
   });
 
-  it('uses the inverse of a non-identity CTM so the rect ends up in absolute device-space coordinates', () => {
+  it('brackets a non-identity CTM with cm/inverse-cm (no q/Q) so the rect draws in absolute device-space coordinates and the ambient transform is restored afterward', () => {
     const content = 'BT\n<41> Tj\nET';
     // A 2x-scaled, translated CTM ambient at the insertion point.
     const result = spliceBackplate(content, { btStart: 0, ctm: { a: 2, d: 4, e: 10, f: 20 } }, rect, [0, 0, 0]);
-    expect(result).toContain(`${1 / 2} 0 0 ${1 / 4} ${-10 / 2} ${-20 / 4} cm`);
+    expect(result).toBeTruthy();
+    const cancelIdx = result!.indexOf(`${1 / 2} 0 0 ${1 / 4} ${-10 / 2} ${-20 / 4} cm`);
+    const restoreIdx = result!.indexOf('2 0 0 4 10 20 cm');
+    expect(cancelIdx).toBeGreaterThanOrEqual(0);
+    expect(restoreIdx).toBeGreaterThan(cancelIdx);
+    expect(/(^|\s)q(\s|$)/.test(result!)).toBe(false);
+    expect(/(^|\s)Q(\s|$)/.test(result!)).toBe(false);
   });
 
   it('returns null for a collapsed (non-invertible) CTM rather than drawing something wrong', () => {
     const content = 'BT\n<41> Tj\nET';
     expect(spliceBackplate(content, { btStart: 0, ctm: { a: 0, d: 1, e: 0, f: 0 } }, rect, [0, 0, 0])).toBeNull();
     expect(spliceBackplate(content, { btStart: 0, ctm: { a: 1, d: 0, e: 0, f: 0 } }, rect, [0, 0, 0])).toBeNull();
+  });
+
+  it('returns null rather than guessing when the ambient restore color is set via an untracked sc/scn colorspace op', () => {
+    // Matches findPrecedingColor's own documented "bail rather than guess"
+    // contract for its null case.
+    const content = '/CS0 cs\n0.5 0.2 0.1 0.9 scn\nBT\n<41> Tj\nET';
+    const btStart = content.indexOf('BT');
+    expect(spliceBackplate(content, { btStart, ctm: { a: 1, d: 1, e: 0, f: 0 } }, rect, [1, 1, 1])).toBeNull();
+  });
+
+  it('restores whatever fill color was genuinely ambient at the insertion point, not pure black unconditionally', () => {
+    const content = '0.4 0.4 0.5 rg\nBEFORE\nBT\n<41> Tj\nET';
+    const btStart = content.indexOf('BT');
+    const result = spliceBackplate(content, { btStart, ctm: { a: 1, d: 1, e: 0, f: 0 } }, rect, [1, 1, 1]);
+    expect(result).toBeTruthy();
+    const inserted = result!.slice(0, result!.indexOf('BT\n<41>'));
+    expect(inserted).toContain('0.4 0.4 0.5 rg');
   });
 
   it('does not modify content before the insertion point', () => {
