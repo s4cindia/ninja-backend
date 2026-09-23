@@ -230,6 +230,16 @@ const PDFUA_IDENTIFIER_CODES = new Set(['PDFUA-IDENTIFIER-MISSING', 'MATTERHORN-
 // (fontToUnicodeService.synthesizeToUnicode) already handles every
 // affected font in a single call.
 const FONT_TOUNICODE_MISSING_CODES = new Set(['FONT-TOUNICODE-MISSING']);
+// pdfa11y's own UA-10-002 (mapped to Matterhorn 10-001): a simple font's
+// /ToUnicode CMap EXISTS but doesn't cover every code the font actually
+// renders -- a genuinely different gap from FONT_TOUNICODE_MISSING_CODES
+// above (no CMap at all), which font-tounicode.service.ts's own
+// synthesizeToUnicode explicitly declines to touch (see its own doc
+// comment: replacing an existing, presumably-correct CMap wholesale risks
+// overwriting more correct mappings than it fixes). extendPartialToUnicode
+// is append-only for exactly that reason. Same "one document-level issue,
+// one whole-document fix" convention as FONT_TOUNICODE_MISSING_CODES.
+const FONT_TOUNICODE_PARTIAL_CODES = new Set(['MATTERHORN-10-001']);
 const UNTAGGED_CONTENT_CODES = new Set(['UNTAGGED-CONTENT', 'MATTERHORN-01-005']);
 // pdf-figure-caption-tree.validator.ts's own real finding: a Figure
 // caption tagged in the content stream and correctly ParentTree-cross-
@@ -1493,6 +1503,17 @@ class AiAnalysisService {
         guidance: 'A /ToUnicode CMap will be synthesized for every font missing one, from its own /Encoding where possible.',
         confidence: 1.0,
         rationale: 'Deterministic fix — derives each missing code\'s Unicode value from the font\'s own /Encoding (Differences or base encoding), falling back to a Private-Use-Area mapping only when no real value can be derived, so every character remains machine-readable',
+        model: 'rule-based',
+        applyMode: 'apply-to-pdf',
+      };
+    }
+
+    if (FONT_TOUNICODE_PARTIAL_CODES.has(code)) {
+      return {
+        suggestionType: 'font-tounicode-extend-fix',
+        guidance: 'Every rendered code not covered by an existing /ToUnicode CMap will get an appended entry, derived from the font\'s own /Encoding where possible.',
+        confidence: 1.0,
+        rationale: 'Deterministic fix — scans the document\'s own content streams for codes each font actually renders, and appends an entry for any not already covered by that font\'s existing CMap; never modifies an existing entry, since a symbol/math font\'s already-correct mappings often can\'t be safely re-derived algorithmically',
         model: 'rule-based',
         applyMode: 'apply-to-pdf',
       };
@@ -3167,7 +3188,7 @@ class AiAnalysisService {
     // for repeat contrast fixes.
     const pagesRewrittenSincePreResolve = new Set<number>();
 
-    const STRUCTURE_WRITER_TYPES = new Set(['heading-fix', 'list-fix', 'table-header-fix', 'table-header-fix-column', 'table-header-scope-fix', 'table-artifact-fix', 'table-from-layout-fix', 'bookmark-generate', 'heading-multiple-h1-fix', 'pdfua-identifier', 'color-contrast-fix', 'alt-text-decorative', 'untagged-content-fix', 'invisible-text-artifact-fix', 'figure-caption-reattach-fix', 'inline-figure-reattach-fix', 'font-tounicode-synthesis-fix']);
+    const STRUCTURE_WRITER_TYPES = new Set(['heading-fix', 'list-fix', 'table-header-fix', 'table-header-fix-column', 'table-header-scope-fix', 'table-artifact-fix', 'table-from-layout-fix', 'bookmark-generate', 'heading-multiple-h1-fix', 'pdfua-identifier', 'color-contrast-fix', 'alt-text-decorative', 'untagged-content-fix', 'invisible-text-artifact-fix', 'figure-caption-reattach-fix', 'inline-figure-reattach-fix', 'font-tounicode-synthesis-fix', 'font-tounicode-extend-fix']);
 
     let applied = 0;
     let failed = 0;
@@ -3281,6 +3302,16 @@ class AiAnalysisService {
             description: r.fontsProcessed > 0
               ? `Synthesized /ToUnicode for ${r.fontsProcessed} font(s) (${r.codesMapped} code(s) mapped, ${r.puaFallback} Private-Use-Area fallback)`
               : 'No fonts needed a synthesized /ToUnicode',
+          };
+        } else if (suggestionType === 'font-tounicode-extend-fix') {
+          // Whole-document, same convention as font-tounicode-synthesis-fix
+          // above -- one call covers every font with a partial CMap.
+          const r = fontToUnicodeService.extendPartialToUnicode(doc);
+          modification = {
+            success: true,
+            description: r.fontsExtended > 0
+              ? `Extended ${r.fontsExtended} partial /ToUnicode CMap(s) (${r.codesAdded} code(s) added)`
+              : 'No fonts had a partial /ToUnicode CMap needing extension',
           };
         } else if (suggestionType === 'color-contrast-fix') {
           if (originalIssue.pageNumber !== undefined && pagesRewrittenSincePreResolve.has(originalIssue.pageNumber)) {
