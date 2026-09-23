@@ -155,6 +155,7 @@ const NINJA_TESTABLE_CONDITIONS: ReadonlySet<string> = new Set([
 const VERAPDF_TESTABLE_CONDITIONS: ReadonlySet<string> = new Set([
   '31-009', // font program not embedded
   '31-027', // font missing ToUnicode entry
+  '31-012', // Type1 font CharSet omits a glyph present in the font program
 ]);
 
 /**
@@ -191,6 +192,7 @@ const PDFA11Y_TESTABLE_CONDITIONS: ReadonlySet<string> = new Set([
   '28-014', // Media clip data dictionary missing /CT entry
   '28-015', // Media clip data dictionary missing /Alt entry
   '31-030', // Text-showing operator references the .notdef glyph
+  '10-001', // Character code cannot be mapped to Unicode (ToUnicode CMap exists but incomplete)
 ]);
 
 // ─── Service ──────────────────────────────────────────────────────────────────

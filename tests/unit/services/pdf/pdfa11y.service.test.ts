@@ -64,6 +64,20 @@ describe('Pdfa11yService.parseJsonReport — real JSON output', () => {
     expect(failure!.description).toContain('pdfuaid:part');
   });
 
+  it('parses an incomplete-ToUnicode FAIL (Matterhorn 10-001) from cp10-tounicode-incomplete.json', () => {
+    // Fixture trimmed from real pdfa11y output captured live against a
+    // real 377-page document — see pdfa11y-matterhorn.map.ts's own comment
+    // on this entry for why UA-10-002 (ToUnicode EXISTS but incomplete) is
+    // a distinct condition from UA-10-001 (ToUnicode absent entirely,
+    // already mapped to 31-027).
+    const failures = parseJsonReport(loadFixtureJson('cp10-tounicode-incomplete.json'));
+    const failure = failures.find((f) => f.ruleId === 'UA-10-002');
+
+    expect(failure).toBeTruthy();
+    expect(failure!.description).toContain('ToUnicode CMap');
+    expect(failure!.pageNumber).toBe(295);
+  });
+
   it('excludes PASS and N/A states, keeping only FAIL and WARN', () => {
     const failures = parseJsonReport(loadFixtureJson('cp31-font-not-embedded.json'));
     // This fixture has 69 total rules but only 2 real failures (1 WARN + 1 FAIL) --
@@ -223,6 +237,7 @@ describe('mapPdfa11yFailures — real fixture round-trip', () => {
       ...parseJsonReport(loadFixtureJson('cp31-font-not-embedded.json')),
       ...parseJsonReport(loadFixtureJson('cp31-missing-tounicode.json')),
       ...parseJsonReport(loadFixtureJson('cp06-metadata-failures.json')),
+      ...parseJsonReport(loadFixtureJson('cp10-tounicode-incomplete.json')),
     ];
 
     const mapped = mapPdfa11yFailures(failures, new Set());
@@ -230,6 +245,7 @@ describe('mapPdfa11yFailures — real fixture round-trip', () => {
     expect(mapped.get('31-009')?.ruleId).toBe('UA-09-001');
     expect(mapped.get('31-027')?.ruleId).toBe('UA-10-001');
     expect(mapped.get('06-002')?.ruleId).toBe('UA-06-003');
+    expect(mapped.get('10-001')?.ruleId).toBe('UA-10-002');
   });
 
   it('skips a mapped condition already found by Ninja or veraPDF', () => {

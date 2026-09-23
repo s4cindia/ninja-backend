@@ -1,0 +1,26 @@
+[
+  {
+    "path": "Math_Weir_PDF_remediated (8).pdf",
+    "verdict": "FAIL",
+    "results": [
+      {
+        "id": "UA-10-002",
+        "title": "/ToUnicode covers every used code",
+        "description": "PDF/UA-1 §7.21.3 requires every rendered code to have a working Unicode mapping. A /ToUnicode CMap that is empty (only a codespace range, no bfchar/bfrange) -- or that maps some codes but not the ones actually used on the page -- silently fails text extraction. This check matches each Tj/TJ code against the font's /ToUnicode coverage.",
+        "category": "09 Fonts",
+        "spec": "PDF/UA-1+2",
+        "severity": "error",
+        "wcag": ["1.3.1"],
+        "state": "FAIL",
+        "findings": [
+          {
+            "severity": "error",
+            "message": "font 'BOXDSW+MathematicalPiLTStd-4' (Type1) renders 1 code(s) not covered by its /ToUnicode CMap (e.g. 0x0061)",
+            "hint": "Extend the /ToUnicode stream's bfchar/bfrange entries to include every code the content stream renders with this font.",
+            "location": { "page": 295 }
+          }
+        ]
+      }
+    ]
+  }
+]

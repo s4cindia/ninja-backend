@@ -79,6 +79,20 @@ export const PDFA11Y_MATTERHORN_MAP: ReadonlyMap<string, string> = new Map<strin
   ['UA-28-022', '28-014'], // [TEXT] "media clip data dictionaries carry a /CT entry"
   ['UA-28-023', '28-015'], // [TEXT] "media clip data dictionaries carry a default /Alt description"
 
+  // CP10: Character Mappings -- closes this checkpoint's previously
+  // UNTESTED condition. [FIRING] on Math_Weir_PDF.pdf: pdfa11y's own title
+  // is "/ToUnicode covers every used code", description "PDF/UA-1 §7.21.3
+  // requires every rendered code to have a working Unicode mapping" --
+  // this is a strictly DIFFERENT, narrower condition than 31-027 (font has
+  // NO /ToUnicode entry at all): UA-10-002 fires when /ToUnicode EXISTS
+  // but doesn't cover every code the content stream actually renders with
+  // that font -- exactly Matterhorn 10-001's real text, "Character code
+  // cannot be mapped to Unicode" (section UA1:7.2-2), which doesn't care
+  // WHY the mapping is missing. Confirmed NOT a redundant fallback: Ninja
+  // has no native validator for 10-001, and 31-027's own Matterhorn text
+  // is specifically about ToUnicode's ABSENCE, not partial coverage.
+  ['UA-10-002', '10-001'], // /ToUnicode CMap exists but doesn't cover every rendered code
+
   // CP31: Fonts
   ['UA-10-004', '31-030'], // [TEXT] "no text-showing operator references the .notdef glyph"
 

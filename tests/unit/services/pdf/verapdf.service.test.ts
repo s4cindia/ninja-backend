@@ -69,6 +69,19 @@ describe('VeraPdfService.parseMrrXml — real MRR output', () => {
     expect(failures[0].context).toContain('metadata[0]');
   });
 
+  it('parses a Type1-font CharSet-omits-a-glyph failure (Matterhorn 31-012) with the correct ruleId', () => {
+    // Fixture trimmed from real veraPDF 1.30.2 MRR output captured live
+    // against a real 377-page document (132 real failing checks) -- see
+    // verapdf-matterhorn.map.ts's own comment on this entry for why no
+    // dedicated minimal fixture PDF was built for this specific condition.
+    const failures = parseMrrXml(loadFixtureXml('cp31-charset-incomplete.xml'));
+
+    expect(failures).toHaveLength(1);
+    expect(failures[0].ruleId).toBe('1:7.21.4.2-1');
+    expect(failures[0].description).toMatch(/CharSet.*list.*glyphs present/i);
+    expect(failures[0].pageNumber).toBe(1);
+  });
+
   it('does not mistake the specification year for the spec part number', () => {
     // Regression test for the real bug: /\d+$/ matched "2014" (the year) in
     // "ISO 14289-1:2014" instead of "1" (the actual PDF/UA part number).
@@ -165,6 +178,7 @@ describe('VeraPdfService.parseMrrXml — ok flag (CodeRabbit finding on PR #577)
     expect(parseMrrXmlFull(loadFixtureXml('cp31-font-not-embedded.xml')).ok).toBe(true);
     expect(parseMrrXmlFull(loadFixtureXml('cp31-missing-tounicode.xml')).ok).toBe(true);
     expect(parseMrrXmlFull(loadFixtureXml('cp06-metadata-failures.xml')).ok).toBe(true);
+    expect(parseMrrXmlFull(loadFixtureXml('cp31-charset-incomplete.xml')).ok).toBe(true);
   });
 });
 
@@ -181,19 +195,21 @@ describe('VeraPdfService.isAvailable / validate — graceful degradation', () =>
 });
 
 describe('mapVeraPdfFailures — real fixture round-trip', () => {
-  it('maps all 3 validated fixture failures to their Matterhorn condition IDs', () => {
+  it('maps all 4 validated fixture failures to their Matterhorn condition IDs', () => {
     const failures: VeraPdfFailure[] = [
       ...parseMrrXml(loadFixtureXml('cp31-font-not-embedded.xml')),
       ...parseMrrXml(loadFixtureXml('cp31-missing-tounicode.xml')),
       ...parseMrrXml(loadFixtureXml('cp06-metadata-failures.xml')),
+      ...parseMrrXml(loadFixtureXml('cp31-charset-incomplete.xml')),
     ];
 
     const mapped = mapVeraPdfFailures(failures, new Set());
 
-    expect(mapped.size).toBe(3);
+    expect(mapped.size).toBe(4);
     expect(mapped.get('31-009')?.ruleId).toBe('1:7.21.4.1-1');
     expect(mapped.get('31-027')?.ruleId).toBe('1:7.21.7-1');
     expect(mapped.get('06-002')?.ruleId).toBe('1:5-1');
+    expect(mapped.get('31-012')?.ruleId).toBe('1:7.21.4.2-1');
   });
 
   it('skips a mapped condition already found by a Ninja validator', () => {
