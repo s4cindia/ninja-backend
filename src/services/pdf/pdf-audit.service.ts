@@ -10,6 +10,7 @@
 import fs from 'fs/promises';
 import os from 'os';
 import path from 'path';
+import { PDFDocument } from 'pdf-lib';
 import { logger } from '../../lib/logger';
 import { BaseAuditService, AuditIssue, AuditReport } from '../audit/base-audit.service';
 import {
@@ -18,6 +19,9 @@ import {
 } from './pdf-comprehensive-parser.service';
 import { pdfParserService } from './pdf-parser.service';
 import { PdfContrastValidator } from './validators/pdf-contrast.validator';
+import { decodePageContent } from './pdf-content-stream-io';
+import { resolveColorContrastTargets, trueColorOfRun, genuinelyFailsContrast } from './pdf-contrast-writer.service';
+import { findSiblingRuns } from './contrast-content-stream';
 import { pdfAltTextValidator } from './validators/pdf-alttext.validator';
 import { pdfTableValidator, TABLE_LIKELY_FORMULA_CODE } from './validators/pdf-table.validator';
 import { pdfFormulaValidator } from './validators/pdf-formula.validator';
@@ -232,6 +236,15 @@ class PdfTableValidatorStub implements PdfValidator {
     return issues;
   }
 }
+
+// reconcileContrastFalsePositives' own scope gate, in PDF-space points
+// (AuditIssue.boundingBox's own unit, not canvas/RENDER_SCALE-multiplied
+// pixels). Comfortably above the real Math_Weir_PDF.pdf numeric-cluster
+// issues this was investigated and validated against (observed
+// boundingBox.width ~20-41), comfortably below ordinary multi-word text
+// (e.g. "Low contrast text" at 14pt, ~126pt) -- see that method's own doc
+// comment for why width, not some other property, is the right gate.
+const CROSSCHECK_MAX_BOX_WIDTH = 60;
 
 /**
  * PDF Audit Service
@@ -467,9 +480,13 @@ class PdfAuditService extends BaseAuditService<PdfParseResult, PdfValidationResu
           logger.info(`[PdfAudit] Running PdfContrastValidator...`);
           const contrastValidator = new PdfContrastValidator();
           const contrastIssues = await contrastValidator.validate(parsed);
-          result.contrastIssues.push(...contrastIssues);
-          result.issues.push(...contrastIssues);
-          logger.info(`[PdfAudit] PdfContrastValidator found ${contrastIssues.length} issues`);
+          const reconciledContrastIssues = this.reconcileContrastFalsePositives(
+            contrastIssues,
+            parsed.parsedPdf?.pdfLibDoc
+          );
+          result.contrastIssues.push(...reconciledContrastIssues);
+          result.issues.push(...reconciledContrastIssues);
+          logger.info(`[PdfAudit] PdfContrastValidator found ${contrastIssues.length} issues (${reconciledContrastIssues.length} after content-stream cross-check)`);
           onValidatorComplete?.('Color Contrast', contrastIssues.length, ++completedValidators, totalValidators, contrastStart);
         } catch (error) {
           const errorMessage = error instanceof Error ? error.message : 'Unknown error';
@@ -740,6 +757,114 @@ class PdfAuditService extends BaseAuditService<PdfParseResult, PdfValidationResu
     );
 
     return result;
+  }
+
+  /**
+   * Drop a COLOR-CONTRAST finding when the content stream's own traceable
+   * fill-color operator for the flagged text run proves it isn't a real
+   * defect -- a cross-check against a DIFFERENT, authoritative signal
+   * source than the pixel-rendering pdf-contrast.validator.ts's own
+   * detection relies on.
+   *
+   * Real incident, confirmed live on Math_Weir_PDF.pdf: small/narrow text
+   * (a short numeric table cell like "99.166" against a medium-gray
+   * background) is disproportionately anti-aliased-edge, not solid
+   * interior -- pixel sampling's own darkest-percentile average dilutes
+   * toward background regardless of how narrow the percentile is (a
+   * genuinely near-black run's own OWN measured ratio can land as low as
+   * ~3.1:1). Explored three different pixel-statistics discriminators
+   * (spread-based, tight-tolerance population count, dilution-curve-shape)
+   * to rescue this at detection time -- all three either fail to fix it or
+   * introduce a real, demonstrated false-negative regression (a genuine
+   * low-contrast run with a small stray artifact wrongly passing), because
+   * a small genuine ink cluster and a small artifact are geometrically
+   * indistinguishable from so few pixels. Content-stream color truth sides
+   * steps this entirely: `rg`/similar fill-color operators aren't subject
+   * to rendering-resolution anti-aliasing at all.
+   *
+   * Reuses pdf-contrast-writer.service.ts's own already-live-validated
+   * machinery (trueColorOfRun/genuinelyFailsContrast/findSiblingRuns, all
+   * from the "8 749 47" multi-segment sibling-fix work) rather than
+   * re-deriving it -- critically, this means a genuine multi-segment
+   * defect (pdfjs's own item-level color blending anchoring the audit's
+   * position to a segment whose own true color is fine, while a SIBLING
+   * segment in the same text object genuinely fails) is NOT silently
+   * dropped just because the matched position happens to pass; only
+   * dropped when neither the matched run NOR any sibling genuinely fails.
+   * Any run locateTextRun/findSiblingRuns can't confidently resolve (low
+   * confidence, ambiguous, rotated page, untracked colorspace) is left
+   * untouched -- conservative by design, matching this file's and the
+   * writer's own "never drop/guess without confidence" principle.
+   *
+   * Scoped to NARROW boxes only (boundingBox.width <=
+   * CROSSCHECK_MAX_BOX_WIDTH) -- deliberately, not an oversight. This
+   * check trusts cd.background as ground truth (it only asks "does the
+   * run's TRUE foreground clear THIS background," never re-derives the
+   * background independently), which color-contrast-verification.test.ts's
+   * own "KNOWN LIMITATION" fixtures prove can be wrong: a static fill near
+   * ordinary-width text can fool detection's own background sampling too,
+   * and this cross-check would then inherit that same wrong background and
+   * risk clearing a genuinely-failing issue. That failure mode is
+   * essentially uncorrelated with box width (it was reproduced live at
+   * regular multi-word text width, ~150px+) and was already an accepted,
+   * documented gap before this change -- narrowing scope to the box sizes
+   * this was actually investigated and validated against (34-41px on the
+   * real Math_Weir_PDF.pdf cluster) avoids compounding it, rather than
+   * trying to solve a separate, pre-existing limitation here.
+   */
+  private reconcileContrastFalsePositives(
+    contrastIssues: AuditIssue[],
+    pdfLibDoc: PDFDocument | undefined
+  ): AuditIssue[] {
+    if (!pdfLibDoc || contrastIssues.length === 0) return contrastIssues;
+
+    const matches = resolveColorContrastTargets(pdfLibDoc, contrastIssues);
+    const contentByPage = new Map<number, string | null>();
+    const getContent = (pageNumber: number): string | null => {
+      if (!contentByPage.has(pageNumber)) {
+        contentByPage.set(pageNumber, decodePageContent(pdfLibDoc, pageNumber));
+      }
+      return contentByPage.get(pageNumber) ?? null;
+    };
+
+    let droppedCount = 0;
+    const reconciled = contrastIssues.filter((issue) => {
+      if (!issue.contrastData || !issue.pageNumber || !issue.boundingBox) return true;
+      if (issue.boundingBox.width > CROSSCHECK_MAX_BOX_WIDTH) return true;
+      const match = matches.get(issue.id);
+      if (!match) return true;
+
+      const content = getContent(issue.pageNumber);
+      if (content === null) return true;
+
+      const matchTrueColor = trueColorOfRun(content, match);
+      if (matchTrueColor && genuinelyFailsContrast(matchTrueColor, issue.contrastData)) {
+        return true; // genuinely fails at the matched position -- real defect
+      }
+
+      // Matched run's own true color already passes (or couldn't be
+      // determined) -- check siblings in the same text object before
+      // concluding this is a false positive; a real defect the audit's
+      // own item-level color blending hid nearby must not be silently
+      // dropped (see doc comment above).
+      const hasFailingSibling = findSiblingRuns(content, match, 8).some((sibling) => {
+        const siblingTrueColor = trueColorOfRun(content, sibling);
+        return siblingTrueColor !== null && genuinelyFailsContrast(siblingTrueColor, issue.contrastData!);
+      });
+      if (hasFailingSibling) return true;
+
+      if (!matchTrueColor) return true; // couldn't determine -- stay conservative
+
+      droppedCount++;
+      return false;
+    });
+
+    if (droppedCount > 0) {
+      logger.info(
+        `[PdfAudit] Reconciliation: dropped ${droppedCount} COLOR-CONTRAST false positive(s) confirmed via content-stream cross-check`
+      );
+    }
+    return reconciled;
   }
 
   /**
