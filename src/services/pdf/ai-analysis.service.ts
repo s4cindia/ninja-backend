@@ -1315,7 +1315,25 @@ class AiAnalysisService {
             applyMode: headerApplyMode,
           };
         }
-        if (orientation !== 'ambiguous' && findRegularHeaderRowIndex(table) !== null) {
+        // findRegularHeaderRowIndex is a cheap pre-filter over TableInfo's
+        // own pdfjs/layout-derived cell counts -- a DIFFERENT data source
+        // than the real struct tree fixSimpleTableHeaders actually mutates
+        // at apply time, and one that can disagree with it (this
+        // codebase's own pre-existing, documented architectural gap, issue
+        // #561). Real incident, Math_Nikitopoulos_PDF.pdf (2026-09-25): 2 of
+        // 3 real MATTERHORN-15-002 tables (12x5 and 53x3) were wrongly
+        // routed to AI-guidance-only here, even though the struct tree has
+        // a clean, regular header row and the writer, called directly,
+        // successfully fixes both -- confirmed via a genuine re-audit round
+        // trip. Falling back to canFixSimpleTableHeaders (the SAME
+        // struct-tree-based check the writer itself runs, read-only) only
+        // when the cheap check disagrees keeps the common, already-working
+        // case free of the extra doc/struct-tree lookup.
+        if (
+          orientation !== 'ambiguous' &&
+          (findRegularHeaderRowIndex(table) !== null ||
+            (parsed.parsedPdf && pdfStructureWriterService.canFixSimpleTableHeaders(parsed.parsedPdf.pdfLibDoc, table.id)))
+        ) {
           return {
             suggestionType: 'table-header-fix',
             guidance: `A header row will be promoted to TH with scope="Column" in the PDF structure tree.`,
