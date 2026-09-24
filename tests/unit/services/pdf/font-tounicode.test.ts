@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { PDFDocument, StandardFonts, PDFName, PDFDict, PDFRef, PDFRawStream, decodePDFRawStream } from 'pdf-lib';
+import { PDFDocument, StandardFonts, PDFName, PDFDict, PDFRef, PDFString, PDFRawStream, decodePDFRawStream } from 'pdf-lib';
 import { fontToUnicodeService } from '../../../../src/services/pdf/font-tounicode.service';
 import { writePageContent } from '../../../../src/services/pdf/pdf-content-stream-io';
 import { WINANSI_CODE_TO_UNICODE, glyphNameToUnicode, baseEncodingTable, isValidScalar } from '../../../../src/services/pdf/font-encodings';
@@ -217,5 +217,63 @@ describe('fontToUnicodeService.extendPartialToUnicode', () => {
     expect(result.fontsExtended).toBe(1);
     expect(result.codesAdded).toBe(1);
     expect(decodeToUnicode(reloaded, fontDict)).toContain('<42> <0042>');
+  });
+
+  // Real incident, confirmed live on Math_Weir_PDF.pdf: font
+  // 'BOXDSW+MathematicalPiLTStd-4' (page 295) has /FirstChar=/LastChar=98
+  // and its content stream literally never shows any other code through
+  // this font object -- content-stream-usage scanning alone finds nothing
+  // to fix. Its /FontDescriptor /CharSet lists a real glyph named "a"
+  // (PDF32000-1:2008 9.8.1: lists every glyph the embedded program
+  // contains, "regardless of whether... referenced or used") that pdfa11y's
+  // UA-10-002 flags as uncovered. This is the shape that usage-only
+  // scanning cannot fix and CharSet-based detection exists for.
+  it("adds an entry for a code the font's own CharSet claims, even though it is never actually shown in any content stream", async () => {
+    const doc = await PDFDocument.create();
+    const page = doc.addPage([300, 200]);
+    const font = await doc.embedFont(StandardFonts.Helvetica);
+    page.drawText('b', { x: 20, y: 100, size: 12, font }); // only code 0x62 ('b') is ever shown
+    const reloaded = await PDFDocument.load(await doc.save());
+    const fontDict = findFont(reloaded)!;
+
+    const fd = fontDict.get(PDFName.of('FontDescriptor'));
+    const fdDict = fd instanceof PDFRef ? reloaded.context.lookup(fd) : fd;
+    const descriptor = fdDict instanceof PDFDict ? fdDict : reloaded.context.obj({});
+    descriptor.set(PDFName.of('CharSet'), PDFString.of('/.notdef/a/b'));
+    if (!(fdDict instanceof PDFDict)) {
+      fontDict.set(PDFName.of('FontDescriptor'), reloaded.context.register(descriptor));
+    }
+    setPartialCMap(reloaded, fontDict, '1 beginbfchar\n<62> <0062>\nendbfchar');
+
+    const result = fontToUnicodeService.extendPartialToUnicode(reloaded);
+    expect(result.fontsExtended).toBe(1);
+    expect(result.codesAdded).toBe(1);
+
+    const cmap = decodeToUnicode(reloaded, fontDict);
+    expect(cmap).toContain('<62> <0062>'); // original entry preserved
+    expect(cmap).toContain('<61> <0061>'); // 'a' -- never shown, but CharSet-claimed
+  });
+
+  it('silently skips a CharSet name with no resolvable Unicode value, rather than guessing', async () => {
+    const doc = await PDFDocument.create();
+    const page = doc.addPage([300, 200]);
+    const font = await doc.embedFont(StandardFonts.Helvetica);
+    page.drawText('b', { x: 20, y: 100, size: 12, font });
+    const reloaded = await PDFDocument.load(await doc.save());
+    const fontDict = findFont(reloaded)!;
+
+    const fd = fontDict.get(PDFName.of('FontDescriptor'));
+    const fdDict = fd instanceof PDFRef ? reloaded.context.lookup(fd) : fd;
+    const descriptor = fdDict instanceof PDFDict ? fdDict : reloaded.context.obj({});
+    // 'braceex' is a real TeX glyph name with no AGL/Unicode resolution.
+    descriptor.set(PDFName.of('CharSet'), PDFString.of('/.notdef/b/braceex'));
+    if (!(fdDict instanceof PDFDict)) {
+      fontDict.set(PDFName.of('FontDescriptor'), reloaded.context.register(descriptor));
+    }
+    setPartialCMap(reloaded, fontDict, '1 beginbfchar\n<62> <0062>\nendbfchar');
+
+    const result = fontToUnicodeService.extendPartialToUnicode(reloaded);
+    expect(result.fontsExtended).toBe(0);
+    expect(result.codesAdded).toBe(0);
   });
 });
