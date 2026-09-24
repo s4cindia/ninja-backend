@@ -104,7 +104,7 @@
  *    is now included in the message.
  */
 
-import { PDFName, PDFDict, PDFArray, PDFNumber, PDFRef, PDFString, PDFHexString, PDFRawStream } from 'pdf-lib';
+import { PDFName, PDFDict, PDFArray, PDFNumber, PDFRef, PDFString, PDFHexString, PDFStream } from 'pdf-lib';
 import { AuditIssue } from '../../audit/base-audit.service';
 import { ParsedPDF } from '../pdf-parser.service';
 import { pdfModifierService } from '../pdf-modifier.service';
@@ -357,6 +357,17 @@ class PdfFigureStructTreeValidator {
       xobjDict = undefined;
     }
 
+    // A PDF is free to store /BBox or /Matrix as an indirect array (`/BBox
+    // 5 0 R` rather than `/BBox [0 0 200 100]`) -- dict.get() returns that
+    // bare PDFRef, not a PDFArray, until resolved. CodeRabbit finding on
+    // this same PR, confirmed real: without this, an indirect array here
+    // silently fell back to the unit-square approximation (BBox) or the
+    // identity matrix (Matrix) this fix exists to avoid.
+    const resolveArray = (val: unknown): PDFArray | undefined => {
+      const resolved = val instanceof PDFRef ? doc.context.lookup(val) : val;
+      return resolved instanceof PDFArray ? resolved : undefined;
+    };
+
     return (name: string): FormXObjectInfo | null => {
       if (cache.has(name)) return cache.get(name)!;
       let info: FormXObjectInfo | null = null;
@@ -364,11 +375,19 @@ class PdfFigureStructTreeValidator {
         const key = name.startsWith('/') ? name.slice(1) : name;
         const ref = xobjDict?.get(PDFName.of(key));
         const resolved = ref instanceof PDFRef ? doc.context.lookup(ref) : ref;
-        if (resolved instanceof PDFRawStream) {
+        // A Form parsed from an existing PDF resolves as PDFRawStream; one
+        // freshly created via pdf-lib's own formXObject() helper (e.g. a
+        // prior remediation round's own writer output, re-audited by this
+        // same validator) is a PDFContentStream instead -- both are a
+        // PDFStream, the common base both this check and .dict rely on
+        // (CodeRabbit finding on this same PR, confirmed real: the
+        // PDFRawStream-only version rejected the latter, falling back to
+        // the unit square exactly like an unresolved indirect array would).
+        if (resolved instanceof PDFStream) {
           const dict = resolved.dict;
           if (dict.get(PDFName.of('Subtype'))?.toString() === '/Form') {
-            const bboxArr = dict.get(PDFName.of('BBox'));
-            if (bboxArr instanceof PDFArray && bboxArr.size() === 4) {
+            const bboxArr = resolveArray(dict.get(PDFName.of('BBox')));
+            if (bboxArr && bboxArr.size() === 4) {
               const bbox = [0, 1, 2, 3].map(i => {
                 const v = bboxArr.get(i);
                 const resolvedV = v instanceof PDFRef ? doc.context.lookup(v) : v;
@@ -376,8 +395,8 @@ class PdfFigureStructTreeValidator {
               }) as [number, number, number, number];
 
               let matrix: [number, number, number, number, number, number] = [1, 0, 0, 1, 0, 0];
-              const matrixArr = dict.get(PDFName.of('Matrix'));
-              if (matrixArr instanceof PDFArray && matrixArr.size() === 6) {
+              const matrixArr = resolveArray(dict.get(PDFName.of('Matrix')));
+              if (matrixArr && matrixArr.size() === 6) {
                 matrix = [0, 1, 2, 3, 4, 5].map(i => {
                   const v = matrixArr.get(i);
                   const resolvedV = v instanceof PDFRef ? doc.context.lookup(v) : v;
