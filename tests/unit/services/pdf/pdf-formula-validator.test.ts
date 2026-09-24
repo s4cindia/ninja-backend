@@ -79,4 +79,38 @@ describe('pdfFormulaValidator', () => {
     expect(res.issues).toHaveLength(0);
     expect(res.metadata.totalFormulas).toBe(0);
   });
+
+  // /Pg is inheritable per PDF32000-1:2008 §14.7.2 -- a struct element with
+  // no /Pg of its own takes its nearest ancestor's. Real incident on
+  // Math_Nikitopoulos_PDF.pdf: Seam-C stamps /Pg on an ancestor Sect, not on
+  // the /Formula node itself, and the old code only ever checked the
+  // Formula's OWN /Pg -- silently defaulting to page 1 with no boundingBox.
+  // dispatchIssue's own gate (`if (!issue.pageNumber || !parsed.parsedPdf ||
+  // !issue.boundingBox) return null`) then refused to generate ANY
+  // suggestion for it at all, on every Auto Mode round.
+  it('REGRESSION: resolves pageNumber/boundingBox from an ancestor /Pg when the Formula element has none of its own', async () => {
+    const src = await PDFDocument.create();
+    src.addPage([400, 600]);
+    src.addPage([400, 600]);
+    const doc = await PDFDocument.load(await src.save());
+    const pages = doc.getPages();
+    const page2Ref = pages[1].ref;
+
+    const formulaDict = doc.context.obj({ S: PDFName.of('Formula'), K: 0 });
+    const formulaRef = doc.context.register(formulaDict);
+    // Ancestor Sect declares /Pg -- the Formula itself does not.
+    const sectDict = doc.context.obj({ S: PDFName.of('Sect'), Pg: page2Ref, K: formulaRef });
+    const sectRef = doc.context.register(sectDict);
+    const documentDict = doc.context.obj({ S: PDFName.of('Document'), K: sectRef });
+    const documentRef = doc.context.register(documentDict);
+    const structTreeRootDict = doc.context.obj({ Type: PDFName.of('StructTreeRoot'), K: documentRef });
+    const structTreeRootRef = doc.context.register(structTreeRootDict);
+    doc.catalog.set(PDFName.of('StructTreeRoot'), structTreeRootRef);
+
+    const res = await pdfFormulaValidator.validate(asParsed(doc));
+    expect(res.issues).toHaveLength(1);
+    const issue = res.issues[0];
+    expect(issue.pageNumber).toBe(2);
+    expect(issue.element).toBe('formula_p2_mc0');
+  });
 });

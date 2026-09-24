@@ -61,7 +61,21 @@ class PdfFormulaValidator {
     const perPageIndex = new Map<number, number>();
     const seen = new Set<string>();
 
-    const visit = (nodeRef: unknown): void => {
+    // /Pg is inheritable per PDF32000-1:2008 §14.7.2 -- a struct element with
+    // no /Pg of its own takes its nearest ancestor's. The old version only
+    // ever checked the Formula element's OWN /Pg, silently defaulting to
+    // page 1 (and leaving boundingBox undefined) whenever that was absent --
+    // real incident on Math_Nikitopoulos_PDF.pdf: Seam-C stamps /Pg on an
+    // ancestor Sect/Div, not the /Formula node itself, so the one real
+    // FORMULA-MISSING-ACTUALTEXT issue always reported page 1 with no
+    // boundingBox. dispatchIssue's own gate
+    // (`if (!issue.pageNumber || !parsed.parsedPdf || !issue.boundingBox)
+    // return null`) then silently refused to generate ANY suggestion for it
+    // at all, on every round -- not a guidance-only downgrade, a complete
+    // no-op. Threading the resolved page down through the recursion (same
+    // inheritance pattern structure-analyzer.service.ts's
+    // traverseStructureTree already uses for headings/tables) fixes both.
+    const visit = (nodeRef: unknown, inheritedPage: PageInfo | undefined): void => {
       const node = nodeRef instanceof PDFRef ? doc.context.lookup(nodeRef) : nodeRef;
       if (!(node instanceof PDFDict)) return;
       // guard against cycles / shared refs
@@ -71,21 +85,25 @@ class PdfFormulaValidator {
         seen.add(key);
       }
 
+      const ownPgRef = node.get(PDFName.of('Pg'));
+      const ownPageInfo = ownPgRef instanceof PDFRef ? pageByRef.get(ownPgRef.toString()) : undefined;
+      const resolvedPage = ownPageInfo ?? inheritedPage;
+
       if (node.get(PDFName.of('S'))?.toString() === '/Formula') {
         totalFormulas++;
         if (this.hasAlternate(node)) {
           withAlternate++;
         } else {
-          issues.push(this.buildIssue(node, pageByRef, perPageIndex, doc));
+          issues.push(this.buildIssue(node, resolvedPage, perPageIndex, doc));
         }
       }
 
       const k = node.get(PDFName.of('K'));
       const kids = k instanceof PDFArray ? k.asArray() : k === undefined ? [] : [k];
-      for (const kid of kids) if (kid instanceof PDFRef || kid instanceof PDFDict) visit(kid);
+      for (const kid of kids) if (kid instanceof PDFRef || kid instanceof PDFDict) visit(kid, resolvedPage);
     };
 
-    visit(root);
+    visit(root, undefined);
 
     logger.info(
       `[PdfFormulaValidator] ${totalFormulas} formula(s): ${withAlternate} with alternate, ${issues.length} missing`,
@@ -112,12 +130,10 @@ class PdfFormulaValidator {
 
   private buildIssue(
     elem: PDFDict,
-    pageByRef: Map<string, PageInfo>,
+    pageInfo: PageInfo | undefined,
     perPageIndex: Map<number, number>,
     doc: ParsedPDF['pdfLibDoc'],
   ): AuditIssue {
-    const pgRef = elem.get(PDFName.of('Pg'));
-    const pageInfo = pgRef instanceof PDFRef ? pageByRef.get(pgRef.toString()) : undefined;
     const pageNumber = pageInfo?.pageNumber ?? 1;
 
     const positional = perPageIndex.get(pageNumber) ?? 0;
