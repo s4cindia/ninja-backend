@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { PDFDocument, PDFName, PDFRawStream } from 'pdf-lib';
+import { PDFDocument, PDFName, PDFRawStream, decodePDFRawStream } from 'pdf-lib';
 import { pdfModifierService } from '../../../../src/services/pdf/pdf-modifier.service';
 
 /**
@@ -51,6 +51,18 @@ const SINGLE_DESCRIPTION_XMP = `<?xpacket begin="" id="W5M0MpCehiHzreSzNTczkc9d"
     </rdf:Description>
   </rdf:RDF>
 </x:xmpmeta>
+<?xpacket end="w"?>`;
+
+// CodeRabbit's own example on PR #605: a valid XMP packet is free to use any
+// namespace prefix alias, not just the conventional x:/rdf:.
+const NONSTANDARD_PREFIX_XMP = `<?xpacket begin="" id="W5M0MpCehiHzreSzNTczkc9d"?>
+<meta:xmpmeta xmlns:meta="adobe:ns:meta/">
+  <r:RDF xmlns:r="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+    <r:Description r:about="" xmlns:xmp="http://ns.adobe.com/xap/1.0/">
+      <xmp:CreateDate>2025-09-10T15:35:06+05:30</xmp:CreateDate>
+    </r:Description>
+  </r:RDF>
+</meta:xmpmeta>
 <?xpacket end="w"?>`;
 
 describe('writePdfUaIdentifier / writeXmpStream', () => {
@@ -129,5 +141,67 @@ describe('writePdfUaIdentifier / writeXmpStream', () => {
     const savedBytes = Buffer.from(await doc.save());
 
     expect(savedBytes.toString('latin1')).toContain('pdfuaid');
+  });
+
+  it('REGRESSION: recognizes x:xmpmeta/rdf:RDF by namespace URI, not literal prefix -- CodeRabbit finding on this same PR: a valid packet using different prefixes (e.g. meta:xmpmeta/r:RDF) must NOT be misclassified as unparseable, which would delete its real metadata via the template fallback', async () => {
+    const doc = await PDFDocument.create();
+    doc.addPage([400, 600]);
+    await setRawXmp(doc, NONSTANDARD_PREFIX_XMP);
+
+    const result = await pdfModifierService.writePdfUaIdentifier(doc);
+    expect(result.success).toBe(true);
+
+    const xmp = readRawXmp(doc);
+    expect(xmp).toContain('<pdfuaid:part>1</pdfuaid:part>');
+    // The original content must survive -- if this had been wrongly
+    // classified as unparseable, the template fallback would have deleted
+    // it entirely.
+    expect(xmp).toContain('2025-09-10T15:35:06+05:30');
+  });
+
+  it('REGRESSION: falls back to the template (rather than silently no-op-ing) when the existing metadata is unparseable garbage -- root cause of a real bug (Nikitopoulos trial, 2026-09-24): writePdfUaIdentifier reported success on every one of 10 real Auto Mode rounds, but the on-disk XMP never changed', async () => {
+    const doc = await PDFDocument.create();
+    doc.addPage([400, 600]);
+    // fast-xml-parser does not throw on non-XML input -- it silently returns
+    // a degenerate object with no x:xmpmeta/rdf:RDF anywhere. Before the fix,
+    // that fell through as a "successful" no-op: patches were silently never
+    // applied, yet the same garbage got rebuilt and written straight back.
+    const bytes = Buffer.from([0x3c, 0x32, 0x6e, 0xef, 0xbf, 0xbd, 0x01, 0xef, 0xbf, 0xbd, 0x31]);
+    const stream = doc.context.stream(bytes, {
+      Type: PDFName.of('Metadata'),
+      Subtype: PDFName.of('XML'),
+      Length: bytes.length,
+    });
+    doc.catalog.set(PDFName.of('Metadata'), doc.context.register(stream));
+
+    const result = await pdfModifierService.writePdfUaIdentifier(doc);
+    expect(result.success).toBe(true);
+
+    const xmp = readRawXmp(doc);
+    expect(xmp).toContain('<pdfuaid:part>1</pdfuaid:part>');
+    expect(xmp).toContain('xmlns:pdfuaid="http://www.aiim.org/pdfua/ns/id/"');
+  });
+
+  it('REGRESSION: decompresses a FlateDecode-compressed existing metadata stream before parsing, instead of reading the raw encoded bytes as UTF-8', async () => {
+    const doc = await PDFDocument.create();
+    doc.addPage([400, 600]);
+    const compressed = doc.context.flateStream(Buffer.from(SINGLE_DESCRIPTION_XMP, 'utf8'), {
+      Type: PDFName.of('Metadata'),
+      Subtype: PDFName.of('XML'),
+    });
+    doc.catalog.set(PDFName.of('Metadata'), doc.context.register(compressed));
+
+    const result = await pdfModifierService.writePdfUaIdentifier(doc);
+    expect(result.success).toBe(true);
+
+    const ref = doc.catalog.get(PDFName.of('Metadata'));
+    const raw = doc.context.lookup(ref!);
+    if (!(raw instanceof PDFRawStream)) throw new Error('Metadata is not a raw stream');
+    const xmp = Buffer.from(decodePDFRawStream(raw).decode()).toString('utf8');
+
+    expect(xmp).toContain('<pdfuaid:part>1</pdfuaid:part>');
+    // Original content must survive the patch, not be replaced by a
+    // template fallback (which would mean decompression silently failed).
+    expect(xmp).toContain('2025-09-10T15:35:06+05:30');
   });
 });
