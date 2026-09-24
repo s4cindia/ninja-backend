@@ -53,6 +53,18 @@ const SINGLE_DESCRIPTION_XMP = `<?xpacket begin="" id="W5M0MpCehiHzreSzNTczkc9d"
 </x:xmpmeta>
 <?xpacket end="w"?>`;
 
+// CodeRabbit's own example on PR #605: a valid XMP packet is free to use any
+// namespace prefix alias, not just the conventional x:/rdf:.
+const NONSTANDARD_PREFIX_XMP = `<?xpacket begin="" id="W5M0MpCehiHzreSzNTczkc9d"?>
+<meta:xmpmeta xmlns:meta="adobe:ns:meta/">
+  <r:RDF xmlns:r="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+    <r:Description r:about="" xmlns:xmp="http://ns.adobe.com/xap/1.0/">
+      <xmp:CreateDate>2025-09-10T15:35:06+05:30</xmp:CreateDate>
+    </r:Description>
+  </r:RDF>
+</meta:xmpmeta>
+<?xpacket end="w"?>`;
+
 describe('writePdfUaIdentifier / writeXmpStream', () => {
   it('writes pdfuaid:part when there is no existing metadata stream at all (Path A)', async () => {
     const doc = await PDFDocument.create();
@@ -129,6 +141,22 @@ describe('writePdfUaIdentifier / writeXmpStream', () => {
     const savedBytes = Buffer.from(await doc.save());
 
     expect(savedBytes.toString('latin1')).toContain('pdfuaid');
+  });
+
+  it('REGRESSION: recognizes x:xmpmeta/rdf:RDF by namespace URI, not literal prefix -- CodeRabbit finding on this same PR: a valid packet using different prefixes (e.g. meta:xmpmeta/r:RDF) must NOT be misclassified as unparseable, which would delete its real metadata via the template fallback', async () => {
+    const doc = await PDFDocument.create();
+    doc.addPage([400, 600]);
+    await setRawXmp(doc, NONSTANDARD_PREFIX_XMP);
+
+    const result = await pdfModifierService.writePdfUaIdentifier(doc);
+    expect(result.success).toBe(true);
+
+    const xmp = readRawXmp(doc);
+    expect(xmp).toContain('<pdfuaid:part>1</pdfuaid:part>');
+    // The original content must survive -- if this had been wrongly
+    // classified as unparseable, the template fallback would have deleted
+    // it entirely.
+    expect(xmp).toContain('2025-09-10T15:35:06+05:30');
   });
 
   it('REGRESSION: falls back to the template (rather than silently no-op-ing) when the existing metadata is unparseable garbage -- root cause of a real bug (Nikitopoulos trial, 2026-09-24): writePdfUaIdentifier reported success on every one of 10 real Auto Mode rounds, but the on-disk XMP never changed', async () => {

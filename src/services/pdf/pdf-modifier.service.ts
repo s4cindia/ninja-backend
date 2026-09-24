@@ -61,6 +61,34 @@ function applyXmpPatchesToTemplate(xmpXml: string, patches: Record<string, strin
   return result;
 }
 
+const XMP_META_NAMESPACE_URI = 'adobe:ns:meta/';
+const RDF_NAMESPACE_URI = 'http://www.w3.org/1999/02/22-rdf-syntax-ns#';
+
+/**
+ * Finds a direct child element by its declared XML namespace URI rather than
+ * its literal prefix -- an XML namespace prefix is just a local alias bound
+ * via its own xmlns declaration, so a perfectly valid XMP packet is free to
+ * use e.g. `<meta:xmpmeta xmlns:meta="adobe:ns:meta/">` instead of the
+ * conventional `<x:xmpmeta xmlns:x="...">`. CodeRabbit finding on PR #605,
+ * confirmed real: the first version of this fix hardcoded the literal keys
+ * 'x:xmpmeta'/'rdf:RDF', which would misclassify any such (valid, if
+ * unconventional) document as unparseable garbage -- and since that routes
+ * into the MINIMAL_XMP_TEMPLATE fallback, it would have DELETED the
+ * document's real title/author/copyright/custom metadata, a worse outcome
+ * than the silent no-op this PR set out to fix.
+ */
+function findChildByNamespaceUri(node: Record<string, unknown>, nsUri: string): Record<string, unknown> | undefined {
+  for (const [key, value] of Object.entries(node)) {
+    if (!key.includes(':') || key.startsWith('@_')) continue;
+    const prefix = key.split(':')[0];
+    const candidate = value as Record<string, unknown> | undefined;
+    if (candidate && typeof candidate === 'object' && candidate[`@_xmlns:${prefix}`] === nsUri) {
+      return candidate;
+    }
+  }
+  return undefined;
+}
+
 /**
  * Result of a PDF modification operation
  */
@@ -1761,8 +1789,8 @@ export class PdfModifierService {
         // elements back to repeated XML nodes). Fix: append a NEW
         // <rdf:Description> (with a proper namespace declaration for the
         // prefix being patched) instead of merging into an ambiguous array.
-        const xmpmeta = parsed['x:xmpmeta'] as Record<string, unknown> | undefined;
-        const rdfRdf = xmpmeta?.['rdf:RDF'] as Record<string, unknown> | undefined;
+        const xmpmeta = findChildByNamespaceUri(parsed, XMP_META_NAMESPACE_URI);
+        const rdfRdf = xmpmeta ? findChildByNamespaceUri(xmpmeta, RDF_NAMESPACE_URI) : undefined;
         if (!rdfRdf) {
           // fast-xml-parser does not throw on unparseable/non-XML input --
           // it silently returns a degenerate object (e.g. the whole garbled
