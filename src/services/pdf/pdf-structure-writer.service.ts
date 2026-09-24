@@ -377,6 +377,83 @@ export class PdfStructureWriterService {
     return rows;
   }
 
+  /**
+   * Read-only core of fixSimpleTableHeaders' own row-finding logic: does
+   * one of the first `maxLeadingRowsToSkip` TR rows match this table's
+   * modal (most common non-zero) cell count? Extracted so both the writer
+   * (mutation) and canFixSimpleTableHeaders (suggestion-time eligibility
+   * probe, read-only) ask the SAME question against the SAME struct-tree
+   * data, instead of two independently-maintained copies that can drift.
+   * The discriminated failure `reason` lets fixSimpleTableHeaders keep
+   * reporting its own specific, pre-existing error messages for each
+   * distinct "refuse rather than guess" case, rather than collapsing them
+   * into one generic message. Never throws.
+   */
+  private detectTableHeaderRow(
+    doc: PDFDocument,
+    table: PDFDict,
+    maxLeadingRowsToSkip = 4,
+  ):
+    | { ok: true; headerRowIndex: number; rows: Array<{ dict: PDFDict; ref: PDFRef }>; cellCount: number }
+    | { ok: false; reason: 'no-rows' | 'tie' | 'no-regular-row'; rows: Array<{ dict: PDFDict; ref: PDFRef }>; mode: number | null } {
+    const rows = this.collectAllRows(doc, table);
+    if (rows.length === 0) return { ok: false, reason: 'no-rows', rows, mode: null };
+
+    const cellCounts = rows.map(row =>
+      this.findAllChildren(doc, row.dict, 'TD').length + this.findAllChildren(doc, row.dict, 'TH').length
+    );
+    const mode = this.modeOf(cellCounts.filter(c => c > 0));
+    if (mode === null) return { ok: false, reason: 'tie', rows, mode: null };
+
+    for (let i = 0; i < Math.min(rows.length, maxLeadingRowsToSkip); i++) {
+      if (cellCounts[i] === mode) return { ok: true, headerRowIndex: i, rows, cellCount: mode };
+    }
+    return { ok: false, reason: 'no-regular-row', rows, mode };
+  }
+
+  /**
+   * Suggestion-time eligibility probe, mirroring fixSimpleTableHeaders'
+   * apply-time logic exactly (same detectTableHeaderRow call) instead of
+   * ai-analysis.service.ts's own findRegularHeaderRowIndex, which judges
+   * eligibility from TableInfo's pdfjs/layout-derived cell counts -- a
+   * DIFFERENT data source than the real struct tree this writer actually
+   * mutates, and one that can disagree with it (this codebase's own
+   * pre-existing, documented architectural gap, issue #561).
+   *
+   * Real incident, Math_Nikitopoulos_PDF.pdf (2026-09-25): 2 of 3 real
+   * MATTERHORN-15-002 tables (12x5 and 53x3) were routed to AI-guidance-only
+   * because findRegularHeaderRowIndex said "not eligible", even though this
+   * exact struct-tree check finds a clean, regular header row and the
+   * writer, when called directly, successfully fixes both -- confirmed via
+   * a genuine re-audit round trip. Callers should treat EITHER signal
+   * (the cheap layout-based check OR this one) as sufficient, since this
+   * probe requires loading the real doc and locating the target table
+   * (findTargetTable's own page/element-id matching), work the cheap check
+   * skips entirely when it already agrees.
+   *
+   * `maxColumns` enforces the SAME simple-table size boundary the caller
+   * already applies against TableInfo.columnCount, but re-checked against
+   * the struct tree's OWN detected row cell count -- CodeRabbit finding on
+   * this same PR, confirmed real: layout extraction undercounting a wide
+   * table (e.g. TableInfo says 5 columns when the struct tree's real modal
+   * row has 8) would otherwise let this probe wrongly approve a table
+   * above the intended complexity ceiling, since detectTableHeaderRow alone
+   * only asks "is there a regular row", never "how wide is it".
+   *
+   * Never mutates the document. Returns false for anything
+   * fixSimpleTableHeaders would itself refuse to guess on (no structure
+   * tree, no matching table, no regular row shape, a genuine tie) --
+   * exactly the same refusals, since it calls the identical detection core.
+   */
+  canFixSimpleTableHeaders(doc: PDFDocument, elementId: string | undefined, maxColumns: number): boolean {
+    const structRoot = this.getStructTreeRoot(doc);
+    if (!structRoot) return false;
+    const target = this.findTargetTable(doc, structRoot, elementId);
+    if (!target) return false;
+    const detection = this.detectTableHeaderRow(doc, target.dict);
+    return detection.ok && detection.cellCount <= maxColumns;
+  }
+
   /** Find all direct children of parent with the given tag type. */
   private findAllChildren(
     doc: PDFDocument,
@@ -1416,41 +1493,21 @@ export class PdfStructureWriterService {
         }
         const table = target.dict;
 
-        const rows = this.collectAllRows(doc, table);
-        if (rows.length === 0) {
+        const detection = this.detectTableHeaderRow(doc, table, MAX_LEADING_ROWS_TO_SKIP);
+        if (!detection.ok) {
+          const errorByReason: Record<typeof detection.reason, string> = {
+            'no-rows': 'Target table has no TR row to promote headers on',
+            'tie': 'No single typical row shape -- row cell counts are evenly split, refusing to guess',
+            'no-regular-row': `No row within the first ${MAX_LEADING_ROWS_TO_SKIP} matches this table's typical (${detection.mode}-cell) row shape`,
+          };
           results.push({
             issueId: issue.id, success: false,
             before: 'unknown', after: 'unknown',
-            error: 'Target table has no TR row to promote headers on',
+            error: errorByReason[detection.reason],
           });
           continue;
         }
-
-        const cellCounts = rows.map(row =>
-          this.findAllChildren(doc, row.dict, 'TD').length + this.findAllChildren(doc, row.dict, 'TH').length
-        );
-        const mode = this.modeOf(cellCounts.filter(c => c > 0));
-        if (mode === null) {
-          results.push({
-            issueId: issue.id, success: false,
-            before: 'unknown', after: 'unknown',
-            error: 'No single typical row shape -- row cell counts are evenly split, refusing to guess',
-          });
-          continue;
-        }
-
-        let headerRowIndex = -1;
-        for (let i = 0; i < Math.min(rows.length, MAX_LEADING_ROWS_TO_SKIP); i++) {
-          if (cellCounts[i] === mode) { headerRowIndex = i; break; }
-        }
-        if (headerRowIndex === -1) {
-          results.push({
-            issueId: issue.id, success: false,
-            before: 'unknown', after: 'unknown',
-            error: `No row within the first ${MAX_LEADING_ROWS_TO_SKIP} matches this table's typical (${mode}-cell) row shape`,
-          });
-          continue;
-        }
+        const { headerRowIndex, rows } = detection;
         const headerRow = rows[headerRowIndex];
 
         // Count all cells (TD + TH) to determine complexity

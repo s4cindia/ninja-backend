@@ -1,10 +1,12 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
+import { PDFDocument, PDFName } from 'pdf-lib';
 import { aiAnalysisService } from '../../../../src/services/pdf/ai-analysis.service';
 import type { AiRemediationConfig } from '../../../../src/services/pdf/ai-analysis.service';
 import type { AuditIssue } from '../../../../src/services/audit/base-audit.service';
 import type { TableInfo, TableCell } from '../../../../src/services/pdf/structure-analyzer.service';
 import type { TextItem } from '../../../../src/services/pdf/text-extractor.service';
 import type { PdfParseResult } from '../../../../src/services/pdf/pdf-comprehensive-parser.service';
+import type { ParsedPDF } from '../../../../src/services/pdf/pdf-parser.service';
 
 function boldItem(text: string): TextItem {
   return {
@@ -305,6 +307,111 @@ describe('dispatchIssue: table-header-fix rule-based column-count gate', () => {
     const res = await svc.dispatchIssue(incompleteIssue, parsed, CONFIG, new Map(), tableById, new Map());
 
     expect(analyzeSpy).toHaveBeenCalledWith(incompleteIssue, table);
+    expect(res.model).toBe('gemini');
+  });
+
+  // Real incident, Math_Nikitopoulos_PDF.pdf (2026-09-25): 2 of 3 real
+  // MATTERHORN-15-002 tables were wrongly routed to AI-guidance-only
+  // because findRegularHeaderRowIndex (TableInfo's own pdfjs/layout-derived
+  // cell counts) disagreed with the real struct tree fixSimpleTableHeaders
+  // actually mutates -- the writer, called directly, successfully found and
+  // fixed a clean regular header row that findRegularHeaderRowIndex missed.
+  it('REGRESSION: falls back to the real struct tree (canFixSimpleTableHeaders) and still applies when TableInfo\'s own layout-derived cell counts disagree with it', async () => {
+    const doc = await PDFDocument.create();
+    const page = doc.addPage([400, 600]);
+
+    const buildRow = (cellCount: number) => {
+      const cellRefs = [];
+      for (let i = 0; i < cellCount; i++) {
+        cellRefs.push(doc.context.register(doc.context.obj({ S: PDFName.of('TD'), K: i })));
+      }
+      return doc.context.register(doc.context.obj({ S: PDFName.of('TR'), K: doc.context.obj(cellRefs) }));
+    };
+    // The REAL struct tree has a clean, regular 5-cell header row (row 0)
+    // followed by a matching 5-cell data row -- canFixSimpleTableHeaders
+    // must find this.
+    const headerRowRef = buildRow(5);
+    const dataRowRef = buildRow(5);
+    const tableDict = doc.context.obj({
+      S: PDFName.of('Table'),
+      Pg: page.ref,
+      K: doc.context.obj([headerRowRef, dataRowRef]),
+    });
+    const tableRef = doc.context.register(tableDict);
+    const documentDict = doc.context.obj({ S: PDFName.of('Document'), K: tableRef });
+    const documentRef = doc.context.register(documentDict);
+    const structTreeRootDict = doc.context.obj({ Type: PDFName.of('StructTreeRoot'), K: documentRef });
+    const structTreeRootRef = doc.context.register(structTreeRootDict);
+    doc.catalog.set(PDFName.of('StructTreeRoot'), structTreeRootRef);
+
+    // Same irregular-row-0, no-bold TableInfo as the "falls through" test
+    // above (5 columns, only 3 cells matched at row 0, no other regular
+    // row) -- findRegularHeaderRowIndex returns null on this alone.
+    const tableById = new Map([['table_p1_0', buildTable(5, 3)]]);
+    const parsed = { isTagged: true, pages: [], parsedPdf: { pdfLibDoc: doc } as ParsedPDF } as unknown as PdfParseResult;
+
+    const res = await svc.dispatchIssue(ISSUE, parsed, CONFIG, new Map(), tableById, new Map());
+
+    expect(res).toBeTruthy();
+    expect(res.suggestionType).toBe('table-header-fix');
+    expect(res.model).toBe('rule-based');
+    expect(res.applyMode).toBe('apply-to-pdf');
+  });
+
+  // CodeRabbit finding on this same PR, confirmed real: the struct-tree
+  // fallback above must re-enforce SIMPLE_TABLE_MAX_COLUMNS against the
+  // struct tree's OWN detected row width, not just trust that TableInfo's
+  // columnCount (which gated entry into this whole branch) was accurate.
+  // Layout extraction can UNDERCOUNT a wide table -- e.g. TableInfo says 5
+  // columns (passing the <=6 gate) while the real struct tree has 8 -- and
+  // without this check, the fallback would wrongly approve a table above
+  // the intended "simple table" complexity ceiling.
+  it('REGRESSION: does not apply via the struct-tree fallback when the real table is wider than SIMPLE_TABLE_MAX_COLUMNS, even if TableInfo undercounted it as simple', async () => {
+    const doc = await PDFDocument.create();
+    const page = doc.addPage([400, 600]);
+
+    const buildRow = (cellCount: number) => {
+      const cellRefs = [];
+      for (let i = 0; i < cellCount; i++) {
+        cellRefs.push(doc.context.register(doc.context.obj({ S: PDFName.of('TD'), K: i })));
+      }
+      return doc.context.register(doc.context.obj({ S: PDFName.of('TR'), K: doc.context.obj(cellRefs) }));
+    };
+    // The REAL struct tree table is 8 columns wide (above
+    // SIMPLE_TABLE_MAX_COLUMNS), with a clean, regular header row --
+    // canFixSimpleTableHeaders' own row-detection alone would say "yes,
+    // there's a regular row", but must still refuse once it checks width.
+    const headerRowRef = buildRow(8);
+    const dataRowRef = buildRow(8);
+    const tableDict = doc.context.obj({
+      S: PDFName.of('Table'),
+      Pg: page.ref,
+      K: doc.context.obj([headerRowRef, dataRowRef]),
+    });
+    const tableRef = doc.context.register(tableDict);
+    const documentDict = doc.context.obj({ S: PDFName.of('Document'), K: tableRef });
+    const documentRef = doc.context.register(documentDict);
+    const structTreeRootDict = doc.context.obj({ Type: PDFName.of('StructTreeRoot'), K: documentRef });
+    const structTreeRootRef = doc.context.register(structTreeRootDict);
+    doc.catalog.set(PDFName.of('StructTreeRoot'), structTreeRootRef);
+
+    // TableInfo UNDERCOUNTS this same table as 5 columns (passes the outer
+    // <=6 gate) with an irregular row 0 (3 of 5 cells) -- the same shape
+    // that makes findRegularHeaderRowIndex return null on its own.
+    const tableById = new Map([['table_p1_0', buildTable(5, 3)]]);
+    const parsed = { isTagged: true, pages: [], parsedPdf: { pdfLibDoc: doc } as ParsedPDF } as unknown as PdfParseResult;
+    const analyzeSpy = vi.spyOn(svc, 'analyzeTableHeaders').mockResolvedValue({
+      suggestionType: 'table-header-fix',
+      guidance: 'AI-drafted',
+      confidence: 0.6,
+      rationale: 'wide table, needs review',
+      model: 'gemini',
+      applyMode: 'guidance-only',
+    });
+
+    const res = await svc.dispatchIssue(ISSUE, parsed, CONFIG, new Map(), tableById, new Map());
+
+    expect(analyzeSpy).toHaveBeenCalledWith(ISSUE, tableById.get('table_p1_0'));
     expect(res.model).toBe('gemini');
   });
 
