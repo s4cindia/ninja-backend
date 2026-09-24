@@ -5,7 +5,7 @@
  * Handles metadata modifications, structure changes, and backup/rollback
  */
 
-import { PDFDocument, PDFName, PDFString, PDFHexString, PDFBool, PDFDict, PDFArray, PDFRef, PDFNumber, PDFRawStream } from 'pdf-lib';
+import { PDFDocument, PDFName, PDFString, PDFHexString, PDFBool, PDFDict, PDFArray, PDFRef, PDFNumber, PDFRawStream, decodePDFRawStream } from 'pdf-lib';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import { XMLParser, XMLBuilder } from 'fast-xml-parser';
@@ -1731,7 +1731,17 @@ export class PdfModifierService {
       try {
         const rawStream = doc.context.lookup(existingRef);
         if (!(rawStream instanceof PDFRawStream)) throw new Error('Metadata is not a raw stream');
-        const raw = Buffer.from(rawStream.contents).toString('utf8');
+        // Must decompress via the stream's own /Filter (e.g. FlateDecode) --
+        // rawStream.contents are the ENCODED bytes, not the XML text. Reading
+        // them directly as UTF-8 silently mangles a compressed stream into
+        // garbage full of U+FFFD replacement characters -- confirmed live on
+        // a real document (Nikitopoulos trial): writePdfUaIdentifier reported
+        // success every one of 10 real Auto Mode rounds, but the on-disk XMP
+        // never actually changed. fast-xml-parser does NOT throw on that
+        // garbage (see the rdfRdf-not-found check below), so the old code
+        // silently fell through this try block writing the same content back
+        // unchanged, with no error ever surfacing.
+        const raw = Buffer.from(decodePDFRawStream(rawStream).decode()).toString('utf8');
 
         const parser = new XMLParser({ ignoreAttributes: false, attributeNamePrefix: '@_' });
         const parsed = parser.parse(raw) as Record<string, unknown>;
@@ -1753,7 +1763,20 @@ export class PdfModifierService {
         // prefix being patched) instead of merging into an ambiguous array.
         const xmpmeta = parsed['x:xmpmeta'] as Record<string, unknown> | undefined;
         const rdfRdf = xmpmeta?.['rdf:RDF'] as Record<string, unknown> | undefined;
-        if (rdfRdf) {
+        if (!rdfRdf) {
+          // fast-xml-parser does not throw on unparseable/non-XML input --
+          // it silently returns a degenerate object (e.g. the whole garbled
+          // string as one bogus self-closing tag). Without this check, that
+          // falls through as a "successful" no-op: patches are silently
+          // never applied (nothing here to attach them to), yet the garbage
+          // gets rebuilt and written straight back as the new stream, so
+          // every subsequent round repeats the exact same silent no-op
+          // forever. Throwing routes into the catch block below, which
+          // regenerates valid XMP from MINIMAL_XMP_TEMPLATE instead.
+          throw new Error('Existing /Metadata stream did not parse into a recognizable x:xmpmeta/rdf:RDF structure');
+        }
+
+        {
           const existingDesc = rdfRdf['rdf:Description'];
           // Codex/CodeRabbit finding on this same PR, confirmed real: the
           // first version of this map only knew 'pdfuaid', so patching
