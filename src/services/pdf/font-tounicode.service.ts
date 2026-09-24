@@ -16,7 +16,7 @@
  * (recommendation #2). ToUnicode carries syntax, ActualText carries semantics.
  */
 
-import { PDFDocument, PDFName, PDFDict, PDFArray, PDFRef, PDFNumber, PDFRawStream, decodePDFRawStream } from 'pdf-lib';
+import { PDFDocument, PDFName, PDFDict, PDFArray, PDFRef, PDFNumber, PDFString, PDFRawStream, decodePDFRawStream } from 'pdf-lib';
 import { logger } from '../../lib/logger';
 import { baseEncodingTable, glyphNameToUnicode, isValidScalar } from './font-encodings';
 import { tokenize } from '../zone-extractor/seam-c/content-stream';
@@ -79,15 +79,36 @@ class FontToUnicodeService {
 
   /**
    * Extend an EXISTING (but incomplete) /ToUnicode CMap with entries for
-   * codes the font actually renders but its CMap doesn't cover -- a
-   * genuinely different gap from synthesizeToUnicode above, which only
-   * ever handles fonts with NO CMap at all (explicitly skips any font
-   * that already has one).
+   * codes the font's own /FontDescriptor /CharSet claims it can render, or
+   * that the document's content streams actually render through it,
+   * whichever its CMap doesn't already cover -- a genuinely different gap
+   * from synthesizeToUnicode above, which only ever handles fonts with NO
+   * CMap at all (explicitly skips any font that already has one).
    *
    * Real incident: pdfa11y's UA-10-002 ("/ToUnicode CMap exists but
    * doesn't cover every rendered code") fires for exactly this shape --
    * confirmed live on Math_Weir_PDF.pdf, font 'BOXDSW+MathematicalPiLTStd-4'
-   * renders one code (0x0061) its own CMap never mapped.
+   * (page 295) has a code (0x61) its own CMap never mapped. An initial,
+   * content-stream-usage-only version of this method (checked in, then
+   * revised here) did NOT fix this real case: direct content-stream
+   * tracing confirmed THIS SPECIFIC font object never actually shows 0x61
+   * anywhere in the document -- its own /FirstChar=/LastChar=98 (only code
+   * 98, 'b', is even nominally in range) -- yet the FontDescriptor's own
+   * /CharSet lists a real glyph named "a" (PDF32000-1:2008 §9.8.1: CharSet
+   * "shall list the character names of all glyphs present in the font
+   * program, regardless of whether a glyph is referenced or used by the
+   * PDF or not" -- Matterhorn 31-012's own message, confirmed to apply the
+   * identical standard elsewhere in this same document). pdfa11y evidently
+   * checks ToUnicode coverage against that DECLARED capability, not
+   * against this specific document's actual usage -- so a usage-only scan
+   * can never satisfy it for a font whose CharSet is broader than what's
+   * actually shown. charSetClaimedCodes resolves each CharSet-listed name
+   * to a byte code via this font's own Unicode-based encoding inference
+   * (buildCodeMap), reusing the exact values it already computes rather
+   * than re-deriving them -- combined additively with
+   * findRenderedCodesByFont's own actual-usage scan (never REPLACING it:
+   * a font whose CharSet is somehow incomplete or missing entirely must
+   * still get fixed for whatever it demonstrably does render).
    *
    * Deliberately APPEND-only, never touching the existing CMap's own
    * entries: a symbol/math-Pi font's glyph names rarely resolve correctly
@@ -117,8 +138,11 @@ class FontToUnicodeService {
       const toUnicodeRef = toUnicodeRaw instanceof PDFRef ? toUnicodeRaw : null;
       if (!toUnicodeRef) continue; // no existing CMap at all -- synthesizeToUnicode's own job, not this one
 
-      const rendered = renderedByFont.get(key);
-      if (!rendered || rendered.size === 0) continue; // never shown anywhere -- nothing to check
+      const inferred = this.buildCodeMap(doc, obj, { fontsProcessed: 0, fontsSkipped: 0, codesMapped: 0, puaFallback: 0 });
+
+      const candidates = new Set<number>(renderedByFont.get(key) ?? []);
+      for (const code of this.charSetClaimedCodes(doc, obj, inferred)) candidates.add(code);
+      if (candidates.size === 0) continue; // neither declared-capable nor actually shown -- nothing to check
 
       const stream = doc.context.lookup(toUnicodeRef);
       if (!(stream instanceof PDFRawStream)) continue;
@@ -130,10 +154,9 @@ class FontToUnicodeService {
       }
 
       const covered = this.parseExistingCMapCodes(existingText);
-      const missing = [...rendered].filter(code => !covered.has(code));
+      const missing = [...candidates].filter(code => !covered.has(code));
       if (missing.length === 0) continue;
 
-      const inferred = this.buildCodeMap(doc, obj, { fontsProcessed: 0, fontsSkipped: 0, codesMapped: 0, puaFallback: 0 });
       const additions = new Map<number, number>();
       for (const code of missing) {
         const cp = inferred.get(code);
@@ -185,6 +208,57 @@ class FontToUnicodeService {
       }
     }
     return covered;
+  }
+
+  /**
+   * Resolves a font's own /FontDescriptor /CharSet -- a string listing
+   * every glyph name the EMBEDDED FONT PROGRAM actually contains
+   * (PDF32000-1:2008 §9.8.1), independent of whether this specific
+   * document's /Widths /FirstChar /LastChar range or content streams ever
+   * reference them -- to the byte codes each name resolves to under this
+   * font's own /Encoding.
+   *
+   * Reuses `inferred` (this font's own already-computed code->Unicode
+   * table from buildCodeMap, built from the SAME /Differences/base-
+   * encoding priority used everywhere else in this file) as a Unicode-
+   * based reverse lookup, rather than building a second, separate
+   * name-based encoding table: for each CharSet name, resolve its Unicode
+   * value via the same AGL lookup (glyphNameToUnicode) already used for
+   * /Differences names, then find which code `inferred` independently
+   * computed that SAME Unicode value for. A name with no resolvable
+   * Unicode (a font-specific/non-AGL name) or no matching code under this
+   * font's own encoding is silently skipped, not guessed at -- the same
+   * "bail rather than guess" discipline as the rest of this module. On the
+   * rare chance two codes share one Unicode value under this encoding,
+   * only the lower one is recorded here -- harmless, since whichever code
+   * IS recorded still gets its own independently-correct `inferred` value
+   * inserted, never a wrong one.
+   */
+  private charSetClaimedCodes(doc: PDFDocument, font: PDFDict, inferred: Map<number, number>): Set<number> {
+    const claimed = new Set<number>();
+    const fdRaw = font.get(PDFName.of('FontDescriptor'));
+    const fd = fdRaw instanceof PDFRef ? doc.context.lookup(fdRaw) : fdRaw;
+    if (!(fd instanceof PDFDict)) return claimed;
+
+    let charSetRaw: unknown = fd.get(PDFName.of('CharSet'));
+    if (charSetRaw instanceof PDFRef) charSetRaw = doc.context.lookup(charSetRaw);
+    if (!(charSetRaw instanceof PDFString)) return claimed;
+
+    const names = charSetRaw.decodeText().split('/').map(s => s.trim()).filter(s => s.length > 0 && s !== '.notdef');
+    if (names.length === 0) return claimed;
+
+    const unicodeToCode = new Map<number, number>();
+    for (const [code, cp] of inferred) {
+      if (!unicodeToCode.has(cp)) unicodeToCode.set(cp, code);
+    }
+
+    for (const name of names) {
+      const cp = glyphNameToUnicode(name);
+      if (cp === undefined) continue;
+      const code = unicodeToCode.get(cp);
+      if (code !== undefined) claimed.add(code);
+    }
+    return claimed;
   }
 
   /**
