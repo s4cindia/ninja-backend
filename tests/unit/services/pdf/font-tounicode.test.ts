@@ -1,7 +1,29 @@
 import { describe, it, expect } from 'vitest';
 import { PDFDocument, StandardFonts, PDFName, PDFDict, PDFRef, PDFRawStream, decodePDFRawStream } from 'pdf-lib';
 import { fontToUnicodeService } from '../../../../src/services/pdf/font-tounicode.service';
+import { writePageContent } from '../../../../src/services/pdf/pdf-content-stream-io';
 import { WINANSI_CODE_TO_UNICODE, glyphNameToUnicode, baseEncodingTable, isValidScalar } from '../../../../src/services/pdf/font-encodings';
+
+function setPartialCMap(doc: PDFDocument, font: PDFDict, cmapBody: string): void {
+  const cmap = [
+    '/CIDInit /ProcSet findresource begin',
+    '12 dict begin',
+    'begincmap',
+    '/CIDSystemInfo <</Registry (Adobe) /Ordering (UCS) /Supplement 0>> def',
+    '/CMapName /Adobe-Identity-UCS def',
+    '/CMapType 2 def',
+    '1 begincodespacerange',
+    '<00> <ff>',
+    'endcodespacerange',
+    cmapBody,
+    'endcmap',
+    'CMapName currentdict /CMap defineresource pop',
+    'end',
+    'end',
+  ].join('\n');
+  const ref = doc.context.register(doc.context.stream(cmap));
+  font.set(PDFName.of('ToUnicode'), ref);
+}
 
 function decodeToUnicode(doc: PDFDocument, font: PDFDict): string {
   const ref = font.get(PDFName.of('ToUnicode'));
@@ -117,5 +139,83 @@ describe('fontToUnicodeService.synthesizeToUnicode', () => {
     const second = fontToUnicodeService.synthesizeToUnicode(reloaded);
     expect(second.fontsProcessed).toBe(0);
     expect(second.fontsSkipped).toBeGreaterThanOrEqual(1);
+  });
+});
+
+describe('fontToUnicodeService.extendPartialToUnicode', () => {
+  // Real incident, confirmed live on Math_Weir_PDF.pdf: pdfa11y's UA-10-002
+  // ("/ToUnicode CMap exists but doesn't cover every rendered code") fires
+  // when a font's own CMap covers SOME but not all the codes it actually
+  // shows. synthesizeToUnicode above explicitly skips any font that
+  // already has a CMap; this is the writer for that different gap.
+  it("adds an entry for a rendered code the font's existing CMap doesn't cover, leaving the existing entry untouched", async () => {
+    const doc = await PDFDocument.create();
+    const page = doc.addPage([300, 200]);
+    const font = await doc.embedFont(StandardFonts.Helvetica);
+    page.drawText('AB', { x: 20, y: 100, size: 12, font }); // renders codes 0x41 ('A') and 0x42 ('B')
+    const reloaded = await PDFDocument.load(await doc.save());
+    const fontDict = findFont(reloaded)!;
+
+    // Simulate a real-world partial CMap: only 'A' (0x41) is covered.
+    setPartialCMap(reloaded, fontDict, '1 beginbfchar\n<41> <0041>\nendbfchar');
+
+    const result = fontToUnicodeService.extendPartialToUnicode(reloaded);
+    expect(result.fontsExtended).toBe(1);
+    expect(result.codesAdded).toBe(1);
+
+    const cmap = decodeToUnicode(reloaded, fontDict);
+    expect(cmap).toContain('<41> <0041>'); // original entry preserved, byte-for-byte
+    expect(cmap).toContain('<42> <0042>'); // newly added, inferred via WinAnsi base encoding
+  });
+
+  it('does nothing when the existing CMap already covers every rendered code', async () => {
+    const doc = await PDFDocument.create();
+    const page = doc.addPage([300, 200]);
+    const font = await doc.embedFont(StandardFonts.Helvetica);
+    page.drawText('A', { x: 20, y: 100, size: 12, font });
+    const reloaded = await PDFDocument.load(await doc.save());
+    const fontDict = findFont(reloaded)!;
+    setPartialCMap(reloaded, fontDict, '1 beginbfchar\n<41> <0041>\nendbfchar');
+
+    const result = fontToUnicodeService.extendPartialToUnicode(reloaded);
+    expect(result.fontsExtended).toBe(0);
+    expect(result.codesAdded).toBe(0);
+  });
+
+  it('leaves a font with NO existing /ToUnicode untouched -- that is synthesizeToUnicode\'s own job, not this one', async () => {
+    const doc = await PDFDocument.create();
+    const page = doc.addPage([300, 200]);
+    const font = await doc.embedFont(StandardFonts.Helvetica);
+    page.drawText('A', { x: 20, y: 100, size: 12, font });
+    const reloaded = await PDFDocument.load(await doc.save());
+    const fontDict = findFont(reloaded)!;
+    expect(fontDict.has(PDFName.of('ToUnicode'))).toBe(false);
+
+    const result = fontToUnicodeService.extendPartialToUnicode(reloaded);
+    expect(result.fontsExtended).toBe(0);
+    expect(fontDict.has(PDFName.of('ToUnicode'))).toBe(false);
+  });
+
+  it('scans codes shown via TJ arrays, not just plain Tj', async () => {
+    const doc = await PDFDocument.create();
+    const page = doc.addPage([300, 200]);
+    const font = await doc.embedFont(StandardFonts.Helvetica);
+    // A throwaway draw call just to get pdf-lib to register the font in
+    // this page's own /Resources/Font -- drawText with kerning-sensitive
+    // text commonly emits TJ, but pdf-lib's own choice of Tj vs TJ isn't
+    // guaranteed, so the content stream is overwritten below to be certain
+    // this exercises the TJ path specifically.
+    page.drawText('x', { x: 0, y: 0, size: 12, font });
+    const reloaded = await PDFDocument.load(await doc.save());
+    const fontDict = findFont(reloaded)!;
+    const fontName = (reloaded.getPage(0).node.Resources()!.get(PDFName.of('Font')) as PDFDict)
+      .keys()[0].decodeText().replace(/^\//, '');
+    writePageContent(reloaded, 1, `BT /${fontName} 12 Tf 20 100 Td [(A)-20(B)] TJ ET`);
+    setPartialCMap(reloaded, fontDict, '1 beginbfchar\n<41> <0041>\nendbfchar');
+
+    const result = fontToUnicodeService.extendPartialToUnicode(reloaded);
+    expect(result.fontsExtended).toBe(1);
+    expect(result.codesAdded).toBe(1);
+    expect(decodeToUnicode(reloaded, fontDict)).toContain('<42> <0042>');
   });
 });

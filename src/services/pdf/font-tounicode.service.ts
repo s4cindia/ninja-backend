@@ -16,15 +16,22 @@
  * (recommendation #2). ToUnicode carries syntax, ActualText carries semantics.
  */
 
-import { PDFDocument, PDFName, PDFDict, PDFArray, PDFRef, PDFNumber } from 'pdf-lib';
+import { PDFDocument, PDFName, PDFDict, PDFArray, PDFRef, PDFNumber, PDFRawStream, decodePDFRawStream } from 'pdf-lib';
 import { logger } from '../../lib/logger';
 import { baseEncodingTable, glyphNameToUnicode, isValidScalar } from './font-encodings';
+import { tokenize } from '../zone-extractor/seam-c/content-stream';
+import { decodePageContent } from './pdf-content-stream-io';
 
 export interface ToUnicodeSynthesisResult {
   fontsProcessed: number;
   fontsSkipped: number;
   codesMapped: number;
   puaFallback: number;
+}
+
+export interface ToUnicodeExtensionResult {
+  fontsExtended: number;
+  codesAdded: number;
 }
 
 // Simple (single-byte) font subtypes we can synthesise for. Type0/CIDFont use
@@ -68,6 +75,248 @@ class FontToUnicodeService {
       );
     }
     return result;
+  }
+
+  /**
+   * Extend an EXISTING (but incomplete) /ToUnicode CMap with entries for
+   * codes the font actually renders but its CMap doesn't cover -- a
+   * genuinely different gap from synthesizeToUnicode above, which only
+   * ever handles fonts with NO CMap at all (explicitly skips any font
+   * that already has one).
+   *
+   * Real incident: pdfa11y's UA-10-002 ("/ToUnicode CMap exists but
+   * doesn't cover every rendered code") fires for exactly this shape --
+   * confirmed live on Math_Weir_PDF.pdf, font 'BOXDSW+MathematicalPiLTStd-4'
+   * renders one code (0x0061) its own CMap never mapped.
+   *
+   * Deliberately APPEND-only, never touching the existing CMap's own
+   * entries: a symbol/math-Pi font's glyph names rarely resolve correctly
+   * via the same Differences/base-encoding inference synthesizeToUnicode
+   * uses for ordinary text -- REPLACING a font's already-correct (if
+   * incomplete) mappings with our own algorithmic guess for ALL 256 codes
+   * would very likely overwrite MORE correct mappings than it fixes.
+   * Mutates `doc`.
+   */
+  extendPartialToUnicode(doc: PDFDocument): ToUnicodeExtensionResult {
+    const result: ToUnicodeExtensionResult = { fontsExtended: 0, codesAdded: 0 };
+    const renderedByFont = this.findRenderedCodesByFont(doc);
+    const seen = new Set<string>();
+
+    for (const [ref, obj] of doc.context.enumerateIndirectObjects()) {
+      if (!(obj instanceof PDFDict)) continue;
+      if (obj.get(PDFName.of('Type'))?.toString() !== '/Font') continue;
+
+      const key = ref.toString();
+      if (seen.has(key)) continue;
+      seen.add(key);
+
+      const subtype = obj.get(PDFName.of('Subtype'))?.toString();
+      if (!subtype || !SIMPLE_FONT_SUBTYPES.has(subtype)) continue;
+
+      const toUnicodeRaw = obj.get(PDFName.of('ToUnicode'));
+      const toUnicodeRef = toUnicodeRaw instanceof PDFRef ? toUnicodeRaw : null;
+      if (!toUnicodeRef) continue; // no existing CMap at all -- synthesizeToUnicode's own job, not this one
+
+      const rendered = renderedByFont.get(key);
+      if (!rendered || rendered.size === 0) continue; // never shown anywhere -- nothing to check
+
+      const stream = doc.context.lookup(toUnicodeRef);
+      if (!(stream instanceof PDFRawStream)) continue;
+      let existingText: string;
+      try {
+        existingText = Buffer.from(decodePDFRawStream(stream).decode()).toString('latin1');
+      } catch {
+        continue; // unparseable existing CMap -- decline rather than guess
+      }
+
+      const covered = this.parseExistingCMapCodes(existingText);
+      const missing = [...rendered].filter(code => !covered.has(code));
+      if (missing.length === 0) continue;
+
+      const inferred = this.buildCodeMap(doc, obj, { fontsProcessed: 0, fontsSkipped: 0, codesMapped: 0, puaFallback: 0 });
+      const additions = new Map<number, number>();
+      for (const code of missing) {
+        const cp = inferred.get(code);
+        if (cp !== undefined) additions.set(code, cp);
+      }
+      if (additions.size === 0) continue;
+
+      const extendedText = this.appendBfCharEntries(existingText, additions);
+      if (extendedText === null) continue; // couldn't find a safe insertion point -- decline
+
+      const newStream = doc.context.flateStream(Buffer.from(extendedText, 'latin1'));
+      doc.context.assign(toUnicodeRef, newStream);
+      result.fontsExtended++;
+      result.codesAdded += additions.size;
+    }
+
+    if (result.fontsExtended > 0) {
+      logger.info(
+        `[FontToUnicode] extended ${result.fontsExtended} partial /ToUnicode CMap(s) ` +
+          `(${result.codesAdded} code(s) added)`,
+      );
+    }
+    return result;
+  }
+
+  /**
+   * Parses a /ToUnicode CMap's own bfchar/bfrange blocks for single-byte
+   * (0x00-0xFF) source codes it already covers -- used to avoid duplicating
+   * or conflicting with an existing, presumably-correct mapping. Multi-byte
+   * source codes (>0xFF, a CID-keyed/Type0 CMap shape) are ignored: this
+   * module's whole scope (SIMPLE_FONT_SUBTYPES) is single-byte fonts only.
+   */
+  private parseExistingCMapCodes(cmapText: string): Set<number> {
+    const covered = new Set<number>();
+    const hexToNum = (h: string): number => parseInt(h, 16);
+
+    for (const m of cmapText.matchAll(/beginbfchar([\s\S]*?)endbfchar/g)) {
+      for (const pair of m[1].matchAll(/<([0-9a-fA-F]+)>\s*<[0-9a-fA-F]+>/g)) {
+        if (pair[1].length <= 2) covered.add(hexToNum(pair[1]));
+      }
+    }
+    for (const m of cmapText.matchAll(/beginbfrange([\s\S]*?)endbfrange/g)) {
+      for (const range of m[1].matchAll(/<([0-9a-fA-F]+)>\s*<([0-9a-fA-F]+)>\s*(?:<[0-9a-fA-F]+>|\[[^\]]*\])/g)) {
+        if (range[1].length > 2 || range[2].length > 2) continue;
+        const lo = hexToNum(range[1]);
+        const hi = hexToNum(range[2]);
+        if (hi < lo || hi - lo > 0xff) continue; // malformed/unexpectedly huge range -- ignore rather than loop forever
+        for (let c = lo; c <= hi; c++) covered.add(c);
+      }
+    }
+    return covered;
+  }
+
+  /**
+   * Inserts a new `N beginbfchar ... endbfchar` block (containing exactly
+   * `additions`) right before the CMap's own `endcmap`, leaving every
+   * existing byte of `cmapText` untouched -- append-only, matching
+   * extendPartialToUnicode's own "never touch existing entries" contract.
+   * Returns null if `endcmap` can't be found (an unrecognized/malformed
+   * CMap shape) rather than guessing an insertion point.
+   */
+  private appendBfCharEntries(cmapText: string, additions: Map<number, number>): string | null {
+    const idx = cmapText.lastIndexOf('endcmap');
+    if (idx === -1) return null;
+    const hex2 = (n: number): string => n.toString(16).padStart(2, '0');
+    const utf16be = (cp: number): string => {
+      if (cp <= 0xffff) return cp.toString(16).padStart(4, '0');
+      const v = cp - 0x10000;
+      const hi = 0xd800 + (v >> 10);
+      const lo = 0xdc00 + (v & 0x3ff);
+      return hi.toString(16).padStart(4, '0') + lo.toString(16).padStart(4, '0');
+    };
+    const lines = [`${additions.size} beginbfchar`];
+    for (const [code, cp] of [...additions.entries()].sort((a, b) => a[0] - b[0])) {
+      lines.push(`<${hex2(code)}> <${utf16be(cp)}>`);
+    }
+    lines.push('endbfchar', '');
+    return cmapText.slice(0, idx) + lines.join('\n') + cmapText.slice(idx);
+  }
+
+  /**
+   * Walks every page's content stream, tracking the active font (via Tf,
+   * resolved to the font object's own indirect-reference key through the
+   * page's /Resources /Font dict) and collecting the single-byte codes
+   * each Tj/TJ/'/" actually shows while that font is selected. Powers
+   * extendPartialToUnicode's own "does this font's existing CMap cover
+   * everything it's actually used for" check -- content-stream usage is
+   * the only reliable source of truth for that; a font's own glyph set
+   * can be far larger than what a specific document actually renders.
+   */
+  private findRenderedCodesByFont(doc: PDFDocument): Map<string, Set<number>> {
+    const result = new Map<string, Set<number>>();
+    const pageCount = doc.getPageCount();
+
+    for (let i = 0; i < pageCount; i++) {
+      const page = doc.getPage(i);
+      const resources = page.node.Resources();
+      const fontDictRaw = resources?.get(PDFName.of('Font'));
+      const fontDict = fontDictRaw instanceof PDFRef ? doc.context.lookup(fontDictRaw) : fontDictRaw;
+      if (!(fontDict instanceof PDFDict)) continue;
+
+      const content = decodePageContent(doc, i + 1);
+      if (content === null) continue;
+
+      const tokens = tokenize(content);
+      let currentFontKey: string | null = null;
+      const operands: Array<{ t: string; v: string }> = [];
+
+      for (const tk of tokens) {
+        if (tk.t !== 'op') { operands.push(tk); continue; }
+        if (tk.v === 'Tf') {
+          const nameTok = operands[operands.length - 2];
+          if (nameTok && nameTok.t === 'name') {
+            const fontEntry = fontDict.get(PDFName.of(nameTok.v.replace(/^\//, '')));
+            currentFontKey = fontEntry instanceof PDFRef ? fontEntry.toString() : null;
+          } else {
+            currentFontKey = null;
+          }
+        } else if ((tk.v === 'Tj' || tk.v === "'" || tk.v === '"') && currentFontKey) {
+          const strTok = operands[operands.length - 1];
+          if (strTok) this.collectStringCodes(strTok, result, currentFontKey);
+        } else if (tk.v === 'TJ' && currentFontKey) {
+          // Every string element inside the array is shown text; numbers
+          // are kerning-only adjustments. tokenize() emits '[' / ']' as
+          // their own token types (not 'op'), so the array's contents
+          // accumulate into `operands` just like any other operator's own
+          // operands would.
+          for (const el of operands) {
+            if (el.t === 's' || el.t === 'h') this.collectStringCodes(el, result, currentFontKey);
+          }
+        }
+        operands.length = 0;
+      }
+    }
+    return result;
+  }
+
+  private collectStringCodes(tok: { t: string; v: string }, result: Map<string, Set<number>>, fontKey: string): void {
+    const bytes = tok.t === 'h' ? this.decodeHexStringBytes(tok.v) : this.decodeLiteralStringBytes(tok.v);
+    if (bytes.length === 0) return;
+    let set = result.get(fontKey);
+    if (!set) { set = new Set(); result.set(fontKey, set); }
+    for (const b of bytes) set.add(b);
+  }
+
+  /** Decodes a hex string token's raw source (e.g. "<4142>") to its byte values -- an odd trailing digit is padded with an implicit 0, per PDF32000-1:2008 §7.3.4.3. */
+  private decodeHexStringBytes(raw: string): number[] {
+    const hex = raw.slice(1, -1).replace(/\s+/g, '');
+    const bytes: number[] = [];
+    for (let i = 0; i + 1 < hex.length; i += 2) bytes.push(parseInt(hex.slice(i, i + 2), 16));
+    if (hex.length % 2 === 1) bytes.push(parseInt(hex[hex.length - 1] + '0', 16));
+    return bytes;
+  }
+
+  /**
+   * Decodes a literal string token's raw source (e.g. "(He\\)llo)") to its
+   * byte values -- each unescaped char is already exactly one byte (this
+   * whole subsystem works in latin1 space, 1:1 byte<->char), and PDF's own
+   * escape sequences (PDF32000-1:2008 §7.3.4.2) are resolved to their real
+   * byte value rather than left as literal backslash+char pairs.
+   */
+  private decodeLiteralStringBytes(raw: string): number[] {
+    const inner = raw.slice(1, -1);
+    const bytes: number[] = [];
+    for (let i = 0; i < inner.length; i++) {
+      const c = inner[i];
+      if (c !== '\\') { bytes.push(inner.charCodeAt(i) & 0xff); continue; }
+      const next = inner[i + 1];
+      if (next === undefined) break;
+      if (next === '\n') { i++; continue; }
+      if (next === '\r') { i++; if (inner[i + 1] === '\n') i++; continue; }
+      const simple: Record<string, number> = { n: 0x0a, r: 0x0d, t: 0x09, b: 0x08, f: 0x0c, '(': 0x28, ')': 0x29, '\\': 0x5c };
+      if (next in simple) { bytes.push(simple[next]); i++; continue; }
+      if (next >= '0' && next <= '7') {
+        let oct = next; i++;
+        for (let k = 0; k < 2 && inner[i + 1] >= '0' && inner[i + 1] <= '7'; k++) { i++; oct += inner[i]; }
+        bytes.push(parseInt(oct, 8) & 0xff);
+        continue;
+      }
+      bytes.push(next.charCodeAt(0) & 0xff);
+      i++;
+    }
+    return bytes;
   }
 
   /**

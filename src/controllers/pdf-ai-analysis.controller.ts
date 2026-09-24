@@ -564,6 +564,14 @@ export class PdfAiAnalysisController {
             ? `Synthesized /ToUnicode for ${r.fontsProcessed} font(s) (${r.codesMapped} code(s) mapped, ${r.puaFallback} Private-Use-Area fallback)`
             : 'No fonts needed a synthesized /ToUnicode',
         };
+      } else if (suggestionType === 'font-tounicode-extend-fix') {
+        const r = fontToUnicodeService.extendPartialToUnicode(doc);
+        modification = {
+          success: true,
+          description: r.fontsExtended > 0
+            ? `Extended ${r.fontsExtended} partial /ToUnicode CMap(s) (${r.codesAdded} code(s) added)`
+            : 'No fonts had a partial /ToUnicode CMap needing extension',
+        };
       } else if (suggestionType === 'color-contrast-fix') {
         // Resolved from ALL sibling contrast issues on the audit report, not
         // just this one -- CodeRabbit finding on PR #563, confirmed real:
