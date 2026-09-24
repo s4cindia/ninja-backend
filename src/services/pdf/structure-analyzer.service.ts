@@ -542,10 +542,30 @@ class StructureAnalyzerService {
       }
     }
 
-    headings.sort((a, b) => {
-      if (a.pageNumber !== b.pageNumber) return a.pageNumber - b.pageNumber;
-      return a.position.y - b.position.y;
-    });
+    // Only the font-size/text heuristic path (no real tags, headings pushed
+    // in raw page-scan order) needs a position-based sort to establish
+    // reading order. Tag-tree-derived headings (taggedExtraction) are
+    // already in the struct tree's own K-array order -- the authoritative
+    // reading order per PDF/UA -- and re-sorting them by pageNumber can only
+    // ever scramble that, never improve it, whenever /Pg resolution silently
+    // defaults a node to the traversal's seed page instead of its true page.
+    // Root cause of a real false-positive HEADING-SKIP bug (Nikitopoulos
+    // trial, 2026-09-24): two headings on genuinely DIFFERENT real pages both
+    // had their pageNumber wrongly default to 1 (a separate, still-open /Pg
+    // resolution gap), and this sort then grouped those two page-1-tagged
+    // entries adjacent to each other -- severing them from the correctly-
+    // resolved headings that sat between them in true reading order and
+    // fabricating an H3-to-H6 "skip" that the tag tree never actually has
+    // (confirmed: the writer's own traversal, which never sorts, finds zero
+    // real skips in the same 84-heading sequence). Every position.y is also
+    // hardcoded to 0 for tag-tree headings (extractTaggedHeadings never
+    // populates it), so this sort's secondary key was already a no-op there.
+    if (!taggedExtraction) {
+      headings.sort((a, b) => {
+        if (a.pageNumber !== b.pageNumber) return a.pageNumber - b.pageNumber;
+        return a.position.y - b.position.y;
+      });
+    }
 
     const hasH1 = headings.some(h => h.level === 1);
     const h1Count = headings.filter(h => h.level === 1).length;
