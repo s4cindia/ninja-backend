@@ -1332,7 +1332,8 @@ class AiAnalysisService {
         if (
           orientation !== 'ambiguous' &&
           (findRegularHeaderRowIndex(table) !== null ||
-            (parsed.parsedPdf && pdfStructureWriterService.canFixSimpleTableHeaders(parsed.parsedPdf.pdfLibDoc, table.id)))
+            (parsed.parsedPdf &&
+              pdfStructureWriterService.canFixSimpleTableHeaders(parsed.parsedPdf.pdfLibDoc, table.id, SIMPLE_TABLE_MAX_COLUMNS)))
         ) {
           return {
             suggestionType: 'table-header-fix',

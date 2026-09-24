@@ -394,7 +394,7 @@ export class PdfStructureWriterService {
     table: PDFDict,
     maxLeadingRowsToSkip = 4,
   ):
-    | { ok: true; headerRowIndex: number; rows: Array<{ dict: PDFDict; ref: PDFRef }> }
+    | { ok: true; headerRowIndex: number; rows: Array<{ dict: PDFDict; ref: PDFRef }>; cellCount: number }
     | { ok: false; reason: 'no-rows' | 'tie' | 'no-regular-row'; rows: Array<{ dict: PDFDict; ref: PDFRef }>; mode: number | null } {
     const rows = this.collectAllRows(doc, table);
     if (rows.length === 0) return { ok: false, reason: 'no-rows', rows, mode: null };
@@ -406,7 +406,7 @@ export class PdfStructureWriterService {
     if (mode === null) return { ok: false, reason: 'tie', rows, mode: null };
 
     for (let i = 0; i < Math.min(rows.length, maxLeadingRowsToSkip); i++) {
-      if (cellCounts[i] === mode) return { ok: true, headerRowIndex: i, rows };
+      if (cellCounts[i] === mode) return { ok: true, headerRowIndex: i, rows, cellCount: mode };
     }
     return { ok: false, reason: 'no-regular-row', rows, mode };
   }
@@ -431,17 +431,27 @@ export class PdfStructureWriterService {
    * (findTargetTable's own page/element-id matching), work the cheap check
    * skips entirely when it already agrees.
    *
+   * `maxColumns` enforces the SAME simple-table size boundary the caller
+   * already applies against TableInfo.columnCount, but re-checked against
+   * the struct tree's OWN detected row cell count -- CodeRabbit finding on
+   * this same PR, confirmed real: layout extraction undercounting a wide
+   * table (e.g. TableInfo says 5 columns when the struct tree's real modal
+   * row has 8) would otherwise let this probe wrongly approve a table
+   * above the intended complexity ceiling, since detectTableHeaderRow alone
+   * only asks "is there a regular row", never "how wide is it".
+   *
    * Never mutates the document. Returns false for anything
    * fixSimpleTableHeaders would itself refuse to guess on (no structure
    * tree, no matching table, no regular row shape, a genuine tie) --
    * exactly the same refusals, since it calls the identical detection core.
    */
-  canFixSimpleTableHeaders(doc: PDFDocument, elementId: string | undefined): boolean {
+  canFixSimpleTableHeaders(doc: PDFDocument, elementId: string | undefined, maxColumns: number): boolean {
     const structRoot = this.getStructTreeRoot(doc);
     if (!structRoot) return false;
     const target = this.findTargetTable(doc, structRoot, elementId);
     if (!target) return false;
-    return this.detectTableHeaderRow(doc, target.dict).ok;
+    const detection = this.detectTableHeaderRow(doc, target.dict);
+    return detection.ok && detection.cellCount <= maxColumns;
   }
 
   /** Find all direct children of parent with the given tag type. */
