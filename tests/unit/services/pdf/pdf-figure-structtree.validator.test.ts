@@ -11,6 +11,7 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { PDFDocument, PDFName, PDFRef, PDFString } from 'pdf-lib';
+import { PDFContentStream } from 'pdf-lib/cjs/core';
 import { pdfFigureStructTreeValidator } from '../../../../src/services/pdf/validators/pdf-figure-structtree.validator';
 import { imageExtractorService } from '../../../../src/services/pdf/image-extractor.service';
 import { pdfModifierService } from '../../../../src/services/pdf/pdf-modifier.service';
@@ -296,6 +297,128 @@ describe('PdfFigureStructTreeValidator', () => {
 
       expect(result.issues).toHaveLength(1);
       expect(result.issues[0].boundingBox).toBeUndefined();
+    });
+
+    // Real incident, Math_Nikitopoulos_PDF.pdf (2026-09-25): all 6 of this
+    // document's real struct-tree-only Figures are `Do`-only spans invoking
+    // Form XObjects with substantial real BBoxes (e.g. 404x268 points).
+    // Before the resolveFormXObject fix, the unit-square fallback collapsed
+    // every one to a ~1x1-point device-space box (device-space "1 unit" at
+    // ~1:1 CTM scale, instead of the form's real few-hundred-point extent),
+    // handing fallbackToPageRender's crop a near-blank sliver instead of the
+    // actual diagram.
+    it('REGRESSION: resolves a Do-invoked Form XObject\'s own /BBox, not a bare unit square', async () => {
+      const { doc, parsedPdf } = await buildTaggedDoc([{ mcid: 5 }]);
+      const page = doc.getPage(0);
+
+      const formStream = doc.context.flateStream(new Uint8Array(0), {
+        Type: PDFName.of('XObject'),
+        Subtype: PDFName.of('Form'),
+        BBox: doc.context.obj([0, 0, 200, 100]),
+      });
+      const formRef = doc.context.register(formStream);
+      const resources = doc.context.obj({ XObject: doc.context.obj({ Fm1: formRef }) });
+      page.node.set(PDFName.of('Resources'), resources);
+
+      writePageContent(doc, 1, '<</MCID 5>>BDC q 1 0 0 1 100 500 cm /Fm1 Do Q EMC');
+
+      const result = await pdfFigureStructTreeValidator.validate(parsedPdf);
+
+      expect(result.issues).toHaveLength(1);
+      // Form's own BBox [0,0,200,100] at CTM translation (100,500): device
+      // box x 100-300, y 500-600. Page height 792 -> top-left y = 792-600 = 192.
+      expect(result.issues[0].boundingBox).toEqual({
+        x: 100, y: 192, width: 200, height: 100, pageWidth: 612, pageHeight: 792,
+      });
+    });
+
+    it('falls back to the unit-square approximation for a Do invoking a real Image XObject (not a Form)', async () => {
+      const { doc, parsedPdf } = await buildTaggedDoc([{ mcid: 5 }]);
+      const page = doc.getPage(0);
+
+      const imageStream = doc.context.flateStream(new Uint8Array(0), {
+        Type: PDFName.of('XObject'),
+        Subtype: PDFName.of('Image'),
+        Width: 10,
+        Height: 10,
+      });
+      const imageRef = doc.context.register(imageStream);
+      const resources = doc.context.obj({ XObject: doc.context.obj({ Im0: imageRef }) });
+      page.node.set(PDFName.of('Resources'), resources);
+
+      writePageContent(doc, 1, '<</MCID 5>>BDC q 100 0 0 50 100 500 cm /Im0 Do Q EMC');
+
+      const result = await pdfFigureStructTreeValidator.validate(parsedPdf);
+
+      expect(result.issues).toHaveLength(1);
+      // Unit square [0,0]-[1,1] scaled by cm (100,50) then translated
+      // (100,500): device box x 100-200, y 500-550. Page height 792 -> top
+      // y = 792-550 = 242.
+      expect(result.issues[0].boundingBox).toEqual({
+        x: 100, y: 242, width: 100, height: 50, pageWidth: 612, pageHeight: 792,
+      });
+    });
+
+    // CodeRabbit finding on this same PR, confirmed real: /BBox and /Matrix
+    // are legal as INDIRECT arrays (`/BBox 5 0 R`), not just inline
+    // (`/BBox [0 0 200 100]`) -- dict.get() alone returns the bare PDFRef,
+    // which the array-shape check must resolve first or it silently falls
+    // back to the unit square / identity matrix this fix exists to avoid.
+    it('REGRESSION: resolves a Form XObject whose /BBox and /Matrix are themselves indirect references', async () => {
+      const { doc, parsedPdf } = await buildTaggedDoc([{ mcid: 5 }]);
+      const page = doc.getPage(0);
+
+      const bboxRef = doc.context.register(doc.context.obj([0, 0, 200, 100]));
+      const matrixRef = doc.context.register(doc.context.obj([1, 0, 0, 1, 0, 0]));
+      const formStream = doc.context.flateStream(new Uint8Array(0), {
+        Type: PDFName.of('XObject'),
+        Subtype: PDFName.of('Form'),
+        BBox: bboxRef,
+        Matrix: matrixRef,
+      });
+      const formRef = doc.context.register(formStream);
+      const resources = doc.context.obj({ XObject: doc.context.obj({ Fm1: formRef }) });
+      page.node.set(PDFName.of('Resources'), resources);
+
+      writePageContent(doc, 1, '<</MCID 5>>BDC q 1 0 0 1 100 500 cm /Fm1 Do Q EMC');
+
+      const result = await pdfFigureStructTreeValidator.validate(parsedPdf);
+
+      expect(result.issues).toHaveLength(1);
+      expect(result.issues[0].boundingBox).toEqual({
+        x: 100, y: 192, width: 200, height: 100, pageWidth: 612, pageHeight: 792,
+      });
+    });
+
+    // CodeRabbit finding on this same PR, confirmed real: a Form XObject
+    // created via pdf-lib's own PDFContentStream.of (e.g. a prior
+    // remediation round's own writer output, re-audited by this same
+    // validator) is a PDFContentStream, not a PDFRawStream -- both are a
+    // PDFStream, but the PDFRawStream-only version rejected the former,
+    // falling back to the unit square exactly like an unresolvable form
+    // would.
+    it('REGRESSION: resolves a Form XObject backed by a PDFContentStream (e.g. authored via pdf-lib itself), not only a parsed PDFRawStream', async () => {
+      const { doc, parsedPdf } = await buildTaggedDoc([{ mcid: 5 }]);
+      const page = doc.getPage(0);
+
+      const formDict = doc.context.obj({
+        Type: PDFName.of('XObject'),
+        Subtype: PDFName.of('Form'),
+        BBox: doc.context.obj([0, 0, 200, 100]),
+      });
+      const formStream = PDFContentStream.of(formDict, []);
+      const formRef = doc.context.register(formStream);
+      const resources = doc.context.obj({ XObject: doc.context.obj({ Fm1: formRef }) });
+      page.node.set(PDFName.of('Resources'), resources);
+
+      writePageContent(doc, 1, '<</MCID 5>>BDC q 1 0 0 1 100 500 cm /Fm1 Do Q EMC');
+
+      const result = await pdfFigureStructTreeValidator.validate(parsedPdf);
+
+      expect(result.issues).toHaveLength(1);
+      expect(result.issues[0].boundingBox).toEqual({
+        x: 100, y: 192, width: 200, height: 100, pageWidth: 612, pageHeight: 792,
+      });
     });
   });
 });
