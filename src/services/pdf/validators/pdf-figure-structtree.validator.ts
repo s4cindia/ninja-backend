@@ -104,13 +104,13 @@
  *    is now included in the message.
  */
 
-import { PDFName, PDFDict, PDFArray, PDFNumber, PDFRef, PDFString, PDFHexString } from 'pdf-lib';
+import { PDFName, PDFDict, PDFArray, PDFNumber, PDFRef, PDFString, PDFHexString, PDFRawStream } from 'pdf-lib';
 import { AuditIssue } from '../../audit/base-audit.service';
 import { ParsedPDF } from '../pdf-parser.service';
 import { pdfModifierService } from '../pdf-modifier.service';
 import { imageExtractorService } from '../image-extractor.service';
 import { decodePageContent } from '../pdf-content-stream-io';
-import { locateMcidBoundingBoxes } from '../mcid-bounding-box';
+import { locateMcidBoundingBoxes, type FormXObjectInfo } from '../mcid-bounding-box';
 import { logger } from '../../../lib/logger';
 
 export interface FigureStructTreeValidationResult {
@@ -307,7 +307,9 @@ class PdfFigureStructTreeValidator {
       try {
         const content = decodePageContent(doc, pageNumber);
         if (!content) continue;
-        const boxes = locateMcidBoundingBoxes(content, new Set(list.map(l => l.mcid)));
+        const boxes = locateMcidBoundingBoxes(content, new Set(list.map(l => l.mcid)), {
+          resolveFormXObject: this.buildFormXObjectResolver(doc, pageNumber),
+        });
         if (boxes.size === 0) continue;
 
         const { width: pageWidth, height: pageHeight } = doc.getPage(pageNumber - 1).getSize();
@@ -327,6 +329,71 @@ class PdfFigureStructTreeValidator {
         logger.debug(`[PdfFigureStructTreeValidator] Could not compute bounding boxes for page ${pageNumber}: ${err instanceof Error ? err.message : String(err)}`);
       }
     }
+  }
+
+  /**
+   * Builds a locateMcidBoundingBoxes-shaped resolver for a single page's
+   * /Resources/XObject dict -- real incident, Math_Nikitopoulos_PDF.pdf
+   * (2026-09-25): all 6 of this document's real struct-tree-only Figures
+   * are `Do`-only spans invoking Form XObjects (the standard "/Fm{N}"
+   * naming convention) with substantial real BBoxes, which
+   * locateMcidBoundingBoxes' own unit-square fallback (no resolver)
+   * collapsed to a useless ~1x1-point device-space box every time. Memoized
+   * per page (a handful of Do names at most, but cheap either way) since a
+   * page can invoke the same Form multiple times.
+   */
+  private buildFormXObjectResolver(
+    doc: ParsedPDF['pdfLibDoc'],
+    pageNumber: number,
+  ): (name: string) => FormXObjectInfo | null {
+    const cache = new Map<string, FormXObjectInfo | null>();
+    let xobjDict: PDFDict | undefined;
+    try {
+      const resources = doc.getPage(pageNumber - 1).node.Resources();
+      const raw = resources?.get(PDFName.of('XObject'));
+      const resolved = raw instanceof PDFRef ? doc.context.lookup(raw) : raw;
+      if (resolved instanceof PDFDict) xobjDict = resolved;
+    } catch {
+      xobjDict = undefined;
+    }
+
+    return (name: string): FormXObjectInfo | null => {
+      if (cache.has(name)) return cache.get(name)!;
+      let info: FormXObjectInfo | null = null;
+      try {
+        const key = name.startsWith('/') ? name.slice(1) : name;
+        const ref = xobjDict?.get(PDFName.of(key));
+        const resolved = ref instanceof PDFRef ? doc.context.lookup(ref) : ref;
+        if (resolved instanceof PDFRawStream) {
+          const dict = resolved.dict;
+          if (dict.get(PDFName.of('Subtype'))?.toString() === '/Form') {
+            const bboxArr = dict.get(PDFName.of('BBox'));
+            if (bboxArr instanceof PDFArray && bboxArr.size() === 4) {
+              const bbox = [0, 1, 2, 3].map(i => {
+                const v = bboxArr.get(i);
+                const resolvedV = v instanceof PDFRef ? doc.context.lookup(v) : v;
+                return resolvedV instanceof PDFNumber ? resolvedV.asNumber() : 0;
+              }) as [number, number, number, number];
+
+              let matrix: [number, number, number, number, number, number] = [1, 0, 0, 1, 0, 0];
+              const matrixArr = dict.get(PDFName.of('Matrix'));
+              if (matrixArr instanceof PDFArray && matrixArr.size() === 6) {
+                matrix = [0, 1, 2, 3, 4, 5].map(i => {
+                  const v = matrixArr.get(i);
+                  const resolvedV = v instanceof PDFRef ? doc.context.lookup(v) : v;
+                  return resolvedV instanceof PDFNumber ? resolvedV.asNumber() : (i === 0 || i === 3 ? 1 : 0);
+                }) as [number, number, number, number, number, number];
+              }
+              info = { bbox, matrix };
+            }
+          }
+        }
+      } catch {
+        info = null;
+      }
+      cache.set(name, info);
+      return info;
+    };
   }
 
   /**

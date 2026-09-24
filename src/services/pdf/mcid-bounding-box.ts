@@ -42,20 +42,27 @@
  *     from the exact same `re` operator as a painted one; this function
  *     doesn't need to distinguish painted vs. clip-only paths for bbox
  *     purposes -- either way it's real evidence of "content lives here").
- *   - `Do`/inline-image (`BI`) invocations: the unit square's four corners
- *     transformed by the current CTM. This assumes an Image XObject; a
- *     `Do` invoking a FORM XObject instead should really use that form's
- *     own /BBox (transformed by both its own /Matrix and the current CTM),
- *     not a bare unit square (CodeRabbit finding on PR #583, confirmed
- *     real, but deliberately NOT fixed here -- resolving a Form XObject
- *     needs a page-Resources lookup this module doesn't otherwise need at
- *     all, a genuinely bigger, separate undertaking). Confirmed dormant for
- *     the real document this was built against: of Math_Weir_PDF.pdf's 283
- *     real struct-tree-only Figures, exactly one uses `Do` at all, and it
- *     invokes a real Image XObject (`/Im0`) that pdf-alttext.validator.ts's
- *     own image-based path almost certainly already covers, via
- *     computeImageCoveredFigures's exclusion above -- so this gap has zero
- *     measured impact on the document it was built and validated against.
+ *   - `Do` invocations: when `options.resolveFormXObject` resolves the
+ *     invoked name to a real Form XObject (checked via /Subtype /Form),
+ *     uses that form's own /BBox (transformed by its own /Matrix, then the
+ *     current CTM) -- not a bare unit square. Falls back to the unit-square
+ *     approximation (transformed by CTM alone) for an Image XObject, an
+ *     inline image (`BI`), or when no resolver is supplied.
+ *
+ *     No longer dormant: confirmed LIVE and load-bearing on
+ *     Math_Nikitopoulos_PDF.pdf (2026-09-25) -- unlike Math_Weir_PDF.pdf
+ *     (this module's original target, where the one real `Do` invoked an
+ *     Image XObject already covered by pdf-alttext.validator.ts's own
+ *     image-based path), all 6 of this document's real struct-tree-only
+ *     Figures are `Do`-only spans invoking real Form XObjects with
+ *     substantial BBoxes (e.g. 404x268, 334x374 points -- genuine full-size
+ *     diagrams). Before this fix, the unit-square approximation collapsed
+ *     every one of them to a ~1x1-point device-space box (since the CTM at
+ *     that point has roughly 1:1 scale, "1 unit" in form space became
+ *     "~1 point" in device space instead of the form's real few-hundred-
+ *     point extent) -- fallbackToPageRender's crop then handed the AI a
+ *     near-blank sliver instead of the actual diagram, with no way to
+ *     produce a usable caption.
  *   - Text run anchors (Tj/TJ/'/"): the current text matrix's own
  *     translation, transformed through the CTM -- an ANCHOR point only,
  *     not true glyph-width extent (no font metrics available from a raw
@@ -86,6 +93,14 @@ type Token = ReturnType<typeof tokenize>[number];
 
 const num = (t: Token | undefined): number => (t && t.t === 'n' ? parseFloat(t.v) : 0);
 
+/** A resolved Form XObject's own geometry, as needed to transform its /BBox into device space. */
+export interface FormXObjectInfo {
+  /** [llx, lly, urx, ury], in the form's own coordinate space, per PDF32000-1:2008 §8.10.2. */
+  bbox: [number, number, number, number];
+  /** [a, b, c, d, e, f]; identity ([1,0,0,1,0,0]) when the form has no /Matrix of its own. */
+  matrix: [number, number, number, number, number, number];
+}
+
 /**
  * Computes a device-space (PDF point space, bottom-left origin) bounding
  * box for each target MCID's own drawn content, in a single pass over the
@@ -109,15 +124,25 @@ const num = (t: Token | undefined): number => (t && t.t === 'n' ? parseFloat(t.v
  * cropBase64Region) needs a real croppable area, not just a point -- a
  * true single point there would silently become a useless few-pixel crop
  * instead of correctly falling back to the whole-page render.
+ *
+ * `options.resolveFormXObject` (optional, defaults to unit-square
+ * approximation when absent, preserving every pre-existing caller's
+ * behavior exactly): given a `Do` operand name (e.g. "/Fm1", including the
+ * leading slash as the tokenizer emits it), returns that Form XObject's own
+ * /BBox and /Matrix, or null when the name doesn't resolve to a real Form
+ * XObject (an Image XObject, a missing/unresolvable resource, etc.) -- the
+ * caller owns the actual page-Resources lookup (this module stays pdf-lib-
+ * free), so it's a pure name->info function, not a PDFDict/doc reference.
  */
 export function locateMcidBoundingBoxes(
   content: string,
   targetMcids: ReadonlySet<number>,
-  options?: { allowSinglePointBoxes?: boolean },
+  options?: { allowSinglePointBoxes?: boolean; resolveFormXObject?: (name: string) => FormXObjectInfo | null },
 ): Map<number, DeviceBoundingBox> {
   const results = new Map<number, DeviceBoundingBox>();
   if (targetMcids.size === 0) return results;
   const allowSinglePointBoxes = options?.allowSinglePointBoxes ?? false;
+  const resolveFormXObject = options?.resolveFormXObject;
   const tokens = tokenize(content);
 
   type Ctm = { a: number; b: number; c: number; d: number; e: number; f: number };
@@ -275,9 +300,26 @@ export function locateMcidBoundingBoxes(
         break;
       }
 
-      case 'Do':
-        include(0, 0); include(1, 0); include(0, 1); include(1, 1);
+      case 'Do': {
+        const nameTok = operands[operands.length - 1];
+        const name = nameTok && nameTok.t === 'name' ? nameTok.v : undefined;
+        const form = name && resolveFormXObject ? resolveFormXObject(name) : null;
+        if (form) {
+          const [llx, lly, urx, ury] = form.bbox;
+          const [fa, fb, fc, fd, fe, ff] = form.matrix;
+          // Form space -> the form's OWN /Matrix first (PDF32000-1:2008
+          // §8.10.2), THEN the current CTM (applied by include() itself) --
+          // not a bare unit square. See this file's header comment for why
+          // the unit-square fallback below silently produced a ~1x1-point
+          // box for a real, few-hundred-point Form XObject.
+          for (const [x, y] of [[llx, lly], [urx, lly], [llx, ury], [urx, ury]] as const) {
+            include(fa * x + fc * y + fe, fb * x + fd * y + ff);
+          }
+        } else {
+          include(0, 0); include(1, 0); include(0, 1); include(1, 1);
+        }
         break;
+      }
       case 'BI': {
         // Inline images carry raw binary data the tokenizer can't parse --
         // approximate with the unit square like Do, and skip past EI in the

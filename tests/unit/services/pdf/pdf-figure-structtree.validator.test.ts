@@ -297,5 +297,65 @@ describe('PdfFigureStructTreeValidator', () => {
       expect(result.issues).toHaveLength(1);
       expect(result.issues[0].boundingBox).toBeUndefined();
     });
+
+    // Real incident, Math_Nikitopoulos_PDF.pdf (2026-09-25): all 6 of this
+    // document's real struct-tree-only Figures are `Do`-only spans invoking
+    // Form XObjects with substantial real BBoxes (e.g. 404x268 points).
+    // Before the resolveFormXObject fix, the unit-square fallback collapsed
+    // every one to a ~1x1-point device-space box (device-space "1 unit" at
+    // ~1:1 CTM scale, instead of the form's real few-hundred-point extent),
+    // handing fallbackToPageRender's crop a near-blank sliver instead of the
+    // actual diagram.
+    it('REGRESSION: resolves a Do-invoked Form XObject\'s own /BBox, not a bare unit square', async () => {
+      const { doc, parsedPdf } = await buildTaggedDoc([{ mcid: 5 }]);
+      const page = doc.getPage(0);
+
+      const formStream = doc.context.flateStream(new Uint8Array(0), {
+        Type: PDFName.of('XObject'),
+        Subtype: PDFName.of('Form'),
+        BBox: doc.context.obj([0, 0, 200, 100]),
+      });
+      const formRef = doc.context.register(formStream);
+      const resources = doc.context.obj({ XObject: doc.context.obj({ Fm1: formRef }) });
+      page.node.set(PDFName.of('Resources'), resources);
+
+      writePageContent(doc, 1, '<</MCID 5>>BDC q 1 0 0 1 100 500 cm /Fm1 Do Q EMC');
+
+      const result = await pdfFigureStructTreeValidator.validate(parsedPdf);
+
+      expect(result.issues).toHaveLength(1);
+      // Form's own BBox [0,0,200,100] at CTM translation (100,500): device
+      // box x 100-300, y 500-600. Page height 792 -> top-left y = 792-600 = 192.
+      expect(result.issues[0].boundingBox).toEqual({
+        x: 100, y: 192, width: 200, height: 100, pageWidth: 612, pageHeight: 792,
+      });
+    });
+
+    it('falls back to the unit-square approximation for a Do invoking a real Image XObject (not a Form)', async () => {
+      const { doc, parsedPdf } = await buildTaggedDoc([{ mcid: 5 }]);
+      const page = doc.getPage(0);
+
+      const imageStream = doc.context.flateStream(new Uint8Array(0), {
+        Type: PDFName.of('XObject'),
+        Subtype: PDFName.of('Image'),
+        Width: 10,
+        Height: 10,
+      });
+      const imageRef = doc.context.register(imageStream);
+      const resources = doc.context.obj({ XObject: doc.context.obj({ Im0: imageRef }) });
+      page.node.set(PDFName.of('Resources'), resources);
+
+      writePageContent(doc, 1, '<</MCID 5>>BDC q 100 0 0 50 100 500 cm /Im0 Do Q EMC');
+
+      const result = await pdfFigureStructTreeValidator.validate(parsedPdf);
+
+      expect(result.issues).toHaveLength(1);
+      // Unit square [0,0]-[1,1] scaled by cm (100,50) then translated
+      // (100,500): device box x 100-200, y 500-550. Page height 792 -> top
+      // y = 792-550 = 242.
+      expect(result.issues[0].boundingBox).toEqual({
+        x: 100, y: 242, width: 100, height: 50, pageWidth: 612, pageHeight: 792,
+      });
+    });
   });
 });
