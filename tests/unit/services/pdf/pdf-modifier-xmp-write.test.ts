@@ -131,6 +131,105 @@ describe('writePdfUaIdentifier / writeXmpStream', () => {
     expect(xmp).toContain('Adobe PDF Library 17.0');
   });
 
+  // CodeRabbit finding on this same PR, confirmed real: a valid RDF/XML
+  // document can have an empty/self-closing sibling <rdf:Description/>,
+  // which fast-xml-parser represents as a bare '' string in the array, not
+  // an object. The dedup fix's own `in` check would throw on that, and the
+  // enclosing catch would treat the WHOLE stream as unparseable -- silently
+  // deleting every real metadata field via the template fallback.
+  const EMPTY_SIBLING_XMP = `<?xpacket begin="" id="W5M0MpCehiHzreSzNTczkc9d"?>
+<x:xmpmeta xmlns:x="adobe:ns:meta/">
+  <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+    <rdf:Description/>
+    <rdf:Description rdf:about="" xmlns:xmp="http://ns.adobe.com/xap/1.0/">
+      <xmp:CreateDate>2025-09-10T15:35:06+05:30</xmp:CreateDate>
+    </rdf:Description>
+  </rdf:RDF>
+</x:xmpmeta>
+<?xpacket end="w"?>`;
+
+  it('REGRESSION: does not throw (and does not fall back to the template) when a sibling rdf:Description is empty/self-closing', async () => {
+    const doc = await PDFDocument.create();
+    doc.addPage([400, 600]);
+    await setRawXmp(doc, EMPTY_SIBLING_XMP);
+
+    const result = await pdfModifierService.writePdfUaIdentifier(doc);
+    expect(result.success).toBe(true);
+
+    const xmp = readRawXmp(doc);
+    expect(xmp).toContain('<pdfuaid:part>1</pdfuaid:part>');
+    expect(xmp).toContain('xmlns:pdfuaid="http://www.aiim.org/pdfua/ns/id/"');
+    // The template fallback would have DELETED this -- its survival proves
+    // the real (non-template) patch path ran successfully.
+    expect(xmp).toContain('2025-09-10T15:35:06+05:30');
+  });
+
+  // CodeRabbit finding on this same PR, confirmed real: matching on the
+  // xmlns ATTRIBUTE KEY alone (ignoring its value) could select a
+  // description that binds the same lexical prefix to a DIFFERENT,
+  // non-canonical URI -- writing the patch there would report success
+  // while landing in the wrong namespace entirely. Same bug class existed
+  // in BOTH the single-Description branch (fixed alongside the array
+  // branch, since it's the identical pattern sitting right next to it) and
+  // the array branch (a genuine sibling-selection bug).
+  const WRONG_NAMESPACE_URI_SINGLE_XMP = `<?xpacket begin="" id="W5M0MpCehiHzreSzNTczkc9d"?>
+<x:xmpmeta xmlns:x="adobe:ns:meta/">
+  <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+    <rdf:Description rdf:about="" xmlns:pdfuaid="http://example.com/not-the-real-pdfuaid-ns/">
+      <pdfuaid:bogus>1</pdfuaid:bogus>
+    </rdf:Description>
+  </rdf:RDF>
+</x:xmpmeta>
+<?xpacket end="w"?>`;
+
+  it('REGRESSION: promotes to a second sibling rather than corrupting a SINGLE existing Description that binds the same prefix to a different URI', async () => {
+    const doc = await PDFDocument.create();
+    doc.addPage([400, 600]);
+    await setRawXmp(doc, WRONG_NAMESPACE_URI_SINGLE_XMP);
+
+    const result = await pdfModifierService.writePdfUaIdentifier(doc);
+    expect(result.success).toBe(true);
+
+    const xmp = readRawXmp(doc);
+    expect(xmp).toContain('xmlns:pdfuaid="http://www.aiim.org/pdfua/ns/id/"');
+    expect(xmp).toContain('<pdfuaid:part>1</pdfuaid:part>');
+    // The bogus description's own wrong-namespace declaration and content
+    // survive untouched -- proving pdfuaid:part was NOT written into it.
+    expect(xmp).toContain('xmlns:pdfuaid="http://example.com/not-the-real-pdfuaid-ns/"');
+    expect(xmp).toContain('<pdfuaid:bogus>1</pdfuaid:bogus>');
+  });
+
+  const WRONG_NAMESPACE_URI_ARRAY_XMP = `<?xpacket begin="" id="W5M0MpCehiHzreSzNTczkc9d"?>
+<x:xmpmeta xmlns:x="adobe:ns:meta/">
+  <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+    <rdf:Description rdf:about="" xmlns:xmp="http://ns.adobe.com/xap/1.0/">
+      <xmp:CreateDate>2025-09-10T15:35:06+05:30</xmp:CreateDate>
+    </rdf:Description>
+    <rdf:Description rdf:about="" xmlns:pdfuaid="http://example.com/not-the-real-pdfuaid-ns/">
+      <pdfuaid:bogus>1</pdfuaid:bogus>
+    </rdf:Description>
+  </rdf:RDF>
+</x:xmpmeta>
+<?xpacket end="w"?>`;
+
+  it('REGRESSION: creates a NEW correctly-namespaced sibling rather than reusing an ARRAY sibling that binds the same prefix to a different URI', async () => {
+    const doc = await PDFDocument.create();
+    doc.addPage([400, 600]);
+    await setRawXmp(doc, WRONG_NAMESPACE_URI_ARRAY_XMP);
+
+    const result = await pdfModifierService.writePdfUaIdentifier(doc);
+    expect(result.success).toBe(true);
+
+    const xmp = readRawXmp(doc);
+    expect(xmp).toContain('xmlns:pdfuaid="http://www.aiim.org/pdfua/ns/id/"');
+    expect(xmp).toContain('<pdfuaid:part>1</pdfuaid:part>');
+    // The bogus sibling's own wrong-namespace declaration and content, plus
+    // the unrelated xmp: sibling, survive untouched.
+    expect(xmp).toContain('xmlns:pdfuaid="http://example.com/not-the-real-pdfuaid-ns/"');
+    expect(xmp).toContain('<pdfuaid:bogus>1</pdfuaid:bogus>');
+    expect(xmp).toContain('2025-09-10T15:35:06+05:30');
+  });
+
   it('REGRESSION: declares xmlns:dc when deriveAndSetTitle patches dc:title into a multi-description document', async () => {
     // Codex + CodeRabbit finding on this same PR, confirmed real: the first
     // version of namespaceUri only knew 'pdfuaid' -- deriveAndSetTitle's own

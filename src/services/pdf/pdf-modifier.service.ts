@@ -1834,14 +1834,29 @@ export class PdfModifierService {
             // sibling that already declares the patch key's own namespace
             // and updates it in place; only creates a new sibling for
             // prefixes with no existing home.
-            const descArr = existingDesc as Array<Record<string, unknown>>;
+            const descArr = existingDesc as unknown[];
             const remaining: Record<string, string> = {};
             for (const [key, value] of Object.entries(patches)) {
               const prefix = key.split(':')[0];
-              const target = descArr.find(d => `@_xmlns:${prefix}` in d || key in d);
+              const xmlnsKey = `@_xmlns:${prefix}`;
+              const canonicalUri = namespaceUri(prefix);
+              // Two CodeRabbit findings on this same PR, both confirmed real:
+              // (1) valid RDF can have an empty/self-closing sibling
+              // <rdf:Description/>, which fast-xml-parser represents as a
+              // bare '' string, not an object -- the `in` operator throws on
+              // that, and the enclosing catch would treat the WHOLE stream
+              // as unparseable, silently deleting every real metadata field
+              // via the template fallback. (2) matching on the xmlns KEY
+              // alone (ignoring its VALUE) could select a sibling that binds
+              // the same lexical prefix to a DIFFERENT, non-canonical URI --
+              // writing the patch there would report success while landing
+              // in the wrong namespace entirely.
+              const target = descArr.find((d): d is Record<string, unknown> => {
+                if (typeof d !== 'object' || d === null) return false;
+                const declared = (d as Record<string, unknown>)[xmlnsKey];
+                return declared !== undefined ? declared === canonicalUri : false;
+              });
               if (target) {
-                const uri = namespaceUri(prefix);
-                if (uri && !(`@_xmlns:${prefix}` in target)) target[`@_xmlns:${prefix}`] = uri;
                 target[key] = value;
               } else {
                 remaining[key] = value;
@@ -1859,11 +1874,34 @@ export class PdfModifierService {
           } else {
             let desc = existingDesc as Record<string, unknown> | undefined;
             if (!desc) { desc = { '@_rdf:about': '' }; rdfRdf['rdf:Description'] = desc; }
+            const remaining: Record<string, string> = {};
             for (const [key, value] of Object.entries(patches)) {
               const prefix = key.split(':')[0];
-              const uri = namespaceUri(prefix);
-              if (uri && !(`@_xmlns:${prefix}` in desc)) desc[`@_xmlns:${prefix}`] = uri;
-              desc[key] = value;
+              const xmlnsKey = `@_xmlns:${prefix}`;
+              const canonicalUri = namespaceUri(prefix);
+              const declared = desc[xmlnsKey];
+              if (declared === undefined) {
+                if (canonicalUri) desc[xmlnsKey] = canonicalUri;
+                desc[key] = value;
+              } else if (declared === canonicalUri) {
+                desc[key] = value;
+              } else {
+                // Same wrong-namespace conflict the array branch above
+                // guards against: this single Description already binds
+                // the prefix to a DIFFERENT URI -- writing here would land
+                // the patch in the wrong namespace. Promote to a second
+                // sibling instead of corrupting the existing one.
+                remaining[key] = value;
+              }
+            }
+            if (Object.keys(remaining).length > 0) {
+              const newDesc: Record<string, unknown> = { '@_rdf:about': '' };
+              for (const [key, value] of Object.entries(remaining)) {
+                const uri = namespaceUri(key.split(':')[0]);
+                if (uri) newDesc[`@_xmlns:${key.split(':')[0]}`] = uri;
+                newDesc[key] = value;
+              }
+              rdfRdf['rdf:Description'] = [desc, newDesc];
             }
           }
         }
