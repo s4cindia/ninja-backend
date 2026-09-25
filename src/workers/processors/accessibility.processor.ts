@@ -14,6 +14,7 @@ import { checkStructureTreeCompleteness } from '../../services/pdf/structure-tre
 import { prepareDocumentForRetag } from '../../services/pdf/strip-marked-content';
 import { fileStorageService } from '../../services/storage/file-storage.service';
 import { aiConfig } from '../../config/ai.config';
+import { pdfConfig } from '../../config/pdf.config';
 import prisma from '../../lib/prisma';
 import { logger } from '../../lib/logger';
 
@@ -172,6 +173,20 @@ async function processPdfAccessibility(
   const fileBuffer = await fileStorageService.getFile(dbJobId, fileName);
   if (!fileBuffer) {
     throw new Error(`PDF file not found in storage for job ${dbJobId}`);
+  }
+
+  // Fail fast on an oversized file BEFORE spending any real work on it.
+  // Real incident (2026-09-25): a 1.43GB comparison-study PDF ran through
+  // ~3 minutes of genuine Adobe/Seam-C auto-tagging before the SAME limit
+  // check (buried inside pdfParserService.parseBuffer, called later via
+  // pdfAuditService.runAuditFromBuffer) finally failed the job -- because
+  // the ONLY earlier size check (in the "quick tagged check" below) has its
+  // failure silently swallowed and treated as "assume untagged", not
+  // propagated. Checking here, unconditionally, means an oversized file
+  // fails in milliseconds instead of minutes, every time.
+  const fileSizeMB = fileBuffer.length / (1024 * 1024);
+  if (fileSizeMB > pdfConfig.maxFileSizeMB) {
+    throw new Error(`PDF file exceeds maximum size of ${pdfConfig.maxFileSizeMB}MB`);
   }
 
   // Quick tagged check — lightweight parse to detect PDF structure tree presence

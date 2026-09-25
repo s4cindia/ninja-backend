@@ -773,11 +773,21 @@ export class PdfController {
       }
 
       if (job.status !== 'COMPLETED') {
+        // job.error was previously dropped here entirely, so a FAILED job's
+        // real reason (e.g. "PDF file exceeds maximum size of 500MB") never
+        // reached the frontend -- it fell back to a generic "Audit failed.
+        // Please try again." with nothing to act on (real incident,
+        // 2026-09-25).
+        let message = 'Audit not started';
+        if (job.status === 'PROCESSING') message = 'Audit in progress';
+        else if (job.status === 'FAILED') message = job.error || 'Audit failed';
+
         return res.json({
           success: true,
           data: {
             status: job.status,
-            message: job.status === 'PROCESSING' ? 'Audit in progress' : 'Audit not started',
+            message,
+            error: job.error ?? null,
           },
         });
       }
