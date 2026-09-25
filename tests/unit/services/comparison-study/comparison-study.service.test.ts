@@ -28,6 +28,10 @@ vi.mock('../../../../src/lib/prisma', () => ({
     job: {
       findUnique: vi.fn(),
     },
+    aiAnalysis: {
+      groupBy: vi.fn(),
+      findMany: vi.fn(),
+    },
   },
 }));
 
@@ -85,6 +89,7 @@ import {
   getPacReport,
   deletePacReport,
   listTrials,
+  getManualFixes,
 } from '../../../../src/services/comparison-study/comparison-study.service';
 
 const mockPrisma = prisma as unknown as {
@@ -100,6 +105,10 @@ const mockPrisma = prisma as unknown as {
     upsert: ReturnType<typeof vi.fn>;
     findUnique: ReturnType<typeof vi.fn>;
     delete: ReturnType<typeof vi.fn>;
+  };
+  aiAnalysis: {
+    groupBy: ReturnType<typeof vi.fn>;
+    findMany: ReturnType<typeof vi.fn>;
   };
 };
 
@@ -124,21 +133,75 @@ describe('comparison-study.service', () => {
   });
 
   describe('listTrials', () => {
+    beforeEach(() => {
+      mockPrisma.aiAnalysis.groupBy.mockResolvedValue([]);
+    });
+
     it('maps each trial\'s externalPacReport relation down to a plain hasPacReport boolean, and never leaks the relation object itself', async () => {
       mockPrisma.comparisonTrial.findMany.mockResolvedValue([
-        { id: 't1', sourceFileName: 'a.pdf', externalPacReport: { id: 'pac-1' } },
-        { id: 't2', sourceFileName: 'b.pdf', externalPacReport: null },
+        { id: 't1', sourceFileName: 'a.pdf', externalPacReport: { id: 'pac-1' }, job: null, ninjaJobId: null },
+        { id: 't2', sourceFileName: 'b.pdf', externalPacReport: null, job: null, ninjaJobId: null },
       ]);
 
       const { trials } = await listTrials({});
 
       expect(trials).toEqual([
-        { id: 't1', sourceFileName: 'a.pdf', hasPacReport: true },
-        { id: 't2', sourceFileName: 'b.pdf', hasPacReport: false },
+        {
+          id: 't1', sourceFileName: 'a.pdf', ninjaJobId: null, hasPacReport: true,
+          taggerSource: null, autoTagStatus: null, aiFixesAppliedCount: 0, manualFixesRequiredCount: 0,
+        },
+        {
+          id: 't2', sourceFileName: 'b.pdf', ninjaJobId: null, hasPacReport: false,
+          taggerSource: null, autoTagStatus: null, aiFixesAppliedCount: 0, manualFixesRequiredCount: 0,
+        },
       ]);
       expect(mockPrisma.comparisonTrial.findMany).toHaveBeenCalledWith(
-        expect.objectContaining({ include: { externalPacReport: { select: { id: true } } } })
+        expect.objectContaining({
+          include: { externalPacReport: { select: { id: true } }, job: { select: { output: true } } },
+        })
       );
+    });
+
+    it('surfaces taggerSource/autoTagStatus from Job.output and AI-fix counts from a single batched groupBy (not one query per trial)', async () => {
+      mockPrisma.comparisonTrial.findMany.mockResolvedValue([
+        {
+          id: 't1', sourceFileName: 'a.pdf', ninjaJobId: 'job-1', externalPacReport: null,
+          job: { output: { taggerSource: 'seam-c', autoTagStatus: 'complete' } },
+        },
+        {
+          id: 't2', sourceFileName: 'b.pdf', ninjaJobId: 'job-2', externalPacReport: null,
+          job: { output: { taggerSource: 'adobe', autoTagStatus: 'complete' } },
+        },
+      ]);
+      mockPrisma.aiAnalysis.groupBy.mockImplementation(({ where }: { where: { status?: string; applyMode?: string } }) => {
+        if (where.status === 'applied') {
+          return Promise.resolve([{ jobId: 'job-1', _count: { _all: 5 } }]);
+        }
+        return Promise.resolve([{ jobId: 'job-2', _count: { _all: 3 } }]);
+      });
+
+      const { trials } = await listTrials({});
+
+      expect(trials[0]).toMatchObject({ taggerSource: 'seam-c', autoTagStatus: 'complete', aiFixesAppliedCount: 5, manualFixesRequiredCount: 0 });
+      expect(trials[1]).toMatchObject({ taggerSource: 'adobe', autoTagStatus: 'complete', aiFixesAppliedCount: 0, manualFixesRequiredCount: 3 });
+      // One groupBy call for applied, one for manual-required -- not one per trial.
+      expect(mockPrisma.aiAnalysis.groupBy).toHaveBeenCalledTimes(2);
+      expect(mockPrisma.aiAnalysis.groupBy).toHaveBeenCalledWith(
+        expect.objectContaining({ where: expect.objectContaining({ jobId: { in: ['job-1', 'job-2'] }, status: 'applied' }) })
+      );
+      expect(mockPrisma.aiAnalysis.groupBy).toHaveBeenCalledWith(
+        expect.objectContaining({ where: expect.objectContaining({ jobId: { in: ['job-1', 'job-2'] }, applyMode: 'guidance-only', status: 'pending' }) })
+      );
+    });
+
+    it('skips the AI-fix-count queries entirely when no trial in the page has a ninjaJobId', async () => {
+      mockPrisma.comparisonTrial.findMany.mockResolvedValue([
+        { id: 't1', sourceFileName: 'a.pdf', ninjaJobId: null, externalPacReport: null, job: null },
+      ]);
+
+      await listTrials({});
+
+      expect(mockPrisma.aiAnalysis.groupBy).not.toHaveBeenCalled();
     });
   });
 
@@ -264,6 +327,135 @@ describe('comparison-study.service', () => {
 
       expect(report.ninja.pacFailureCount).toBeNull();
       expect(report.pdfxt.pacFailureCount).toBeNull();
+    });
+
+    it('surfaces taggerSource/autoTagStatus from Job.output and AI-fix/manual-fix counts from AiAnalysis', async () => {
+      mockPrisma.comparisonTrial.findUniqueOrThrow.mockResolvedValue({
+        id: 'trial-4',
+        sourceFileName: 'sample.pdf',
+        contentType: 'text-dominant',
+        ninjaActiveMs: null,
+        ninjaGpuCostUsd: null,
+        ninjaPacResult: null,
+        ninjaJobId: 'job-4',
+        pdfxtTimeMs: null,
+        pdfxtPageCount: null,
+        pdfxtCostUsd: null,
+        pdfxtPacResult: null,
+        job: { output: { taggerSource: 'seam-c', autoTagStatus: 'complete' } },
+      });
+      mockPrisma.aiAnalysis.groupBy.mockImplementation(({ where }: { where: { status?: string } }) =>
+        Promise.resolve(
+          where.status === 'applied'
+            ? [{ jobId: 'job-4', _count: { _all: 7 } }]
+            : [{ jobId: 'job-4', _count: { _all: 2 } }]
+        )
+      );
+
+      const report = await getTrialReport('trial-4');
+
+      expect(report.ninja.taggerSource).toBe('seam-c');
+      expect(report.ninja.autoTagStatus).toBe('complete');
+      expect(report.ninja.aiFixesAppliedCount).toBe(7);
+      expect(report.ninja.manualFixesRequiredCount).toBe(2);
+    });
+
+    it('reports zero AI-fix counts and null tagger fields when the trial has no Ninja job yet', async () => {
+      mockPrisma.comparisonTrial.findUniqueOrThrow.mockResolvedValue({
+        id: 'trial-5',
+        sourceFileName: 'sample.pdf',
+        contentType: 'mixed',
+        ninjaActiveMs: null,
+        ninjaGpuCostUsd: null,
+        ninjaPacResult: null,
+        ninjaJobId: null,
+        pdfxtTimeMs: null,
+        pdfxtPageCount: null,
+        pdfxtCostUsd: null,
+        pdfxtPacResult: null,
+        job: null,
+      });
+
+      const report = await getTrialReport('trial-5');
+
+      expect(report.ninja.taggerSource).toBeNull();
+      expect(report.ninja.aiFixesAppliedCount).toBe(0);
+      expect(report.ninja.manualFixesRequiredCount).toBe(0);
+      expect(mockPrisma.aiAnalysis.groupBy).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('getManualFixes', () => {
+    it('joins pending guidance-only AiAnalysis rows against the audit report\'s issue detail', async () => {
+      mockPrisma.comparisonTrial.findUniqueOrThrow.mockResolvedValue({
+        id: 'trial-1',
+        job: {
+          id: 'job-1',
+          output: {
+            auditReport: {
+              issues: [
+                { id: 'issue-1', code: 'MATTERHORN-13-001', message: 'Missing alt text', wcagCriteria: ['1.1.1'], location: 'Page 3', pageNumber: 3, matterhornCheckpoint: '13-001' },
+              ],
+            },
+          },
+        },
+      });
+      mockPrisma.aiAnalysis.findMany.mockResolvedValue([
+        {
+          id: 'ai-1', issueId: 'issue-1', suggestionType: 'alt-text',
+          guidance: 'This image requires a subject matter expert to describe it accurately.',
+          rationale: 'Low confidence: technical diagram with no surrounding context.',
+        },
+      ]);
+
+      const items = await getManualFixes('trial-1');
+
+      expect(items).toEqual([{
+        id: 'ai-1',
+        code: 'MATTERHORN-13-001',
+        message: 'Missing alt text',
+        wcagCriteria: ['1.1.1'],
+        location: 'Page 3',
+        pageNumber: 3,
+        matterhornCheckpoint: '13-001',
+        suggestionType: 'alt-text',
+        guidance: 'This image requires a subject matter expert to describe it accurately.',
+        rationale: 'Low confidence: technical diagram with no surrounding context.',
+      }]);
+      expect(mockPrisma.aiAnalysis.findMany).toHaveBeenCalledWith({
+        where: { jobId: 'job-1', applyMode: 'guidance-only', status: 'pending' },
+        orderBy: { createdAt: 'asc' },
+      });
+    });
+
+    it('degrades to null issue detail (not a throw) when issueId no longer resolves against a since-replaced audit report', async () => {
+      // AiAnalysis.issueId is a per-audit sequential counter that a later
+      // re-audit can reassign -- see the doc comment on issueFingerprint in
+      // schema.prisma. The guidance/rationale text (this modal's actual
+      // point) lives directly on the AiAnalysis row and is unaffected.
+      mockPrisma.comparisonTrial.findUniqueOrThrow.mockResolvedValue({
+        id: 'trial-1',
+        job: { id: 'job-1', output: { auditReport: { issues: [] } } },
+      });
+      mockPrisma.aiAnalysis.findMany.mockResolvedValue([
+        { id: 'ai-1', issueId: 'stale-issue-id', suggestionType: 'table-summary', guidance: 'Add a summary describing the table structure.', rationale: 'Complex table, low confidence.' },
+      ]);
+
+      const items = await getManualFixes('trial-1');
+
+      expect(items).toEqual([{
+        id: 'ai-1', code: null, message: null, wcagCriteria: null, location: null,
+        pageNumber: null, matterhornCheckpoint: null, suggestionType: 'table-summary',
+        guidance: 'Add a summary describing the table structure.',
+        rationale: 'Complex table, low confidence.',
+      }]);
+    });
+
+    it('returns an empty array (not a throw) when the trial has no Ninja job yet', async () => {
+      mockPrisma.comparisonTrial.findUniqueOrThrow.mockResolvedValue({ id: 'trial-1', job: null });
+
+      await expect(getManualFixes('trial-1')).resolves.toEqual([]);
+      expect(mockPrisma.aiAnalysis.findMany).not.toHaveBeenCalled();
     });
   });
 

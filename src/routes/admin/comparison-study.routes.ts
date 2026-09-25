@@ -19,6 +19,7 @@ import {
   logPdfxtData,
   validateTrial,
   getTrialReport,
+  getManualFixes,
   getAggregateReport,
   updateAutoModeConfig,
   getPacReportUploadUrl,
@@ -236,6 +237,18 @@ router.get('/comparison-study/trials/:id/report', authenticate, async (req: Requ
 
     const report = await getTrialReport(req.params.id);
     return res.json({ success: true, data: report });
+  } catch (err) {
+    return internalError(res, err);
+  }
+});
+
+// GET /api/v1/admin/comparison-study/trials/:id/manual-fixes
+router.get('/comparison-study/trials/:id/manual-fixes', authenticate, async (req: Request, res: Response) => {
+  try {
+    if (!isAdminOrOperator(req)) return forbidden(res);
+
+    const items = await getManualFixes(req.params.id);
+    return res.json({ success: true, data: { items } });
   } catch (err) {
     return internalError(res, err);
   }
