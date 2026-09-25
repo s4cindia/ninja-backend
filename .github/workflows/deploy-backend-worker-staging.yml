@@ -1,0 +1,153 @@
+name: Deploy Backend Worker to Staging
+
+# Separate, deliberately isolated from deploy-backend-staging.yml -- builds
+# its own image (yes, this means the ninja-backend image gets built twice
+# per push; a shared-build refactor is a safe follow-up once the web/worker
+# split is proven stable) so the existing, working web deploy pipeline is
+# never touched by this file. Same image/ECR repo/cluster as the web
+# service; PROCESS_ROLE=worker is what actually changes its behavior (see
+# src/index.ts and infrastructure/ecs/ninja-backend-worker-task-definition.json).
+#
+# Triggers on every push to main (not path-filtered) because the worker
+# runs the SAME src/ tree as the web service -- any backend code change
+# needs to reach both.
+
+"on":
+  push:
+    branches:
+      - main
+
+env:
+  AWS_REGION: ap-south-1
+  ECR_REPOSITORY: ninja-backend
+  ECS_CLUSTER: ninja-cluster
+  ECS_SERVICE: ninja-backend-worker-service
+  TASK_DEFINITION_FILE: infrastructure/ecs/ninja-backend-worker-task-definition.json
+  CONTAINER_NAME: ninja-backend-worker
+
+jobs:
+  build-and-deploy:
+    name: Build and Deploy Worker to Staging
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push image with caching
+        id: build-image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ github.sha }}
+          build-args: |
+            COMMIT_SHA=${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          provenance: false
+
+      - name: Set image output
+        id: image-output
+        run: echo "image=${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ github.sha }}" >> $GITHUB_OUTPUT
+
+      - name: Inject environment variables and secrets
+        env:
+          ACE_URL: ${{ secrets.ACE_SERVICE_URL }}
+          DATABASE_ARN: ${{ secrets.STAGING_DATABASE_SECRET_ARN }}
+          REDIS_ARN: ${{ secrets.STAGING_REDIS_SECRET_ARN }}
+          ANTHROPIC_ARN: ${{ secrets.STAGING_ANTHROPIC_SECRET_ARN }}
+          GEMINI_ARN: ${{ secrets.STAGING_GEMINI_SECRET_ARN }}
+        run: |
+          # Same pattern as deploy-backend-staging.yml's own env/secrets
+          # injection -- the static JSON file's own environment/secrets
+          # values are placeholders, overwritten here from real GH secrets
+          # before every deploy, never used as-is.
+          #
+          # DATABASE_URL specifically (CodeRabbit catch on PR #615): unlike
+          # the web workflow, which live-fetches the ALREADY-CORRECT web
+          # task definition and only patches specific known fields (so
+          # DATABASE_URL, set on that task long ago, survives untouched),
+          # this worker task definition is built from scratch as a static
+          # file -- it has no pre-existing DATABASE_URL to inherit. Without
+          # it, Prisma can't even initialize, and the worker would fail
+          # every DB-backed job while its own /health check (which doesn't
+          # touch the database) keeps reporting healthy. Requires a NEW
+          # GitHub secret, STAGING_DATABASE_SECRET_ARN, pointing at the
+          # same staging database's Secrets Manager ARN -- create this
+          # before relying on this workflow.
+          SECRETS_ARRAY='[{"name": "DATABASE_URL", "valueFrom": "'"$DATABASE_ARN"'"}, {"name": "REDIS_URL", "valueFrom": "'"$REDIS_ARN"'"}'
+          if [ -n "$ANTHROPIC_ARN" ]; then
+            SECRETS_ARRAY="$SECRETS_ARRAY"', {"name": "ANTHROPIC_API_KEY", "valueFrom": "'"$ANTHROPIC_ARN"'"}'
+          fi
+          if [ -n "$GEMINI_ARN" ]; then
+            SECRETS_ARRAY="$SECRETS_ARRAY"', {"name": "GEMINI_API_KEY", "valueFrom": "'"$GEMINI_ARN"'"}'
+          fi
+          SECRETS_ARRAY="$SECRETS_ARRAY]"
+
+          jq --arg aceurl "$ACE_URL" \
+             --argjson secrets "$SECRETS_ARRAY" '
+            (.containerDefinitions[0].environment) |= (
+              map(select(.name != "ACE_SERVICE_URL" and .name != "S3_BUCKET" and .name != "S3_REGION" and .name != "VERAPDF_PATH")) +
+              [
+                {"name": "ACE_SERVICE_URL", "value": $aceurl},
+                {"name": "S3_BUCKET", "value": "ninja-epub-staging"},
+                {"name": "S3_REGION", "value": "ap-south-1"},
+                {"name": "VERAPDF_PATH", "value": "/opt/verapdf/verapdf"},
+                {"name": "PROCESS_ROLE", "value": "worker"}
+              ]
+            ) |
+            (.containerDefinitions[0].secrets) |= $secrets
+          ' ${{ env.TASK_DEFINITION_FILE }} > task-definition-updated.json
+          mv task-definition-updated.json ${{ env.TASK_DEFINITION_FILE }}
+
+      - name: Render task definition
+        id: task-def
+        uses: aws-actions/amazon-ecs-render-task-definition@v1
+        with:
+          task-definition: ${{ env.TASK_DEFINITION_FILE }}
+          container-name: ${{ env.CONTAINER_NAME }}
+          image: ${{ steps.image-output.outputs.image }}
+
+      - name: Deploy to Amazon ECS
+        # NOTE: this only UPDATES an existing service -- the
+        # ninja-backend-worker-service must already exist (one-time
+        # `aws ecs create-service`, no --load-balancers, done manually --
+        # nothing in this repo creates ECS services). This step will fail
+        # with a clear error until that's been done once.
+        #
+        # ORDERING (CodeRabbit catch on PR #615): create that service only
+        # AFTER cutting the web service over to PROCESS_ROLE=web (set the
+        # WEB_PROCESS_ROLE repo variable to "web" and let
+        # deploy-backend-staging.yml redeploy first). If this worker
+        # starts while the web task is still in legacy mode (running its
+        # own background workers too), its own startup calls
+        # cleanupStaleActiveJobs() (src/workers/index.ts), which treats
+        # every "active" accessibility job as orphaned from a dead
+        # process and marks it FAILED -- but a still-alive legacy web
+        # task could legitimately be mid-processing one of those jobs.
+        # Cutting web over first means it gracefully drains its own
+        # workers via its own shutdown before this worker ever starts, so
+        # there's no second live consumer for this worker's startup
+        # cleanup to collide with.
+        uses: aws-actions/amazon-ecs-deploy-task-definition@v2
+        with:
+          task-definition: ${{ steps.task-def.outputs.task-definition }}
+          service: ${{ env.ECS_SERVICE }}
+          cluster: ${{ env.ECS_CLUSTER }}
+          wait-for-service-stability: true

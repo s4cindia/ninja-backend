@@ -4,6 +4,7 @@ import { Prisma, FileStatus } from '@prisma/client';
 import fs from 'fs/promises';
 import { validateFilePath } from '../utils/path-validator';
 import { areQueuesAvailable, getAccessibilityQueue, JOB_TYPES } from '../queues';
+import { config } from '../config';
 import { pdfParserService } from '../services/pdf/pdf-parser.service';
 import { textExtractorService } from '../services/pdf/text-extractor.service';
 import { imageExtractorService } from '../services/pdf/image-extractor.service';
@@ -1133,35 +1134,49 @@ export async function createAndEnqueuePdfAuditJob(
 
     // Fallback: if BullMQ's blocking connection silently hangs (Upstash TCP drop),
     // jobs can sit in QUEUED forever. After 60s, process in-process as a safety net.
-    const fallbackJobId = jobId;
-    const fallbackFileName = file.originalname;
-    const fallbackTenantId = tenantId;
-    const fallbackUserId = userId;
-    setTimeout(async () => {
-      try {
-        const dbJob = await prisma.job.findUnique({
-          where: { id: fallbackJobId },
-          select: { status: true },
-        });
-        if (!dbJob || dbJob.status !== 'QUEUED') return; // BullMQ picked it up
-        logger.warn(`[PDF] Job ${fallbackJobId} still QUEUED after 60s — BullMQ worker may be stuck, falling back to in-process`);
-        const fileBuffer = await fileStorageService.getFile(fallbackJobId, fallbackFileName);
-        if (!fileBuffer) {
-          logger.error(`[PDF] Fallback failed: file not found in storage for job ${fallbackJobId}`);
-          return;
+    //
+    // Skipped entirely on PROCESS_ROLE=web (the split web/worker deployment,
+    // 2026-09-25): running a CPU-heavy audit in-process here is exactly the
+    // event-loop-starves-health-checks incident this split exists to
+    // prevent, and it would trigger under precisely the condition most
+    // likely to cause it -- a backlogged/unhealthy worker fleet. On the web
+    // role a stuck-QUEUED job just stays logged for investigation instead.
+    if (config.processRole !== 'web') {
+      const fallbackJobId = jobId;
+      const fallbackFileName = file.originalname;
+      const fallbackTenantId = tenantId;
+      const fallbackUserId = userId;
+      setTimeout(async () => {
+        try {
+          const dbJob = await prisma.job.findUnique({
+            where: { id: fallbackJobId },
+            select: { status: true },
+          });
+          if (!dbJob || dbJob.status !== 'QUEUED') return; // BullMQ picked it up
+          logger.warn(`[PDF] Job ${fallbackJobId} still QUEUED after 60s — BullMQ worker may be stuck, falling back to in-process`);
+          const fileBuffer = await fileStorageService.getFile(fallbackJobId, fallbackFileName);
+          if (!fileBuffer) {
+            logger.error(`[PDF] Fallback failed: file not found in storage for job ${fallbackJobId}`);
+            return;
+          }
+          processAuditFromBufferBackground(fallbackJobId, fileBuffer, fallbackFileName, fallbackTenantId, fallbackUserId).catch(
+            (err: unknown) => logger.error(`[PDF] Fallback audit failed for ${fallbackJobId}: ${err instanceof Error ? err.message : 'Unknown'}`)
+          );
+        } catch (err) {
+          logger.error(`[PDF] Fallback check failed for ${fallbackJobId}: ${err instanceof Error ? err.message : 'Unknown'}`);
         }
-        processAuditFromBufferBackground(fallbackJobId, fileBuffer, fallbackFileName, fallbackTenantId, fallbackUserId).catch(
-          (err: unknown) => logger.error(`[PDF] Fallback audit failed for ${fallbackJobId}: ${err instanceof Error ? err.message : 'Unknown'}`)
-        );
-      } catch (err) {
-        logger.error(`[PDF] Fallback check failed for ${fallbackJobId}: ${err instanceof Error ? err.message : 'Unknown'}`);
-      }
-    }, 60_000);
-  } else {
+      }, 60_000);
+    }
+  } else if (config.processRole !== 'web') {
     // Fallback: process in-process when Redis is not configured. file.buffer
     // may be absent (the sourceS3Key/copy path above never downloaded one)
     // -- load it from the storage location just written to, same as the
     // 60s BullMQ-stall fallback above already does.
+    //
+    // Skipped on PROCESS_ROLE=web for the same reason as the fallback
+    // above -- see that comment. In a real split deployment Redis should
+    // always be configured (both roles need it for BullMQ), so this branch
+    // firing on the web role at all would mean Redis itself is down.
     logger.warn(`[PDF] Redis not available — processing job ${jobId} in-process`);
     (file.buffer ? Promise.resolve(file.buffer) : fileStorageService.getFile(jobId, file.originalname))
       .then((buffer) => {
@@ -1185,6 +1200,25 @@ export async function createAndEnqueuePdfAuditJob(
           logger.error(`[PDF] Failed to mark job ${jobId} as FAILED:`, updateError instanceof Error ? updateError : undefined);
         }
       });
+  } else {
+    // PROCESS_ROLE=web with Redis/BullMQ unavailable: no in-process
+    // fallback runs (see above), and nothing else will ever pick this job
+    // up -- recoverStaleJobs() (src/workers/index.ts) only handles
+    // citation documents, not PDF audit jobs. Returning { jobId } here
+    // would silently claim success for a job that can never be processed
+    // (CodeRabbit catch on PR #615). The caller never gets a jobId to
+    // mark it FAILED itself (its own catch block only does that when a
+    // jobId was actually returned) since we're throwing instead of
+    // returning, so do it here before throwing.
+    const message = 'PDF processing is temporarily unavailable (Redis/BullMQ not configured)';
+    logger.error(`[PDF] Job ${jobId}: ${message}`);
+    await prisma.job.update({
+      where: { id: jobId },
+      data: { status: 'FAILED', completedAt: new Date(), error: message },
+    }).catch((updateError: unknown) =>
+      logger.error(`[PDF] Failed to mark job ${jobId} as FAILED:`, updateError instanceof Error ? updateError : undefined)
+    );
+    throw new Error(message);
   }
 
   return { jobId };
