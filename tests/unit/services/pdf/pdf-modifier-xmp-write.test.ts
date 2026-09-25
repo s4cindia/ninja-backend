@@ -251,6 +251,44 @@ describe('writePdfUaIdentifier / writeXmpStream', () => {
     expect(xmp).toContain('Adobe PDF Library 17.0');
   });
 
+  // CodeRabbit finding on this same PR, confirmed real: dc:title is
+  // conventionally structured as <dc:title><rdf:Alt><rdf:li
+  // xml:lang="x-default">...</rdf:li></rdf:Alt></dc:title> -- confirmed on
+  // the real Math_Nikitopoulos_PDF.pdf XMP -- not a plain string. The dedup
+  // fix's own `target[key] = value` would replace the whole rdf:Alt
+  // structure with a bare string, silently dropping any OTHER language
+  // alternative a real document might carry.
+  const EXISTING_ALT_TITLE_XMP = `<?xpacket begin="" id="W5M0MpCehiHzreSzNTczkc9d"?>
+<x:xmpmeta xmlns:x="adobe:ns:meta/">
+  <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+    <rdf:Description rdf:about="" xmlns:dc="http://purl.org/dc/elements/1.1/">
+      <dc:title>
+        <rdf:Alt>
+          <rdf:li xml:lang="x-default">Old Title</rdf:li>
+          <rdf:li xml:lang="fr">Ancien Titre</rdf:li>
+        </rdf:Alt>
+      </dc:title>
+    </rdf:Description>
+  </rdf:RDF>
+</x:xmpmeta>
+<?xpacket end="w"?>`;
+
+  it('REGRESSION: updates the x-default rdf:li in place rather than replacing the whole rdf:Alt container when dc:title already exists', async () => {
+    const doc = await PDFDocument.create();
+    doc.addPage([400, 600]);
+    await setRawXmp(doc, EXISTING_ALT_TITLE_XMP);
+
+    await pdfModifierService.writeXmpStream(doc, { 'dc:title': 'New Title' });
+
+    const xmp = readRawXmp(doc);
+    expect(xmp).toContain('<rdf:li xml:lang="x-default">New Title</rdf:li>');
+    // The other language alternative must survive untouched -- proving the
+    // rdf:Alt container itself was updated in place, not replaced.
+    expect(xmp).toContain('<rdf:li xml:lang="fr">Ancien Titre</rdf:li>');
+    expect(xmp).not.toContain('Old Title');
+    expect(xmp).not.toContain('<dc:title>New Title</dc:title>');
+  });
+
   it('REGRESSION: survives a doc.save() round trip with a multi-description XMP (the exact real-world symptom)', async () => {
     const doc = await PDFDocument.create();
     doc.addPage([400, 600]);

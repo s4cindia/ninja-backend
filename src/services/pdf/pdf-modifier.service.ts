@@ -90,6 +90,54 @@ function findChildByNamespaceUri(node: Record<string, unknown>, nsUri: string): 
 }
 
 /**
+ * Writes a plain-string patch value into an XMP property on `target`,
+ * preserving an existing rdf:Alt (language-alternative) container's OTHER
+ * entries when the property is already one -- CodeRabbit finding,
+ * confirmed real: dc:title (deriveAndSetTitle's own call to writeXmpStream)
+ * is conventionally structured as
+ * `<dc:title><rdf:Alt><rdf:li xml:lang="x-default">...</rdf:li></rdf:Alt></dc:title>`,
+ * not a plain string -- confirmed on the real Math_Nikitopoulos_PDF.pdf
+ * XMP. Blindly doing `target[key] = value` would replace the whole rdf:Alt
+ * structure with a bare string, silently dropping every OTHER language
+ * alternative a real document might carry.
+ *
+ * Updates the "x-default" rdf:li (or the first one, if none is tagged
+ * x-default) in place when the existing value looks like an rdf:Alt
+ * container; otherwise falls back to a plain assignment (the property
+ * didn't exist yet, or isn't in a recognizable Alt shape).
+ */
+function setXmpPropertyValue(target: Record<string, unknown>, key: string, value: string): void {
+  const existing = target[key];
+  if (existing && typeof existing === 'object' && !Array.isArray(existing) && 'rdf:Alt' in existing) {
+    const alt = (existing as Record<string, unknown>)['rdf:Alt'];
+    if (alt && typeof alt === 'object' && !Array.isArray(alt)) {
+      const altObj = alt as Record<string, unknown>;
+      const li = altObj['rdf:li'];
+      const setLiValue = (entry: unknown): unknown => {
+        if (entry && typeof entry === 'object' && !Array.isArray(entry)) {
+          return { ...(entry as Record<string, unknown>), '#text': value };
+        }
+        return value;
+      };
+      if (Array.isArray(li)) {
+        const idx = li.findIndex(
+          item => typeof item === 'object' && item !== null && (item as Record<string, unknown>)['@_xml:lang'] === 'x-default'
+        );
+        const targetIdx = idx >= 0 ? idx : 0;
+        if (li.length > 0) {
+          li[targetIdx] = setLiValue(li[targetIdx]);
+          return;
+        }
+      } else if (li !== undefined) {
+        altObj['rdf:li'] = setLiValue(li);
+        return;
+      }
+    }
+  }
+  target[key] = value;
+}
+
+/**
  * Result of a PDF modification operation
  */
 export interface ModificationResult {
@@ -1857,7 +1905,7 @@ export class PdfModifierService {
                 return declared !== undefined ? declared === canonicalUri : false;
               });
               if (target) {
-                target[key] = value;
+                setXmpPropertyValue(target, key, value);
               } else {
                 remaining[key] = value;
               }
@@ -1867,7 +1915,7 @@ export class PdfModifierService {
               for (const [key, value] of Object.entries(remaining)) {
                 const uri = namespaceUri(key.split(':')[0]);
                 if (uri) newDesc[`@_xmlns:${key.split(':')[0]}`] = uri;
-                newDesc[key] = value;
+                setXmpPropertyValue(newDesc, key, value);
               }
               descArr.push(newDesc);
             }
@@ -1882,9 +1930,9 @@ export class PdfModifierService {
               const declared = desc[xmlnsKey];
               if (declared === undefined) {
                 if (canonicalUri) desc[xmlnsKey] = canonicalUri;
-                desc[key] = value;
+                setXmpPropertyValue(desc, key, value);
               } else if (declared === canonicalUri) {
-                desc[key] = value;
+                setXmpPropertyValue(desc, key, value);
               } else {
                 // Same wrong-namespace conflict the array branch above
                 // guards against: this single Description already binds
@@ -1899,7 +1947,7 @@ export class PdfModifierService {
               for (const [key, value] of Object.entries(remaining)) {
                 const uri = namespaceUri(key.split(':')[0]);
                 if (uri) newDesc[`@_xmlns:${key.split(':')[0]}`] = uri;
-                newDesc[key] = value;
+                setXmpPropertyValue(newDesc, key, value);
               }
               rdfRdf['rdf:Description'] = [desc, newDesc];
             }
