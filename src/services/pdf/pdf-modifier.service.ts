@@ -1971,6 +1971,17 @@ export class PdfModifierService {
       Length: bytes.length,
     });
     doc.catalog.set(PDFName.of('Metadata'), doc.context.register(stream));
+
+    // Real incident, Math_Nikitopoulos_PDF.pdf (2026-09-25): every call
+    // registers a BRAND NEW indirect object and repoints the catalog to it,
+    // but never removes the object it just superseded. Across repeated
+    // rounds this leaves every PAST version of the /Metadata stream
+    // permanently embedded in the file as dead weight -- confirmed live: 10
+    // separate /Type /Metadata objects (only the newest referenced by the
+    // catalog) on a single real document, one per past write, each larger
+    // than the last. doc.context.delete removes it from the object
+    // registry entirely, so it's no longer written on the next save.
+    if (existingRef instanceof PDFRef) doc.context.delete(existingRef);
   }
 
   /**

@@ -1,6 +1,15 @@
 import { describe, it, expect } from 'vitest';
-import { PDFDocument, PDFName, PDFRawStream, decodePDFRawStream } from 'pdf-lib';
+import { PDFDocument, PDFName, PDFDict, PDFRawStream, decodePDFRawStream } from 'pdf-lib';
 import { pdfModifierService } from '../../../../src/services/pdf/pdf-modifier.service';
+
+function countMetadataObjects(doc: PDFDocument): number {
+  let count = 0;
+  for (const [, obj] of doc.context.enumerateIndirectObjects()) {
+    const dict = obj instanceof PDFRawStream ? obj.dict : obj instanceof PDFDict ? obj : null;
+    if (dict?.get(PDFName.of('Type'))?.toString() === '/Metadata') count++;
+  }
+  return count;
+}
 
 /**
  * Regression coverage for a real bug found on a live document (Army trial,
@@ -360,5 +369,31 @@ describe('writePdfUaIdentifier / writeXmpStream', () => {
     // Original content must survive the patch, not be replaced by a
     // template fallback (which would mean decompression silently failed).
     expect(xmp).toContain('2025-09-10T15:35:06+05:30');
+  });
+
+  // Real incident, Math_Nikitopoulos_PDF.pdf (2026-09-25): every call
+  // registers a brand-new /Metadata stream object and repoints the catalog
+  // to it, but never removed the object it superseded. Across a real
+  // document's full remediation history this left 10 separate /Type
+  // /Metadata objects permanently embedded in the file -- only the newest
+  // referenced by the catalog, the other 9 pure dead weight that grows by
+  // one every time the fix (harmlessly, from Ninja's own perspective) keeps
+  // re-running.
+  it('REGRESSION: deletes the superseded /Metadata object instead of leaving it as permanent dead weight in the file', async () => {
+    const doc = await PDFDocument.create();
+    doc.addPage([400, 600]);
+
+    expect(countMetadataObjects(doc)).toBe(0);
+    await pdfModifierService.writePdfUaIdentifier(doc);
+    expect(countMetadataObjects(doc)).toBe(1);
+    await pdfModifierService.writePdfUaIdentifier(doc);
+    await pdfModifierService.writePdfUaIdentifier(doc);
+    // 3 total calls, but still only ONE /Metadata object should exist --
+    // each call's own object superseded (and deleted) the previous one.
+    expect(countMetadataObjects(doc)).toBe(1);
+
+    const savedBytes = Buffer.from(await doc.save());
+    const reloaded = await PDFDocument.load(savedBytes, { updateMetadata: false });
+    expect(countMetadataObjects(reloaded)).toBe(1);
   });
 });
