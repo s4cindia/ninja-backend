@@ -94,6 +94,13 @@ class PDFParserService {
     }
 
     const fileBuffer = await fs.readFile(filePath);
+    // NOTE: tried a zero-copy Uint8Array view here (sharing fileBuffer's own
+    // backing ArrayBuffer instead of copying) to reduce peak memory for large
+    // files -- reverted, it broke pdf-lib's parse. pdfjs-dist's getDocument()
+    // appears to detach/transfer the underlying ArrayBuffer internally, and
+    // since loadWithPdfLib/loadWithPdfjs run concurrently via Promise.all
+    // below, pdfjs taking ownership corrupted the SAME buffer pdf-lib was
+    // still reading from. Real copy it is.
     const uint8Array = new Uint8Array(fileBuffer);
 
     const [pdfLibDoc, pdfjsDoc] = await Promise.all([

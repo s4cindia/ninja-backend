@@ -1,5 +1,17 @@
 export const pdfConfig = {
-  maxFileSizeMB: parseInt(process.env.MAX_PDF_FILE_SIZE_MB || '500', 10),
+  // Real incident (2026-09-25): a genuine production comparison-study PDF
+  // (BMW_188935_BMW E36.pdf, ~1.43GB) was rejected by the old 500MB default.
+  // Raised to 2GB per explicit decision to support real large-document
+  // uploads. This meaningfully raises OOM risk for the ECS task -- pdf-lib
+  // and pdfjs each hold their own full in-memory parse of the file
+  // (see loadWithPdfLib/loadWithPdfjs in pdf-parser.service.ts) -- consistent
+  // with this codebase's own prior finding that a much smaller 377-page
+  // document already OOM-killed a 4GB task during a different per-page
+  // operation, fixed by raising that task to 8GB (see maxContrastPages
+  // below). If a 1-2GB PDF OOM-kills the task, the ECS task definition's
+  // memory (not stored in this repo -- fetched live from AWS) is the next
+  // thing to check/raise, same as that precedent.
+  maxFileSizeMB: parseInt(process.env.MAX_PDF_FILE_SIZE_MB || '2000', 10),
   // Hard upload limit — rejects PDFs with more pages than this before any processing.
   // Set MAX_PDF_PAGES in .env to override (0 = no limit). Defaults to 5000.
   // MAX_AUDIT_PAGES is the effective processing cap and is usually much lower.
