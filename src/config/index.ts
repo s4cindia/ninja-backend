@@ -19,6 +19,16 @@ export interface Config {
   awsAccessKeyId: string | null;
   awsSecretAccessKey: string | null;
   ninjaGpuBlendedCostPerDocUsd: number | null;
+  // Web/worker process split (2026-09-25 incident: CPU-heavy BullMQ job
+  // processing shared the web process's event loop, starving the ALB health
+  // check and getting the whole task killed -- see src/index.ts). Three
+  // states, not two: null (unset) is the legacy/monolith default -- runs
+  // both the HTTP server AND every BullMQ worker, exactly like before this
+  // split existed. 'web'/'worker' are only ever set explicitly on their
+  // respective ECS task definitions, never as a default, so deploying this
+  // code alone (before a worker service exists) can't accidentally stop job
+  // processing.
+  processRole: 'web' | 'worker' | null;
   features: {
     enableWebSocket: boolean;
     emitAllTransitions: boolean;
@@ -48,6 +58,9 @@ export const config: Config = {
   // CloudWatch logs. Null until that's run at least once.
   ninjaGpuBlendedCostPerDocUsd: process.env.NINJA_GPU_BLENDED_COST_PER_DOC_USD
     ? parseFloat(process.env.NINJA_GPU_BLENDED_COST_PER_DOC_USD)
+    : null,
+  processRole: process.env.PROCESS_ROLE === 'web' || process.env.PROCESS_ROLE === 'worker'
+    ? process.env.PROCESS_ROLE
     : null,
   features: {
     enableWebSocket: process.env.ENABLE_WEBSOCKET !== 'false', // Default: enabled (can disable with ENABLE_WEBSOCKET=false)

@@ -1,4 +1,5 @@
 import express, { Express } from 'express';
+import http from 'http';
 import cors from 'cors';
 import helmet from 'helmet';
 import compression from 'compression';
@@ -9,7 +10,7 @@ import { notFoundHandler } from './middleware/not-found.middleware';
 import routes from './routes';
 import { closeQueues } from './queues';
 import { closeRedisConnection } from './lib/redis';
-import { startWorkers, stopWorkers } from './workers';
+import { startBackgroundWorkers, stopBackgroundWorkers, startWorkflowQueueWorker, stopWorkflowQueueWorker } from './workers';
 import { startWorkflowRecovery, stopWorkflowRecovery } from './services/workflow/workflow-recovery.service';
 import { isRedisConfigured } from './config/redis.config';
 import { sseService } from './sse/sse.service';
@@ -17,6 +18,13 @@ import { websocketService } from './services/workflow/websocket.service';
 import { logger } from './lib/logger';
 import { integrityCheckService } from './services/integrity/integrity-check.service';
 import { plagiarismCheckService } from './services/plagiarism/plagiarism-check.service';
+import { getWorkerFlags } from './config/process-role';
+
+// Web/worker process split -- see the doc comment on config.processRole.
+// null (unset) is the legacy/monolith default: runs both the HTTP server
+// AND every BullMQ worker, exactly like before this split existed.
+const processRole = config.processRole;
+const { runsBackgroundWorkers, runsWorkflowWorker } = getWorkerFlags(processRole);
 
 const app: Express = express();
 
@@ -89,6 +97,7 @@ app.get('/health', (req, res) => {
     environment: config.nodeEnv,
     version: config.version,
     commitSha: process.env.COMMIT_SHA || 'unknown',
+    role: processRole ?? 'legacy',
     redis: redisAvailable ? 'connected' : 'not_configured',
     workers: redisAvailable ? 'enabled' : 'disabled',
     websocket: {
@@ -104,78 +113,152 @@ app.use('/api/v1', routes);
 app.use(notFoundHandler);
 app.use(errorHandler);
 
-const server = app.listen(config.port, '0.0.0.0', () => {
-  // Extend timeout for large PDF processing (default 120s is too short)
-  server.timeout = parseInt(process.env.SERVER_TIMEOUT_MS || '120000', 10);
-  server.keepAliveTimeout = parseInt(process.env.SERVER_TIMEOUT_MS || '120000', 10);
-  logger.info(`🚀 Ninja Backend v${config.version} running on port ${config.port}`);
-  logger.info(`📍 Environment: ${config.nodeEnv}`);
-  logger.info(`❤️  Health check: http://localhost:${config.port}/health`);
-  logger.info(`📚 API Base: http://localhost:${config.port}/api/v1`);
-  
-  if (isRedisConfigured()) {
-    logger.info('✅ Redis configured - BullMQ workers enabled');
-  } else {
-    logger.warn('⚠️  Redis not configured - running in sync mode');
-  }
-  
-  sseService.initialize().catch(err => {
-    logger.error('Failed to initialize SSE service', err as Error);
-  });
+let server: http.Server;
 
-  if (config.features.enableWebSocket) {
-    websocketService.initialize(server);
-    logger.info('✅ WebSocket service initialized');
-  } else {
-    logger.info('⚠️  WebSocket service disabled (ENABLE_WEBSOCKET=false)');
-  }
-
-  startWorkers();
-
-  if (isRedisConfigured()) {
-    startWorkflowRecovery();
-    logger.info('✅ Workflow recovery scanner started');
-  }
-
-  // Startup health check: make a real Claude API call to verify connectivity
-  (async () => {
-    try {
-      const { claudeService } = await import('./services/ai/claude.service');
-      const result = await claudeService.healthCheck();
-      if (result.healthy) {
-        logger.info(`✅ Claude API health check passed: ${JSON.stringify(result.details)}`);
-      } else {
-        logger.error(`❌ Claude API health check FAILED: ${JSON.stringify(result.details)}`);
-      }
-    } catch (err) {
-      logger.error(`❌ Claude API health check error: ${err}`);
+if (processRole === 'worker') {
+  // Worker role: the full Express app above is built (cheap, declarative)
+  // but deliberately never given a listening socket -- none of its routes
+  // are reachable over the network from this process. A minimal raw HTTP
+  // listener exists ONLY so the Dockerfile's existing
+  // `HEALTHCHECK CMD curl -f http://localhost:3000/health` keeps working
+  // unmodified. No ALB is ever attached to this service's task definition
+  // (see infrastructure/ecs/ninja-backend-worker-task-definition.json), so
+  // nothing but that local Docker probe ever reaches this port.
+  server = http.createServer((req, res) => {
+    if (req.method === 'GET' && req.url === '/health') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        status: 'healthy',
+        timestamp: new Date().toISOString(),
+        environment: config.nodeEnv,
+        version: config.version,
+        commitSha: process.env.COMMIT_SHA || 'unknown',
+        role: 'worker',
+        redis: isRedisConfigured() ? 'connected' : 'not_configured',
+      }));
+      return;
     }
-  })();
+    res.writeHead(404, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: { code: 'NOT_FOUND', message: 'This is the worker process -- it serves no API routes' } }));
+  });
 
-  // Recover stale jobs left in PROCESSING/QUEUED from previous crashes/deploys
-  integrityCheckService.cleanupStaleJobs().catch(err => {
-    logger.error('Failed to clean up stale integrity check jobs', err as Error);
+  server.listen(config.port, '0.0.0.0', () => {
+    logger.info(`🚀 Ninja Backend Worker v${config.version} running on port ${config.port} (PROCESS_ROLE=worker)`);
+    logger.info(`❤️  Health check: http://localhost:${config.port}/health`);
+
+    if (isRedisConfigured()) {
+      logger.info('✅ Redis configured - BullMQ workers enabled');
+    } else {
+      logger.warn('⚠️  Redis not configured - running in sync mode');
+    }
+
+    // Needed for its Redis-subscribe side effect even though this process
+    // never serves an SSE HTTP route itself -- batch-remediation/
+    // batch-processing publish progress via sseService.broadcastToChannel,
+    // which silently falls back to a useless local-only broadcast unless
+    // initialize() ran in this process too.
+    sseService.initialize().catch(err => {
+      logger.error('Failed to initialize SSE service', err as Error);
+    });
+
+    startBackgroundWorkers();
+
+    if (isRedisConfigured()) {
+      startWorkflowRecovery();
+      logger.info('✅ Workflow recovery scanner started');
+    }
   });
-  plagiarismCheckService.cleanupStaleJobs().catch(err => {
-    logger.error('Failed to clean up stale plagiarism check jobs', err as Error);
+} else {
+  server = app.listen(config.port, '0.0.0.0', () => {
+    // Extend timeout for large PDF processing (default 120s is too short)
+    server.timeout = parseInt(process.env.SERVER_TIMEOUT_MS || '120000', 10);
+    server.keepAliveTimeout = parseInt(process.env.SERVER_TIMEOUT_MS || '120000', 10);
+    logger.info(`🚀 Ninja Backend v${config.version} running on port ${config.port}${processRole ? ` (PROCESS_ROLE=${processRole})` : ''}`);
+    logger.info(`📍 Environment: ${config.nodeEnv}`);
+    logger.info(`❤️  Health check: http://localhost:${config.port}/health`);
+    logger.info(`📚 API Base: http://localhost:${config.port}/api/v1`);
+
+    if (isRedisConfigured()) {
+      logger.info('✅ Redis configured - BullMQ workers enabled');
+    } else {
+      logger.warn('⚠️  Redis not configured - running in sync mode');
+    }
+
+    sseService.initialize().catch(err => {
+      logger.error('Failed to initialize SSE service', err as Error);
+    });
+
+    if (config.features.enableWebSocket) {
+      websocketService.initialize(server);
+      logger.info('✅ WebSocket service initialized');
+    } else {
+      logger.info('⚠️  WebSocket service disabled (ENABLE_WEBSOCKET=false)');
+    }
+
+    // workflow-processing's worker stays on this (web/legacy) process --
+    // its processor calls websocketService directly, and websocketService.io
+    // is only ever set here, where initialize(server) just ran above.
+    if (runsWorkflowWorker) {
+      startWorkflowQueueWorker();
+    }
+
+    // 'web' role explicitly does NOT run background workers -- that's the
+    // whole point of the split (see PROCESS_ROLE doc comment on config).
+    // Only legacy (unset) still runs everything in one process.
+    if (runsBackgroundWorkers) {
+      startBackgroundWorkers();
+
+      if (isRedisConfigured()) {
+        startWorkflowRecovery();
+        logger.info('✅ Workflow recovery scanner started');
+      }
+    }
+
+    // Startup health check: make a real Claude API call to verify connectivity
+    (async () => {
+      try {
+        const { claudeService } = await import('./services/ai/claude.service');
+        const result = await claudeService.healthCheck();
+        if (result.healthy) {
+          logger.info(`✅ Claude API health check passed: ${JSON.stringify(result.details)}`);
+        } else {
+          logger.error(`❌ Claude API health check FAILED: ${JSON.stringify(result.details)}`);
+        }
+      } catch (err) {
+        logger.error(`❌ Claude API health check error: ${err}`);
+      }
+    })();
+
+    // Recover stale jobs left in PROCESSING/QUEUED from previous crashes/deploys
+    integrityCheckService.cleanupStaleJobs().catch(err => {
+      logger.error('Failed to clean up stale integrity check jobs', err as Error);
+    });
+    plagiarismCheckService.cleanupStaleJobs().catch(err => {
+      logger.error('Failed to clean up stale plagiarism check jobs', err as Error);
+    });
   });
-});
+}
 
 const gracefulShutdown = async () => {
   logger.info('Shutting down gracefully...');
-  
+
   server.close(async () => {
-    logger.info('HTTP server closed');
-    
-    stopWorkflowRecovery();
-    await stopWorkers();
+    logger.info(processRole === 'worker' ? 'Worker HTTP listener closed' : 'HTTP server closed');
+
+    if (runsBackgroundWorkers) {
+      stopWorkflowRecovery();
+      await stopBackgroundWorkers();
+    }
+    if (runsWorkflowWorker) {
+      await stopWorkflowQueueWorker();
+    }
 
     await closeQueues();
     logger.info('Queues closed');
-    
+
     await closeRedisConnection();
     logger.info('Redis connection closed');
-    
+
     process.exit(0);
   });
 };

@@ -1,0 +1,49 @@
+{
+  "family": "ninja-backend-worker-task",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "2048",
+  "memory": "8192",
+  "executionRoleArn": "arn:aws:iam::223643972423:role/ecsTaskExecutionRole",
+  "taskRoleArn": "arn:aws:iam::223643972423:role/ninja-backend-task-role",
+  "containerDefinitions": [
+    {
+      "name": "ninja-backend-worker",
+      "image": "223643972423.dkr.ecr.ap-south-1.amazonaws.com/ninja-backend:latest",
+      "essential": true,
+      "portMappings": [
+        {
+          "containerPort": 3000,
+          "protocol": "tcp"
+        }
+      ],
+      "environment": [
+        { "name": "PROCESS_ROLE", "value": "worker" },
+        { "name": "S3_BUCKET", "value": "ninja-epub-staging" },
+        { "name": "S3_REGION", "value": "ap-south-1" },
+        { "name": "VERAPDF_PATH", "value": "/opt/verapdf/verapdf" }
+      ],
+      "secrets": [
+        { "name": "REDIS_URL", "valueFrom": "REPLACE_WITH_STAGING_REDIS_SECRET_ARN" }
+      ],
+      "healthCheck": {
+        "command": [
+          "CMD-SHELL",
+          "curl -f http://localhost:3000/health || exit 1"
+        ],
+        "interval": 60,
+        "timeout": 15,
+        "retries": 10,
+        "startPeriod": 120
+      },
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/ninja-backend-worker",
+          "awslogs-region": "ap-south-1",
+          "awslogs-stream-prefix": "ecs"
+        }
+      }
+    }
+  ]
+}

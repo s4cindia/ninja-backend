@@ -7,14 +7,23 @@ import { processFileJob } from './processors/file.processor';
 import { processBatchJob } from './processors/batch.processor';
 import { processBatchProcessingJob } from './processors/batch-processing.processor';
 import { processCitationJob } from './processors/citation.processor';
-import { startWorkflowWorker } from '../queues/workflow.queue';
+import { startWorkflowWorker as createWorkflowQueueWorker } from '../queues/workflow.queue';
 import { processStyleJob } from './processors/style.processor';
 import { startCalibrationWorker } from './calibration.worker';
 import { isRedisConfigured } from '../lib/redis';
 import { logger } from '../lib/logger';
 import prisma from '../lib/prisma';
 
-let workers: Worker[] = [];
+// Split into two independently start/stoppable groups for the web/worker
+// process split (PROCESS_ROLE): backgroundWorkers is every CPU/IO-heavy
+// BullMQ consumer (accessibility, vpat, file, citation, style, calibration,
+// batch-remediation, batch-processing) -- these belong on the worker
+// process. workflowWorkers is just the workflow-processing queue, which
+// stays on the web process because its processor calls websocketService
+// directly (see queues/workflow.queue.ts) and there is no cross-process
+// relay for that today.
+let backgroundWorkers: Worker[] = [];
+let workflowWorkers: Worker[] = [];
 let watchdogInterval: ReturnType<typeof setInterval> | null = null;
 let isRecovering = false;
 
@@ -226,8 +235,16 @@ async function cleanupStaleActiveJobs(): Promise<void> {
   }
 }
 
-export function startWorkers(): void {
-  logger.info('🚀 Starting job workers...');
+/**
+ * Every CPU/IO-heavy BullMQ consumer except workflow-processing: accessibility,
+ * vpat, file, citation, style, calibration, batch-remediation, batch-processing.
+ * Belongs on the worker process (PROCESS_ROLE=worker) -- this is the group
+ * that was originally implicated in the CPU-starves-health-checks incident
+ * (accessibility-validation specifically), and none of the others emit
+ * WebSocket events, so all of them are safe to move together.
+ */
+export function startBackgroundWorkers(): void {
+  logger.info('🚀 Starting background job workers...');
 
   const accessibilityWorker = createWorker({
     queueName: QUEUE_NAMES.ACCESSIBILITY,
@@ -236,38 +253,38 @@ export function startWorkers(): void {
     lockDuration: 10 * 60 * 1000, // 10 min — PDF audits can be slow for large files
     stalledInterval: 5000, // 5 s — quickly reclaim orphaned active jobs from old server instances
   });
-  if (accessibilityWorker) workers.push(accessibilityWorker);
+  if (accessibilityWorker) backgroundWorkers.push(accessibilityWorker);
 
   const vpatWorker = createWorker({
     queueName: QUEUE_NAMES.VPAT,
     processor: processVpatJob,
     concurrency: 1,
   });
-  if (vpatWorker) workers.push(vpatWorker);
+  if (vpatWorker) backgroundWorkers.push(vpatWorker);
 
   const fileWorker = createWorker({
     queueName: QUEUE_NAMES.FILE_PROCESSING,
     processor: processFileJob,
     concurrency: 2,
   });
-  if (fileWorker) workers.push(fileWorker);
+  if (fileWorker) backgroundWorkers.push(fileWorker);
 
   const citationWorker = createWorker({
     queueName: QUEUE_NAMES.CITATION_PROCESSING,
     processor: processCitationJob,
     concurrency: 2,
   });
-  if (citationWorker) workers.push(citationWorker);
+  if (citationWorker) backgroundWorkers.push(citationWorker);
 
   const styleWorker = createWorker({
     queueName: QUEUE_NAMES.STYLE_PROCESSING,
     processor: processStyleJob,
     concurrency: 2,
   });
-  if (styleWorker) workers.push(styleWorker);
+  if (styleWorker) backgroundWorkers.push(styleWorker);
 
   const calibrationWorker = startCalibrationWorker();
-  if (calibrationWorker) workers.push(calibrationWorker);
+  if (calibrationWorker) backgroundWorkers.push(calibrationWorker);
 
   if (isRedisConfigured()) {
     const connection = getBullMQConnection();
@@ -283,7 +300,7 @@ export function startWorkers(): void {
       batchWorker.on('failed', (job, err) => {
         logger.error(`📕 Batch job ${job?.id} failed: ${err.message}`);
       });
-      workers.push(batchWorker);
+      backgroundWorkers.push(batchWorker);
 
       const batchProcessingWorker = new Worker<BatchProcessingJobData, BatchProcessingJobResult>(
         QUEUE_NAMES.BATCH_PROCESSING,
@@ -307,26 +324,12 @@ export function startWorkers(): void {
       batchProcessingWorker.on('error', (err) => {
         logger.error('[BatchProcessingWorker] Worker error:', err);
       });
-      workers.push(batchProcessingWorker);
-
-      // Workflow automation worker
-      const workflowWorker = startWorkflowWorker();
-      workflowWorker.on('completed', (job) => {
-        logger.info(`🔄 Workflow event ${job.id} completed`);
-      });
-      workflowWorker.on('failed', (job, err) => {
-        logger.error(`🔄 Workflow event ${job?.id} failed: ${err.message}`);
-      });
-      workflowWorker.on('error', (err) => {
-        logger.error('[WorkflowWorker] Worker error:', err);
-      });
-      workers.push(workflowWorker);
-      logger.info('✅ Workflow automation worker started');
+      backgroundWorkers.push(batchProcessingWorker);
     }
   }
 
-  if (workers.length > 0) {
-    logger.info(`✅ ${workers.length} workers started`);
+  if (backgroundWorkers.length > 0) {
+    logger.info(`✅ ${backgroundWorkers.length} background workers started`);
 
     // Clean up any stale active BullMQ jobs left by a previous server process.
     // Must run BEFORE recoverStaleJobs so freed slots are visible to the stale-job recovery.
@@ -348,21 +351,64 @@ export function startWorkers(): void {
     }, WATCHDOG_INTERVAL_MS);
     logger.info(`✅ Stale job watchdog started (every ${WATCHDOG_INTERVAL_MS / 1000}s)`);
   } else {
-    logger.warn('⚠️  No workers started (Redis may not be configured)');
+    logger.warn('⚠️  No background workers started (Redis may not be configured)');
   }
 }
 
-export async function stopWorkers(): Promise<void> {
-  logger.info('🛑 Stopping workers...');
+export async function stopBackgroundWorkers(): Promise<void> {
+  logger.info('🛑 Stopping background workers...');
   if (watchdogInterval) {
     clearInterval(watchdogInterval);
     watchdogInterval = null;
   }
-  await Promise.all(workers.map((worker) => worker.close()));
-  workers = [];
-  logger.info('✅ All workers stopped');
+  await Promise.all(backgroundWorkers.map((worker) => worker.close()));
+  backgroundWorkers = [];
+  logger.info('✅ All background workers stopped');
+}
+
+/**
+ * Just the workflow-processing queue's worker. Kept separate from
+ * startBackgroundWorkers() because its processor calls websocketService
+ * directly (see queues/workflow.queue.ts) -- websocketService.io is only
+ * ever set on the process that called websocketService.initialize(server),
+ * i.e. the web process. Moving this worker to a separate process would make
+ * every workflow WebSocket event silently no-op with no error. It isn't
+ * CPU-heavy, so there's no upside to moving it anyway.
+ */
+export function startWorkflowQueueWorker(): void {
+  if (!isRedisConfigured()) return;
+  const connection = getBullMQConnection();
+  if (!connection) return;
+
+  const workflowWorker = createWorkflowQueueWorker();
+  workflowWorker.on('completed', (job) => {
+    logger.info(`🔄 Workflow event ${job.id} completed`);
+  });
+  workflowWorker.on('failed', (job, err) => {
+    logger.error(`🔄 Workflow event ${job?.id} failed: ${err.message}`);
+  });
+  workflowWorker.on('error', (err) => {
+    logger.error('[WorkflowWorker] Worker error:', err);
+  });
+  workflowWorkers.push(workflowWorker);
+  logger.info('✅ Workflow automation worker started');
+}
+
+export async function stopWorkflowQueueWorker(): Promise<void> {
+  await Promise.all(workflowWorkers.map((worker) => worker.close()));
+  workflowWorkers = [];
+}
+
+/** Legacy/default (PROCESS_ROLE unset): everything in one process, unchanged from before the web/worker split. */
+export function startWorkers(): void {
+  startBackgroundWorkers();
+  startWorkflowQueueWorker();
+}
+
+export async function stopWorkers(): Promise<void> {
+  await Promise.all([stopBackgroundWorkers(), stopWorkflowQueueWorker()]);
 }
 
 export function getActiveWorkers(): number {
-  return workers.length;
+  return backgroundWorkers.length + workflowWorkers.length;
 }
