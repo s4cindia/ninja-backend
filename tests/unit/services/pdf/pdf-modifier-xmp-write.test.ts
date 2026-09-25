@@ -111,6 +111,26 @@ describe('writePdfUaIdentifier / writeXmpStream', () => {
     expect(xmp).toContain('Adobe PDF Library 17.0');
   });
 
+  it('REGRESSION: does not append a new rdf:Description on a REPEAT call once one already declares the patched namespace -- real incident (Nikitopoulos trial, 2026-09-25): the same document accumulated 9 redundant <rdf:Description xmlns:pdfuaid=...> blocks across repeated Auto Mode rounds', async () => {
+    const doc = await PDFDocument.create();
+    doc.addPage([400, 600]);
+    await setRawXmp(doc, MULTI_DESCRIPTION_XMP);
+
+    await pdfModifierService.writePdfUaIdentifier(doc);
+    await pdfModifierService.writePdfUaIdentifier(doc);
+    await pdfModifierService.writePdfUaIdentifier(doc);
+
+    const xmp = readRawXmp(doc);
+    const descriptionCount = (xmp.match(/<rdf:Description\b/g) ?? []).length;
+    // 2 original (xmp:, pdf:) + exactly 1 new one for pdfuaid -- not 4.
+    expect(descriptionCount).toBe(3);
+    const pdfuaidCount = (xmp.match(/<pdfuaid:part>1<\/pdfuaid:part>/g) ?? []).length;
+    expect(pdfuaidCount).toBe(1);
+    // Both original descriptions still survive untouched.
+    expect(xmp).toContain('2025-09-10T15:35:06+05:30');
+    expect(xmp).toContain('Adobe PDF Library 17.0');
+  });
+
   it('REGRESSION: declares xmlns:dc when deriveAndSetTitle patches dc:title into a multi-description document', async () => {
     // Codex + CodeRabbit finding on this same PR, confirmed real: the first
     // version of namespaceUri only knew 'pdfuaid' -- deriveAndSetTitle's own

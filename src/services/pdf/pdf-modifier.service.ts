@@ -1821,13 +1821,41 @@ export class PdfModifierService {
           const namespaceUri = (prefix: string): string | undefined => XMP_NAMESPACE_URIS[prefix];
 
           if (Array.isArray(existingDesc)) {
-            const newDesc: Record<string, unknown> = { '@_rdf:about': '' };
+            // Real incident, Math_Nikitopoulos_PDF.pdf (2026-09-25): this
+            // branch unconditionally appended a NEW <rdf:Description> on
+            // EVERY call, even when one already declaring the target
+            // namespace already existed -- across repeated Auto Mode
+            // rounds (each re-triggering writePdfUaIdentifier for its own,
+            // separate reasons), the same document accumulated 9 redundant
+            // <rdf:Description xmlns:pdfuaid=...><pdfuaid:part>1</...>
+            // blocks, all asserting the identical value. Harmless to a
+            // graph-merge-based RDF reader, but wasteful and a sign this
+            // method was never idempotent. Now searches for an existing
+            // sibling that already declares the patch key's own namespace
+            // and updates it in place; only creates a new sibling for
+            // prefixes with no existing home.
+            const descArr = existingDesc as Array<Record<string, unknown>>;
+            const remaining: Record<string, string> = {};
             for (const [key, value] of Object.entries(patches)) {
-              const uri = namespaceUri(key.split(':')[0]);
-              if (uri) newDesc[`@_xmlns:${key.split(':')[0]}`] = uri;
-              newDesc[key] = value;
+              const prefix = key.split(':')[0];
+              const target = descArr.find(d => `@_xmlns:${prefix}` in d || key in d);
+              if (target) {
+                const uri = namespaceUri(prefix);
+                if (uri && !(`@_xmlns:${prefix}` in target)) target[`@_xmlns:${prefix}`] = uri;
+                target[key] = value;
+              } else {
+                remaining[key] = value;
+              }
             }
-            existingDesc.push(newDesc);
+            if (Object.keys(remaining).length > 0) {
+              const newDesc: Record<string, unknown> = { '@_rdf:about': '' };
+              for (const [key, value] of Object.entries(remaining)) {
+                const uri = namespaceUri(key.split(':')[0]);
+                if (uri) newDesc[`@_xmlns:${key.split(':')[0]}`] = uri;
+                newDesc[key] = value;
+              }
+              descArr.push(newDesc);
+            }
           } else {
             let desc = existingDesc as Record<string, unknown> | undefined;
             if (!desc) { desc = { '@_rdf:about': '' }; rdfRdf['rdf:Description'] = desc; }
