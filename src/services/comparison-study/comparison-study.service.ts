@@ -56,6 +56,19 @@ export async function generateUploadUrl(
  * SAME job-creation/enqueue path as every other PDF upload (see
  * createAndEnqueuePdfAuditJob), so the trial's Ninja side is a real job,
  * not a special case.
+ *
+ * Real incident (2026-09-25): this used to call s3Service.getFileBuffer to
+ * download the whole just-uploaded PDF into memory, purely to read its byte
+ * length and hand the buffer to createAndEnqueuePdfAuditJob, which then
+ * re-uploaded that same buffer to a different S3 key -- a full
+ * download+reupload round trip inside this single HTTP request/response
+ * cycle. For a large PDF that round trip could exceed the server's own
+ * request timeout or exhaust memory, dropping the connection before ever
+ * responding -- surfaced to the operator as a generic "Network Error" on
+ * Register Trial (axios's own message for a request that got no response
+ * at all). Now reads the size via a cheap HEAD request and passes the
+ * existing S3 key through so createAndEnqueuePdfAuditJob can do a
+ * server-side S3-to-S3 copy instead (see saveFileFromS3Key).
  */
 export async function registerTrial(input: {
   sourceFileName: string;
@@ -65,14 +78,13 @@ export async function registerTrial(input: {
   tenantId: string;
   userId: string;
 }): Promise<ComparisonTrial> {
-  const buffer = await s3Service.getFileBuffer(input.sourceS3Key);
+  const size = await s3Service.getFileSize(input.sourceS3Key);
 
   const { jobId } = await createAndEnqueuePdfAuditJob(
     {
       originalname: input.sourceFileName,
       mimetype: 'application/pdf',
-      size: buffer.length,
-      buffer,
+      size,
     },
     input.tenantId,
     input.userId,
@@ -81,7 +93,7 @@ export async function registerTrial(input: {
     // source PDF's /MarkInfo /Marked flag happens to be set (which says
     // nothing about whether the existing tagging is any good) would
     // silently defeat that comparison.
-    { forceAutoTag: true },
+    { forceAutoTag: true, sourceS3Key: input.sourceS3Key },
   );
 
   const trial = await prisma.comparisonTrial.create({

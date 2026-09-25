@@ -1060,10 +1060,10 @@ export const pdfController = new PdfController();
  * could drift from this one (see PR #452).
  */
 export async function createAndEnqueuePdfAuditJob(
-  file: { originalname: string; mimetype: string; size: number; buffer: Buffer },
+  file: { originalname: string; mimetype: string; size: number; buffer?: Buffer },
   tenantId: string,
   userId: string,
-  jobOptions?: { forceAutoTag?: boolean }
+  jobOptions?: { forceAutoTag?: boolean; sourceS3Key?: string }
 ): Promise<{ jobId: string }> {
   // Create job as QUEUED — audit runs asynchronously
   const job = await prisma.job.create({
@@ -1083,8 +1083,24 @@ export async function createAndEnqueuePdfAuditJob(
   });
   const jobId = job.id;
 
-  // Save to permanent storage immediately so the worker can load it on any retry
-  await fileStorageService.saveFile(jobId, file.originalname, file.buffer);
+  // Save to permanent storage immediately so the worker can load it on any
+  // retry. When the caller already knows the file's own S3 key (e.g. a
+  // comparison-study trial, uploaded via presigned URL before this call),
+  // do a server-side S3-to-S3 copy instead of requiring a Buffer -- real
+  // incident, comparison-study trial registration (2026-09-25): the
+  // previous caller downloaded the whole file into memory purely to hand it
+  // to saveFile() here, which re-uploaded that same buffer -- a full
+  // download+reupload round trip inside the HTTP request/response cycle
+  // that could exceed the server's own timeout or exhaust memory for a
+  // large PDF, dropping the connection before ever responding (a generic
+  // "Network Error" on the frontend). See saveFileFromS3Key's own doc
+  // comment for the fix.
+  if (jobOptions?.sourceS3Key) {
+    await fileStorageService.saveFileFromS3Key(jobId, file.originalname, jobOptions.sourceS3Key);
+  } else {
+    if (!file.buffer) throw new Error('createAndEnqueuePdfAuditJob: file.buffer is required when jobOptions.sourceS3Key is not provided');
+    await fileStorageService.saveFile(jobId, file.originalname, file.buffer);
+  }
 
   if (areQueuesAvailable()) {
     // Enqueue to BullMQ — worker will pick up and process
@@ -1132,11 +1148,19 @@ export async function createAndEnqueuePdfAuditJob(
       }
     }, 60_000);
   } else {
-    // Fallback: process in-process when Redis is not configured
+    // Fallback: process in-process when Redis is not configured. file.buffer
+    // may be absent (the sourceS3Key/copy path above never downloaded one)
+    // -- load it from the storage location just written to, same as the
+    // 60s BullMQ-stall fallback above already does.
     logger.warn(`[PDF] Redis not available — processing job ${jobId} in-process`);
-    processAuditFromBufferBackground(jobId, file.buffer, file.originalname, tenantId, userId).catch(
-      (err: unknown) => logger.error(`[PDF] In-process audit failed for ${jobId}: ${err instanceof Error ? err.message : 'Unknown'}`)
-    );
+    (file.buffer ? Promise.resolve(file.buffer) : fileStorageService.getFile(jobId, file.originalname))
+      .then((buffer) => {
+        if (!buffer) throw new Error(`file not found in storage for job ${jobId}`);
+        return processAuditFromBufferBackground(jobId, buffer, file.originalname, tenantId, userId);
+      })
+      .catch(
+        (err: unknown) => logger.error(`[PDF] In-process audit failed for ${jobId}: ${err instanceof Error ? err.message : 'Unknown'}`)
+      );
   }
 
   return { jobId };

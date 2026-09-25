@@ -30,6 +30,7 @@ vi.mock('../../../../src/services/s3.service', () => ({
   s3Client: {},
   s3Service: {
     getFileBuffer: vi.fn(),
+    getFileSize: vi.fn(),
   },
 }));
 
@@ -107,9 +108,17 @@ describe('comparison-study.service', () => {
   });
 
   describe('registerTrial', () => {
-    it('fetches the uploaded source from S3 and enqueues it via the shared job-creation path', async () => {
-      const buffer = Buffer.from('%PDF-1.7 fake');
-      (s3Service.getFileBuffer as ReturnType<typeof vi.fn>).mockResolvedValue(buffer);
+    it('reads the uploaded source\'s size via a cheap HEAD request and enqueues it via the shared job-creation path, without downloading its bytes', async () => {
+      // Real incident (2026-09-25): registerTrial used to download the
+      // WHOLE file (getFileBuffer) purely to read its byte length and hand
+      // the buffer to createAndEnqueuePdfAuditJob, which then re-uploaded
+      // that same buffer to a different S3 key -- a full download+reupload
+      // round trip inside this single HTTP request/response cycle that
+      // could time out or exhaust memory for a large PDF ("Network Error"
+      // on Register Trial). Now uses getFileSize (a HEAD request) and
+      // passes sourceS3Key through so the shared job-creation path can do a
+      // server-side S3-to-S3 copy instead.
+      (s3Service.getFileSize as ReturnType<typeof vi.fn>).mockResolvedValue(123456);
       (createAndEnqueuePdfAuditJob as ReturnType<typeof vi.fn>).mockResolvedValue({ jobId: 'job-123' });
       mockPrisma.comparisonTrial.create.mockResolvedValue({
         id: 'trial-1',
@@ -126,12 +135,13 @@ describe('comparison-study.service', () => {
         userId: 'user-1',
       });
 
-      expect(s3Service.getFileBuffer).toHaveBeenCalledWith('comparison-study/123-sample.pdf');
+      expect(s3Service.getFileSize).toHaveBeenCalledWith('comparison-study/123-sample.pdf');
+      expect(s3Service.getFileBuffer).not.toHaveBeenCalled();
       expect(createAndEnqueuePdfAuditJob).toHaveBeenCalledWith(
-        expect.objectContaining({ originalname: 'sample.pdf', buffer }),
+        { originalname: 'sample.pdf', mimetype: 'application/pdf', size: 123456 },
         'tenant-1',
         'user-1',
-        { forceAutoTag: true },
+        { forceAutoTag: true, sourceS3Key: 'comparison-study/123-sample.pdf' },
       );
       expect(mockPrisma.comparisonTrial.create).toHaveBeenCalledWith(
         expect.objectContaining({

@@ -4,6 +4,7 @@ import {
   PutObjectCommand,
   GetObjectCommand,
   HeadObjectCommand,
+  CopyObjectCommand,
   DeleteObjectCommand,
   DeleteObjectsCommand,
   ListObjectsV2Command,
@@ -62,6 +63,25 @@ async function s3ObjectExists(key: string): Promise<boolean> {
   }
 }
 
+// Server-side S3-to-S3 copy -- the object's bytes never transit this
+// process. Real incident, comparison-study trial registration (2026-09-25):
+// registerTrial() downloaded a just-uploaded PDF back out of S3 into an
+// in-memory Buffer, purely to hand it to saveFile() below, which re-uploaded
+// that same buffer to a different key -- a full download+reupload round
+// trip inside the HTTP request/response cycle. For a large PDF this could
+// exceed the server's own request timeout or exhaust memory, dropping the
+// connection before ever responding (surfaced to the browser as a generic
+// "Network Error", since axios reports that for any request that gets no
+// response at all). CopyObjectCommand does the same net effect (the file
+// ends up at the new key) without ever loading it into this process.
+async function s3CopyObject(sourceKey: string, destKey: string): Promise<void> {
+  await s3Client.send(new CopyObjectCommand({
+    Bucket: config.s3Bucket,
+    Key: destKey,
+    CopySource: `${config.s3Bucket}/${encodeURIComponent(sourceKey)}`,
+  }));
+}
+
 class FileStorageService {
   async ensureDir(dirPath: string): Promise<void> {
     await fs.mkdir(dirPath, { recursive: true });
@@ -83,6 +103,29 @@ class FileStorageService {
     await fs.writeFile(filePath, buffer);
     logger.info(`Saved file locally: ${filePath}`);
     return filePath;
+  }
+
+  /**
+   * Same net effect as saveFile, for a source that's ALREADY an S3 object
+   * (e.g. a comparison-study trial's presigned-upload key) -- does a
+   * server-side S3-to-S3 copy instead of downloading the file into this
+   * process just to re-upload it. Falls back to a real download+local-write
+   * only when S3 isn't configured at all (local dev), matching saveFile's
+   * own fallback.
+   */
+  async saveFileFromS3Key(jobId: string, fileName: string, sourceS3Key: string): Promise<string> {
+    const sanitizedFileName = path.basename(fileName);
+
+    if (s3Service.isConfigured()) {
+      const key = `${S3_PREFIX}/${jobId}/${sanitizedFileName}`;
+      await s3CopyObject(sourceS3Key, key);
+      logger.info(`Copied file within S3: ${sourceS3Key} -> ${key}`);
+      return key;
+    }
+
+    const buffer = await s3GetBuffer(sourceS3Key);
+    if (!buffer) throw new Error(`Source S3 object not found: ${sourceS3Key}`);
+    return this.saveFile(jobId, fileName, buffer);
   }
 
   async getFile(jobId: string, fileName: string): Promise<Buffer | null> {
