@@ -84,6 +84,7 @@ import {
   confirmPacReportUpload,
   getPacReport,
   deletePacReport,
+  listTrials,
 } from '../../../../src/services/comparison-study/comparison-study.service';
 
 const mockPrisma = prisma as unknown as {
@@ -118,6 +119,25 @@ describe('comparison-study.service', () => {
         expect.anything(),
         expect.anything(),
         { expiresIn: 30 * 60 }
+      );
+    });
+  });
+
+  describe('listTrials', () => {
+    it('maps each trial\'s externalPacReport relation down to a plain hasPacReport boolean, and never leaks the relation object itself', async () => {
+      mockPrisma.comparisonTrial.findMany.mockResolvedValue([
+        { id: 't1', sourceFileName: 'a.pdf', externalPacReport: { id: 'pac-1' } },
+        { id: 't2', sourceFileName: 'b.pdf', externalPacReport: null },
+      ]);
+
+      const { trials } = await listTrials({});
+
+      expect(trials).toEqual([
+        { id: 't1', sourceFileName: 'a.pdf', hasPacReport: true },
+        { id: 't2', sourceFileName: 'b.pdf', hasPacReport: false },
+      ]);
+      expect(mockPrisma.comparisonTrial.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({ include: { externalPacReport: { select: { id: true } } } })
       );
     });
   });
