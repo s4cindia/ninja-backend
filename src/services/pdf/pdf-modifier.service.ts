@@ -90,6 +90,54 @@ function findChildByNamespaceUri(node: Record<string, unknown>, nsUri: string): 
 }
 
 /**
+ * Writes a plain-string patch value into an XMP property on `target`,
+ * preserving an existing rdf:Alt (language-alternative) container's OTHER
+ * entries when the property is already one -- CodeRabbit finding,
+ * confirmed real: dc:title (deriveAndSetTitle's own call to writeXmpStream)
+ * is conventionally structured as
+ * `<dc:title><rdf:Alt><rdf:li xml:lang="x-default">...</rdf:li></rdf:Alt></dc:title>`,
+ * not a plain string -- confirmed on the real Math_Nikitopoulos_PDF.pdf
+ * XMP. Blindly doing `target[key] = value` would replace the whole rdf:Alt
+ * structure with a bare string, silently dropping every OTHER language
+ * alternative a real document might carry.
+ *
+ * Updates the "x-default" rdf:li (or the first one, if none is tagged
+ * x-default) in place when the existing value looks like an rdf:Alt
+ * container; otherwise falls back to a plain assignment (the property
+ * didn't exist yet, or isn't in a recognizable Alt shape).
+ */
+function setXmpPropertyValue(target: Record<string, unknown>, key: string, value: string): void {
+  const existing = target[key];
+  if (existing && typeof existing === 'object' && !Array.isArray(existing) && 'rdf:Alt' in existing) {
+    const alt = (existing as Record<string, unknown>)['rdf:Alt'];
+    if (alt && typeof alt === 'object' && !Array.isArray(alt)) {
+      const altObj = alt as Record<string, unknown>;
+      const li = altObj['rdf:li'];
+      const setLiValue = (entry: unknown): unknown => {
+        if (entry && typeof entry === 'object' && !Array.isArray(entry)) {
+          return { ...(entry as Record<string, unknown>), '#text': value };
+        }
+        return value;
+      };
+      if (Array.isArray(li)) {
+        const idx = li.findIndex(
+          item => typeof item === 'object' && item !== null && (item as Record<string, unknown>)['@_xml:lang'] === 'x-default'
+        );
+        const targetIdx = idx >= 0 ? idx : 0;
+        if (li.length > 0) {
+          li[targetIdx] = setLiValue(li[targetIdx]);
+          return;
+        }
+      } else if (li !== undefined) {
+        altObj['rdf:li'] = setLiValue(li);
+        return;
+      }
+    }
+  }
+  target[key] = value;
+}
+
+/**
  * Result of a PDF modification operation
  */
 export interface ModificationResult {
@@ -1821,21 +1869,87 @@ export class PdfModifierService {
           const namespaceUri = (prefix: string): string | undefined => XMP_NAMESPACE_URIS[prefix];
 
           if (Array.isArray(existingDesc)) {
-            const newDesc: Record<string, unknown> = { '@_rdf:about': '' };
+            // Real incident, Math_Nikitopoulos_PDF.pdf (2026-09-25): this
+            // branch unconditionally appended a NEW <rdf:Description> on
+            // EVERY call, even when one already declaring the target
+            // namespace already existed -- across repeated Auto Mode
+            // rounds (each re-triggering writePdfUaIdentifier for its own,
+            // separate reasons), the same document accumulated 9 redundant
+            // <rdf:Description xmlns:pdfuaid=...><pdfuaid:part>1</...>
+            // blocks, all asserting the identical value. Harmless to a
+            // graph-merge-based RDF reader, but wasteful and a sign this
+            // method was never idempotent. Now searches for an existing
+            // sibling that already declares the patch key's own namespace
+            // and updates it in place; only creates a new sibling for
+            // prefixes with no existing home.
+            const descArr = existingDesc as unknown[];
+            const remaining: Record<string, string> = {};
             for (const [key, value] of Object.entries(patches)) {
-              const uri = namespaceUri(key.split(':')[0]);
-              if (uri) newDesc[`@_xmlns:${key.split(':')[0]}`] = uri;
-              newDesc[key] = value;
+              const prefix = key.split(':')[0];
+              const xmlnsKey = `@_xmlns:${prefix}`;
+              const canonicalUri = namespaceUri(prefix);
+              // Two CodeRabbit findings on this same PR, both confirmed real:
+              // (1) valid RDF can have an empty/self-closing sibling
+              // <rdf:Description/>, which fast-xml-parser represents as a
+              // bare '' string, not an object -- the `in` operator throws on
+              // that, and the enclosing catch would treat the WHOLE stream
+              // as unparseable, silently deleting every real metadata field
+              // via the template fallback. (2) matching on the xmlns KEY
+              // alone (ignoring its VALUE) could select a sibling that binds
+              // the same lexical prefix to a DIFFERENT, non-canonical URI --
+              // writing the patch there would report success while landing
+              // in the wrong namespace entirely.
+              const target = descArr.find((d): d is Record<string, unknown> => {
+                if (typeof d !== 'object' || d === null) return false;
+                const declared = (d as Record<string, unknown>)[xmlnsKey];
+                return declared !== undefined ? declared === canonicalUri : false;
+              });
+              if (target) {
+                setXmpPropertyValue(target, key, value);
+              } else {
+                remaining[key] = value;
+              }
             }
-            existingDesc.push(newDesc);
+            if (Object.keys(remaining).length > 0) {
+              const newDesc: Record<string, unknown> = { '@_rdf:about': '' };
+              for (const [key, value] of Object.entries(remaining)) {
+                const uri = namespaceUri(key.split(':')[0]);
+                if (uri) newDesc[`@_xmlns:${key.split(':')[0]}`] = uri;
+                setXmpPropertyValue(newDesc, key, value);
+              }
+              descArr.push(newDesc);
+            }
           } else {
             let desc = existingDesc as Record<string, unknown> | undefined;
             if (!desc) { desc = { '@_rdf:about': '' }; rdfRdf['rdf:Description'] = desc; }
+            const remaining: Record<string, string> = {};
             for (const [key, value] of Object.entries(patches)) {
               const prefix = key.split(':')[0];
-              const uri = namespaceUri(prefix);
-              if (uri && !(`@_xmlns:${prefix}` in desc)) desc[`@_xmlns:${prefix}`] = uri;
-              desc[key] = value;
+              const xmlnsKey = `@_xmlns:${prefix}`;
+              const canonicalUri = namespaceUri(prefix);
+              const declared = desc[xmlnsKey];
+              if (declared === undefined) {
+                if (canonicalUri) desc[xmlnsKey] = canonicalUri;
+                setXmpPropertyValue(desc, key, value);
+              } else if (declared === canonicalUri) {
+                setXmpPropertyValue(desc, key, value);
+              } else {
+                // Same wrong-namespace conflict the array branch above
+                // guards against: this single Description already binds
+                // the prefix to a DIFFERENT URI -- writing here would land
+                // the patch in the wrong namespace. Promote to a second
+                // sibling instead of corrupting the existing one.
+                remaining[key] = value;
+              }
+            }
+            if (Object.keys(remaining).length > 0) {
+              const newDesc: Record<string, unknown> = { '@_rdf:about': '' };
+              for (const [key, value] of Object.entries(remaining)) {
+                const uri = namespaceUri(key.split(':')[0]);
+                if (uri) newDesc[`@_xmlns:${key.split(':')[0]}`] = uri;
+                setXmpPropertyValue(newDesc, key, value);
+              }
+              rdfRdf['rdf:Description'] = [desc, newDesc];
             }
           }
         }
