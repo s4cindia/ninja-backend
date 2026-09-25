@@ -21,6 +21,10 @@ import {
   getTrialReport,
   getAggregateReport,
   updateAutoModeConfig,
+  getPacReportUploadUrl,
+  confirmPacReportUpload,
+  getPacReport,
+  deletePacReport,
 } from '../../services/comparison-study/comparison-study.service';
 
 const router = Router();
@@ -232,6 +236,107 @@ router.get('/comparison-study/trials/:id/report', authenticate, async (req: Requ
 
     const report = await getTrialReport(req.params.id);
     return res.json({ success: true, data: report });
+  } catch (err) {
+    return internalError(res, err);
+  }
+});
+
+const pacReportUploadUrlBodySchema = z.object({
+  filename: z.string().min(1),
+  contentType: z.string().default('application/pdf'),
+});
+
+// POST /api/v1/admin/comparison-study/trials/:id/pac-report-upload-url
+router.post('/comparison-study/trials/:id/pac-report-upload-url', authenticate, async (req: Request, res: Response) => {
+  try {
+    if (!isAdminOrOperator(req)) return forbidden(res);
+
+    const parsed = pacReportUploadUrlBodySchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(422).json({
+        success: false,
+        error: { code: 'VALIDATION_ERROR', message: 'Request validation failed', details: parsed.error.issues },
+      });
+    }
+
+    const result = await getPacReportUploadUrl(req.params.id, parsed.data.filename, parsed.data.contentType);
+    return res.json({ success: true, data: result });
+  } catch (err) {
+    if (err instanceof AppError) {
+      return res.status(err.statusCode).json({ success: false, error: { code: err.code, message: err.message } });
+    }
+    return internalError(res, err);
+  }
+});
+
+const pacReportConfirmBodySchema = z.object({
+  originalFileName: z.string().min(1),
+  mimeType: z.string().min(1),
+  summary: z
+    .object({
+      pass: z.number().int().nonnegative().optional(),
+      fail: z.number().int().nonnegative().optional(),
+      untested: z.number().int().nonnegative().optional(),
+      humanRequired: z.number().int().nonnegative().optional(),
+      notApplicable: z.number().int().nonnegative().optional(),
+    })
+    .default({}),
+});
+
+// POST /api/v1/admin/comparison-study/trials/:id/pac-report-confirm
+router.post('/comparison-study/trials/:id/pac-report-confirm', authenticate, async (req: Request, res: Response) => {
+  try {
+    if (!isAdminOrOperator(req)) return forbidden(res);
+
+    const parsed = pacReportConfirmBodySchema.safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(422).json({
+        success: false,
+        error: { code: 'VALIDATION_ERROR', message: 'Request validation failed', details: parsed.error.issues },
+      });
+    }
+
+    const user = (req as Request & { user?: { id: string } }).user!;
+    const report = await confirmPacReportUpload(req.params.id, {
+      originalFileName: parsed.data.originalFileName,
+      mimeType: parsed.data.mimeType,
+      summary: parsed.data.summary,
+      uploadedById: user.id,
+    });
+    return res.status(201).json({ success: true, data: report });
+  } catch (err) {
+    if (err instanceof AppError) {
+      return res.status(err.statusCode).json({ success: false, error: { code: err.code, message: err.message } });
+    }
+    return internalError(res, err);
+  }
+});
+
+// GET /api/v1/admin/comparison-study/trials/:id/pac-report
+router.get('/comparison-study/trials/:id/pac-report', authenticate, async (req: Request, res: Response) => {
+  try {
+    if (!isAdminOrOperator(req)) return forbidden(res);
+
+    const report = await getPacReport(req.params.id);
+    return res.json({ success: true, data: report });
+  } catch (err) {
+    return internalError(res, err);
+  }
+});
+
+// DELETE /api/v1/admin/comparison-study/trials/:id/pac-report
+router.delete('/comparison-study/trials/:id/pac-report', authenticate, async (req: Request, res: Response) => {
+  try {
+    if (!isAdminOrOperator(req)) return forbidden(res);
+
+    const deleted = await deletePacReport(req.params.id);
+    if (!deleted) {
+      return res.status(404).json({
+        success: false,
+        error: { code: 'NOT_FOUND', message: 'No PAC report attached to this trial' },
+      });
+    }
+    return res.json({ success: true, data: { trialId: req.params.id } });
   } catch (err) {
     return internalError(res, err);
   }

@@ -20,6 +20,11 @@ vi.mock('../../../../src/lib/prisma', () => ({
       findUnique: vi.fn(),
       findUniqueOrThrow: vi.fn(),
     },
+    externalPacReport: {
+      upsert: vi.fn(),
+      findUnique: vi.fn(),
+      delete: vi.fn(),
+    },
     job: {
       findUnique: vi.fn(),
     },
@@ -27,10 +32,11 @@ vi.mock('../../../../src/lib/prisma', () => ({
 }));
 
 vi.mock('../../../../src/services/s3.service', () => ({
-  s3Client: {},
+  s3Client: { send: vi.fn() },
   s3Service: {
     getFileBuffer: vi.fn(),
     getFileSize: vi.fn(),
+    getPresignedDownloadUrl: vi.fn(),
   },
 }));
 
@@ -65,7 +71,7 @@ vi.mock('../../../../src/config', () => ({
 import { Prisma } from '@prisma/client';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import prisma from '../../../../src/lib/prisma';
-import { s3Service } from '../../../../src/services/s3.service';
+import { s3Client, s3Service } from '../../../../src/services/s3.service';
 import { createAndEnqueuePdfAuditJob } from '../../../../src/controllers/pdf.controller';
 import {
   registerTrial,
@@ -74,6 +80,10 @@ import {
   getAggregateReport,
   updateAutoModeConfig,
   generateUploadUrl,
+  getPacReportUploadUrl,
+  confirmPacReportUpload,
+  getPacReport,
+  deletePacReport,
 } from '../../../../src/services/comparison-study/comparison-study.service';
 
 const mockPrisma = prisma as unknown as {
@@ -84,6 +94,11 @@ const mockPrisma = prisma as unknown as {
     findMany: ReturnType<typeof vi.fn>;
     findUnique: ReturnType<typeof vi.fn>;
     findUniqueOrThrow: ReturnType<typeof vi.fn>;
+  };
+  externalPacReport: {
+    upsert: ReturnType<typeof vi.fn>;
+    findUnique: ReturnType<typeof vi.fn>;
+    delete: ReturnType<typeof vi.fn>;
   };
 };
 
@@ -368,6 +383,153 @@ describe('comparison-study.service', () => {
 
       await expect(updateAutoModeConfig('missing-trial', { mode: 'auto' })).rejects.toMatchObject({ statusCode: 404 });
       expect(mockPrisma.comparisonTrial.update).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('getPacReportUploadUrl', () => {
+    it('presigns a deterministic, trial-ID-derived key', async () => {
+      mockPrisma.comparisonTrial.findUnique.mockResolvedValue({ id: 'trial-1' });
+
+      const result = await getPacReportUploadUrl('trial-1', 'PAC Report Final.pdf', 'application/pdf');
+
+      expect(getSignedUrl).toHaveBeenCalledWith(
+        s3Client,
+        expect.objectContaining({
+          input: expect.objectContaining({
+            Bucket: 'ninja-epub-staging',
+            Key: 'comparison-study/pac-reports/trial-1/pac-report-final.pdf',
+          }),
+        }),
+        { expiresIn: 30 * 60 },
+      );
+      expect(result.uploadUrl).toBe('https://s3.example.com/signed-url');
+    });
+
+    it('throws a 404 AppError when the trial does not exist', async () => {
+      mockPrisma.comparisonTrial.findUnique.mockResolvedValue(null);
+
+      await expect(getPacReportUploadUrl('missing-trial', 'report.pdf', 'application/pdf')).rejects.toMatchObject({
+        statusCode: 404,
+      });
+      expect(getSignedUrl).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('confirmPacReportUpload', () => {
+    const baseInput = {
+      originalFileName: 'PAC Report Final.pdf',
+      mimeType: 'application/pdf',
+      summary: { pass: 40, fail: 2, untested: 5, humanRequired: 1, notApplicable: 0 },
+      uploadedById: 'user-1',
+    };
+
+    it('regenerates the deterministic key server-side, verifies via HeadObjectCommand, and upserts the report', async () => {
+      mockPrisma.comparisonTrial.findUnique.mockResolvedValue({ id: 'trial-1' });
+      (s3Client.send as ReturnType<typeof vi.fn>).mockResolvedValue({ ContentLength: 12345 });
+      mockPrisma.externalPacReport.upsert.mockResolvedValue({ id: 'report-1', trialId: 'trial-1', ...baseInput, size: 12345 });
+
+      const result = await confirmPacReportUpload('trial-1', baseInput);
+
+      expect(s3Client.send).toHaveBeenCalledWith(
+        expect.objectContaining({
+          input: expect.objectContaining({
+            Bucket: 'ninja-epub-staging',
+            Key: 'comparison-study/pac-reports/trial-1/pac-report-final.pdf',
+          }),
+        }),
+      );
+      expect(mockPrisma.externalPacReport.upsert).toHaveBeenCalledWith({
+        where: { trialId: 'trial-1' },
+        create: expect.objectContaining({
+          trialId: 'trial-1',
+          s3Key: 'comparison-study/pac-reports/trial-1/pac-report-final.pdf',
+          size: 12345,
+          pass: 40,
+          fail: 2,
+          untested: 5,
+          humanRequired: 1,
+          notApplicable: 0,
+          uploadedById: 'user-1',
+        }),
+        update: expect.objectContaining({ size: 12345 }),
+      });
+      expect(result.id).toBe('report-1');
+    });
+
+    it('never trusts a client-supplied key -- always regenerates it from trialId + originalFileName', async () => {
+      mockPrisma.comparisonTrial.findUnique.mockResolvedValue({ id: 'trial-1' });
+      (s3Client.send as ReturnType<typeof vi.fn>).mockResolvedValue({ ContentLength: 1 });
+      mockPrisma.externalPacReport.upsert.mockResolvedValue({ id: 'report-1' });
+
+      await confirmPacReportUpload('trial-1', { ...baseInput, originalFileName: 'different-name.pdf' });
+
+      expect(s3Client.send).toHaveBeenCalledWith(
+        expect.objectContaining({
+          input: expect.objectContaining({ Key: 'comparison-study/pac-reports/trial-1/different-name.pdf' }),
+        }),
+      );
+    });
+
+    it('throws a 404 AppError when the trial does not exist', async () => {
+      mockPrisma.comparisonTrial.findUnique.mockResolvedValue(null);
+
+      await expect(confirmPacReportUpload('missing-trial', baseInput)).rejects.toMatchObject({ statusCode: 404 });
+      expect(s3Client.send).not.toHaveBeenCalled();
+      expect(mockPrisma.externalPacReport.upsert).not.toHaveBeenCalled();
+    });
+
+    it('throws a 400 AppError (not a raw S3 error) when the object never actually landed in S3', async () => {
+      mockPrisma.comparisonTrial.findUnique.mockResolvedValue({ id: 'trial-1' });
+      (s3Client.send as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('NotFound'));
+
+      await expect(confirmPacReportUpload('trial-1', baseInput)).rejects.toMatchObject({ statusCode: 400 });
+      expect(mockPrisma.externalPacReport.upsert).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('getPacReport', () => {
+    it('returns null when no report has been uploaded, without calling S3', async () => {
+      mockPrisma.externalPacReport.findUnique.mockResolvedValue(null);
+
+      const result = await getPacReport('trial-1');
+
+      expect(result).toBeNull();
+      expect(s3Service.getPresignedDownloadUrl).not.toHaveBeenCalled();
+    });
+
+    it('returns the report plus a presigned download URL when one exists', async () => {
+      mockPrisma.externalPacReport.findUnique.mockResolvedValue({
+        id: 'report-1',
+        trialId: 'trial-1',
+        s3Key: 'comparison-study/pac-reports/trial-1/report.pdf',
+      });
+      (s3Service.getPresignedDownloadUrl as ReturnType<typeof vi.fn>).mockResolvedValue({
+        downloadUrl: 'https://s3.example.com/download-url',
+        expiresIn: 3600,
+      });
+
+      const result = await getPacReport('trial-1');
+
+      expect(s3Service.getPresignedDownloadUrl).toHaveBeenCalledWith('comparison-study/pac-reports/trial-1/report.pdf');
+      expect(result).toMatchObject({ id: 'report-1', downloadUrl: 'https://s3.example.com/download-url' });
+    });
+  });
+
+  describe('deletePacReport', () => {
+    it('returns true on successful delete', async () => {
+      mockPrisma.externalPacReport.delete.mockResolvedValue({ id: 'report-1' });
+
+      await expect(deletePacReport('trial-1')).resolves.toBe(true);
+    });
+
+    it('returns false (not a thrown error) when no report exists for that trial, so a repeat delete is a no-op', async () => {
+      const notFoundError = new Prisma.PrismaClientKnownRequestError('Record not found', {
+        code: 'P2025',
+        clientVersion: '5.22.0',
+      });
+      mockPrisma.externalPacReport.delete.mockRejectedValue(notFoundError);
+
+      await expect(deletePacReport('trial-1')).resolves.toBe(false);
     });
   });
 });

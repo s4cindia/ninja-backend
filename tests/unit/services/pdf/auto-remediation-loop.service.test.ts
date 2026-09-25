@@ -178,12 +178,42 @@ describe('autoRemediationLoopService.startAutoLoop', () => {
     expect(remediationCycleLockService.releaseLock).toHaveBeenCalledWith('job-1', 7);
     expect(prisma.comparisonTrial.update).toHaveBeenCalledWith({
       where: { id: 'trial-1' },
-      data: { autoStatus: 'stopped', autoStopReason: 'converged', autoStopRequested: false },
+      data: { autoStatus: 'stopped', autoStopReason: 'converged', autoStopRequested: false, autoStoppedAt: expect.any(Date) },
     });
     // A round that found nothing to do doesn't count toward the ceiling --
     // only the initial reset (autoRoundsCompleted: 0) and the final stop
     // update happen, no separate per-round bookkeeping update in between.
     expect(prisma.comparisonTrial.update).toHaveBeenCalledTimes(2);
+  });
+
+  it('sums Claude cost together with Gemini cost, not just Gemini alone (real bug: autoCostSpentUsd used to silently drop Claude-routed suggestion cost from the same round)', async () => {
+    vi.mocked(prisma.comparisonTrial.findUnique).mockResolvedValue(makeTrial() as any);
+    mockLockAcquired();
+    vi.mocked(aiAnalysisService.analyzeJob).mockResolvedValue({ analyzed: 1, skipped: 0 } as any);
+    vi.mocked(prisma.aiAnalysis.count)
+      .mockResolvedValueOnce(1)
+      .mockResolvedValueOnce(0);
+    vi.mocked(prisma.aiAnalysis.updateMany).mockResolvedValueOnce({ count: 1 } as any);
+    vi.mocked(aiAnalysisService.applyApprovedSuggestions).mockResolvedValueOnce({
+      applied: 1,
+      failed: 0,
+      errors: [],
+      modifiedBuffer: Buffer.from('pdf'),
+      fileName: 'doc.pdf',
+    });
+    mockReauditSuccess();
+    vi.mocked(prisma.job.findUnique).mockResolvedValue({
+      id: 'job-1',
+      tenantId: 'tenant-1',
+      output: { aiAnalysisStats: { gemini: { estimatedCostUsd: 0.1 }, claude: { estimatedCostUsd: 0.05 } } },
+    } as any);
+
+    await autoRemediationLoopService.startAutoLoop('trial-1');
+
+    expect(prisma.comparisonTrial.update).toHaveBeenCalledWith({
+      where: { id: 'trial-1' },
+      data: { autoRoundsCompleted: 1, autoCostSpentUsd: expect.closeTo(0.15, 10) },
+    });
   });
 
   it('regression: keeps going past a fully-successful round 1 and only converges once a fresh round finds nothing (the exact bug caught live)', async () => {
@@ -209,7 +239,7 @@ describe('autoRemediationLoopService.startAutoLoop', () => {
     });
     expect(prisma.comparisonTrial.update).toHaveBeenCalledWith({
       where: { id: 'trial-1' },
-      data: { autoStatus: 'stopped', autoStopReason: 'converged', autoStopRequested: false },
+      data: { autoStatus: 'stopped', autoStopReason: 'converged', autoStopRequested: false, autoStoppedAt: expect.any(Date) },
     });
   });
 
@@ -264,7 +294,7 @@ describe('autoRemediationLoopService.startAutoLoop', () => {
     expect(aiAnalysisService.applyApprovedSuggestions).toHaveBeenCalledTimes(2);
     expect(prisma.comparisonTrial.update).toHaveBeenCalledWith({
       where: { id: 'trial-1' },
-      data: { autoStatus: 'stopped', autoStopReason: 'converged', autoStopRequested: false },
+      data: { autoStatus: 'stopped', autoStopReason: 'converged', autoStopRequested: false, autoStoppedAt: expect.any(Date) },
     });
   });
 
@@ -448,7 +478,7 @@ describe('autoRemediationLoopService.startAutoLoop', () => {
     expect(aiAnalysisService.analyzeJob).toHaveBeenCalledTimes(2);
     expect(prisma.comparisonTrial.update).toHaveBeenCalledWith({
       where: { id: 'trial-1' },
-      data: { autoStatus: 'stopped', autoStopReason: 'round_limit', autoStopRequested: false },
+      data: { autoStatus: 'stopped', autoStopReason: 'round_limit', autoStopRequested: false, autoStoppedAt: expect.any(Date) },
     });
   });
 
@@ -462,7 +492,7 @@ describe('autoRemediationLoopService.startAutoLoop', () => {
     expect(aiAnalysisService.analyzeJob).toHaveBeenCalledTimes(1);
     expect(prisma.comparisonTrial.update).toHaveBeenCalledWith({
       where: { id: 'trial-1' },
-      data: { autoStatus: 'stopped', autoStopReason: 'budget_limit', autoStopRequested: false },
+      data: { autoStatus: 'stopped', autoStopReason: 'budget_limit', autoStopRequested: false, autoStoppedAt: expect.any(Date) },
     });
   });
 
@@ -480,7 +510,7 @@ describe('autoRemediationLoopService.startAutoLoop', () => {
     expect(aiAnalysisService.analyzeJob).toHaveBeenCalledTimes(2);
     expect(prisma.comparisonTrial.update).toHaveBeenCalledWith({
       where: { id: 'trial-1' },
-      data: { autoStatus: 'stopped', autoStopReason: 'budget_limit', autoStopRequested: false },
+      data: { autoStatus: 'stopped', autoStopReason: 'budget_limit', autoStopRequested: false, autoStoppedAt: expect.any(Date) },
     });
   });
 
@@ -505,7 +535,7 @@ describe('autoRemediationLoopService.startAutoLoop', () => {
     expect(pdfReauditService.reauditAndCompare).not.toHaveBeenCalled();
     expect(prisma.comparisonTrial.update).toHaveBeenCalledWith({
       where: { id: 'trial-1' },
-      data: { autoStatus: 'stopped', autoStopReason: 'stalled', autoStopRequested: false },
+      data: { autoStatus: 'stopped', autoStopReason: 'stalled', autoStopRequested: false, autoStoppedAt: expect.any(Date) },
     });
   });
 
@@ -538,7 +568,7 @@ describe('autoRemediationLoopService.startAutoLoop', () => {
     expect(aiAnalysisService.analyzeJob).toHaveBeenCalledTimes(3);
     expect(prisma.comparisonTrial.update).toHaveBeenCalledWith({
       where: { id: 'trial-1' },
-      data: { autoStatus: 'stopped', autoStopReason: 'converged', autoStopRequested: false },
+      data: { autoStatus: 'stopped', autoStopReason: 'converged', autoStopRequested: false, autoStoppedAt: expect.any(Date) },
     });
   });
 
@@ -560,7 +590,7 @@ describe('autoRemediationLoopService.startAutoLoop', () => {
     expect(aiAnalysisService.analyzeJob).toHaveBeenCalledTimes(1);
     expect(prisma.comparisonTrial.update).toHaveBeenCalledWith({
       where: { id: 'trial-1' },
-      data: { autoStatus: 'stopped', autoStopReason: 'manual_stop', autoStopRequested: false },
+      data: { autoStatus: 'stopped', autoStopReason: 'manual_stop', autoStopRequested: false, autoStoppedAt: expect.any(Date) },
     });
   });
 
@@ -575,7 +605,7 @@ describe('autoRemediationLoopService.startAutoLoop', () => {
     expect(remediationCycleLockService.releaseLock).toHaveBeenCalledWith('job-1', 9);
     expect(prisma.comparisonTrial.update).toHaveBeenCalledWith({
       where: { id: 'trial-1' },
-      data: { autoStatus: 'stopped', autoStopReason: 'error', autoStopRequested: false },
+      data: { autoStatus: 'stopped', autoStopReason: 'error', autoStopRequested: false, autoStoppedAt: expect.any(Date) },
     });
   });
 
@@ -661,7 +691,7 @@ describe('autoRemediationLoopService.reconcileIfOrphaned', () => {
     expect(mockQueryRaw).toHaveBeenCalled();
     expect(prisma.comparisonTrial.updateMany).toHaveBeenCalledWith({
       where: { id: 'trial-1', autoStatus: 'running' },
-      data: { autoStatus: 'stopped', autoStopReason: 'error', autoStopRequested: false },
+      data: { autoStatus: 'stopped', autoStopReason: 'error', autoStopRequested: false, autoStoppedAt: expect.any(Date) },
     });
   });
 
@@ -675,7 +705,7 @@ describe('autoRemediationLoopService.reconcileIfOrphaned', () => {
 
     expect(prisma.comparisonTrial.updateMany).toHaveBeenCalledWith({
       where: { id: 'trial-1', autoStatus: 'running' },
-      data: { autoStatus: 'stopped', autoStopReason: 'error', autoStopRequested: false },
+      data: { autoStatus: 'stopped', autoStopReason: 'error', autoStopRequested: false, autoStoppedAt: expect.any(Date) },
     });
   });
 
