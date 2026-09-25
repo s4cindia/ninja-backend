@@ -6,11 +6,11 @@ export const pdfConfig = {
   // and pdfjs each hold their own full in-memory parse of the file
   // (see loadWithPdfLib/loadWithPdfjs in pdf-parser.service.ts) -- consistent
   // with this codebase's own prior finding that a much smaller 377-page
-  // document already OOM-killed an 8GB task during a different per-page
-  // operation (see maxContrastPages below). If a 1-2GB PDF OOM-kills the
-  // task, the ECS task definition's memory (not stored in this repo --
-  // fetched live from AWS) is the next thing to check/raise, same as that
-  // precedent.
+  // document already OOM-killed a 4GB task during a different per-page
+  // operation, fixed by raising that task to 8GB (see maxContrastPages
+  // below). If a 1-2GB PDF OOM-kills the task, the ECS task definition's
+  // memory (not stored in this repo -- fetched live from AWS) is the next
+  // thing to check/raise, same as that precedent.
   maxFileSizeMB: parseInt(process.env.MAX_PDF_FILE_SIZE_MB || '2000', 10),
   // Hard upload limit — rejects PDFs with more pages than this before any processing.
   // Set MAX_PDF_PAGES in .env to override (0 = no limit). Defaults to 5000.

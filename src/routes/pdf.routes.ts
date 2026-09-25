@@ -12,6 +12,7 @@ import { authorizeJob } from '../middleware/authorize-job.middleware';
 import { pdfController } from '../controllers/pdf.controller';
 import { pdfAcrController } from '../controllers/pdf-acr.controller';
 import { fileStorageService } from '../services/storage/file-storage.service';
+import { pdfConfig } from '../config/pdf.config';
 
 // Extended request type for authenticated routes with file
 interface AuthenticatedRequest extends Request {
@@ -21,11 +22,18 @@ interface AuthenticatedRequest extends Request {
 
 const router = Router();
 
-// Configure multer for PDF uploads
+// Configure multer for PDF uploads. Tied to pdfConfig.maxFileSizeMB (was a
+// separate hard-coded 500MB, silently out of sync with the parser's own
+// limit -- CodeRabbit catch on PR #613). NOTE: multer.memoryStorage()
+// buffers the WHOLE upload in memory before any route code runs, and
+// CloudFront WAF is documented (see CLAUDE.md's "WAF Blocking File Uploads")
+// to block large multipart/form-data uploads -- a multi-GB direct upload
+// through this route may still fail on WAF or ECS memory before ever
+// reaching this limit, untested as of this change.
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: {
-    fileSize: 500 * 1024 * 1024, // 500MB max file size
+    fileSize: pdfConfig.maxFileSizeMB * 1024 * 1024,
   },
   fileFilter: (_req, file, cb) => {
     // Accept PDF files based on MIME type or filename
