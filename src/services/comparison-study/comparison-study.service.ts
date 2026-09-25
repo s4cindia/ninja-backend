@@ -116,7 +116,7 @@ export async function listTrials(opts: {
   contentType?: string;
   limit?: number;
   cursor?: string;
-}): Promise<{ trials: ComparisonTrial[]; nextCursor: string | null }> {
+}): Promise<{ trials: (ComparisonTrial & { hasPacReport: boolean })[]; nextCursor: string | null }> {
   const { limit = 20, cursor, status, contentType } = opts;
   const where: Record<string, unknown> = {};
   if (status) where.status = status;
@@ -127,12 +127,17 @@ export async function listTrials(opts: {
     take: limit + 1,
     ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {}),
     orderBy: { createdAt: 'desc' },
+    include: { externalPacReport: { select: { id: true } } },
   });
 
   const hasMore = trials.length > limit;
   const items = hasMore ? trials.slice(0, limit) : trials;
   const nextCursor = hasMore ? items[items.length - 1].id : null;
-  return { trials: items, nextCursor };
+  const mapped = items.map(({ externalPacReport, ...trial }) => ({
+    ...trial,
+    hasPacReport: externalPacReport != null,
+  }));
+  return { trials: mapped, nextCursor };
 }
 
 export async function getTrial(id: string): Promise<
