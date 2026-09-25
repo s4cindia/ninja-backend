@@ -1158,9 +1158,23 @@ export async function createAndEnqueuePdfAuditJob(
         if (!buffer) throw new Error(`file not found in storage for job ${jobId}`);
         return processAuditFromBufferBackground(jobId, buffer, file.originalname, tenantId, userId);
       })
-      .catch(
-        (err: unknown) => logger.error(`[PDF] In-process audit failed for ${jobId}: ${err instanceof Error ? err.message : 'Unknown'}`)
-      );
+      .catch(async (err: unknown) => {
+        // processAuditFromBufferBackground always resolves -- it catches its
+        // own errors internally and marks the job FAILED itself. So this
+        // only fires for a failure BEFORE that call (e.g. the buffer load
+        // above), which happens before any status transition out of
+        // QUEUED -- mark it FAILED here so the job doesn't sit QUEUED
+        // forever with no active queue to ever pick it up.
+        logger.error(`[PDF] In-process audit failed for ${jobId}: ${err instanceof Error ? err.message : 'Unknown'}`);
+        try {
+          await prisma.job.update({
+            where: { id: jobId },
+            data: { status: 'FAILED', completedAt: new Date(), error: err instanceof Error ? err.message : 'Unknown error' },
+          });
+        } catch (updateError) {
+          logger.error(`[PDF] Failed to mark job ${jobId} as FAILED:`, updateError instanceof Error ? updateError : undefined);
+        }
+      });
   }
 
   return { jobId };
