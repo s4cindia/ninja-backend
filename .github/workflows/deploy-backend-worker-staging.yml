@@ -69,6 +69,7 @@ jobs:
       - name: Inject environment variables and secrets
         env:
           ACE_URL: ${{ secrets.ACE_SERVICE_URL }}
+          DATABASE_ARN: ${{ secrets.STAGING_DATABASE_SECRET_ARN }}
           REDIS_ARN: ${{ secrets.STAGING_REDIS_SECRET_ARN }}
           ANTHROPIC_ARN: ${{ secrets.STAGING_ANTHROPIC_SECRET_ARN }}
           GEMINI_ARN: ${{ secrets.STAGING_GEMINI_SECRET_ARN }}
@@ -77,7 +78,20 @@ jobs:
           # injection -- the static JSON file's own environment/secrets
           # values are placeholders, overwritten here from real GH secrets
           # before every deploy, never used as-is.
-          SECRETS_ARRAY='[{"name": "REDIS_URL", "valueFrom": "'"$REDIS_ARN"'"}'
+          #
+          # DATABASE_URL specifically (CodeRabbit catch on PR #615): unlike
+          # the web workflow, which live-fetches the ALREADY-CORRECT web
+          # task definition and only patches specific known fields (so
+          # DATABASE_URL, set on that task long ago, survives untouched),
+          # this worker task definition is built from scratch as a static
+          # file -- it has no pre-existing DATABASE_URL to inherit. Without
+          # it, Prisma can't even initialize, and the worker would fail
+          # every DB-backed job while its own /health check (which doesn't
+          # touch the database) keeps reporting healthy. Requires a NEW
+          # GitHub secret, STAGING_DATABASE_SECRET_ARN, pointing at the
+          # same staging database's Secrets Manager ARN -- create this
+          # before relying on this workflow.
+          SECRETS_ARRAY='[{"name": "DATABASE_URL", "valueFrom": "'"$DATABASE_ARN"'"}, {"name": "REDIS_URL", "valueFrom": "'"$REDIS_ARN"'"}'
           if [ -n "$ANTHROPIC_ARN" ]; then
             SECRETS_ARRAY="$SECRETS_ARRAY"', {"name": "ANTHROPIC_API_KEY", "valueFrom": "'"$ANTHROPIC_ARN"'"}'
           fi
@@ -116,6 +130,21 @@ jobs:
         # `aws ecs create-service`, no --load-balancers, done manually --
         # nothing in this repo creates ECS services). This step will fail
         # with a clear error until that's been done once.
+        #
+        # ORDERING (CodeRabbit catch on PR #615): create that service only
+        # AFTER cutting the web service over to PROCESS_ROLE=web (set the
+        # WEB_PROCESS_ROLE repo variable to "web" and let
+        # deploy-backend-staging.yml redeploy first). If this worker
+        # starts while the web task is still in legacy mode (running its
+        # own background workers too), its own startup calls
+        # cleanupStaleActiveJobs() (src/workers/index.ts), which treats
+        # every "active" accessibility job as orphaned from a dead
+        # process and marks it FAILED -- but a still-alive legacy web
+        # task could legitimately be mid-processing one of those jobs.
+        # Cutting web over first means it gracefully drains its own
+        # workers via its own shutdown before this worker ever starts, so
+        # there's no second live consumer for this worker's startup
+        # cleanup to collide with.
         uses: aws-actions/amazon-ecs-deploy-task-definition@v2
         with:
           task-definition: ${{ steps.task-def.outputs.task-definition }}

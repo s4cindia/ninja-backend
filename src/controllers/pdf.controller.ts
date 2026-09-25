@@ -1201,7 +1201,24 @@ export async function createAndEnqueuePdfAuditJob(
         }
       });
   } else {
-    logger.error(`[PDF] Job ${jobId} queued but Redis/BullMQ is unavailable and PROCESS_ROLE=web -- no in-process fallback will run. Job will remain QUEUED until Redis recovers.`);
+    // PROCESS_ROLE=web with Redis/BullMQ unavailable: no in-process
+    // fallback runs (see above), and nothing else will ever pick this job
+    // up -- recoverStaleJobs() (src/workers/index.ts) only handles
+    // citation documents, not PDF audit jobs. Returning { jobId } here
+    // would silently claim success for a job that can never be processed
+    // (CodeRabbit catch on PR #615). The caller never gets a jobId to
+    // mark it FAILED itself (its own catch block only does that when a
+    // jobId was actually returned) since we're throwing instead of
+    // returning, so do it here before throwing.
+    const message = 'PDF processing is temporarily unavailable (Redis/BullMQ not configured)';
+    logger.error(`[PDF] Job ${jobId}: ${message}`);
+    await prisma.job.update({
+      where: { id: jobId },
+      data: { status: 'FAILED', completedAt: new Date(), error: message },
+    }).catch((updateError: unknown) =>
+      logger.error(`[PDF] Failed to mark job ${jobId} as FAILED:`, updateError instanceof Error ? updateError : undefined)
+    );
+    throw new Error(message);
   }
 
   return { jobId };

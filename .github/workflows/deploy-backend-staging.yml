@@ -142,6 +142,17 @@ jobs:
           REDIS_ARN: ${{ secrets.STAGING_REDIS_SECRET_ARN }}
           ANTHROPIC_ARN: ${{ secrets.STAGING_ANTHROPIC_SECRET_ARN }}
           GEMINI_ARN: ${{ secrets.STAGING_GEMINI_SECRET_ARN }}
+          # Web/worker split cutover switch (CodeRabbit catch on PR #615):
+          # the rollout for that split needs a way to set PROCESS_ROLE=web
+          # on THIS (existing) task once the new worker service is
+          # confirmed healthy, without a code change/new PR for the
+          # cutover moment itself. Unset (the default) is a no-op --
+          # WEB_PROCESS_ROLE stays empty, the jq below omits PROCESS_ROLE
+          # entirely, and this task keeps running in legacy/monolith mode
+          # exactly as before that split existed. Set the
+          # WEB_PROCESS_ROLE repo variable to "web" and redeploy when
+          # ready to cut over.
+          WEB_PROCESS_ROLE: ${{ vars.WEB_PROCESS_ROLE }}
         run: |
           # Build secrets array conditionally
           SECRETS_ARRAY='[{"name": "REDIS_URL", "valueFrom": "'"$REDIS_ARN"'"}'
@@ -153,17 +164,27 @@ jobs:
           fi
           SECRETS_ARRAY="$SECRETS_ARRAY]"
 
+          # Only inject a PROCESS_ROLE entry when WEB_PROCESS_ROLE is
+          # actually set -- otherwise the array stays empty and the jq's
+          # own filter (which always strips any existing PROCESS_ROLE
+          # first) leaves the task with none, i.e. legacy mode.
+          ROLE_ENV_ARRAY='[]'
+          if [ -n "$WEB_PROCESS_ROLE" ]; then
+            ROLE_ENV_ARRAY='[{"name": "PROCESS_ROLE", "value": "'"$WEB_PROCESS_ROLE"'"}]'
+          fi
+
           jq --arg aceurl "$ACE_URL" \
-             --argjson secrets "$SECRETS_ARRAY" '
+             --argjson secrets "$SECRETS_ARRAY" \
+             --argjson roleEnv "$ROLE_ENV_ARRAY" '
             # Update environment variables (remove API keys - they will be added as secrets)
             (.containerDefinitions[0].environment) |= (
-              map(select(.name != "ACE_SERVICE_URL" and .name != "S3_BUCKET" and .name != "S3_REGION" and .name != "ANTHROPIC_API_KEY" and .name != "GEMINI_API_KEY" and .name != "VERAPDF_PATH")) +
+              map(select(.name != "ACE_SERVICE_URL" and .name != "S3_BUCKET" and .name != "S3_REGION" and .name != "ANTHROPIC_API_KEY" and .name != "GEMINI_API_KEY" and .name != "VERAPDF_PATH" and .name != "PROCESS_ROLE")) +
               [
                 {"name": "ACE_SERVICE_URL", "value": $aceurl},
                 {"name": "S3_BUCKET", "value": "ninja-epub-staging"},
                 {"name": "S3_REGION", "value": "ap-south-1"},
                 {"name": "VERAPDF_PATH", "value": "/opt/verapdf/verapdf"}
-              ]
+              ] + $roleEnv
             ) |
             # Add secrets section
             (.containerDefinitions[0].secrets) |= (

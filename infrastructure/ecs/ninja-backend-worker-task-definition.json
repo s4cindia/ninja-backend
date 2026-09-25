@@ -24,6 +24,7 @@
         { "name": "VERAPDF_PATH", "value": "/opt/verapdf/verapdf" }
       ],
       "secrets": [
+        { "name": "DATABASE_URL", "valueFrom": "REPLACE_WITH_STAGING_DATABASE_SECRET_ARN" },
         { "name": "REDIS_URL", "valueFrom": "REPLACE_WITH_STAGING_REDIS_SECRET_ARN" }
       ],
       "healthCheck": {
