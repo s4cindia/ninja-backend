@@ -11,12 +11,12 @@
  * training pipeline — see prisma/schema.prisma for why.
  */
 
-import { PutObjectCommand } from '@aws-sdk/client-s3';
+import { PutObjectCommand, HeadObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { promises as fs } from 'fs';
 import os from 'os';
 import path from 'path';
-import { ComparisonTrial, Prisma } from '@prisma/client';
+import { ComparisonTrial, ExternalPacReport, Prisma } from '@prisma/client';
 import prisma from '../../lib/prisma';
 import { logger } from '../../lib/logger';
 import { config } from '../../config';
@@ -416,4 +416,129 @@ export async function getAggregateReport(): Promise<AggregateReport> {
     avgNinjaCostUsd: average(reports.map((r) => r.ninja.costUsd).filter((v): v is number => v != null)),
     avgPdfxtCostUsd: average(reports.map((r) => r.pdfxt.costUsd).filter((v): v is number => v != null)),
   };
+}
+
+// ─── External PAC report (uploaded by an operator, NOT self-generated) ─────
+//
+// A real, external PAC-tool report file, distinct from BOTH of this
+// codebase's other two "PAC report" concepts: pac-report.service.ts's own
+// self-generated Matterhorn-protocol emulation, and this same file's own
+// ninjaPacResult/pdfxtPacResult (a veraPDF failure-count blob, see
+// runVeraPdf/validateTrial above). Nothing parses real PAC export files
+// (HTML/XML/PDF) anywhere in this codebase, so the summary counts are
+// entered manually by the uploading operator, same as pdfxtTimeMs/
+// pdfxtCostUsd/etc. already are via logPdfxtData above.
+
+const PAC_REPORT_KEY_PREFIX = 'comparison-study/pac-reports/';
+
+/**
+ * Deterministic, trial-ID-derived key -- computed the SAME way on both the
+ * presign step and the confirm step below, so confirmPacReportUpload never
+ * has to trust a client-supplied path (corpus.routes.ts's
+ * tagged-pdf-upload-url/-confirm pair is the model for this).
+ */
+function buildPacReportS3Key(trialId: string, filename: string): string {
+  const sanitised = filename.replace(/[^a-zA-Z0-9._-]/g, '-').toLowerCase();
+  return `${PAC_REPORT_KEY_PREFIX}${trialId}/${sanitised}`;
+}
+
+export interface PacReportUploadUrlResult {
+  uploadUrl: string;
+  expiresIn: number;
+}
+
+/** Presigned PUT URL for an operator to upload a real PAC-tool report against a trial. */
+export async function getPacReportUploadUrl(
+  trialId: string,
+  filename: string,
+  contentType: string,
+): Promise<PacReportUploadUrlResult> {
+  const trial = await prisma.comparisonTrial.findUnique({ where: { id: trialId } });
+  if (!trial) {
+    throw AppError.notFound('Trial not found');
+  }
+
+  const s3Key = buildPacReportS3Key(trialId, filename);
+  const command = new PutObjectCommand({ Bucket: config.s3Bucket, Key: s3Key, ContentType: contentType });
+  const uploadUrl = await getSignedUrl(s3Client, command, { expiresIn: UPLOAD_URL_EXPIRY_SECONDS });
+  return { uploadUrl, expiresIn: UPLOAD_URL_EXPIRY_SECONDS };
+}
+
+export interface PacReportSummaryInput {
+  pass?: number;
+  fail?: number;
+  untested?: number;
+  humanRequired?: number;
+  notApplicable?: number;
+}
+
+/**
+ * Step 2 of the upload flow: regenerate the SAME deterministic key
+ * server-side (never trust a client-supplied path), then verify the object
+ * actually landed via HeadObjectCommand (feedback/attachment.service.ts's
+ * own confirmUpload pattern) before writing the DB row -- a client that
+ * calls confirm without ever completing the S3 PUT gets a clear 400
+ * instead of a row pointing at a nonexistent object.
+ */
+export async function confirmPacReportUpload(
+  trialId: string,
+  input: { originalFileName: string; mimeType: string; summary: PacReportSummaryInput; uploadedById: string },
+): Promise<ExternalPacReport> {
+  const trial = await prisma.comparisonTrial.findUnique({ where: { id: trialId } });
+  if (!trial) {
+    throw AppError.notFound('Trial not found');
+  }
+
+  const s3Key = buildPacReportS3Key(trialId, input.originalFileName);
+
+  let size: number;
+  try {
+    const head = await s3Client.send(new HeadObjectCommand({ Bucket: config.s3Bucket, Key: s3Key }));
+    size = head.ContentLength ?? 0;
+  } catch {
+    throw AppError.badRequest('Uploaded file not found in S3 -- the upload may have failed or not completed yet');
+  }
+
+  const data = {
+    s3Key,
+    originalFileName: input.originalFileName,
+    mimeType: input.mimeType,
+    size,
+    pass: input.summary.pass ?? null,
+    fail: input.summary.fail ?? null,
+    untested: input.summary.untested ?? null,
+    humanRequired: input.summary.humanRequired ?? null,
+    notApplicable: input.summary.notApplicable ?? null,
+    uploadedById: input.uploadedById,
+  };
+
+  const report = await prisma.externalPacReport.upsert({
+    where: { trialId },
+    create: { trialId, ...data },
+    update: data,
+  });
+
+  logger.info(`[ComparisonStudy] Confirmed external PAC report for trial ${trialId}: ${s3Key}`);
+  return report;
+}
+
+/** Returns the trial's uploaded PAC report plus a presigned download URL, or null if none exists. */
+export async function getPacReport(trialId: string): Promise<(ExternalPacReport & { downloadUrl: string }) | null> {
+  const report = await prisma.externalPacReport.findUnique({ where: { trialId } });
+  if (!report) return null;
+  const { downloadUrl } = await s3Service.getPresignedDownloadUrl(report.s3Key);
+  return { ...report, downloadUrl };
+}
+
+/** Removes the trial's uploaded PAC report record. Returns false (not an error) if none existed. */
+export async function deletePacReport(trialId: string): Promise<boolean> {
+  try {
+    await prisma.externalPacReport.delete({ where: { trialId } });
+    return true;
+  } catch (err) {
+    if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2025') {
+      return false;
+    }
+    throw err;
+  }
 }

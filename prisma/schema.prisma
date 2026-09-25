@@ -2292,8 +2292,17 @@ model ComparisonTrial {
   autoCostSpentUsd    Float   @default(0)
   /// 'running' | 'stopped'; null if auto mode has never been started.
   autoStatus          String?
-  /// 'converged' | 'round_limit' | 'budget_limit' | 'manual_stop' | 'error'
+  /// 'converged' | 'round_limit' | 'budget_limit' | 'manual_stop' | 'stalled' | 'error'
   autoStopReason      String?
+  /// Wall-clock start/stop of the current/last auto-mode run, for a real
+  /// "time to convergence" figure. Both written by startAutoLoop() (start
+  /// alongside the existing autoStatus:'running' reset, stop in its
+  /// finally block alongside the existing terminal-state write) and
+  /// autoStoppedAt is also written by reconcileIfOrphaned() -- without
+  /// that, a crashed/orphan-reconciled run would have no stop timestamp
+  /// at all.
+  autoStartedAt       DateTime?
+  autoStoppedAt       DateTime?
   /// Cooperative cancellation flag -- checked at the top of each round, never
   /// mid-round, so a stop request never leaves a round half-applied.
   autoStopRequested   Boolean @default(false)
@@ -2315,9 +2324,37 @@ model ComparisonTrial {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
+  externalPacReport ExternalPacReport?
+
   @@index([operatorId])
   @@index([status])
   @@index([contentType])
+}
+
+/// A real, external PAC-tool report file uploaded by an operator against a
+/// trial's final remediated output -- distinct from BOTH of this codebase's
+/// other two "PAC report" concepts: pac-report.service.ts's own
+/// self-generated Matterhorn-protocol emulation, and
+/// ComparisonTrial.ninjaPacResult/pdfxtPacResult (a veraPDF failure-count
+/// blob). Nothing parses real PAC export files (HTML/XML/PDF) today, so the
+/// summary counts below are entered manually by the uploading operator,
+/// same as pdfxtTimeMs/pdfxtCostUsd/etc. are today -- not derived from the
+/// file's own contents.
+model ExternalPacReport {
+  id               String          @id @default(cuid())
+  trialId          String          @unique
+  trial            ComparisonTrial @relation(fields: [trialId], references: [id], onDelete: Cascade)
+  s3Key            String
+  originalFileName String
+  mimeType         String
+  size             Int
+  pass             Int?
+  fail             Int?
+  untested         Int?
+  humanRequired    Int?
+  notApplicable    Int?
+  uploadedById     String
+  createdAt        DateTime        @default(now())
 }
 
 /// Ninja-side remediation timing for a ComparisonTrial's job. Structural

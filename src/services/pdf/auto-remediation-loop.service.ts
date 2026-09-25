@@ -135,7 +135,7 @@ class AutoRemediationLoopService {
 
       const result = await tx.comparisonTrial.updateMany({
         where: { id: trialId, autoStatus: 'running' },
-        data: { autoStatus: 'stopped', autoStopReason: 'error', autoStopRequested: false },
+        data: { autoStatus: 'stopped', autoStopReason: 'error', autoStopRequested: false, autoStoppedAt: new Date() },
       });
       if (result.count > 0) {
         logger.warn(
@@ -202,6 +202,8 @@ class AutoRemediationLoopService {
         autoStopRequested: false,
         autoRoundsCompleted: 0,
         autoCostSpentUsd: 0,
+        autoStartedAt: loopStartedAt,
+        autoStoppedAt: null,
       },
     });
 
@@ -258,9 +260,13 @@ class AutoRemediationLoopService {
 
         const latestJob = await prisma.job.findUnique({ where: { id: jobId } });
         const stats = (latestJob?.output as Record<string, unknown> | undefined)?.aiAnalysisStats as
-          | { gemini?: { estimatedCostUsd?: number } }
+          | { gemini?: { estimatedCostUsd?: number }; claude?: { estimatedCostUsd?: number } }
           | undefined;
-        costSpentUsd += stats?.gemini?.estimatedCostUsd ?? 0;
+        // Real bug, found while building the processing-log/cost-reporting
+        // feature: this only ever summed Gemini spend, silently dropping
+        // real Claude Haiku cost from suggestion types routed there in the
+        // same round (ai-analysis.service.ts computes both).
+        costSpentUsd += (stats?.gemini?.estimatedCostUsd ?? 0) + (stats?.claude?.estimatedCostUsd ?? 0);
 
         await prisma.comparisonTrial.update({
           where: { id: trialId },
@@ -308,7 +314,7 @@ class AutoRemediationLoopService {
       try {
         await prisma.comparisonTrial.update({
           where: { id: trialId },
-          data: { autoStatus: 'stopped', autoStopReason: stopReason, autoStopRequested: false },
+          data: { autoStatus: 'stopped', autoStopReason: stopReason, autoStopRequested: false, autoStoppedAt: new Date() },
         });
       } finally {
         await remediationCycleLockService.releaseLock(jobId, cycleNumber);
