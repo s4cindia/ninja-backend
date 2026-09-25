@@ -25,6 +25,7 @@ import { fileStorageService } from '../storage/file-storage.service';
 import { veraPdfService, VeraPdfValidationResult } from '../pdf/verapdf.service';
 import { createAndEnqueuePdfAuditJob } from '../../controllers/pdf.controller';
 import { AppError } from '../../utils/app-error';
+import type { AuditIssue } from '../audit/base-audit.service';
 
 const COMPARISON_STUDY_PREFIX = 'comparison-study/';
 // Comparison-study source PDFs can be large (tens of MB); 300s was too
@@ -111,12 +112,70 @@ export async function registerTrial(input: {
   return trial;
 }
 
+/** Shape of the fields comparison-study reads off Job.output -- written by
+ * accessibility.processor.ts's tagAndPersist (taggerSource/autoTagStatus)
+ * and ai-analysis.service.ts's analyzeJob (aiAnalysisStats). */
+type JobOutputForReporting = {
+  taggerSource?: 'seam-c' | 'adobe';
+  autoTagStatus?: 'complete' | 'skipped' | 'failed';
+  aiAnalysisStats?: { totalCostUsd?: number };
+};
+
+function extractTaggerFields(output: unknown): {
+  taggerSource: 'seam-c' | 'adobe' | null;
+  autoTagStatus: 'complete' | 'skipped' | 'failed' | null;
+} {
+  const o = output as JobOutputForReporting | null;
+  return { taggerSource: o?.taggerSource ?? null, autoTagStatus: o?.autoTagStatus ?? null };
+}
+
+/**
+ * Batched (not per-trial) counts of applied vs. still-outstanding-manual AI
+ * fixes for a set of jobs -- two groupBy queries regardless of list size,
+ * to avoid an N+1 query per trial row. "Manual fixes required" mirrors the
+ * existing guidance-acknowledgment gate's own definition (applyMode:
+ * 'guidance-only', status: 'pending') -- see
+ * pdf-ai-analysis.controller.ts's remainingCount.
+ */
+async function getAiFixCounts(jobIds: string[]): Promise<{
+  applied: Map<string, number>;
+  manualRequired: Map<string, number>;
+}> {
+  if (jobIds.length === 0) return { applied: new Map(), manualRequired: new Map() };
+
+  const [appliedGroups, manualGroups] = await Promise.all([
+    prisma.aiAnalysis.groupBy({
+      by: ['jobId'],
+      where: { jobId: { in: jobIds }, status: 'applied' },
+      _count: { _all: true },
+    }),
+    prisma.aiAnalysis.groupBy({
+      by: ['jobId'],
+      where: { jobId: { in: jobIds }, applyMode: 'guidance-only', status: 'pending' },
+      _count: { _all: true },
+    }),
+  ]);
+
+  return {
+    applied: new Map(appliedGroups.map(g => [g.jobId, g._count._all])),
+    manualRequired: new Map(manualGroups.map(g => [g.jobId, g._count._all])),
+  };
+}
+
+export interface TrialListItem extends ComparisonTrial {
+  hasPacReport: boolean;
+  taggerSource: 'seam-c' | 'adobe' | null;
+  autoTagStatus: 'complete' | 'skipped' | 'failed' | null;
+  aiFixesAppliedCount: number;
+  manualFixesRequiredCount: number;
+}
+
 export async function listTrials(opts: {
   status?: string;
   contentType?: string;
   limit?: number;
   cursor?: string;
-}): Promise<{ trials: (ComparisonTrial & { hasPacReport: boolean })[]; nextCursor: string | null }> {
+}): Promise<{ trials: TrialListItem[]; nextCursor: string | null }> {
   const { limit = 20, cursor, status, contentType } = opts;
   const where: Record<string, unknown> = {};
   if (status) where.status = status;
@@ -127,15 +186,25 @@ export async function listTrials(opts: {
     take: limit + 1,
     ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {}),
     orderBy: { createdAt: 'desc' },
-    include: { externalPacReport: { select: { id: true } } },
+    include: {
+      externalPacReport: { select: { id: true } },
+      job: { select: { output: true } },
+    },
   });
 
   const hasMore = trials.length > limit;
   const items = hasMore ? trials.slice(0, limit) : trials;
   const nextCursor = hasMore ? items[items.length - 1].id : null;
-  const mapped = items.map(({ externalPacReport, ...trial }) => ({
+
+  const jobIds = items.map(t => t.ninjaJobId).filter((id): id is string => id != null);
+  const { applied, manualRequired } = await getAiFixCounts(jobIds);
+
+  const mapped: TrialListItem[] = items.map(({ externalPacReport, job, ...trial }) => ({
     ...trial,
     hasPacReport: externalPacReport != null,
+    ...extractTaggerFields(job?.output),
+    aiFixesAppliedCount: trial.ninjaJobId ? (applied.get(trial.ninjaJobId) ?? 0) : 0,
+    manualFixesRequiredCount: trial.ninjaJobId ? (manualRequired.get(trial.ninjaJobId) ?? 0) : 0,
   }));
   return { trials: mapped, nextCursor };
 }
@@ -309,6 +378,10 @@ export interface TrialReport {
     costUsd: number | null;
     pacFailureCount: number | null;
     pagesPerHour: number | null;
+    taggerSource: 'seam-c' | 'adobe' | null;
+    autoTagStatus: 'complete' | 'skipped' | 'failed' | null;
+    aiFixesAppliedCount: number;
+    manualFixesRequiredCount: number;
   };
   pdfxt: {
     timeMs: number | null;
@@ -344,7 +417,7 @@ export async function getTrialReport(id: string): Promise<TrialReport> {
     include: { job: { select: { output: true } } },
   });
 
-  const jobOutput = trial.job?.output as { aiAnalysisStats?: { totalCostUsd?: number } } | null;
+  const jobOutput = trial.job?.output as JobOutputForReporting | null;
   const ninjaAiCostUsd = jobOutput?.aiAnalysisStats?.totalCostUsd ?? null;
   const ninjaCostUsd =
     ninjaAiCostUsd !== null || trial.ninjaGpuCostUsd !== null
@@ -354,6 +427,14 @@ export async function getTrialReport(id: string): Promise<TrialReport> {
   const pageCount = trial.pdfxtPageCount ?? null;
   const ninjaPacFailures = extractPacFailureCount(trial.ninjaPacResult);
   const pdfxtPacFailures = extractPacFailureCount(trial.pdfxtPacResult);
+
+  let aiFixesAppliedCount = 0;
+  let manualFixesRequiredCount = 0;
+  if (trial.ninjaJobId) {
+    const { applied, manualRequired } = await getAiFixCounts([trial.ninjaJobId]);
+    aiFixesAppliedCount = applied.get(trial.ninjaJobId) ?? 0;
+    manualFixesRequiredCount = manualRequired.get(trial.ninjaJobId) ?? 0;
+  }
 
   return {
     trialId: trial.id,
@@ -366,6 +447,9 @@ export async function getTrialReport(id: string): Promise<TrialReport> {
       costUsd: ninjaCostUsd,
       pacFailureCount: ninjaPacFailures,
       pagesPerHour: pagesPerHour(pageCount, trial.ninjaActiveMs),
+      ...extractTaggerFields(trial.job?.output),
+      aiFixesAppliedCount,
+      manualFixesRequiredCount,
     },
     pdfxt: {
       timeMs: trial.pdfxtTimeMs,
@@ -374,6 +458,72 @@ export async function getTrialReport(id: string): Promise<TrialReport> {
       pagesPerHour: pagesPerHour(pageCount, trial.pdfxtTimeMs),
     },
   };
+}
+
+export interface ManualFixItem {
+  /** AiAnalysis.id -- stable row identity for this suggestion. */
+  id: string;
+  /** Matterhorn/WCAG issue code from the audit report, when the underlying
+   * AuditIssue is still resolvable (see the id-reassignment caveat below). */
+  code: string | null;
+  message: string | null;
+  wcagCriteria: string[] | null;
+  location: string | null;
+  pageNumber: number | null;
+  matterhornCheckpoint: string | null;
+  suggestionType: string;
+  /** Human-readable "how to fix it" instruction -- see AiAnalysis.guidance's
+   * doc comment; already populated at suggestion-creation time. */
+  guidance: string | null;
+  rationale: string;
+}
+
+/**
+ * Every 'guidance-only' / still-'pending' AI suggestion for a trial's Ninja
+ * job -- the same definition as the manualFixesRequiredCount on
+ * getTrialReport()/listTrials(), joined against the audit report's own
+ * issue detail (WCAG/Matterhorn code, location) for a fix-it modal.
+ *
+ * The join is best-effort: AiAnalysis.issueId is a per-audit sequential
+ * counter that can be reassigned by a later re-audit (see the doc comment
+ * on AiAnalysis.issueFingerprint in schema.prisma), so an issue whose audit
+ * report has since been replaced simply reports null code/location/etc.
+ * rather than throwing -- the guidance/rationale text (this modal's actual
+ * point) is unaffected either way, since it's stored directly on the
+ * AiAnalysis row itself.
+ */
+export async function getManualFixes(trialId: string): Promise<ManualFixItem[]> {
+  const trial = await prisma.comparisonTrial.findUniqueOrThrow({
+    where: { id: trialId },
+    include: { job: { select: { id: true, output: true } } },
+  });
+  if (!trial.job) return [];
+
+  const [suggestions, output] = [
+    await prisma.aiAnalysis.findMany({
+      where: { jobId: trial.job.id, applyMode: 'guidance-only', status: 'pending' },
+      orderBy: { createdAt: 'asc' },
+    }),
+    (trial.job.output ?? {}) as { auditReport?: { issues?: AuditIssue[] } },
+  ];
+
+  const issueById = new Map((output.auditReport?.issues ?? []).map(i => [i.id, i]));
+
+  return suggestions.map(s => {
+    const issue = issueById.get(s.issueId);
+    return {
+      id: s.id,
+      code: issue?.code ?? null,
+      message: issue?.message ?? null,
+      wcagCriteria: issue?.wcagCriteria ?? null,
+      location: issue?.location ?? null,
+      pageNumber: issue?.pageNumber ?? null,
+      matterhornCheckpoint: issue?.matterhornCheckpoint ?? null,
+      suggestionType: s.suggestionType,
+      guidance: s.guidance ?? null,
+      rationale: s.rationale,
+    };
+  });
 }
 
 export interface AggregateReport {
