@@ -1,6 +1,6 @@
-import { Worker } from 'bullmq';
+import { Job, Queue, Worker } from 'bullmq';
 import { createWorker } from './base.worker';
-import { QUEUE_NAMES, QUEUE_PREFIX, BatchJobData, BatchJobResult, BatchProcessingJobData, BatchProcessingJobResult, getBullMQConnection, getCitationQueue, getAccessibilityQueue, JOB_TYPES, areQueuesAvailable } from '../queues';
+import { QUEUE_NAMES, QUEUE_PREFIX, BatchJobData, BatchJobResult, BatchProcessingJobData, BatchProcessingJobResult, JobData, JobResult, getBullMQConnection, getCitationQueue, getAccessibilityQueue, JOB_TYPES, areQueuesAvailable } from '../queues';
 import { processAccessibilityJob } from './processors/accessibility.processor';
 import { processVpatJob } from './processors/vpat.processor';
 import { processFileJob } from './processors/file.processor';
@@ -184,9 +184,49 @@ async function recoverStaleJobs(): Promise<void> {
 }
 
 /**
+ * Shared by both the startup sweep and the shutdown-time sweep below: given
+ * an already-fetched list of "active" BullMQ jobs, fail their DB records and
+ * remove them from Redis. `logPrefix` only affects log lines.
+ */
+async function failAndCleanActiveJobs(
+  queue: Queue<JobData, JobResult>,
+  activeJobs: Job<JobData, JobResult>[],
+  errorMessage: string,
+  logPrefix: string
+): Promise<void> {
+  if (activeJobs.length === 0) return;
+
+  logger.info(`${logPrefix} Found ${activeJobs.length} stale active job(s) — cleaning up`);
+
+  // Update DB records first (before removing from Redis)
+  for (const bullJob of activeJobs) {
+    const dbJobId = (bullJob.data?.options?.dbJobId as string | undefined) || bullJob.id;
+    if (dbJobId) {
+      await prisma.job.updateMany({
+        where: { id: dbJobId, status: 'PROCESSING' },
+        data: {
+          status: 'FAILED',
+          completedAt: new Date(),
+          error: errorMessage,
+        },
+      }).catch(err => logger.warn(`${logPrefix} Failed to update DB for stale job ${dbJobId}: ${err.message}`));
+    }
+  }
+
+  // Remove stale active jobs from Redis using queue.clean() — no lock token required
+  const removed = await queue.clean(0, activeJobs.length + 10, 'active');
+  logger.info(`${logPrefix} Stale active job cleanup complete — removed ${removed.length} BullMQ job(s)`);
+}
+
+/**
  * On server startup, clean up any BullMQ jobs that were left in "active" state
  * by a previous (now dead) worker process, and fix the corresponding DB records.
  * This prevents new jobs from waiting behind orphaned active slots.
+ *
+ * This is a startup-only safety net — it catches jobs orphaned by a crash or
+ * a SIGKILL that hit before failActiveJobsBeforeShutdown() (below) could run.
+ * A clean shutdown handles the common case (an ECS deploy) proactively instead
+ * of waiting for the next boot.
  */
 async function cleanupStaleActiveJobs(): Promise<void> {
   if (!areQueuesAvailable()) return;
@@ -208,30 +248,87 @@ async function cleanupStaleActiveJobs(): Promise<void> {
 
     // Collect active jobs before cleaning so we can update DB records
     const activeJobs = await queue.getActive();
-    if (activeJobs.length === 0) return;
-
-    logger.info(`[Startup] Found ${activeJobs.length} stale active job(s) from previous process — cleaning up`);
-
-    // Update DB records first (before removing from Redis)
-    for (const bullJob of activeJobs) {
-      const dbJobId = (bullJob.data?.options?.dbJobId as string | undefined) || bullJob.id;
-      if (dbJobId) {
-        await prisma.job.updateMany({
-          where: { id: dbJobId, status: 'PROCESSING' },
-          data: {
-            status: 'FAILED',
-            completedAt: new Date(),
-            error: 'Server restarted while job was processing — please re-submit the file',
-          },
-        }).catch(err => logger.warn(`[Startup] Failed to update DB for stale job ${dbJobId}: ${err.message}`));
-      }
-    }
-
-    // Remove stale active jobs from Redis using queue.clean() — no lock token required
-    const removed = await queue.clean(0, activeJobs.length + 10, 'active');
-    logger.info(`[Startup] Stale active job cleanup complete — removed ${removed.length} BullMQ job(s)`);
+    await failAndCleanActiveJobs(
+      queue,
+      activeJobs,
+      'Server restarted while job was processing — please re-submit the file',
+      '[Startup]'
+    );
   } catch (err) {
     logger.warn(`[Startup] Stale active job cleanup failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
+/**
+ * Runs on SIGTERM, before worker.close(). Immediately fails any job the
+ * accessibility worker currently has active, instead of leaving it to BullMQ's
+ * passive lock expiry (up to lockDuration, 10 min) or the next process's
+ * startup sweep.
+ *
+ * Why this exists: ECS Fargate caps `stopTimeout` at 120s regardless of the
+ * task definition value, but a real accessibility job can run 10-30+ minutes
+ * (large PDFs). worker.close()'s default graceful drain — wait for the active
+ * job to finish — can never complete inside that window, so ECS always
+ * SIGKILLs the process mid-job. That abrupt kill left the job's BullMQ lock
+ * to expire passively and its DB row stuck at PROCESSING/error:null
+ * indefinitely (real incident, 2026-09-26: a 529-page file's Alt Text step
+ * orphaned this way after a routine worker redeploy, with zero recovery in
+ * 28+ minutes). Failing fast here trades "maybe the job finishes in the
+ * shutdown window" (never true for these job sizes against a 120s cap) for a
+ * clean, immediate, honest FAILED status the user can act on right away.
+ */
+export async function failActiveJobsBeforeShutdown(): Promise<void> {
+  if (!areQueuesAvailable()) return;
+  try {
+    const queue = getAccessibilityQueue();
+    if (!queue) return;
+    const activeJobs = await queue.getActive();
+    await failAndCleanActiveJobs(
+      queue,
+      activeJobs,
+      'Worker restarted (deploy) while this job was processing — please retry',
+      '[Shutdown]'
+    );
+  } catch (err) {
+    logger.warn(`[Shutdown] Failed to fail active jobs before shutdown (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
+/**
+ * Periodic runtime safety net (called from the watchdog interval, every
+ * WATCHDOG_INTERVAL_MS): catches PDF/EPUB accessibility Job rows stuck at
+ * PROCESSING whose updatedAt is stale, regardless of how they got orphaned —
+ * covers anything failActiveJobsBeforeShutdown() and cleanupStaleActiveJobs()
+ * miss (e.g. an OOM kill or crash with no graceful SIGTERM at all).
+ *
+ * Threshold is deliberately generous — the accessibility processor writes
+ * progress (and so updatedAt) at every page/validator checkpoint, and real
+ * files have taken 25+ minutes for a single step (Alt Text on a 529-page
+ * doc). This only fires when a job has made NO progress at all for the full
+ * window, which a genuinely still-running job never does.
+ */
+const PDF_JOB_STALE_TIMEOUT_MS = parseInt(process.env.PDF_JOB_STALE_TIMEOUT_MS || '', 10) || 20 * 60 * 1000;
+
+export async function cleanupStalePdfJobs(): Promise<void> {
+  try {
+    const staleThreshold = new Date(Date.now() - PDF_JOB_STALE_TIMEOUT_MS);
+    const result = await prisma.job.updateMany({
+      where: {
+        type: { in: ['PDF_ACCESSIBILITY', 'EPUB_ACCESSIBILITY'] },
+        status: 'PROCESSING',
+        updatedAt: { lt: staleThreshold },
+      },
+      data: {
+        status: 'FAILED',
+        completedAt: new Date(),
+        error: `No progress for over ${Math.round(PDF_JOB_STALE_TIMEOUT_MS / 60000)} minutes — job appears orphaned, please retry`,
+      },
+    });
+    if (result.count > 0) {
+      logger.warn(`[Watchdog] Marked ${result.count} stale PDF/EPUB accessibility job(s) as FAILED (no progress for ${Math.round(PDF_JOB_STALE_TIMEOUT_MS / 60000)}+ min)`);
+    }
+  } catch (err) {
+    logger.error('[Watchdog] Stale PDF/EPUB job cleanup failed:', err);
   }
 }
 
@@ -343,10 +440,15 @@ export function startBackgroundWorkers(): void {
     });
 
     // Start periodic watchdog to catch jobs that get stuck during runtime
-    // (e.g., BullMQ job fails all retries but DB stays in QUEUED/ANALYZING)
+    // (e.g., BullMQ job fails all retries but DB stays in QUEUED/ANALYZING,
+    // or a PDF/EPUB accessibility job got orphaned by a crash/OOM with no
+    // graceful SIGTERM to trigger failActiveJobsBeforeShutdown())
     watchdogInterval = setInterval(() => {
       recoverStaleJobs().catch(err => {
         logger.error('[Watchdog] Periodic recovery failed:', err);
+      });
+      cleanupStalePdfJobs().catch(err => {
+        logger.error('[Watchdog] Periodic PDF/EPUB job cleanup failed:', err);
       });
     }, WATCHDOG_INTERVAL_MS);
     logger.info(`✅ Stale job watchdog started (every ${WATCHDOG_INTERVAL_MS / 1000}s)`);

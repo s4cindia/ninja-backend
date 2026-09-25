@@ -11,6 +11,7 @@
       "name": "ninja-backend-worker",
       "image": "223643972423.dkr.ecr.ap-south-1.amazonaws.com/ninja-backend:latest",
       "essential": true,
+      "stopTimeout": 120,
       "portMappings": [
         {
           "containerPort": 3000,

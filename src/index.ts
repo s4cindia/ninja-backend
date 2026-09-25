@@ -10,7 +10,7 @@ import { notFoundHandler } from './middleware/not-found.middleware';
 import routes from './routes';
 import { closeQueues } from './queues';
 import { closeRedisConnection } from './lib/redis';
-import { startBackgroundWorkers, stopBackgroundWorkers, startWorkflowQueueWorker, stopWorkflowQueueWorker } from './workers';
+import { startBackgroundWorkers, stopBackgroundWorkers, startWorkflowQueueWorker, stopWorkflowQueueWorker, failActiveJobsBeforeShutdown } from './workers';
 import { startWorkflowRecovery, stopWorkflowRecovery } from './services/workflow/workflow-recovery.service';
 import { isRedisConfigured } from './config/redis.config';
 import { sseService } from './sse/sse.service';
@@ -247,6 +247,13 @@ const gracefulShutdown = async () => {
 
     if (runsBackgroundWorkers) {
       stopWorkflowRecovery();
+      // Fail any currently-active accessibility job immediately rather than
+      // letting worker.close() wait for it — ECS Fargate's stopTimeout caps
+      // at 120s regardless of the task definition, far short of a real PDF
+      // job's runtime, so that wait can never finish before SIGKILL anyway.
+      // See failActiveJobsBeforeShutdown()'s own doc comment for the incident
+      // this fixes.
+      await failActiveJobsBeforeShutdown();
       await stopBackgroundWorkers();
     }
     if (runsWorkflowWorker) {
