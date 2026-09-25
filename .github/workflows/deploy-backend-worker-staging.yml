@@ -21,7 +21,11 @@ env:
   AWS_REGION: ap-south-1
   ECR_REPOSITORY: ninja-backend
   ECS_CLUSTER: ninja-cluster
-  ECS_SERVICE: ninja-backend-worker-service
+  # Not "ninja-backend-worker-service" -- the AWS Console's Create Service
+  # flow appended its own suffix instead of using the typed name literally
+  # when this service was actually created (2026-09-25). This is that real
+  # service's real name; keep this in sync if it's ever recreated.
+  ECS_SERVICE: ninja-backend-worker-task-service-bccfcjg7
   TASK_DEFINITION_FILE: infrastructure/ecs/ninja-backend-worker-task-definition.json
   CONTAINER_NAME: ninja-backend-worker
 
@@ -125,11 +129,11 @@ jobs:
           image: ${{ steps.image-output.outputs.image }}
 
       - name: Deploy to Amazon ECS
-        # NOTE: this only UPDATES an existing service -- the
-        # ninja-backend-worker-service must already exist (one-time
-        # `aws ecs create-service`, no --load-balancers, done manually --
-        # nothing in this repo creates ECS services). This step will fail
-        # with a clear error until that's been done once.
+        # NOTE: this only UPDATES an existing service -- the one named in
+        # env.ECS_SERVICE above (created 2026-09-25, one-time via the AWS
+        # Console, no load balancer attached -- nothing in this repo
+        # creates ECS services) must already exist. This step will fail
+        # with a clear error if it doesn't.
         #
         # ORDERING (CodeRabbit catch on PR #615): create that service only
         # AFTER cutting the web service over to PROCESS_ROLE=web (set the
