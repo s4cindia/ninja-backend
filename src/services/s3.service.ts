@@ -1,4 +1,4 @@
-import { S3Client, PutObjectCommand, GetObjectCommand, DeleteObjectCommand } from '@aws-sdk/client-s3';
+import { S3Client, PutObjectCommand, GetObjectCommand, HeadObjectCommand, DeleteObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { config } from '../config';
 import { logger } from '../lib/logger';
@@ -92,6 +92,18 @@ class S3Service {
     }
 
     return Buffer.concat(chunks);
+  }
+
+  /**
+   * HEAD, not GET -- reads an object's size without pulling its (potentially
+   * large) body over the network. Added for comparison-study trial
+   * registration (2026-09-25), which only ever needed the byte count for
+   * Job.input metadata but was calling getFileBuffer (a full download) to
+   * get it.
+   */
+  async getFileSize(fileKey: string): Promise<number> {
+    const response = await s3Client.send(new HeadObjectCommand({ Bucket: this.bucket, Key: fileKey }));
+    return response.ContentLength ?? 0;
   }
 
   async deleteFile(fileKey: string): Promise<void> {
