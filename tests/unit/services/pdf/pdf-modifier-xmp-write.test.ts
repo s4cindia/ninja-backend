@@ -1,6 +1,15 @@
 import { describe, it, expect } from 'vitest';
-import { PDFDocument, PDFName, PDFRawStream, decodePDFRawStream } from 'pdf-lib';
+import { PDFDocument, PDFName, PDFDict, PDFRawStream, decodePDFRawStream } from 'pdf-lib';
 import { pdfModifierService } from '../../../../src/services/pdf/pdf-modifier.service';
+
+function countMetadataObjects(doc: PDFDocument): number {
+  let count = 0;
+  for (const [, obj] of doc.context.enumerateIndirectObjects()) {
+    const dict = obj instanceof PDFRawStream ? obj.dict : obj instanceof PDFDict ? obj : null;
+    if (dict?.get(PDFName.of('Type'))?.toString() === '/Metadata') count++;
+  }
+  return count;
+}
 
 /**
  * Regression coverage for a real bug found on a live document (Army trial,
@@ -360,5 +369,61 @@ describe('writePdfUaIdentifier / writeXmpStream', () => {
     // Original content must survive the patch, not be replaced by a
     // template fallback (which would mean decompression silently failed).
     expect(xmp).toContain('2025-09-10T15:35:06+05:30');
+  });
+
+  // Real incident, Math_Nikitopoulos_PDF.pdf (2026-09-25): every call
+  // registers a brand-new /Metadata stream object and repoints the catalog
+  // to it, but never removed the object it superseded. Across a real
+  // document's full remediation history this left 10 separate /Type
+  // /Metadata objects permanently embedded in the file -- only the newest
+  // referenced by the catalog, the other 9 pure dead weight that grows by
+  // one every time the fix (harmlessly, from Ninja's own perspective) keeps
+  // re-running.
+  it('REGRESSION: deletes the superseded /Metadata object instead of leaving it as permanent dead weight in the file', async () => {
+    const doc = await PDFDocument.create();
+    doc.addPage([400, 600]);
+
+    expect(countMetadataObjects(doc)).toBe(0);
+    await pdfModifierService.writePdfUaIdentifier(doc);
+    expect(countMetadataObjects(doc)).toBe(1);
+    await pdfModifierService.writePdfUaIdentifier(doc);
+    await pdfModifierService.writePdfUaIdentifier(doc);
+    // 3 total calls, but still only ONE /Metadata object should exist --
+    // each call's own object superseded (and deleted) the previous one.
+    expect(countMetadataObjects(doc)).toBe(1);
+
+    const savedBytes = Buffer.from(await doc.save());
+    const reloaded = await PDFDocument.load(savedBytes, { updateMetadata: false });
+    expect(countMetadataObjects(reloaded)).toBe(1);
+  });
+
+  // CodeRabbit finding on this same PR, confirmed real: PDF permits
+  // page-level metadata (a page's own /Metadata key, independent of the
+  // document-level one) -- if it happens to point at the SAME object the
+  // catalog's own /Metadata just referenced, unconditionally deleting that
+  // object would leave the page's reference dangling, and doc.save() would
+  // write a malformed PDF with no object for it.
+  it('REGRESSION: does not delete the superseded object when a page still references it via its own /Metadata key', async () => {
+    const doc = await PDFDocument.create();
+    const page = doc.addPage([400, 600]);
+
+    await pdfModifierService.writePdfUaIdentifier(doc);
+    expect(countMetadataObjects(doc)).toBe(1);
+
+    // Simulate a page that happens to share the SAME metadata object the
+    // catalog currently references.
+    const sharedRef = doc.catalog.get(PDFName.of('Metadata'));
+    page.node.set(PDFName.of('Metadata'), sharedRef!);
+
+    await pdfModifierService.writePdfUaIdentifier(doc);
+    // The catalog now points to a NEW object, but the OLD (shared) one must
+    // survive -- the page still references it.
+    expect(countMetadataObjects(doc)).toBe(2);
+    expect(page.node.get(PDFName.of('Metadata'))?.toString()).toBe(sharedRef!.toString());
+
+    // Must also survive a real save+reload, not just stay valid in memory.
+    const savedBytes = Buffer.from(await doc.save());
+    const reloaded = await PDFDocument.load(savedBytes, { updateMetadata: false });
+    expect(countMetadataObjects(reloaded)).toBe(2);
   });
 });

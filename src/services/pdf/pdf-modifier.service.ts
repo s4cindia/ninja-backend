@@ -1971,6 +1971,35 @@ export class PdfModifierService {
       Length: bytes.length,
     });
     doc.catalog.set(PDFName.of('Metadata'), doc.context.register(stream));
+
+    // Real incident, Math_Nikitopoulos_PDF.pdf (2026-09-25): every call
+    // registers a BRAND NEW indirect object and repoints the catalog to it,
+    // but never removes the object it just superseded. Across repeated
+    // rounds this leaves every PAST version of the /Metadata stream
+    // permanently embedded in the file as dead weight -- confirmed live: 10
+    // separate /Type /Metadata objects (only the newest referenced by the
+    // catalog) on a single real document, one per past write, each larger
+    // than the last. doc.context.delete removes it from the object
+    // registry entirely, so it's no longer written on the next save.
+    //
+    // CodeRabbit finding on this same PR, confirmed real: PDF permits
+    // page-level metadata (a page's own /Metadata key, independent of the
+    // document-level one at doc.catalog), and it's legal -- if unusual --
+    // for that to point at the SAME object the catalog's own /Metadata
+    // just referenced. doc.context.delete has no reference-counting of its
+    // own: unconditionally deleting existingRef would leave that OTHER
+    // reference dangling, and doc.save() would write a malformed PDF with
+    // no object for it. Only delete once no other object's own /Metadata
+    // key still points at it.
+    if (existingRef instanceof PDFRef) {
+      const stillReferenced = Array.from(doc.context.enumerateIndirectObjects()).some(([ref, obj]) => {
+        if (ref === existingRef) return false;
+        const dict = obj instanceof PDFDict ? obj : obj instanceof PDFRawStream ? obj.dict : null;
+        const metadataRef = dict?.get(PDFName.of('Metadata'));
+        return metadataRef instanceof PDFRef && metadataRef.toString() === existingRef.toString();
+      });
+      if (!stillReferenced) doc.context.delete(existingRef);
+    }
   }
 
   /**
