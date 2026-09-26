@@ -444,10 +444,29 @@ describe('PDFAltTextValidator', () => {
       expect(onProgress).toHaveBeenCalledWith(2, 2);
     });
 
+    it('calls onProgress with the total up front, before any image completes', async () => {
+      // Real gap this closes: a job that dies during image validation (a
+      // crash, a timeout, a stale-job watchdog false-positive) before ANY
+      // image finishes previously left no record of the document's total
+      // image count at all -- losing a real data point for later
+      // audit-time-estimation work, not just a progress-UI nicety.
+      const mockParsedPdf = createMockParsedPdf();
+      const mockDocImages = createMockDocumentImages([
+        createMockImage(1, 0, 'Fine alt text here', false),
+        createMockImage(1, 1, 'Also fine alt text', false),
+      ]);
+      vi.mocked(imageExtractorService.extractImages).mockResolvedValue(mockDocImages);
+
+      const onProgress = vi.fn();
+      await pdfAltTextValidator.validate(mockParsedPdf, false, onProgress);
+
+      expect(onProgress.mock.calls[0]).toEqual([0, 2]);
+    });
+
     it('throttles to at most one call per 30s while still-in-progress, independent of image count', async () => {
       const mockParsedPdf = createMockParsedPdf();
       // Three non-final images -- if onProgress fired per-image regardless of
-      // elapsed time, this would be 3 calls before the final (4th) image.
+      // elapsed time, this would be 3 more calls before the final (4th) image.
       const mockDocImages = createMockDocumentImages([
         createMockImage(1, 0, 'Fine alt text here', false),
         createMockImage(1, 1, 'Fine alt text here', false),
@@ -461,9 +480,10 @@ describe('PDFAltTextValidator', () => {
       // No time advance between images 1-3 -- still within the 30s window.
       await validatePromise;
 
-      // Only the final-image flush fired; the three earlier images were all
-      // throttled since no wall-clock time passed between them.
-      expect(onProgress).toHaveBeenCalledTimes(1);
+      // The upfront total call, plus only the final-image flush -- the three
+      // earlier images were all throttled since no wall-clock time passed
+      // between them.
+      expect(onProgress).toHaveBeenCalledTimes(2);
       expect(onProgress).toHaveBeenCalledWith(4, 4);
     });
 

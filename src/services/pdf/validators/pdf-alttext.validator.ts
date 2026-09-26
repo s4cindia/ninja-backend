@@ -179,6 +179,14 @@ class PDFAltTextValidator {
     // Validate each image
     const totalImages = documentImages.totalImages;
     let imagesCompleted = 0;
+    // Fired once immediately, before the loop -- separately from the
+    // throttled per-image calls below. Records the real total image count
+    // for this document even if the run never completes a single image
+    // (crashes, times out, or -- historically -- gets falsely orphaned by
+    // the stale-job watchdog). Without this, a job that dies here leaves NO
+    // record of how many images the document had, losing a real data point
+    // for later audit-time estimation work.
+    if (onProgress) await onProgress(0, totalImages);
     // Time-based, not count-based: per-image latency varies a lot (a
     // MAX_TOKENS retry alone can take ~30-60s), so a fixed image-count
     // throttle could still leave a multi-minute gap. A 30s wall-clock cap
