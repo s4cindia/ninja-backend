@@ -569,16 +569,43 @@ async function processPdfAccessibility(
 
   logger.info(`[PDF Worker] Running audit for job ${dbJobId}, file: ${fileName}`);
   const scanLevel = 'comprehensive';
-  const auditReport = await pdfAuditService.runAuditFromBuffer(
-    auditBuffer,
-    dbJobId,
-    fileName,
-    scanLevel,
-    undefined,
-    onProgress,
-    onValidatorComplete,
-    onAltTextImageProgress,
-  );
+
+  // General heartbeat for the whole audit call, not just Alt Text. Real
+  // incident (2026-09-26): PdfFormulaValidator and PdfFigureStructTreeValidator
+  // (pdf-audit.service.ts's "bonus sub-check" validators, deliberately excluded
+  // from onValidatorComplete's progress total) ran between Alt Text and Color
+  // Contrast for 18+ minutes with zero signal to the job, and the stale-job
+  // watchdog killed it 36 SECONDS before Color Contrast finished and would have
+  // reported in on its own -- the underlying work kept running regardless
+  // (this DB write can't cancel the in-flight promise chain) and eventually
+  // completed successfully, silently flipping status back from FAILED to
+  // COMPLETED minutes later. Rather than keep hunting down and individually
+  // instrumenting every current and future slow, unmonitored sub-step the way
+  // Alt Text's per-image progress was, this touches Job.updatedAt on a fixed
+  // interval for the ENTIRE runAuditFromBuffer call regardless of which
+  // validator (named or "bonus") is currently executing.
+  const HEARTBEAT_MS = 2 * 60 * 1000; // 10x margin under the 20-min watchdog threshold
+  const heartbeatInterval = setInterval(() => {
+    queueService.updateJobProgress(dbJobId, lastKnownPct).catch(err => {
+      logger.warn(`[PDF Worker] Heartbeat update failed for job ${dbJobId} (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
+    });
+  }, HEARTBEAT_MS);
+
+  let auditReport;
+  try {
+    auditReport = await pdfAuditService.runAuditFromBuffer(
+      auditBuffer,
+      dbJobId,
+      fileName,
+      scanLevel,
+      undefined,
+      onProgress,
+      onValidatorComplete,
+      onAltTextImageProgress,
+    );
+  } finally {
+    clearInterval(heartbeatInterval);
+  }
   logger.info(`[PDF Worker] Audit complete for job ${dbJobId}`);
 
   // ── 3b. Post-audit auto-applies [non-fatal] ──────────────────────────────────
