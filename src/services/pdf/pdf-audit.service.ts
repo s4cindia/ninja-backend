@@ -287,7 +287,8 @@ class PdfAuditService extends BaseAuditService<PdfParseResult, PdfValidationResu
     parsed: PdfParseResult,
     scanLevel: ScanLevel = 'comprehensive',
     customValidators?: ValidatorType[],
-    onValidatorComplete?: (label: string, issuesFound: number, completed: number, total: number, startedAt: Date) => void
+    onValidatorComplete?: (label: string, issuesFound: number, completed: number, total: number, startedAt: Date) => void,
+    onAltTextImageProgress?: (completed: number, total: number) => void
   ): Promise<PdfValidationResult> {
     logger.info(`[PdfAudit] Running validators...`);
 
@@ -423,7 +424,7 @@ class PdfAuditService extends BaseAuditService<PdfParseResult, PdfValidationResu
         const altTextStart = new Date();
         try {
           logger.info(`[PdfAudit] Running PdfAltTextValidator...`);
-          const altTextResult = await pdfAltTextValidator.validate(parsed.parsedPdf, true);
+          const altTextResult = await pdfAltTextValidator.validate(parsed.parsedPdf, true, onAltTextImageProgress);
           result.altTextIssues.push(...altTextResult.issues);
           result.issues.push(...altTextResult.issues);
           logger.info(`[PdfAudit] PdfAltTextValidator found ${altTextResult.issues.length} issues`);
@@ -1334,7 +1335,8 @@ class PdfAuditService extends BaseAuditService<PdfParseResult, PdfValidationResu
     scanLevel: ScanLevel = 'basic',
     customValidators?: ValidatorType[],
     onProgress?: (currentPage: number, totalPages: number) => void,
-    onValidatorComplete?: (label: string, issuesFound: number, completed: number, total: number, startedAt: Date) => void
+    onValidatorComplete?: (label: string, issuesFound: number, completed: number, total: number, startedAt: Date) => void,
+    onAltTextImageProgress?: (completed: number, total: number) => void
   ): Promise<AuditReport> {
     let parsed: PdfParseResult | null = null;
     let externalValidatorTempDir: string | null = null;
@@ -1362,7 +1364,7 @@ class PdfAuditService extends BaseAuditService<PdfParseResult, PdfValidationResu
 
       // Validate
       logger.info(`[PdfAudit] Validating with ${scanLevel} scan level...`);
-      const validation = await this.validate(parsed, scanLevel, customValidators, onValidatorComplete);
+      const validation = await this.validate(parsed, scanLevel, customValidators, onValidatorComplete, onAltTextImageProgress);
       logger.info(`[PdfAudit] Validation complete`);
 
       // Generate report

@@ -254,7 +254,7 @@ describe('processPdfAccessibility — auto-tag / strip-and-retag wiring', () => 
 
     // The audit must run against the newly retagged buffer, not the original.
     expect(pdfAuditService.runAuditFromBuffer).toHaveBeenCalledWith(
-      Buffer.from('retagged-pdf'), 'job-1', 'test.pdf', 'comprehensive', undefined, expect.any(Function), expect.any(Function),
+      Buffer.from('retagged-pdf'), 'job-1', 'test.pdf', 'comprehensive', undefined, expect.any(Function), expect.any(Function), expect.any(Function),
     );
   });
 
@@ -272,7 +272,7 @@ describe('processPdfAccessibility — auto-tag / strip-and-retag wiring', () => 
     expect(result.data?.retagOutcome).toBe('failed-strip-bailed');
 
     expect(pdfAuditService.runAuditFromBuffer).toHaveBeenCalledWith(
-      originalBuffer, 'job-1', 'test.pdf', 'comprehensive', undefined, expect.any(Function), expect.any(Function),
+      originalBuffer, 'job-1', 'test.pdf', 'comprehensive', undefined, expect.any(Function), expect.any(Function), expect.any(Function),
     );
   });
 
@@ -293,7 +293,7 @@ describe('processPdfAccessibility — auto-tag / strip-and-retag wiring', () => 
     // Never ships a stripped-but-not-retagged document — the audit must see
     // the ORIGINAL (un-stripped) buffer, exactly like today's existing behavior.
     expect(pdfAuditService.runAuditFromBuffer).toHaveBeenCalledWith(
-      originalBuffer, 'job-1', 'test.pdf', 'comprehensive', undefined, expect.any(Function), expect.any(Function),
+      originalBuffer, 'job-1', 'test.pdf', 'comprehensive', undefined, expect.any(Function), expect.any(Function), expect.any(Function),
     );
   });
 });
