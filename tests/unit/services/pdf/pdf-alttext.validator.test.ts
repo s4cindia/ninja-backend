@@ -4,7 +4,7 @@
  * Tests validation of alternative text for images in PDF documents.
  */
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { pdfAltTextValidator } from '../../../../src/services/pdf/validators/pdf-alttext.validator';
 import { imageExtractorService, DocumentImages, ImageInfo } from '../../../../src/services/pdf/image-extractor.service';
 import { pdfParserService, ParsedPDF } from '../../../../src/services/pdf/pdf-parser.service';
@@ -228,14 +228,14 @@ describe('PDFAltTextValidator', () => {
       const result = await pdfAltTextValidator.validateFromFile('/path/to/test.pdf', true);
 
       expect(geminiService.analyzeImageWithSchema).toHaveBeenCalled();
-      // Regression: quality-assessment calls also need the 600-token budget
-      // (was 300 — see the classification test above for why).
+      // Regression: quality-assessment calls also need the same 1000-token
+      // budget (was 300, then 600 — see the classification test above for why).
       expect(geminiService.analyzeImageWithSchema).toHaveBeenCalledWith(
         expect.any(String),
         expect.any(String),
         expect.any(String),
         expect.any(Object),
-        expect.objectContaining({ maxOutputTokens: 600 }),
+        expect.objectContaining({ maxOutputTokens: 1000 }),
         expect.any(Object)
       );
       expect(result.summary.moderate).toBeGreaterThan(0);
@@ -292,11 +292,14 @@ describe('PDFAltTextValidator', () => {
       );
     });
 
-    it('requests a 600-token budget for classification (regression: 300 was too tight)', async () => {
+    it('requests a 1000-token budget for classification (regression: 300, then 600, were both too tight)', async () => {
       // A real trial showed the model frequently prefixing responses with an
       // unwanted preamble ("Here is the analysis...") that, combined with a
       // 300-token budget, truncated the JSON mid-string — and since retries
       // reuse the same budget, the same truncation recurred on every attempt.
+      // A later real trial (2026-09-25, a 3843-image document) hit the same
+      // finishReason:"MAX_TOKENS" truncation again at 600, so the budget was
+      // raised further to 1000.
       const mockParsedPdf = createMockParsedPdf();
       const mockDocImages = createMockDocumentImages([
         createMockImageWithBase64(1, 0, undefined, false, 'base64data', 'image/jpeg'),
@@ -317,7 +320,7 @@ describe('PDFAltTextValidator', () => {
         expect.any(String),
         expect.any(String),
         expect.any(Object),
-        expect.objectContaining({ maxOutputTokens: 600 }),
+        expect.objectContaining({ maxOutputTokens: 1000 }),
         expect.any(Object)
       );
     });
@@ -407,6 +410,71 @@ describe('PDFAltTextValidator', () => {
       expect(qualityIssue).toBeDefined();
       expect(qualityIssue?.message).toContain('safety filter');
       expect(qualityIssue?.suggestion).toContain('Manual review required');
+    });
+  });
+
+  describe('onProgress callback', () => {
+    // Real incident (2026-09-25): a 3843-image document ran validate()'s
+    // image loop for 20+ minutes with no signal to the caller at all -- the
+    // only progress report available is per-VALIDATOR (before/after this
+    // entire loop), never per-image within it. A new stale-job watchdog that
+    // fails anything with no DB update for 20+ minutes then killed the job
+    // as "orphaned" even though it was still genuinely working. onProgress
+    // exists so the caller can touch Job.updatedAt periodically during a
+    // long image-heavy run.
+    beforeEach(() => {
+      vi.useFakeTimers();
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it('always calls onProgress on the final image, even with zero elapsed time', async () => {
+      const mockParsedPdf = createMockParsedPdf();
+      const mockDocImages = createMockDocumentImages([
+        createMockImage(1, 0, 'Fine alt text here', false),
+        createMockImage(1, 1, 'Also fine alt text', false),
+      ]);
+      vi.mocked(imageExtractorService.extractImages).mockResolvedValue(mockDocImages);
+
+      const onProgress = vi.fn();
+      await pdfAltTextValidator.validate(mockParsedPdf, false, onProgress);
+
+      expect(onProgress).toHaveBeenCalledWith(2, 2);
+    });
+
+    it('throttles to at most one call per 30s while still-in-progress, independent of image count', async () => {
+      const mockParsedPdf = createMockParsedPdf();
+      // Three non-final images -- if onProgress fired per-image regardless of
+      // elapsed time, this would be 3 calls before the final (4th) image.
+      const mockDocImages = createMockDocumentImages([
+        createMockImage(1, 0, 'Fine alt text here', false),
+        createMockImage(1, 1, 'Fine alt text here', false),
+        createMockImage(1, 2, 'Fine alt text here', false),
+        createMockImage(1, 3, 'Fine alt text here', false),
+      ]);
+      vi.mocked(imageExtractorService.extractImages).mockResolvedValue(mockDocImages);
+
+      const onProgress = vi.fn();
+      const validatePromise = pdfAltTextValidator.validate(mockParsedPdf, false, onProgress);
+      // No time advance between images 1-3 -- still within the 30s window.
+      await validatePromise;
+
+      // Only the final-image flush fired; the three earlier images were all
+      // throttled since no wall-clock time passed between them.
+      expect(onProgress).toHaveBeenCalledTimes(1);
+      expect(onProgress).toHaveBeenCalledWith(4, 4);
+    });
+
+    it('is optional -- validate() still works with no onProgress argument', async () => {
+      const mockParsedPdf = createMockParsedPdf();
+      const mockDocImages = createMockDocumentImages([
+        createMockImage(1, 0, 'Fine alt text here', false),
+      ]);
+      vi.mocked(imageExtractorService.extractImages).mockResolvedValue(mockDocImages);
+
+      await expect(pdfAltTextValidator.validate(mockParsedPdf, false)).resolves.toBeDefined();
     });
   });
 

@@ -424,6 +424,9 @@ async function processPdfAccessibility(
   // a failed progress write becomes a non-fatal warning instead of a process
   // crash.
   let totalPagesStored = false;
+  // Tracked so onAltTextImageProgress below can re-write the same value
+  // (see its own doc comment for why it never computes a new one).
+  let lastKnownPct = auditStartPct;
   const onProgress = async (currentPage: number, totalPages: number) => {
     try {
       if (!totalPagesStored && totalPages > 0) {
@@ -444,6 +447,7 @@ async function processPdfAccessibility(
       }
       if (totalPages > 0) {
         const pct = auditStartPct + Math.round((currentPage / totalPages) * auditPctRange);
+        lastKnownPct = pct;
         await job.updateProgress(pct);
         await queueService.updateJobProgress(dbJobId, pct);
       }
@@ -461,6 +465,7 @@ async function processPdfAccessibility(
       validatorProgress.push({ label, issuesFound, startedAt: startedAt.toISOString(), completedAt: new Date().toISOString() });
       logger.info(`[PDF Worker] Validator "${label}" done: ${issuesFound} issues (${completed}/${total})`);
       const pct = 88 + Math.round((completed / total) * 7); // 88–95%
+      lastKnownPct = pct;
       await job.updateProgress(pct);
       await queueService.updateJobProgress(dbJobId, pct);
       const ej = await prisma.job.findUnique({ where: { id: dbJobId }, select: { input: true } });
@@ -475,6 +480,36 @@ async function processPdfAccessibility(
     }
   };
 
+  // Alt Text sub-progress: touches Job.updatedAt every ~30s while
+  // PDFAltTextValidator works through a large image set, independent of
+  // onValidatorComplete above (which only fires once, after ALL images are
+  // done). Real incident (2026-09-25): a 3843-image document ran this step
+  // for 20+ minutes with no intervening update, which the new
+  // cleanupStalePdfJobs watchdog (src/workers/index.ts) then wrongly killed
+  // as "orphaned" -- it was still genuinely working, just not reporting in.
+  // Deliberately re-writes lastKnownPct rather than computing a new value:
+  // guessing at Alt Text's share of the 88-95% validator range here risks
+  // the progress bar visibly jumping backward relative to what
+  // onValidatorComplete will report once this validator actually finishes.
+  // Also records real per-image progress in job.input for visibility into
+  // exactly this kind of long-running phase (the only thing available while
+  // investigating the incident above was a frozen top-level percentage).
+  const onAltTextImageProgress = async (completed: number, total: number) => {
+    try {
+      logger.info(`[PDF Worker] Alt Text progress for job ${dbJobId}: ${completed}/${total} images`);
+      await queueService.updateJobProgress(dbJobId, lastKnownPct);
+      const ej = await prisma.job.findUnique({ where: { id: dbJobId }, select: { input: true } });
+      const ei = ej?.input && typeof ej.input === 'object' && !Array.isArray(ej.input)
+        ? ej.input as Record<string, unknown> : {};
+      await prisma.job.update({
+        where: { id: dbJobId },
+        data: { input: { ...ei, altTextImageProgress: { completed, total } } as Prisma.InputJsonObject },
+      });
+    } catch (err) {
+      logger.warn(`[PDF Worker] onAltTextImageProgress callback failed for job ${dbJobId} (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
+    }
+  };
+
   logger.info(`[PDF Worker] Running audit for job ${dbJobId}, file: ${fileName}`);
   const scanLevel = 'comprehensive';
   const auditReport = await pdfAuditService.runAuditFromBuffer(
@@ -485,6 +520,7 @@ async function processPdfAccessibility(
     undefined,
     onProgress,
     onValidatorComplete,
+    onAltTextImageProgress,
   );
   logger.info(`[PDF Worker] Audit complete for job ${dbJobId}`);
 

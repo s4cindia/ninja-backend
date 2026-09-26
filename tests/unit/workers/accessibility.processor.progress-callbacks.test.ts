@@ -96,6 +96,7 @@ async function captureCallbacks() {
   return {
     onProgress: call[5] as (currentPage: number, totalPages: number) => Promise<void>,
     onValidatorComplete: call[6] as (label: string, issuesFound: number, completed: number, total: number, startedAt: Date) => Promise<void>,
+    onAltTextImageProgress: call[7] as (completed: number, total: number) => Promise<void>,
   };
 }
 
@@ -191,5 +192,44 @@ describe('accessibility.processor progress callbacks — crash-safety', () => {
     await onValidatorComplete('Alt Text', 3, 2, 8, new Date());
 
     expect(logger.warn).not.toHaveBeenCalledWith(expect.stringContaining('callback failed'));
+  });
+
+  // Real incident (2026-09-25): PDFAltTextValidator's internal per-image
+  // loop (up to thousands of images on a large document) reported zero
+  // progress to the caller for its entire duration -- only onValidatorComplete
+  // above fires, and only once, after every image is done. A new stale-job
+  // watchdog that fails anything with no DB update for 20+ minutes then
+  // killed a genuinely still-working job as "orphaned." onAltTextImageProgress
+  // exists to touch Job.updatedAt periodically during that long-running loop,
+  // and needs the same crash-safety guarantee as the two callbacks above.
+  it('onAltTextImageProgress resolves (never rejects) when queueService.updateJobProgress fails', async () => {
+    const { onAltTextImageProgress } = await captureCallbacks();
+
+    vi.mocked(queueService.updateJobProgress).mockRejectedValueOnce(new Error('redis connection reset'));
+
+    await expect(onAltTextImageProgress(1200, 3843)).resolves.toBeUndefined();
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.stringContaining('onAltTextImageProgress callback failed for job job-1')
+    );
+  });
+
+  it('onAltTextImageProgress resolves (never rejects) when prisma.job.update fails', async () => {
+    const { onAltTextImageProgress } = await captureCallbacks();
+
+    vi.mocked(prisma.job.update).mockRejectedValueOnce(new Error('connection pool exhausted'));
+
+    await expect(onAltTextImageProgress(1200, 3843)).resolves.toBeUndefined();
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.stringContaining('onAltTextImageProgress callback failed for job job-1')
+    );
+  });
+
+  it('onAltTextImageProgress records progress normally when nothing fails', async () => {
+    const { onAltTextImageProgress } = await captureCallbacks();
+
+    await onAltTextImageProgress(1200, 3843);
+
+    expect(logger.warn).not.toHaveBeenCalledWith(expect.stringContaining('callback failed'));
+    expect(queueService.updateJobProgress).toHaveBeenCalledWith('job-1', expect.any(Number));
   });
 });

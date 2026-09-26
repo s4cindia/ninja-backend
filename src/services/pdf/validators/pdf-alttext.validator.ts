@@ -138,9 +138,24 @@ class PDFAltTextValidator {
    *
    * @param parsedPdf - Parsed PDF document
    * @param useAI - Whether to use AI for quality assessment
+   * @param onProgress - Called at most once every 30s (plus once on the final
+   *   image) as images are validated. Real incident (2026-09-25): a
+   *   529-page/3843-image document ran this loop for 20+ minutes with zero
+   *   intervening signal to the caller -- the only progress report is
+   *   per-VALIDATOR (before this loop starts and after it fully finishes),
+   *   never per-image within it. A new stale-job watchdog that fails
+   *   anything with no DB update for 20+ minutes (see
+   *   src/workers/index.ts's cleanupStalePdfJobs) then killed the job as
+   *   "orphaned" even though it was still genuinely working. This callback
+   *   lets the caller touch Job.updatedAt periodically during a long
+   *   image-heavy run, independent of that run's own AI-call latency.
    * @returns Validation result with issues
    */
-  async validate(parsedPdf: ParsedPDF, useAI: boolean = true): Promise<AltTextValidationResult> {
+  async validate(
+    parsedPdf: ParsedPDF,
+    useAI: boolean = true,
+    onProgress?: (completed: number, total: number) => void
+  ): Promise<AltTextValidationResult> {
     this.issueCounter = 0;
     const issues: AuditIssue[] = [];
 
@@ -162,11 +177,26 @@ class PDFAltTextValidator {
     );
 
     // Validate each image
+    const totalImages = documentImages.totalImages;
+    let imagesCompleted = 0;
+    // Time-based, not count-based: per-image latency varies a lot (a
+    // MAX_TOKENS retry alone can take ~30-60s), so a fixed image-count
+    // throttle could still leave a multi-minute gap. A 30s wall-clock cap
+    // comfortably beats the 20-minute watchdog above regardless of how slow
+    // (or fast) any individual image turns out to be.
+    const PROGRESS_THROTTLE_MS = 30_000;
+    let lastProgressAt = Date.now();
     for (const pageImages of documentImages.pages) {
       for (const image of pageImages.images) {
         const pageSize = pageDims.get(image.pageNumber) ?? { width: 0, height: 0 };
         const imageIssues = await this.validateImage(image, useAI, pageSize);
         issues.push(...imageIssues);
+        imagesCompleted++;
+        const isLast = imagesCompleted === totalImages;
+        if (onProgress && (isLast || Date.now() - lastProgressAt >= PROGRESS_THROTTLE_MS)) {
+          lastProgressAt = Date.now();
+          onProgress(imagesCompleted, totalImages);
+        }
       }
     }
 
@@ -494,22 +524,21 @@ markdown code fences. Your response must start with "{" and contain nothing else
     try {
       // responseSchema alone doesn't guarantee compliance — retry with a
       // correction prompt (same image re-attached) on a parse miss rather
-      // than giving up after one attempt. maxOutputTokens raised 300 -> 600:
-      // the model would often prefix responses with an unwanted "Here is
-      // the analysis..." preamble despite instructions, and at 300 tokens
-      // that preamble frequently ate enough of the budget to truncate the
-      // JSON itself mid-string (seen live as sustained "Unexpected end of
-      // JSON input" / "Here is th"-prefixed parse failures on a real trial).
-      // Since maxOutputTokens is fixed per call and reused unchanged on
-      // every retry attempt, a too-tight budget made retries just as likely
-      // to truncate as the first attempt — a stronger-worded retry prompt
-      // alone can't fix a budget problem.
+      // than giving up after one attempt. maxOutputTokens raised 300 -> 600
+      // -> 1000 (2026-09-25): 600 was still hitting finishReason:"MAX_TOKENS"
+      // live on a real trial (3843-image document), truncating mid-string
+      // the same way 300 did before it. Since maxOutputTokens is fixed per
+      // call and reused unchanged on every retry attempt, a too-tight budget
+      // makes retries just as likely to truncate as the first attempt — a
+      // stronger-worded retry prompt alone can't fix a budget problem, so
+      // this raises the ceiling itself rather than relying on retries to
+      // work around it.
       const { data } = await geminiService.analyzeImageWithSchema(
         image.base64,
         image.mimeType,
         prompt,
         AssessAltTextResult,
-        { model: 'flash', temperature: 0.3, maxOutputTokens: 600, responseSchema: ASSESS_ALT_TEXT_SCHEMA },
+        { model: 'flash', temperature: 0.3, maxOutputTokens: 1000, responseSchema: ASSESS_ALT_TEXT_SCHEMA },
         { maxRetries: 2 }
       );
       return { matchesContent: data.matchesContent, suggestedAltText: data.suggestedAltText };
@@ -550,14 +579,14 @@ markdown code fences. Your response must start with "{" and contain nothing else
     try {
       // responseSchema alone doesn't guarantee compliance — retry with a
       // correction prompt (same image re-attached) on a parse miss rather
-      // than giving up after one attempt. maxOutputTokens raised 300 -> 600 —
-      // see the matching comment in assessAltTextWithAI above for why.
+      // than giving up after one attempt. maxOutputTokens raised 300 -> 600 ->
+      // 1000 — see the matching comment in assessAltTextWithAI above for why.
       const { data } = await geminiService.analyzeImageWithSchema(
         image.base64!,
         image.mimeType,
         prompt,
         ClassifyImageResult,
-        { model: 'flash', temperature: 0.2, maxOutputTokens: 600, responseSchema: CLASSIFY_IMAGE_SCHEMA },
+        { model: 'flash', temperature: 0.2, maxOutputTokens: 1000, responseSchema: CLASSIFY_IMAGE_SCHEMA },
         { maxRetries: 2 }
       );
 
