@@ -154,7 +154,7 @@ class PDFAltTextValidator {
   async validate(
     parsedPdf: ParsedPDF,
     useAI: boolean = true,
-    onProgress?: (completed: number, total: number) => void
+    onProgress?: (completed: number, total: number) => void | Promise<void>
   ): Promise<AltTextValidationResult> {
     this.issueCounter = 0;
     const issues: AuditIssue[] = [];
@@ -195,7 +195,14 @@ class PDFAltTextValidator {
         const isLast = imagesCompleted === totalImages;
         if (onProgress && (isLast || Date.now() - lastProgressAt >= PROGRESS_THROTTLE_MS)) {
           lastProgressAt = Date.now();
-          onProgress(imagesCompleted, totalImages);
+          // Awaited (not fire-and-forget): the caller's callback does a
+          // read-modify-write of Job.input, as does onValidatorComplete
+          // right after this method returns. Without awaiting here, the
+          // final-image call could still be in flight when
+          // onValidatorComplete's own read-modify-write starts, and whichever
+          // write lands last would silently clobber the other's field
+          // (CodeRabbit catch, PR #621).
+          await onProgress(imagesCompleted, totalImages);
         }
       }
     }

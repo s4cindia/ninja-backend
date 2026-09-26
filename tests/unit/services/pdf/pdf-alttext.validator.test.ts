@@ -476,6 +476,28 @@ describe('PDFAltTextValidator', () => {
 
       await expect(pdfAltTextValidator.validate(mockParsedPdf, false)).resolves.toBeDefined();
     });
+
+    it('awaits an async onProgress before resolving (CodeRabbit catch, PR #621)', async () => {
+      // Without awaiting the final-image call, validate() could resolve --
+      // and the caller's own onValidatorComplete could start its own
+      // read-modify-write of the same Job.input JSON blob -- while
+      // onProgress's write was still in flight, silently clobbering
+      // whichever field lost the race.
+      const mockParsedPdf = createMockParsedPdf();
+      const mockDocImages = createMockDocumentImages([
+        createMockImage(1, 0, 'Fine alt text here', false),
+      ]);
+      vi.mocked(imageExtractorService.extractImages).mockResolvedValue(mockDocImages);
+
+      let progressResolved = false;
+      const onProgress = vi.fn().mockImplementation(() => Promise.resolve().then(() => {
+        progressResolved = true;
+      }));
+
+      await pdfAltTextValidator.validate(mockParsedPdf, false, onProgress);
+
+      expect(progressResolved).toBe(true);
+    });
   });
 
   describe('severity classification', () => {
