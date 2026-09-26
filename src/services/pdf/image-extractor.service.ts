@@ -540,6 +540,21 @@ class ImageExtractorService {
                     structInfo?.isDecorative
                   );
 
+                  // Real incident (2026-09-26): processImage -> decodeStreamBytes
+                  // runs zlib.inflateSync + reversePredictor's hand-written
+                  // per-byte pixel loop synchronously, with no yield points of
+                  // its own, for every PNG/predictor-encoded image (common for
+                  // scanned figures). On a 3843-image document, enough of these
+                  // back-to-back delayed Node's timer phase long enough that
+                  // BullMQ's own lock-renewal missed its window mid-extraction
+                  // -- BullMQ concluded the (actually-alive, just busy) worker
+                  // had died and silently restarted the ENTIRE audit from
+                  // scratch. This explicit macrotask yield after every image
+                  // guarantees the event loop gets a real chance to run pending
+                  // timers regardless of how expensive any single image's
+                  // decode turns out to be.
+                  await new Promise<void>(resolve => setImmediate(resolve));
+
                   if (imageInfo &&
                       imageInfo.dimensions.width >= options.minWidth &&
                       imageInfo.dimensions.height >= options.minHeight) {
