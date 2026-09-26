@@ -128,6 +128,88 @@ describe('accessibility.processor — audit heartbeat', () => {
     expect(vi.mocked(queueService.updateJobProgress).mock.calls.length).toBe(callsAfterCompletion);
   });
 
+  it('stops refreshing updatedAt past the max heartbeat lifetime, so a genuinely hung job can still be caught (CodeRabbit P1)', async () => {
+    // An unbounded heartbeat would mask a TRULY hung job (a deadlocked
+    // validator or DB call, not just a slow one) forever, since
+    // cleanupStalePdfJobs (src/workers/index.ts) would never see a stale
+    // updatedAt again. The cap lets the normal 20-min watchdog resume
+    // authority once a run has gone on far longer than any legitimate one.
+    vi.mocked(pdfAuditService.runAuditFromBuffer).mockReturnValue(new Promise(() => {})); // never resolves
+
+    processAccessibilityJob(makeJob());
+    await vi.advanceTimersByTimeAsync(0);
+
+    // Advance to just under the 6h cap -- heartbeat still ticking.
+    await vi.advanceTimersByTimeAsync(6 * 60 * 60 * 1000 - 60 * 1000);
+    const callsNearCap = vi.mocked(queueService.updateJobProgress).mock.calls.length;
+    expect(callsNearCap).toBeGreaterThan(0);
+
+    // Advance well past the cap -- no further heartbeat calls should land.
+    await vi.advanceTimersByTimeAsync(60 * 60 * 1000);
+    const callsPastCap = vi.mocked(queueService.updateJobProgress).mock.calls.length;
+
+    await vi.advanceTimersByTimeAsync(2 * 60 * 1000 * 5);
+    expect(vi.mocked(queueService.updateJobProgress).mock.calls.length).toBe(callsPastCap);
+  });
+
+  it('awaits an in-flight heartbeat write before letting the function continue, so it can never land after the final progress write (CodeRabbit Major)', async () => {
+    // clearInterval only stops FUTURE ticks -- without awaiting the very
+    // last in-flight write, it could otherwise resolve after progress is
+    // set to 100/COMPLETED, regressing it back to a stale lastKnownPct with
+    // a misleadingly later updatedAt.
+    let resolveAudit!: (value: any) => void;
+    vi.mocked(pdfAuditService.runAuditFromBuffer).mockReturnValue(
+      new Promise((resolve) => { resolveAudit = resolve; })
+    );
+
+    const job = makeJob();
+    const jobPromise = processAccessibilityJob(job);
+
+    // Let the processor run up to (but not through) runAuditFromBuffer --
+    // every updateJobProgress call up to this point (10%, auditStartPct,
+    // etc.) must resolve normally, whatever the exact count turns out to be.
+    await vi.advanceTimersByTimeAsync(0);
+    const callsBeforeHeartbeat = vi.mocked(queueService.updateJobProgress).mock.calls.length;
+
+    // From here on, intercept exactly the NEXT call (the first heartbeat
+    // tick, since runAuditFromBuffer is mocked and never itself invokes
+    // onProgress/onValidatorComplete) and hold it pending indefinitely.
+    let resolveHeartbeatWrite!: () => void;
+    let heartbeatWriteStarted = false;
+    let callsSoFar = callsBeforeHeartbeat;
+    vi.mocked(queueService.updateJobProgress).mockImplementation(() => {
+      callsSoFar++;
+      if (callsSoFar === callsBeforeHeartbeat + 1) {
+        heartbeatWriteStarted = true;
+        return new Promise((resolve) => { resolveHeartbeatWrite = resolve; });
+      }
+      return Promise.resolve();
+    });
+
+    // Fire exactly one heartbeat tick -- its write is now in flight and
+    // deliberately never resolved yet.
+    await vi.advanceTimersByTimeAsync(2 * 60 * 1000);
+    expect(heartbeatWriteStarted).toBe(true);
+
+    // Resolve the audit itself while that heartbeat write is still pending,
+    // and let plenty of fake time pass -- long enough for every OTHER
+    // intervening step (AcrJob creation, etc.) to fully settle on its own.
+    resolveAudit({ issues: [], score: 100 });
+    await vi.advanceTimersByTimeAsync(10_000);
+
+    // The function must NOT have reached job.updateProgress(100) yet -- it's
+    // still awaiting the in-flight heartbeat write in the finally block.
+    expect(job.updateProgress).not.toHaveBeenCalledWith(100);
+
+    // Now let the in-flight heartbeat write resolve -- only then can the
+    // function proceed to its own final progress write.
+    resolveHeartbeatWrite();
+    await vi.advanceTimersByTimeAsync(0);
+    await jobPromise;
+
+    expect(job.updateProgress).toHaveBeenCalledWith(100);
+  });
+
   it('stops the heartbeat even when runAuditFromBuffer throws', async () => {
     let rejectAudit!: (err: Error) => void;
     vi.mocked(pdfAuditService.runAuditFromBuffer).mockReturnValue(
