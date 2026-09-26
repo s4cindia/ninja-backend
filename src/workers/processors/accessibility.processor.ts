@@ -134,6 +134,63 @@ function collectLangAttributes(
   }
 }
 
+export interface TimingSummary {
+  /** Wall-clock from Job.startedAt to whenever this summary is computed (job completion). */
+  totalMs: number | null;
+  autoTagMs: number | null;
+  /** No explicit start/end markers of its own -- inferred as whatever ran
+   * between auto-tagging (if any) finishing and the first validator starting. */
+  extractionMs: number | null;
+  /** Keyed by validator label ("Structure & Tags", "Alt Text", etc.), ms each took. */
+  validators: Record<string, number>;
+  totalPages: number | null;
+  totalImages: number | null;
+  fileSizeBytes: number | null;
+  computedAt: string;
+}
+
+/**
+ * Pure rollup of every timing signal already written to Job.input over the
+ * course of an audit (validatorProgress, totalPages, altTextImageProgress,
+ * autoTagProgress) into one flat, query-ready record. Kept pure (no Prisma
+ * calls) so it's directly unit-testable without mocking the DB -- see
+ * accessibility.processor.timing-summary.test.ts.
+ */
+export function computeTimingSummary(input: Record<string, unknown>, jobStartedAt: Date | null): TimingSummary {
+  const validatorEntries = Array.isArray(input.validatorProgress)
+    ? input.validatorProgress as Array<{ label: string; startedAt: string; completedAt: string }>
+    : [];
+  const autoTag = input.autoTagProgress as { startedAt?: string; completedAt?: string } | undefined;
+  const altTextTotal = (input.altTextImageProgress as { total?: number } | undefined)?.total ?? null;
+
+  const validators: Record<string, number> = {};
+  for (const v of validatorEntries) {
+    validators[v.label] = new Date(v.completedAt).getTime() - new Date(v.startedAt).getTime();
+  }
+
+  const extractionStart = autoTag?.completedAt ?? jobStartedAt?.toISOString();
+  const firstValidatorStart = validatorEntries[0]?.startedAt;
+  const extractionMs = extractionStart && firstValidatorStart
+    ? new Date(firstValidatorStart).getTime() - new Date(extractionStart).getTime()
+    : null;
+
+  const totalMs = jobStartedAt ? Date.now() - jobStartedAt.getTime() : null;
+  const autoTagMs = autoTag?.startedAt && autoTag?.completedAt
+    ? new Date(autoTag.completedAt).getTime() - new Date(autoTag.startedAt).getTime()
+    : null;
+
+  return {
+    totalMs,
+    autoTagMs,
+    extractionMs,
+    validators,
+    totalPages: (input.totalPages as number | undefined) ?? null,
+    totalImages: altTextTotal,
+    fileSizeBytes: (input.size as number | undefined) ?? null,
+    computedAt: new Date().toISOString(),
+  };
+}
+
 export async function processAccessibilityJob(
   job: Job<JobData, JobResult>
 ): Promise<JobResult> {
@@ -643,6 +700,32 @@ async function processPdfAccessibility(
         logger.warn(`[PDF Worker] AI Analysis failed for job ${dbJobId} (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
       });
   }, 3000);
+
+  // Roll up every timing signal collected above into one flat, query-ready
+  // record -- the goal (per user direction, 2026-09-26) is enough real data
+  // per-title, per-step, to eventually estimate audit time from a new
+  // upload's page/image count before running it. The raw pieces
+  // (validatorProgress, totalPages, altTextImageProgress, autoTagProgress)
+  // already exist scattered across job.input; this is the same data,
+  // computed once at completion so a later analysis doesn't have to re-parse
+  // and re-derive it from every single Job row by hand.
+  try {
+    const ej = await prisma.job.findUnique({ where: { id: dbJobId }, select: { input: true, startedAt: true } });
+    const ei = ej?.input && typeof ej.input === 'object' && !Array.isArray(ej.input)
+      ? ej.input as Record<string, unknown> : {};
+
+    await prisma.job.update({
+      where: { id: dbJobId },
+      data: {
+        input: {
+          ...ei,
+          timingSummary: computeTimingSummary(ei, ej?.startedAt ?? null),
+        } as unknown as Prisma.InputJsonObject,
+      },
+    });
+  } catch (err) {
+    logger.warn(`[PDF Worker] Failed to compute timingSummary for job ${dbJobId} (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
+  }
 
   await job.updateProgress(100);
   await queueService.updateJobProgress(dbJobId, 100);
