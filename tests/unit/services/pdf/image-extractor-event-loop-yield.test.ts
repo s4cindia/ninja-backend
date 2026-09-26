@@ -47,9 +47,20 @@ describe('extractPageImages — event-loop yield between images', () => {
     const bytes = await src.save();
     const parsedPdf = await pdfParserService.parseBuffer(Buffer.from(bytes));
 
+    // Records how many yields had already RESOLVED at the moment each new
+    // one is scheduled (CodeRabbit catch: counting scheduled calls alone
+    // can't tell an awaited yield from three fired-and-forgotten in a row --
+    // only a strictly increasing sequence proves the loop actually waits for
+    // each one before moving to the next image).
+    let resolvedCount = 0;
+    const resolvedCountAtEachSchedule: number[] = [];
     const realSetImmediate = global.setImmediate;
     const setImmediateSpy = vi.spyOn(global, 'setImmediate').mockImplementation(((cb: () => void) => {
-      return realSetImmediate(cb);
+      resolvedCountAtEachSchedule.push(resolvedCount);
+      return realSetImmediate(() => {
+        resolvedCount++;
+        cb();
+      });
     }) as unknown as typeof setImmediate);
 
     try {
@@ -60,6 +71,9 @@ describe('extractPageImages — event-loop yield between images', () => {
       // One yield per image actually processed through the loop -- not a
       // single yield for the whole page, and not zero (the pre-fix behavior).
       expect(setImmediateSpy.mock.calls.length).toBeGreaterThanOrEqual(3);
+      // Strictly increasing: the Nth yield is only scheduled after the
+      // (N-1)th has already resolved, proving the loop awaits sequentially.
+      expect(resolvedCountAtEachSchedule.slice(0, 3)).toEqual([0, 1, 2]);
     } finally {
       await pdfParserService.close(parsedPdf);
     }
