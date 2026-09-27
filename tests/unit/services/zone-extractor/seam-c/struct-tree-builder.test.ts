@@ -139,10 +139,31 @@ describe('buildStructTreeFromZones (end-to-end)', () => {
     expect(figureBBox).toBeInstanceOf(PDFArray); // device-space [x1 y1 x2 y2]
   });
 
+  it('drops a Figure zone that overlaps no real content (a zone-detector false positive)', async () => {
+    // Real incident (2026-09-27, Curiel title page): the YOLO detector flagged a
+    // "figure" region over blank whitespace -- no text, image, or path painted
+    // anywhere inside its bbox. Creating a Figure StructElem there left an
+    // orphan with no /K (invalid PDF/UA) and an unfixable "missing alt text"
+    // issue for content that doesn't exist. Pick a bbox far from any drawn
+    // text (the page's content sits in y=[420,570]; this sits at y=[50,90]).
+    const doc = await PDFDocument.load(await makeUntaggedPdf());
+    const result = buildStructTreeFromZones(doc, [
+      z('section-header', 30, 20),                                    // real: bound to 'Chapter One'
+      { pageNumber: 1, bbox: { x: 50, y: 500, w: 200, h: 40 }, zoneType: 'figure' }, // blank region
+    ]);
+    expect(result.mcids).toBe(1); // only the section-header actually bound
+
+    const tagged = await doc.save();
+    const { tree } = await serializeStructTreeAsync(tagged as unknown as Parameters<typeof serializeStructTreeAsync>[0]);
+    const topTags = (tree[0].children || []).map((c) => c.tag);
+    expect(topTags).not.toContain('Figure');
+    expect(topTags).toEqual(['H1']);
+  });
+
   it('is a no-op for a PDF with no zones', async () => {
     const doc = await PDFDocument.load(await makeUntaggedPdf());
     const result = buildStructTreeFromZones(doc, []);
-    expect(result).toEqual({ elements: 0, mcids: 0, pages: 0 });
+    expect(result).toEqual({ elements: 0, mcids: 0, pages: 0, droppedZoneCounts: {} });
     expect(doc.catalog.get(PDFName.of('StructTreeRoot'))).toBeFalsy();
   });
 });

@@ -63,6 +63,27 @@ describe('SeamCTagService.tagPdf', () => {
     expect(deps.touchIdle).toHaveBeenCalledOnce();
   });
 
+  it('does not count a figure zone the struct-tree builder dropped for having no bound content', async () => {
+    // Real incident (Curiel title page): the detector flagged a "figure" zone
+    // over blank page space (no text/image there). struct-tree-builder.ts
+    // correctly drops it from the tree, but elementCounts must not still
+    // report it -- that would over-count zones that were never actually
+    // tagged as structure.
+    const buf = await makeUntaggedPdf();
+    const deps = mockDeps({
+      detect: vi.fn(async () => ({
+        zones: [
+          ...DETECT_RESPONSE.zones,
+          { page: 1, bbox: { x: 50, y: 300, w: 400, h: 20 }, label: 'figure' }, // blank region
+        ],
+      })),
+    });
+    const res = await svc.tagPdf(buf, 'job4', deps);
+
+    expect(res.elementCounts).toEqual({ 'section-header': 1, paragraph: 1 });
+    expect(res.elementCounts.figure).toBeUndefined();
+  });
+
   it('throws SEAM_C_NO_ZONES when the detector returns nothing (temp still cleaned)', async () => {
     const buf = await makeUntaggedPdf();
     const deps = mockDeps({ detect: vi.fn(async () => ({ zones: [] })) });

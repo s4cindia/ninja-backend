@@ -78,10 +78,19 @@ export class SeamCTagService {
     const doc = await PDFDocument.load(pdfBuffer);
     const buildResult = buildStructTreeFromZones(doc, zones);
 
+    // Tally raw detected zones, then subtract any the struct-tree builder
+    // dropped for having no bound content (e.g. a "figure" zone over blank
+    // page space) -- otherwise this over-reports zones that never actually
+    // made it into the emitted structure.
     const elementCounts = zones.reduce<Record<string, number>>((counts, zone) => {
       counts[zone.zoneType] = (counts[zone.zoneType] ?? 0) + 1;
       return counts;
     }, {});
+    for (const [zoneType, dropped] of Object.entries(buildResult.droppedZoneCounts)) {
+      const remaining = (elementCounts[zoneType] ?? 0) - dropped;
+      if (remaining > 0) elementCounts[zoneType] = remaining;
+      else delete elementCounts[zoneType];
+    }
 
     // 3 — synthesise /ToUnicode for fonts missing one (veraPDF 7.21.7). Best-effort,
     // deterministic, and never wrong for standard text; math fonts fall to a PUA
