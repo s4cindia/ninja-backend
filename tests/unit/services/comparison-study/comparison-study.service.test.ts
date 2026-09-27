@@ -248,6 +248,40 @@ describe('comparison-study.service', () => {
       );
       expect(trial.ninjaJobId).toBe('job-123');
     });
+
+    it("sets autoColorContrastMode to 'apply-to-pdf' explicitly, and leaves mode unset so the schema default ('auto') applies", async () => {
+      // A new trial should start in auto mode with auto-apply contrast
+      // handling, with no manual reconfiguration -- mode relies on
+      // ComparisonTrial.mode's own column default (schema.prisma) rather
+      // than being set here, since Prisma only applies a column default
+      // when the field is OMITTED from the create() data, not when
+      // explicitly passed. autoColorContrastMode is different: it must
+      // stay nullable at the schema level (see its own doc comment --
+      // a column default there would silently override the tenant-wide
+      // setting other flows still inherit), so THIS is the one and only
+      // place that sets it, as a comparison-study-specific application
+      // default.
+      (s3Service.getFileSize as ReturnType<typeof vi.fn>).mockResolvedValue(123456);
+      (createAndEnqueuePdfAuditJob as ReturnType<typeof vi.fn>).mockResolvedValue({ jobId: 'job-456' });
+      mockPrisma.comparisonTrial.create.mockResolvedValue({
+        id: 'trial-2',
+        ninjaJobId: 'job-456',
+        status: 'registered',
+      });
+
+      await registerTrial({
+        sourceFileName: 'sample2.pdf',
+        sourceS3Key: 'comparison-study/456-sample2.pdf',
+        contentType: 'text-dominant',
+        operatorId: 'op-1',
+        tenantId: 'tenant-1',
+        userId: 'user-1',
+      });
+
+      const createCall = mockPrisma.comparisonTrial.create.mock.calls[0][0];
+      expect(createCall.data.autoColorContrastMode).toBe('apply-to-pdf');
+      expect(createCall.data).not.toHaveProperty('mode');
+    });
   });
 
   describe('getTrialReport', () => {

@@ -105,6 +105,12 @@ export async function registerTrial(input: {
       operatorId: input.operatorId,
       ninjaJobId: jobId,
       status: 'registered',
+      // Comparison-study-specific application default -- see
+      // ComparisonTrial.autoColorContrastMode's own doc comment in
+      // schema.prisma for why this is set here rather than as a column
+      // default (a column default would silently override the tenant-wide
+      // setting other, non-comparison-study flows still inherit).
+      autoColorContrastMode: 'apply-to-pdf',
     },
   });
 
