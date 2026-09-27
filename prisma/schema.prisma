@@ -20,6 +20,7 @@ model Tenant {
   jobs                Job[]
   products            Product[]
   batches             Batch[]
+  pdfBatches          PdfBatch[]
   editorialDocs       EditorialDocument[]
   houseRuleSets       HouseRuleSet[]
   houseStyleRules     HouseStyleRule[]
@@ -48,6 +49,7 @@ model User {
   acrJobs               AcrJob[]
   acrCriterionReviews   AcrCriterionReview[] @relation("CriterionReviewer")
   batches               Batch[]
+  pdfBatches            PdfBatch[]
   workflowInstances     WorkflowInstance[]
   batchWorkflows        BatchWorkflow[]
   hitlDecisions         HITLDecision[]
@@ -147,6 +149,7 @@ model Job {
   comparisonTrial        ComparisonTrial?
   remediationSessions    RemediationSession[]
   remediationCycleEvents RemediationCycleEvent[]
+  pdfAutoRemediationRun  PdfAutoRemediationRun?
 
   @@index([tenantId])
   @@index([status])
@@ -748,6 +751,202 @@ enum BatchFileStatus {
   REMEDIATED
   FAILED
   SKIPPED
+}
+
+// ============================================
+// PDF BATCH PROCESSING MODELS
+// ============================================
+// Deliberately NOT an extension of Batch/BatchFile above -- those are
+// EPUB-shaped throughout (hardcoded mimeType, EPUB-only file validation in
+// batch-orchestrator.service.ts, an auto/quickfix/manual issue taxonomy that
+// doesn't map onto PDF's AI-suggestion model) and PDF batch needs a
+// genuinely different, CONCURRENT processing structure -- Batch's own
+// processBatchSync is a plain sequential for-loop, but the weighted
+// concurrency budget below (the "5 small files, or 1 large alone" scenario)
+// requires real concurrency, which nothing in this schema's batch concept
+// does today.
+
+model PdfBatch {
+  id       String @id @default(uuid())
+  tenantId String
+  userId   String
+  name     String
+
+  status PdfBatchStatus @default(DRAFT)
+
+  totalFiles Int @default(0)
+  // Per-status item counts are computed at read time from PdfBatchItem
+  // rather than tracked as incremented counters here -- Batch's own
+  // increment-based counters (filesAudited, filesRemediated, etc., above)
+  // drift from reality and its own processBatchSync has to reconcile them
+  // at the end; avoid reproducing that class of bug.
+
+  items  PdfBatchItem[]
+  tenant Tenant         @relation(fields: [tenantId], references: [id])
+  user   User           @relation(fields: [userId], references: [id])
+
+  createdAt   DateTime  @default(now())
+  startedAt   DateTime?
+  completedAt DateTime?
+
+  @@index([tenantId, status])
+  @@index([createdAt])
+}
+
+model PdfBatchItem {
+  id      String   @id @default(uuid())
+  batchId String
+  batch   PdfBatch @relation(fields: [batchId], references: [id], onDelete: Cascade)
+
+  fileName     String
+  originalName String
+  /// BigInt, not Int -- File.size (Int, 32-bit) is a known, pre-existing
+  /// overflow risk right at the 2GB boundary this feature routinely
+  /// targets (see upload.controller.ts's confirmUpload). Weight computation
+  /// reads this field, so it must not silently wrap.
+  fileSize     BigInt
+  mimeType     String  @default("application/pdf")
+  storagePath  String
+  /// Loose reference to File.id (the row created by POST /uploads/presign +
+  /// confirm) -- no formal relation, matching BatchFile.auditJobId's own
+  /// loose-reference convention below.
+  sourceFileId String
+
+  status PdfBatchItemStatus @default(UPLOADED)
+
+  /// Weight tier from file size alone, computed at upload time (immediately
+  /// available, before any processing).
+  sizeWeightUnits Int
+  /// Populated once the audit determines the real page count.
+  pageCount Int?
+  /// max(sizeWeightUnits, pageWeightUnits) once pageCount is known -- the
+  /// value actually used for budget admission from that point on.
+  effectiveWeightUnits Int?
+  /// Loose reference to the PdfConcurrencyLease currently held for this
+  /// item, if any -- null while queued/held, not actively leased.
+  activeLeaseId String?
+
+  /// Loose reference to Job.id -- matches BatchFile.auditJobId's own pattern;
+  /// resolved via queueService.getJobStatus rather than a formal relation.
+  auditJobId  String?
+  auditScore  Int?
+  issuesFound Int?
+
+  issuesAutoFixed    Int?
+  issuesGuidanceOnly Int?
+  remediatedFilePath String?
+
+  error        String?
+  errorDetails Json?
+
+  uploadedAt             DateTime  @default(now())
+  auditStartedAt         DateTime?
+  auditCompletedAt       DateTime?
+  remediationStartedAt   DateTime?
+  remediationCompletedAt DateTime?
+
+  @@index([batchId])
+  @@index([status])
+  @@index([batchId, status])
+}
+
+enum PdfBatchStatus {
+  DRAFT
+  QUEUED
+  PROCESSING
+  COMPLETED
+  FAILED
+  CANCELLED
+}
+
+enum PdfBatchItemStatus {
+  UPLOADED
+  QUEUED_FOR_BUDGET
+  AUDITING
+  AUDITED
+  HELD_FOR_BUDGET
+  REMEDIATING
+  REMEDIATED
+  FAILED
+  SKIPPED
+}
+
+/// Decoupled auto-remediation config/state for a production PDF job,
+/// mirroring the auto-loop fields that live on ComparisonTrial for that
+/// flow (mode/autoMaxRounds/autoCostLimitUsd/etc. above). This is what
+/// JobAutoRemediationDriver (auto-remediation-loop.service.ts) persists to
+/// for a batch-created job, so the SAME loop body can run for either an
+/// admin-created Comparison Study trial or a customer's batch item without
+/// Comparison Study becoming a dependency of production PDF processing.
+/// jobId is @unique (1:1), matching ComparisonTrial.ninjaJobId's own
+/// uniqueness constraint -- one auto-remediation config per job.
+model PdfAutoRemediationRun {
+  id    String @id @default(cuid())
+  jobId String @unique
+  job   Job    @relation(fields: [jobId], references: [id])
+
+  /// Loose reference to PdfBatchItem.id, for traceability only.
+  batchItemId String?
+
+  autoMaxRounds       Int     @default(10)
+  autoCostLimitUsd    Float   @default(2.0)
+  autoRoundsCompleted Int     @default(0)
+  autoCostSpentUsd    Float   @default(0)
+  /// 'running' | 'stopped'; null if the loop has never been started.
+  autoStatus String?
+  /// 'converged' | 'round_limit' | 'budget_limit' | 'manual_stop' | 'stalled' | 'error'
+  autoStopReason String?
+  autoStartedAt  DateTime?
+  autoStoppedAt  DateTime?
+  /// Cooperative cancellation flag -- checked at the top of each round, same
+  /// convention as ComparisonTrial.autoStopRequested above.
+  autoStopRequested Boolean @default(false)
+  /// 'guidance-only' | 'disabled' | 'apply-to-pdf', or null to inherit the
+  /// tenant's own aiRemediation.colorContrastMode setting -- same semantics
+  /// as ComparisonTrial.autoColorContrastMode above.
+  autoColorContrastMode String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+/// Per-tenant weighted concurrency budget for PDF batch processing -- gates
+/// how many batch items can be actively auditing/auto-remediating at once,
+/// weighted by file size/page count rather than a flat file count (see the
+/// batch-processing plan's "5 small files, or 1 large alone" example).
+/// DB-backed (not an in-process counter, admission checked via SELECT ...
+/// FOR UPDATE) because this backend's deployment topology (single instance
+/// vs multiple ECS tasks) can't be confirmed from this repo -- an in-memory
+/// semaphore would be silently wrong the moment this runs on more than one
+/// task. tenantId is the primary key: one budget row per tenant, no
+/// separate id needed.
+model PdfConcurrencyBudget {
+  tenantId   String   @id
+  totalUnits Int      @default(10)
+  unitsInUse Int      @default(0)
+  updatedAt  DateTime @updatedAt
+}
+
+/// One row per batch item currently holding budget -- lets a watchdog
+/// recover a stale lease (a crashed worker never released it) via
+/// heartbeatAt, mirroring remediation-cycle-lock.service.ts's own
+/// stale-lock-recovery pattern. tenantId/batchItemId are loose references
+/// (no formal relation) -- a lease's lifecycle is short-lived/operational,
+/// not a core domain relation.
+model PdfConcurrencyLease {
+  id          String @id @default(uuid())
+  tenantId    String
+  batchItemId String
+  /// 'audit' | 'auto_remediation' -- which phase this lease covers.
+  phase       String
+  weightUnits Int
+
+  acquiredAt  DateTime  @default(now())
+  heartbeatAt DateTime  @default(now())
+  releasedAt  DateTime?
+
+  @@index([batchItemId])
+  @@index([tenantId, releasedAt])
 }
 
 // ============================================
