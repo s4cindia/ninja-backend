@@ -569,16 +569,70 @@ async function processPdfAccessibility(
 
   logger.info(`[PDF Worker] Running audit for job ${dbJobId}, file: ${fileName}`);
   const scanLevel = 'comprehensive';
-  const auditReport = await pdfAuditService.runAuditFromBuffer(
-    auditBuffer,
-    dbJobId,
-    fileName,
-    scanLevel,
-    undefined,
-    onProgress,
-    onValidatorComplete,
-    onAltTextImageProgress,
-  );
+
+  // General heartbeat for the whole audit call, not just Alt Text. Real
+  // incident (2026-09-26): PdfFormulaValidator and PdfFigureStructTreeValidator
+  // (pdf-audit.service.ts's "bonus sub-check" validators, deliberately excluded
+  // from onValidatorComplete's progress total) ran between Alt Text and Color
+  // Contrast for 18+ minutes with zero signal to the job, and the stale-job
+  // watchdog killed it 36 SECONDS before Color Contrast finished and would have
+  // reported in on its own -- the underlying work kept running regardless
+  // (this DB write can't cancel the in-flight promise chain) and eventually
+  // completed successfully, silently flipping status back from FAILED to
+  // COMPLETED minutes later. Rather than keep hunting down and individually
+  // instrumenting every current and future slow, unmonitored sub-step the way
+  // Alt Text's per-image progress was, this touches Job.updatedAt on a fixed
+  // interval for the ENTIRE runAuditFromBuffer call regardless of which
+  // validator (named or "bonus") is currently executing.
+  //
+  // Two CodeRabbit findings on the first version of this fix, both real:
+  //
+  // 1. (P1) An unbounded heartbeat masks a GENUINELY hung job forever --
+  //    e.g. a validator or DB call truly deadlocked, not just slow --
+  //    since cleanupStalePdfJobs (src/workers/index.ts) would never see a
+  //    stale updatedAt again. MAX_HEARTBEAT_MS caps how long the heartbeat
+  //    keeps refreshing; past that, it stops and the normal 20-minute
+  //    watchdog can catch a truly stuck job again. Set well above the
+  //    longest legitimate run observed so far (~4h12m total, ~3h37m of
+  //    that in Alt Text alone, on a 3843-image document).
+  //
+  // 2. (Major) clearInterval only stops FUTURE ticks -- an already-in-flight
+  //    write isn't cancelled by it, and could otherwise land after the
+  //    audit resolves and progress is set to 100/COMPLETED, regressing it
+  //    back to a stale lastKnownPct with a misleadingly later updatedAt.
+  //    inFlightHeartbeat is awaited in the finally block so the very last
+  //    write (if any) is always settled before this function moves on.
+  const HEARTBEAT_MS = 2 * 60 * 1000; // 10x margin under the 20-min watchdog threshold
+  const MAX_HEARTBEAT_MS = 6 * 60 * 60 * 1000; // well above the longest legitimate run observed so far
+  const heartbeatStartedAt = Date.now();
+  let inFlightHeartbeat: Promise<void> | null = null;
+  const heartbeatInterval = setInterval(() => {
+    if (Date.now() - heartbeatStartedAt >= MAX_HEARTBEAT_MS) {
+      logger.warn(`[PDF Worker] Heartbeat for job ${dbJobId} exceeded ${MAX_HEARTBEAT_MS / 60000}min cap -- stopping so the stale-job watchdog can resume authority`);
+      clearInterval(heartbeatInterval);
+      return;
+    }
+    inFlightHeartbeat = queueService.updateJobProgress(dbJobId, lastKnownPct).catch(err => {
+      logger.warn(`[PDF Worker] Heartbeat update failed for job ${dbJobId} (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
+    });
+  }, HEARTBEAT_MS);
+
+  let auditReport;
+  try {
+    auditReport = await pdfAuditService.runAuditFromBuffer(
+      auditBuffer,
+      dbJobId,
+      fileName,
+      scanLevel,
+      undefined,
+      onProgress,
+      onValidatorComplete,
+      onAltTextImageProgress,
+    );
+  } finally {
+    clearInterval(heartbeatInterval);
+    if (inFlightHeartbeat) await inFlightHeartbeat;
+  }
   logger.info(`[PDF Worker] Audit complete for job ${dbJobId}`);
 
   // ── 3b. Post-audit auto-applies [non-fatal] ──────────────────────────────────
