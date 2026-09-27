@@ -3,6 +3,7 @@ import { nanoid } from 'nanoid';
 import { s3Service } from '../services/s3.service';
 import prisma from '../lib/prisma';
 import { logger } from '../lib/logger';
+import { pdfConfig } from '../config/pdf.config';
 
 export const getPresignedUploadUrl = async (req: Request, res: Response) => {
   try {
@@ -38,7 +39,13 @@ export const getPresignedUploadUrl = async (req: Request, res: Response) => {
       });
     }
 
-    const maxSize = 100 * 1024 * 1024;
+    // PDFs get pdfConfig's own (much larger) cap -- this presigned-S3 path is
+    // what batch PDF uploads use, and it's WAF-safe (unlike the direct
+    // multipart /pdf/audit-upload route, which shares pdfConfig.maxFileSizeMB
+    // but is documented as exactly the kind of request CloudFront's WAF can
+    // block for large bodies). EPUB and everything else keeps the original
+    // 100MB cap -- unrelated to this change.
+    const maxSize = isPdf ? pdfConfig.maxFileSizeMB * 1024 * 1024 : 100 * 1024 * 1024;
     if (fileSize && fileSize > maxSize) {
       return res.status(400).json({
         success: false,
@@ -108,9 +115,24 @@ export const confirmUpload = async (req: Request, res: Response) => {
       return res.status(400).json({ success: false, error: 'File upload already confirmed' });
     }
 
+    // Verify the object actually landed in S3 and read its REAL size via a
+    // HEAD request, rather than trusting the client-declared fileSize from
+    // the presign request (getPresignedUploadUrl above) -- nothing before
+    // this point confirms the upload succeeded at all, and batch weight
+    // tiering (comparison-study batch PDF processing) depends on this
+    // number being honest. getFileSize throws if the object is missing,
+    // which is exactly the "never actually uploaded" case.
+    let realSize: number;
+    try {
+      realSize = await s3Service.getFileSize(file.storagePath ?? file.path);
+    } catch (error) {
+      logger.warn(`[confirmUpload] Object not found in S3 for file ${fileId} (key ${file.storagePath ?? file.path}): ${error instanceof Error ? error.message : 'Unknown error'}`);
+      return res.status(400).json({ success: false, error: 'Upload did not complete -- object not found in storage' });
+    }
+
     const updatedFile = await prisma.file.update({
       where: { id: fileId },
-      data: { status: 'UPLOADED' },
+      data: { status: 'UPLOADED', size: realSize },
     });
 
     res.json({
