@@ -639,6 +639,23 @@ export function locateTextRun(
  * when exactly one exists, same convention as `locateTextRun`) -- these
  * runs are found by structural adjacency, not position-distance, so the
  * distance-based confidence/ambiguity model doesn't apply.
+ *
+ * Searches BOTH directions from `afterRun` within its enclosing text
+ * object, not just forward. Real incident (Curiel_187961_CSHP.pdf, a
+ * two-line wrapped list question): the audit's flagged position resolved
+ * to the SECOND (wrapped-continuation) line, whose own true color already
+ * passed after a backplate fix; the FIRST line -- the list marker plus
+ * most of the question text -- was the genuinely still-failing run, but it
+ * precedes the matched run in the content stream, so a forward-only search
+ * could never reach it. Every subsequent audit round re-matched the same
+ * (already-fixed) second line and re-applied an identical, already-
+ * ineffective backplate on top of the previous one -- confirmed live: 7
+ * near-identical backplate splices stacked at the same position across 7
+ * rounds, the true defect (the first line) never touched. Results stay in
+ * ascending document order (nearest-preceding first, then nearest-
+ * following) regardless of which direction found them, since callers (the
+ * writer's width estimation from `siblings[i+1].anchorX`) assume that
+ * ordering.
  */
 export function findSiblingRuns(
   content: string,
@@ -650,25 +667,16 @@ export function findSiblingRuns(
 
   const tokens = tokenize(content);
   const units = findTextUnits(tokens);
-  const result: TextRunMatch[] = [];
 
-  for (const u of units) {
-    if (u.start < afterRun.end) continue;
-    const unitEnclosing = locateEnclosingTextObject(content, u.start);
-    // Units are in document order (findTextUnits appends as it scans), so
-    // the first one outside the original text object means every
-    // subsequent unit is too -- safe to stop rather than skip.
-    if (!unitEnclosing || unitEnclosing.btStart !== enclosing.btStart) break;
-    if (u.anchorX === null || u.anchorY === null) continue;
-
+  const buildMatch = (u: TextUnit): TextRunMatch | null => {
+    if (u.anchorX === null || u.anchorY === null) return null;
     const ops = findFillColorOps(tokens, u.start, u.lastShowEnd!);
     let restoreColorOverride: [number, number, number] | undefined;
     if (ops.length > 0) {
       const finalColor = parseFillColorOpToRgb(content, ops[ops.length - 1]);
       if (finalColor !== null) restoreColorOverride = finalColor;
     }
-
-    result.push({
+    return {
       start: u.start,
       end: u.end,
       confidence: 1,
@@ -678,11 +686,67 @@ export function findSiblingRuns(
       restoreColorOverride,
       anchorX: u.anchorX,
       anchorY: u.anchorY,
-    });
-    if (result.length >= maxSiblings) break;
+    };
+  };
+  const sameObject = (start: number): boolean => {
+    const unitEnclosing = locateEnclosingTextObject(content, start);
+    return !!unitEnclosing && unitEnclosing.btStart === enclosing.btStart;
+  };
+
+  // Anchor on afterRun's own unit so both scans start immediately adjacent
+  // to it, not at either end of the whole document. Bail (rather than guess
+  // a starting point) if a fresh scan of `content` doesn't reproduce
+  // afterRun's exact offset -- matches this module's "bail rather than
+  // guess" convention throughout.
+  const matchedIndex = units.findIndex((u) => u.start === afterRun.start);
+  if (matchedIndex === -1) return [];
+
+  const after: TextRunMatch[] = [];
+  for (let i = matchedIndex + 1; i < units.length; i++) {
+    const u = units[i];
+    // Units are in document order (findTextUnits appends as it scans), so
+    // the first one outside the original text object means every
+    // subsequent unit is too -- safe to stop rather than skip.
+    if (!sameObject(u.start)) break;
+    const m = buildMatch(u);
+    if (m) after.push(m);
+    if (after.length >= maxSiblings) break;
   }
 
-  return result;
+  // Nearest-preceding-first (NOT yet reversed to document order -- that
+  // happens below, only for whatever slice actually gets selected).
+  const before: TextRunMatch[] = [];
+  for (let i = matchedIndex - 1; i >= 0; i--) {
+    const u = units[i];
+    if (!sameObject(u.start)) break;
+    const m = buildMatch(u);
+    if (m) before.push(m);
+    if (before.length >= maxSiblings) break;
+  }
+
+  // Interleave by proximity to afterRun rather than concatenating --
+  // CodeRabbit finding on this PR: capping the *combined* list at
+  // maxSiblings after collecting up to maxSiblings from EACH direction
+  // independently let one direction (e.g. several failing preceding runs)
+  // fill the whole budget and silently starve every following sibling,
+  // even ones closer to the match than some of what got kept. Both arrays
+  // are nearest-first here, so index 0 in each is the natural starting
+  // point for a proximity comparison.
+  let bi = 0;
+  let ai = 0;
+  while (bi + ai < maxSiblings && (bi < before.length || ai < after.length)) {
+    const bDist = bi < before.length ? afterRun.start - before[bi].end : Infinity;
+    const aDist = ai < after.length ? after[ai].start - afterRun.end : Infinity;
+    if (bDist <= aDist) bi++;
+    else ai++;
+  }
+
+  // The selected prefix of `before` (nearest bi preceding siblings) must be
+  // reversed back to document order before returning -- callers' width
+  // estimation from siblings[i+1].anchorX assumes ascending order, and no
+  // `before` entry can ever sit after any `after` entry, so this
+  // concatenation alone is enough (no further sort needed).
+  return [...before.slice(0, bi).reverse(), ...after.slice(0, ai)];
 }
 
 /**

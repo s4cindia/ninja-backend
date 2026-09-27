@@ -400,10 +400,29 @@ export class PdfContrastWriterService {
       // guess. Floors at boundingBox.height (never thinner than the text
       // is tall) and falls back to the original issue's own width when
       // this is the last/only sibling in range.
-      const nextAnchorX = siblings[nextFailingIndex + 1]?.anchorX;
+      //
+      // Only trusted when that next sibling is on the SAME LINE (baseline
+      // Y within half a line-height) -- CodeRabbit finding on this PR:
+      // findSiblingRuns can now return a PRECEDING sibling on an earlier,
+      // different line (e.g. the first line of a wrapped list question,
+      // reached via the new backward search), and the "next" entry after
+      // it in the returned list can then be on a DIFFERENT line too (or
+      // even the original matched run itself, on a different row
+      // entirely). Its anchorX has no horizontal-adjacency relationship
+      // to `sibling`'s own text width in that case -- using the delta
+      // anyway produces a near-zero/nonsense width, backplating only a
+      // sliver of a full line of text and leaving the rest exposed. This
+      // heuristic is only valid for the same-line case it was built for
+      // (adjacent segments like "8" then "749").
+      const nextSibling = siblings[nextFailingIndex + 1];
+      const sameLine =
+        nextSibling !== undefined &&
+        sibling.anchorY !== undefined &&
+        nextSibling.anchorY !== undefined &&
+        Math.abs(nextSibling.anchorY! - sibling.anchorY!) < boundingBox.height / 2;
       const estimatedWidth =
-        nextAnchorX !== undefined && sibling.anchorX !== undefined
-          ? Math.max(nextAnchorX - sibling.anchorX, boundingBox.height)
+        sameLine && sibling.anchorX !== undefined
+          ? Math.max(nextSibling.anchorX! - sibling.anchorX, boundingBox.height)
           : boundingBox.width;
       const siblingBoundingBox = {
         x: sibling.anchorX!,

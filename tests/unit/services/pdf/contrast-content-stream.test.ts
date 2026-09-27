@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { locateTextRun, locateTextRunsForPage, locateEnclosingTextObject, findPrecedingColor } from '../../../../src/services/pdf/contrast-content-stream';
+import { locateTextRun, locateTextRunsForPage, locateEnclosingTextObject, findPrecedingColor, findSiblingRuns } from '../../../../src/services/pdf/contrast-content-stream';
 
 // Same shape as content-stream.test.ts's twoLineStream (verified pdf-lib output
 // shape: q BT … Tm … Tj … ET Q). Line 1 anchor (50,150), line 2 anchor (50,120).
@@ -926,5 +926,56 @@ EMC
     // here, which is exactly the bug that corrupted a 19-cell cluster on
     // the real document.
     expect(findPrecedingColor(stream, secondRunStart)).toEqual([0.184, 0.192, 0.22]);
+  });
+});
+
+describe('findSiblingRuns', () => {
+  // Six Td-delimited runs in one text object: before3, before2, before1,
+  // matched, after1, after2 (document order). CodeRabbit finding on this
+  // PR: with maxSiblings smaller than the number of siblings on ONE side
+  // alone, collecting up to maxSiblings from each direction independently
+  // and then concatenating-and-slicing let the backward direction (added
+  // by this PR) fill the whole budget and silently starve every following
+  // sibling, even ones closer to the match than some kept preceding ones.
+  const sixRunStream = `BT
+0 0 0 rg
+/F1 12 Tf
+1 0 0 1 50 500 Tm
+(before3) Tj
+0 -20 Td
+(before2) Tj
+0 -20 Td
+(before1) Tj
+0 -20 Td
+(matched) Tj
+0 -20 Td
+(after1) Tj
+0 -20 Td
+(after2) Tj
+ET
+`;
+
+  it('interleaves by proximity so a small cap does not let one direction starve the other', () => {
+    const matched = locateTextRun(sixRunStream, { x: 50, baselineY: 500 - 60 }); // "matched"'s own Tm-relative position
+    expect(matched).not.toBeNull();
+    expect(matched!.ambiguous).toBe(false);
+
+    const siblings = findSiblingRuns(sixRunStream, matched!, 3);
+    expect(siblings).toHaveLength(3);
+
+    const textOf = (m: { start: number; end: number }) => sixRunStream.slice(m.start, m.end);
+    const texts = siblings.map(textOf);
+
+    // The single closest sibling on EACH side must be present -- neither
+    // direction is fully excluded just because the other has more entries
+    // within range.
+    expect(texts.some((t) => t.includes('before1'))).toBe(true);
+    expect(texts.some((t) => t.includes('after1'))).toBe(true);
+
+    // Results stay in ascending document order (before-entries, in their
+    // own original order, followed by after-entries) -- callers' width
+    // estimation from siblings[i+1].anchorX assumes this.
+    const positions = siblings.map((s) => s.start);
+    expect(positions).toEqual([...positions].sort((a, b) => a - b));
   });
 });

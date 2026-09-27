@@ -466,6 +466,130 @@ ET
     expect(finalContent).not.toContain('0.15 0.15 0.15 rg');
   });
 
+  // Real-world incident, confirmed live on Curiel_187961_CSHP.pdf: a
+  // two-line wrapped list question where the audit's flagged position
+  // anchored to the SECOND (wrapped-continuation) line -- whose own true
+  // color already passed -- leaving the FIRST line (the list marker plus
+  // most of the question, genuinely low-contrast light gray) untouched.
+  // Unlike the "8 749 47" case above, the real defect here PRECEDES the
+  // matched run in the content stream, not follows it -- findSiblingRuns
+  // used to only search forward, so this defect was structurally
+  // unreachable. Every subsequent audit round re-matched the same
+  // (already-fine) second line and re-applied an identical, already-
+  // ineffective backplate on top of the previous one, live-confirmed as 7
+  // stacked, near-identical splices across 7 rounds with the true defect
+  // never touched.
+  it("fixes a genuinely-failing PRECEDING sibling run when the matched (later) run's own true color already passes", async () => {
+    vi.mocked(verifyContrastInRegion).mockResolvedValue({ ratio: 21, passes: true, foreground: '#000000', background: '#ffffff', uncertain: false, variance: 0 });
+
+    const src = await PDFDocument.create();
+    src.addPage([500, 700]);
+    const doc = await PDFDocument.load(await src.save());
+    // "1. What types..." (first line, light gray, genuinely failing) comes
+    // BEFORE "of abuse..." (the wrapped second line, already black) in the
+    // content stream -- the same order as the real two-line list question.
+    const content = `BT
+1 0 0 1 50 450 Tm
+0.85 0.85 0.85 rg
+(1. What types) Tj
+0 -14 Td
+0 0 0 rg
+(of abuse) Tj
+ET
+`;
+    writePageContent(doc, 1, content);
+
+    // The audit's own position anchors to the SECOND line ("of abuse"),
+    // which already passes -- but reports a foreground that matches
+    // neither segment's real color (the classic blended-detection
+    // signature), triggering the sibling search.
+    const issue = contrastIssue({
+      boundingBox: { x: 50, y: 700 - 436, width: 60, height: 14, pageWidth: 500, pageHeight: 700 },
+      contrastData: { foreground: '#262626', background: '#ffffff', ratio: 3.12, requiredRatio: 4.5, isLargeText: false },
+    });
+
+    const result = await pdfContrastWriterService.fixColorContrast(doc, issue);
+    expect(result.success).toBe(true);
+    expect(result.after).toContain('also fixed 1 sibling run');
+
+    const finalContent = decodePageContent(doc, 1)!;
+    // The FIRST line's own light-gray fill op -- specifically the color
+    // declared immediately before "(1. What types)" -- must have changed.
+    // (0.85 0.85 0.85 can legitimately still appear LATER in the content as
+    // the second line's own restore-after-fix marker -- findPrecedingColor
+    // correctly finds line 1's original color as line 2's "ambient before"
+    // value; that's an unrelated, harmless artifact of restoring the SECOND
+    // run's own surrounding state, not a claim that line 1 is unfixed.)
+    const beforeFirstLine = finalContent.slice(0, finalContent.indexOf('(1. What types)'));
+    expect(beforeFirstLine).not.toContain('0.85 0.85 0.85 rg');
+  });
+
+  // CodeRabbit finding on the PR that made findSiblingRuns bidirectional: a
+  // newly-reachable PRECEDING sibling can be on an earlier, different line
+  // than the matched run, and the "next sibling" used for width estimation
+  // (originally built only for same-line adjacent segments, e.g. "8" then
+  // "749") can then ALSO be on a different line -- its anchorX has no
+  // horizontal-adjacency relationship to the sibling's own text width.
+  it("falls back to the issue's own width for a backplated sibling when the 'next' sibling is on a different line", async () => {
+    const mockVerify = vi.mocked(verifyContrastInRegion);
+    const mockVerifyBackplate = vi.mocked(verifyBackplateContrast);
+    mockVerify.mockClear();
+    mockVerifyBackplate.mockClear();
+    // Call 1: primary ("Matched") passes trivially, no escalation needed.
+    // Calls 2-3: sibling ("First line...")'s moderate + extreme attempts
+    // both fail/uncertain, forcing it into the backplate tier.
+    mockVerify
+      .mockResolvedValueOnce({ ratio: 21, passes: true, foreground: '#000000', background: '#ffffff', uncertain: false, variance: 0 })
+      .mockResolvedValueOnce({ ratio: 1.4, passes: false, foreground: '#d9d9dc', background: '#ffffff', uncertain: true, variance: 0.001 })
+      .mockResolvedValueOnce({ ratio: 1.4, passes: false, foreground: '#d9d9dc', background: '#ffffff', uncertain: true, variance: 0.001 });
+    mockVerifyBackplate.mockResolvedValueOnce({ ratio: 18, passes: true, foreground: '#000000', background: '#000000', uncertain: false, variance: 0 });
+
+    const src = await PDFDocument.create();
+    src.addPage([500, 700]);
+    const doc = await PDFDocument.load(await src.save());
+    // Three stacked lines, same left margin (x=50) -- "First line..." (long,
+    // genuinely failing, the backward-reachable sibling), "Matched" (already
+    // black, what the audit's position resolves to), "Third" (a THIRD,
+    // separate line -- its anchorX sits at the SAME x as "First line...",
+    // exactly the shape that fooled the old same-line width heuristic).
+    const content = `BT
+1 0 0 1 50 500 Tm
+0.85 0.85 0.85 rg
+(First line text needs a lot of space) Tj
+0 -20 Td
+0 0 0 rg
+(Matched) Tj
+0 -20 Td
+0 0 0 rg
+(Third) Tj
+ET
+`;
+    writePageContent(doc, 1, content);
+
+    const issue = contrastIssue({
+      boundingBox: { x: 50, y: 700 - 480, width: 60, height: 14, pageWidth: 500, pageHeight: 700 },
+      contrastData: { foreground: '#262626', background: '#ffffff', ratio: 3.12, requiredRatio: 4.5, isLargeText: false },
+    });
+
+    const result = await pdfContrastWriterService.fixColorContrast(doc, issue);
+    expect(result.success).toBe(true);
+    expect(result.after).toContain('also fixed 1 sibling run');
+    expect(mockVerifyBackplate).toHaveBeenCalledTimes(1);
+
+    const finalContent = decodePageContent(doc, 1)!;
+    const reMatch = finalContent.match(/([\d.]+) [\d.]+ ([\d.]+) [\d.]+ re/);
+    expect(reMatch).toBeTruthy();
+    const backplateWidth = parseFloat(reMatch![2]);
+    // The old same-line delta heuristic ("Third"'s anchorX minus "First
+    // line"'s own anchorX, both ~0 since they share the same left margin)
+    // would floor to boundingBox.height (14) + padding (~8) = ~22 -- a
+    // sliver nowhere near covering "First line text needs a lot of space".
+    // The fixed fallback (boundingBox.width=60 + the same padding) is
+    // comfortably wider; assert well above the buggy value rather than an
+    // exact number to stay robust to the padding constants themselves.
+    expect(backplateWidth).toBeGreaterThan(40);
+  });
+
   it('draws a backplate when the background is flat and known but too mid-luminance for text-color escalation alone', async () => {
     // Real Math_Weir_PDF.pdf finding (PR #575): a confidently-FLAT medium
     // gray background (e.g. #9b9c9f) caps even pure-black text's
