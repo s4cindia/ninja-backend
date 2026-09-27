@@ -39,48 +39,58 @@ export async function detectZones(
     await ensureYoloServiceUp();
   }
 
-  const response = mode === 'yolo'
-    ? await detectWithYolo(pdfPath, bootstrapJobId)
-    : await detectWithDocling(pdfPath, bootstrapJobId);
+  let detected: Array<{
+    pageNumber: number;
+    bbox: DetectedZone['bbox'];
+    rawLabel: string;
+    zoneType: DetectedZone['zoneType'];
+    confidence: number | null;
+  }>;
+  try {
+    const response = mode === 'yolo'
+      ? await detectWithYolo(pdfPath, bootstrapJobId)
+      : await detectWithDocling(pdfPath, bootstrapJobId);
 
-  const detected = response.zones.map((zone) => ({
-    pageNumber: zone.page,
-    bbox: zone.bbox,
-    rawLabel: zone.label,
-    zoneType: mode === 'yolo' ? mapYoloLabel(zone.label) : mapDoclingLabel(zone.label),
-    confidence: zone.confidence ?? null,
-  }));
+    detected = response.zones.map((zone) => ({
+      pageNumber: zone.page,
+      bbox: zone.bbox,
+      rawLabel: zone.label,
+      zoneType: mode === 'yolo' ? mapYoloLabel(zone.label) : mapDoclingLabel(zone.label),
+      confidence: zone.confidence ?? null,
+    }));
 
-  await prisma.$transaction([
-    prisma.zoneBootstrapJob.update({
-      where: { id: bootstrapJobId },
-      data: { extractionMode: mode },
-    }),
-    prisma.zone.createMany({
-      data: detected.map((z) => ({
-        bootstrapJobId,
-        tenantId,
-        fileId,
-        pageNumber: z.pageNumber,
-        type: z.zoneType,
-        bounds: z.bbox as unknown as Prisma.InputJsonValue,
-        source: mode,
-        ...(mode === 'docling'
-          ? { doclingLabel: z.rawLabel, doclingConfidence: z.confidence }
-          : { label: z.rawLabel }),
-      })),
-    }),
-  ]);
+    await prisma.$transaction([
+      prisma.zoneBootstrapJob.update({
+        where: { id: bootstrapJobId },
+        data: { extractionMode: mode },
+      }),
+      prisma.zone.createMany({
+        data: detected.map((z) => ({
+          bootstrapJobId,
+          tenantId,
+          fileId,
+          pageNumber: z.pageNumber,
+          type: z.zoneType,
+          bounds: z.bbox as unknown as Prisma.InputJsonValue,
+          source: mode,
+          ...(mode === 'docling'
+            ? { doclingLabel: z.rawLabel, doclingConfidence: z.confidence }
+            : { label: z.rawLabel }),
+        })),
+      }),
+    ]);
+  } finally {
+    // Guaranteed even on error — otherwise this caller's active-request lease
+    // (taken by ensureYoloServiceUp above) never releases, and the yolo
+    // scaler can never scale back down (see yolo-service-scaler.ts).
+    if (mode === 'yolo') {
+      touchYoloIdleTimer();
+    }
+  }
 
   logger.info(
     `[ZoneExtractor] Completed ${detected.length} zones for job ${bootstrapJobId} (${mode})`,
   );
-
-  // Re-arm the idle countdown so a batch of documents keeps the GPU warm, then
-  // the service scales back to 0 once detection stops.
-  if (mode === 'yolo') {
-    touchYoloIdleTimer();
-  }
 
   return detected.map((z) => ({
     pageNumber: z.pageNumber,

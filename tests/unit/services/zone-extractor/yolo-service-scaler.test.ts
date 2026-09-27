@@ -33,6 +33,7 @@ import {
   touchYoloIdleTimer,
   isWithinWarmWindow,
   __clearYoloIdleTimerForTest,
+  __resetYoloActiveRequestCountForTest,
 } from '../../../../src/services/zone-extractor/yolo-service-scaler';
 
 const IDLE_MS = 10 * 60 * 1000;
@@ -40,11 +41,24 @@ const POLL_MS = 10_000;
 
 const updateCalls = () => sendMock.mock.calls.filter((c) => c[0].__type === 'UpdateService');
 
+// A healthy task from the first check onward — lets ensureYoloServiceUp()
+// resolve immediately without needing fake timers.
+const mockAlreadyHealthy = () => {
+  sendMock.mockImplementation((cmd) => {
+    if (cmd.__type === 'ListTasks') return Promise.resolve({ taskArns: ['t1'] });
+    if (cmd.__type === 'DescribeTasks') {
+      return Promise.resolve({ tasks: [{ lastStatus: 'RUNNING', healthStatus: 'HEALTHY' }] });
+    }
+    return Promise.resolve({});
+  });
+};
+
 beforeEach(() => {
   sendMock.mockReset();
 });
 afterEach(() => {
   __clearYoloIdleTimerForTest();
+  __resetYoloActiveRequestCountForTest();
   vi.useRealTimers();
 });
 
@@ -151,6 +165,50 @@ describe('isWithinWarmWindow (business-hours warm window, IST Mon-Fri)', () => {
   it('is false on the weekend even within the hours', () => {
     process.env[S] = '9'; process.env[E] = '19';
     expect(isWithinWarmWindow(new Date('2026-07-25T05:00:00Z'))).toBe(false); // Sat 10:30 IST
+  });
+});
+
+describe('active-request lease (concurrent worker jobs)', () => {
+  it('skips scale-down while another caller is still active, then scales down once released', async () => {
+    mockAlreadyHealthy();
+
+    // Two concurrent callers each acquire the service (worker concurrency: 5).
+    await ensureYoloServiceUp(); // caller A
+    await ensureYoloServiceUp(); // caller B
+
+    // Caller A finishes; B is still active — must not scale to 0.
+    touchYoloIdleTimer();
+    await scaleYoloServiceDown();
+    expect(updateCalls()).toHaveLength(0);
+
+    // Caller B finishes; nothing left active — now it's safe to scale down.
+    touchYoloIdleTimer();
+    await scaleYoloServiceDown();
+    const down = updateCalls();
+    expect(down).toHaveLength(1);
+    expect(down[0][0].input.desiredCount).toBe(0);
+  });
+
+  it('the idle timer itself is blocked from scaling down while a caller is active', async () => {
+    vi.useFakeTimers();
+    mockAlreadyHealthy();
+
+    await ensureYoloServiceUp(); // caller A
+    await ensureYoloServiceUp(); // caller B — stays active for the rest of this test
+    touchYoloIdleTimer(); // A finishes: releases its lease, arms the countdown
+    await vi.advanceTimersByTimeAsync(IDLE_MS + 100);
+
+    expect(updateCalls()).toHaveLength(0); // B still holds a lease
+  });
+
+  it('releasing the lease never drops the count below zero', async () => {
+    // touchYoloIdleTimer() called without a prior ensureYoloServiceUp() (e.g.
+    // a defensive/duplicate release) must not push the count negative and
+    // permanently block future scale-downs.
+    touchYoloIdleTimer();
+    await scaleYoloServiceDown();
+    expect(updateCalls()).toHaveLength(1);
+    expect(updateCalls()[0][0].input.desiredCount).toBe(0);
   });
 });
 
