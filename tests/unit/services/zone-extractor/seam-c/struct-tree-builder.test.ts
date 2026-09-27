@@ -197,6 +197,31 @@ describe('buildStructTreeFromZones (end-to-end)', () => {
     expect(cs).toContain('EMC');
   });
 
+  it('does not destroy a page whose /Contents cannot be decoded', async () => {
+    // Real risk flagged in review: since every page is now processed (not
+    // just zoned ones), a page whose content genuinely can't be decoded must
+    // not have its real (still-intact) Contents silently replaced with an
+    // empty stream. Swap in a raw stream declaring an unsupported filter --
+    // decodePDFRawStream throws synchronously for it, simulating a genuine
+    // decode failure (as opposed to a legitimately empty page).
+    const doc = await PDFDocument.load(await makeUntaggedPdf());
+    const page = doc.getPage(0);
+    const corrupt = PDFRawStream.of(
+      doc.context.obj({ Filter: PDFName.of('CCITTFaxDecode') }),
+      new Uint8Array([1, 2, 3]),
+    );
+    const corruptRef = doc.context.register(corrupt);
+    page.node.set(PDFName.of('Contents'), corruptRef);
+
+    buildStructTreeFromZones(doc, ZONES);
+
+    // Contents must be untouched -- still the same corrupt stream, not an
+    // empty replacement that would have destroyed real content on an
+    // actually-valid page hitting this same decode-failure path.
+    expect(page.node.get(PDFName.of('Contents'))).toBe(corruptRef);
+    expect(page.node.get(PDFName.of('StructParents'))).toBeUndefined();
+  });
+
   it('is a no-op for a PDF with no zones', async () => {
     const doc = await PDFDocument.load(await makeUntaggedPdf());
     const result = buildStructTreeFromZones(doc, []);

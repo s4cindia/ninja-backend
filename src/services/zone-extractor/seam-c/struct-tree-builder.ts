@@ -34,8 +34,14 @@ export interface BuildResult {
   droppedZoneCounts: Record<string, number>;
 }
 
-/** Decode a page's content stream(s) into a single string. */
-function pageContent(doc: PDFDocument, pageNode: { get(n: PDFName): PDFObject | undefined }): string {
+/**
+ * Decode a page's content stream(s) into a single string. Returns null if a
+ * /Contents stream exists but NONE of it could be decoded -- as opposed to a
+ * page that legitimately has no /Contents at all (empty string). The caller
+ * must not write back an "empty" content stream on a decode failure, or it
+ * silently destroys the page's real, still-intact, still-encoded content.
+ */
+function pageContent(doc: PDFDocument, pageNode: { get(n: PDFName): PDFObject | undefined }): string | null {
   const raw = pageNode.get(PDFName.of('Contents'));
   const resolve = (o: PDFObject | undefined): PDFObject | undefined =>
     o instanceof PDFRef ? doc.context.lookup(o) : o;
@@ -52,6 +58,7 @@ function pageContent(doc: PDFDocument, pageNode: { get(n: PDFName): PDFObject | 
     if (!bytes && s instanceof PDFRawStream) { try { bytes = decodePDFRawStream(s).decode(); } catch { /* */ } }
     if (bytes) parts.push(Buffer.from(bytes).toString('latin1'));
   }
+  if (streams.length > 0 && parts.length === 0) return null;
   return parts.join('\n');
 }
 
@@ -157,6 +164,15 @@ export function buildStructTreeFromZones(
     });
 
     const content = pageContent(doc, page.node);
+    if (content === null) {
+      // This page's /Contents exists but couldn't be decoded (a real risk
+      // now that EVERY page is processed, not just zoned ones -- flagged in
+      // review). Leave it untouched rather than write back an empty stream
+      // and silently destroy its real, still-intact content: it just won't
+      // be accessibility-tagged, which is the same outcome the old
+      // zones-only loop already had for any page with no detected zones.
+      continue;
+    }
     const { content: tagged2, assignments } = tagContentStream(content, bands, 0);
 
     // swap the page's content stream
