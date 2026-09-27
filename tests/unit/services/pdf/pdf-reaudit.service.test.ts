@@ -475,6 +475,36 @@ describe('PdfReauditService', () => {
       );
     });
 
+    it('resets altTextImageProgress to null at the start of a new round (CodeRabbit catch, PR #625)', async () => {
+      // A second Auto Mode round's re-audit reuses the same job row.
+      // updateReauditProgress merges into the EXISTING postRemediationProgress,
+      // so without an explicit reset, this round would keep showing the
+      // PREVIOUS round's final Alt Text count (often completed === total)
+      // until this round's own Alt Text validator gets around to firing its
+      // own upfront (0, total) call -- misleadingly reading as "already done"
+      // during a potentially long extraction phase.
+      vi.mocked(prisma.job.findUnique).mockResolvedValue({
+        id: mockJobId,
+        output: {
+          auditReport: mockOriginalAuditReport,
+          // Stale value left over from a completed prior round.
+          postRemediationProgress: { altTextImageProgress: { completed: 3843, total: 3843 } },
+        },
+      } as any);
+      vi.mocked(prisma.job.update).mockResolvedValue({} as any);
+      vi.mocked(fileStorageService.saveRemediatedFile).mockResolvedValue('/path/to/remediated.pdf');
+      vi.mocked(pdfAuditService.runAuditFromBuffer).mockResolvedValue({
+        ...mockOriginalAuditReport,
+        jobId: `${mockJobId}-reaudit`,
+        issues: [],
+      });
+
+      await pdfReauditService.reauditAndCompare(mockJobId, mockBuffer, mockFileName);
+
+      const firstProgressWrite = vi.mocked(prisma.job.update).mock.calls[0][0].data as any;
+      expect(firstProgressWrite.output.postRemediationProgress.altTextImageProgress).toBeNull();
+    });
+
     it('should handle re-audit failure gracefully', async () => {
       vi.mocked(prisma.job.findUnique).mockResolvedValue({
         id: mockJobId,

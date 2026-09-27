@@ -123,7 +123,21 @@ class PdfReauditService {
           await this.updateReauditProgress(jobId, { altTextImageProgress: { completed, total } });
         };
 
-        await this.updateReauditProgress(jobId, { currentPage: 0, totalPages: 0, completedValidators: 0, totalValidators: 0 });
+        // altTextImageProgress explicitly reset to null (not just omitted) --
+        // updateReauditProgress merges into the existing postRemediationProgress
+        // object, so a second Auto Mode round would otherwise keep showing the
+        // PREVIOUS round's final Alt Text count (often completed === total)
+        // until this round's own Alt Text validator finishes extracting every
+        // image and fires its own upfront (0, total) call, misleadingly
+        // reading as "already done" during a potentially long extraction
+        // phase (CodeRabbit catch, PR #625).
+        await this.updateReauditProgress(jobId, {
+          currentPage: 0,
+          totalPages: 0,
+          completedValidators: 0,
+          totalValidators: 0,
+          altTextImageProgress: null,
+        });
 
         reauditReport = await pdfAuditService.runAuditFromBuffer(
           remediatedPdfBuffer,
@@ -481,7 +495,7 @@ class PdfReauditService {
       completedValidators?: number;
       totalValidators?: number;
       currentValidator?: string;
-      altTextImageProgress?: { completed: number; total: number };
+      altTextImageProgress?: { completed: number; total: number } | null;
     }
   ): Promise<void> {
     try {
