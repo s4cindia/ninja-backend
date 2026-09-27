@@ -163,7 +163,7 @@ describe('buildStructTreeFromZones (end-to-end)', () => {
   it('is a no-op for a PDF with no zones', async () => {
     const doc = await PDFDocument.load(await makeUntaggedPdf());
     const result = buildStructTreeFromZones(doc, []);
-    expect(result).toEqual({ elements: 0, mcids: 0, pages: 0 });
+    expect(result).toEqual({ elements: 0, mcids: 0, pages: 0, droppedZoneCounts: {} });
     expect(doc.catalog.get(PDFName.of('StructTreeRoot'))).toBeFalsy();
   });
 });

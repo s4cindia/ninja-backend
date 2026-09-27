@@ -25,6 +25,13 @@ export interface BuildResult {
   elements: number;
   mcids: number;
   pages: number;
+  /**
+   * Per-zoneType tally of zones dropped for having no bound content (see the
+   * 'block' case in build()). Callers that tally raw detected zones by type
+   * (e.g. SeamCTagService's elementCounts) should subtract this, or the count
+   * over-reports zones that never actually made it into the struct tree.
+   */
+  droppedZoneCounts: Record<string, number>;
 }
 
 /** Decode a page's content stream(s) into a single string. */
@@ -90,7 +97,7 @@ export function buildStructTreeFromZones(
   zones: OrderableZone[],
   lang = 'en-US',
 ): BuildResult {
-  if (zones.length === 0) return { elements: 0, mcids: 0, pages: 0 };
+  if (zones.length === 0) return { elements: 0, mcids: 0, pages: 0, droppedZoneCounts: {} };
 
   // Seam C only tags GENUINELY untagged PDFs. Running on a doc that already has a
   // /StructTreeRoot (and existing MCID marked content) would create duplicate /
@@ -167,6 +174,7 @@ export function buildStructTreeFromZones(
 
   let elemCount = 1; // Document
   let mcidCount = 0;
+  const droppedZoneCounts: Record<string, number> = {};
 
   const makeElem = (S: string, parentRef: PDFRef): { ref: PDFRef; dict: PDFDict } => {
     const dict = doc.context.obj({ Type: PDFName.of('StructElem'), S: PDFName.of(S), P: parentRef }) as PDFDict;
@@ -215,6 +223,7 @@ export function buildStructTreeFromZones(
         const meta = zoneMeta.get(node.zone)!;
         const hasContent = (zoneMcids.get(meta.index)?.mcids.length ?? 0) > 0;
         if (!hasContent) {
+          droppedZoneCounts[node.zone.zoneType] = (droppedZoneCounts[node.zone.zoneType] ?? 0) + 1;
           // No marked content (a text run, image Do, or inline image -- see
           // content-stream.ts) actually falls inside this zone's bbox on the
           // page. Creating a StructElem here would leave an orphan with no
@@ -332,5 +341,5 @@ export function buildStructTreeFromZones(
   // Declare PDF/UA-1 conformance in XMP (5-1).
   setPdfUaIdentifier(doc);
 
-  return { elements: elemCount, mcids: mcidCount, pages: zonesByPage.size };
+  return { elements: elemCount, mcids: mcidCount, pages: zonesByPage.size, droppedZoneCounts };
 }
