@@ -11,7 +11,7 @@ import { Request, Response, NextFunction } from 'express';
 import prisma from '../lib/prisma';
 import { logger } from '../lib/logger';
 import { AppError } from '../utils/app-error';
-import { autoRemediationLoopService, resolveColorContrastMode } from '../services/pdf/auto-remediation-loop.service';
+import { autoRemediationLoopService, resolveColorContrastMode, ComparisonTrialAutoRemediationDriver } from '../services/pdf/auto-remediation-loop.service';
 
 export class PdfAutoModeController {
   /**
@@ -51,7 +51,7 @@ export class PdfAutoModeController {
       // own errors internally, but a setup failure before that point (e.g. a
       // DB blip on the very first lookup) would otherwise be an unhandled
       // promise rejection.
-      autoRemediationLoopService.startAutoLoop(trial.id).catch((err) => {
+      autoRemediationLoopService.startAutoLoop(new ComparisonTrialAutoRemediationDriver(trial.id)).catch((err) => {
         logger.error(
           `[PdfAutoMode] Unexpected error starting auto loop for trial ${trial.id}: ${err instanceof Error ? err.message : String(err)}`
         );

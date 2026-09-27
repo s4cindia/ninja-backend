@@ -27,7 +27,7 @@ vi.mock('../../../src/services/pdf/auto-remediation-loop.service', async (import
 
 import prisma from '../../../src/lib/prisma';
 import { pdfAutoModeController } from '../../../src/controllers/pdf-auto-mode.controller';
-import { autoRemediationLoopService } from '../../../src/services/pdf/auto-remediation-loop.service';
+import { autoRemediationLoopService, ComparisonTrialAutoRemediationDriver } from '../../../src/services/pdf/auto-remediation-loop.service';
 
 function makeRes(): Response {
   const res: any = {};
@@ -90,7 +90,7 @@ describe('PdfAutoModeController', () => {
       await pdfAutoModeController.start(makeReq(), res, next);
 
       expect(autoRemediationLoopService.reconcileIfOrphaned).toHaveBeenCalledWith('trial-1');
-      expect(autoRemediationLoopService.startAutoLoop).toHaveBeenCalledWith('trial-1');
+      expect(autoRemediationLoopService.startAutoLoop).toHaveBeenCalledWith(new ComparisonTrialAutoRemediationDriver('trial-1'));
       expect(res.status).toHaveBeenCalledWith(202);
       expect(next).not.toHaveBeenCalled();
     });
@@ -102,7 +102,7 @@ describe('PdfAutoModeController', () => {
 
       await pdfAutoModeController.start(makeReq(), res, next);
 
-      expect(autoRemediationLoopService.startAutoLoop).toHaveBeenCalledWith('trial-1');
+      expect(autoRemediationLoopService.startAutoLoop).toHaveBeenCalledWith(new ComparisonTrialAutoRemediationDriver('trial-1'));
       expect(res.status).toHaveBeenCalledWith(202);
       expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ success: true }));
     });

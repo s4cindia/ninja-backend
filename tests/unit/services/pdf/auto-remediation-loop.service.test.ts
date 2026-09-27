@@ -56,7 +56,7 @@ vi.mock('../../../../src/lib/logger', () => ({
 }));
 
 import prisma from '../../../../src/lib/prisma';
-import { autoRemediationLoopService } from '../../../../src/services/pdf/auto-remediation-loop.service';
+import { autoRemediationLoopService, ComparisonTrialAutoRemediationDriver } from '../../../../src/services/pdf/auto-remediation-loop.service';
 import { aiAnalysisService } from '../../../../src/services/pdf/ai-analysis.service';
 import { pdfReauditService } from '../../../../src/services/pdf/pdf-reaudit.service';
 import { remediationCycleLockService } from '../../../../src/services/pdf/remediation-cycle-lock.service';
@@ -148,7 +148,7 @@ describe('autoRemediationLoopService.startAutoLoop', () => {
   it('does nothing if the trial is not in auto mode', async () => {
     vi.mocked(prisma.comparisonTrial.findUnique).mockResolvedValue(makeTrial({ mode: 'manual' }) as any);
 
-    await autoRemediationLoopService.startAutoLoop('trial-1');
+    await autoRemediationLoopService.startAutoLoop(new ComparisonTrialAutoRemediationDriver('trial-1'));
 
     expect(remediationCycleLockService.acquireLock).not.toHaveBeenCalled();
   });
@@ -158,7 +158,7 @@ describe('autoRemediationLoopService.startAutoLoop', () => {
     vi.mocked(prisma.job.findUnique).mockResolvedValue({ id: 'job-1', tenantId: 'tenant-1' } as any);
     vi.mocked(remediationCycleLockService.acquireLock).mockResolvedValue({ acquired: false } as any);
 
-    await autoRemediationLoopService.startAutoLoop('trial-1');
+    await autoRemediationLoopService.startAutoLoop(new ComparisonTrialAutoRemediationDriver('trial-1'));
 
     expect(aiAnalysisService.analyzeJob).not.toHaveBeenCalled();
     expect(prisma.comparisonTrial.update).not.toHaveBeenCalled();
@@ -170,7 +170,7 @@ describe('autoRemediationLoopService.startAutoLoop', () => {
     mockJobFound();
     mockEmptyRound();
 
-    await autoRemediationLoopService.startAutoLoop('trial-1');
+    await autoRemediationLoopService.startAutoLoop(new ComparisonTrialAutoRemediationDriver('trial-1'));
 
     expect(aiAnalysisService.analyzeJob).toHaveBeenCalledTimes(1);
     expect(aiAnalysisService.applyApprovedSuggestions).not.toHaveBeenCalled();
@@ -208,7 +208,7 @@ describe('autoRemediationLoopService.startAutoLoop', () => {
       output: { aiAnalysisStats: { gemini: { estimatedCostUsd: 0.1 }, claude: { estimatedCostUsd: 0.05 } } },
     } as any);
 
-    await autoRemediationLoopService.startAutoLoop('trial-1');
+    await autoRemediationLoopService.startAutoLoop(new ComparisonTrialAutoRemediationDriver('trial-1'));
 
     expect(prisma.comparisonTrial.update).toHaveBeenCalledWith({
       where: { id: 'trial-1' },
@@ -228,7 +228,7 @@ describe('autoRemediationLoopService.startAutoLoop', () => {
     mockProductiveRound(234, 0.1);
     mockEmptyRound();
 
-    await autoRemediationLoopService.startAutoLoop('trial-1');
+    await autoRemediationLoopService.startAutoLoop(new ComparisonTrialAutoRemediationDriver('trial-1'));
 
     expect(aiAnalysisService.analyzeJob).toHaveBeenCalledTimes(2);
     expect(aiAnalysisService.applyApprovedSuggestions).toHaveBeenCalledTimes(1);
@@ -288,7 +288,7 @@ describe('autoRemediationLoopService.startAutoLoop', () => {
       });
     mockReauditSuccess();
 
-    await autoRemediationLoopService.startAutoLoop('trial-1');
+    await autoRemediationLoopService.startAutoLoop(new ComparisonTrialAutoRemediationDriver('trial-1'));
 
     expect(aiAnalysisService.analyzeJob).toHaveBeenCalledTimes(3);
     expect(aiAnalysisService.applyApprovedSuggestions).toHaveBeenCalledTimes(2);
@@ -310,7 +310,7 @@ describe('autoRemediationLoopService.startAutoLoop', () => {
     mockProductiveRound(1, 0);
     mockEmptyRound();
 
-    await autoRemediationLoopService.startAutoLoop('trial-1');
+    await autoRemediationLoopService.startAutoLoop(new ComparisonTrialAutoRemediationDriver('trial-1'));
 
     expect(aiAnalysisService.analyzeJob).toHaveBeenCalledWith('job-1', 'tenant-1', {
       colorContrastMode: 'apply-to-pdf',
@@ -329,7 +329,7 @@ describe('autoRemediationLoopService.startAutoLoop', () => {
     mockJobFound();
     mockEmptyRound();
 
-    await autoRemediationLoopService.startAutoLoop('trial-1');
+    await autoRemediationLoopService.startAutoLoop(new ComparisonTrialAutoRemediationDriver('trial-1'));
 
     expect(aiAnalysisService.analyzeJob).toHaveBeenCalledWith('job-1', 'tenant-1', undefined);
   });
@@ -342,7 +342,7 @@ describe('autoRemediationLoopService.startAutoLoop', () => {
     mockJobFound();
     mockEmptyRound();
 
-    await autoRemediationLoopService.startAutoLoop('trial-1');
+    await autoRemediationLoopService.startAutoLoop(new ComparisonTrialAutoRemediationDriver('trial-1'));
 
     expect(aiAnalysisService.analyzeJob).toHaveBeenCalledWith('job-1', 'tenant-1', undefined);
   });
@@ -362,7 +362,7 @@ describe('autoRemediationLoopService.startAutoLoop', () => {
     mockJobFound();
     mockEmptyRound('guidance-only');
 
-    await autoRemediationLoopService.startAutoLoop('trial-1');
+    await autoRemediationLoopService.startAutoLoop(new ComparisonTrialAutoRemediationDriver('trial-1'));
 
     expect(prisma.aiAnalysis.updateMany).toHaveBeenCalledWith({
       where: {
@@ -388,7 +388,7 @@ describe('autoRemediationLoopService.startAutoLoop', () => {
     mockJobFound();
     mockEmptyRound('disabled');
 
-    await autoRemediationLoopService.startAutoLoop('trial-1');
+    await autoRemediationLoopService.startAutoLoop(new ComparisonTrialAutoRemediationDriver('trial-1'));
 
     expect(prisma.aiAnalysis.deleteMany).toHaveBeenCalledWith({
       where: {
@@ -410,7 +410,7 @@ describe('autoRemediationLoopService.startAutoLoop', () => {
     mockJobFound();
     mockEmptyRound('apply-to-pdf');
 
-    await autoRemediationLoopService.startAutoLoop('trial-1');
+    await autoRemediationLoopService.startAutoLoop(new ComparisonTrialAutoRemediationDriver('trial-1'));
 
     expect(prisma.aiAnalysis.deleteMany).not.toHaveBeenCalled();
     expect(prisma.aiAnalysis.updateMany).not.toHaveBeenCalledWith(
@@ -431,7 +431,7 @@ describe('autoRemediationLoopService.startAutoLoop', () => {
     mockJobFound();
     mockEmptyRound('disabled');
 
-    await autoRemediationLoopService.startAutoLoop('trial-1');
+    await autoRemediationLoopService.startAutoLoop(new ComparisonTrialAutoRemediationDriver('trial-1'));
 
     expect(aiAnalysisService.analyzeJob).toHaveBeenCalledWith('job-1', 'tenant-1', undefined);
     expect(prisma.aiAnalysis.deleteMany).toHaveBeenCalledWith({
@@ -449,7 +449,7 @@ describe('autoRemediationLoopService.startAutoLoop', () => {
     mockProductiveRound(1, 0);
     mockEmptyRound(); // let it converge right after, so there's exactly one round to inspect
 
-    await autoRemediationLoopService.startAutoLoop('trial-1');
+    await autoRemediationLoopService.startAutoLoop(new ComparisonTrialAutoRemediationDriver('trial-1'));
 
     expect(prisma.aiAnalysis.count).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -473,7 +473,7 @@ describe('autoRemediationLoopService.startAutoLoop', () => {
     mockProductiveRound(5, 0);
     mockProductiveRound(5, 0);
 
-    await autoRemediationLoopService.startAutoLoop('trial-1');
+    await autoRemediationLoopService.startAutoLoop(new ComparisonTrialAutoRemediationDriver('trial-1'));
 
     expect(aiAnalysisService.analyzeJob).toHaveBeenCalledTimes(2);
     expect(prisma.comparisonTrial.update).toHaveBeenCalledWith({
@@ -487,7 +487,7 @@ describe('autoRemediationLoopService.startAutoLoop', () => {
     mockLockAcquired();
     mockProductiveRound(5, 1.5); // exceeds the $1.00 ceiling after round 1
 
-    await autoRemediationLoopService.startAutoLoop('trial-1');
+    await autoRemediationLoopService.startAutoLoop(new ComparisonTrialAutoRemediationDriver('trial-1'));
 
     expect(aiAnalysisService.analyzeJob).toHaveBeenCalledTimes(1);
     expect(prisma.comparisonTrial.update).toHaveBeenCalledWith({
@@ -505,7 +505,7 @@ describe('autoRemediationLoopService.startAutoLoop', () => {
     mockProductiveRound(5, 0.6);
     mockProductiveRound(5, 0.6);
 
-    await autoRemediationLoopService.startAutoLoop('trial-1');
+    await autoRemediationLoopService.startAutoLoop(new ComparisonTrialAutoRemediationDriver('trial-1'));
 
     expect(aiAnalysisService.analyzeJob).toHaveBeenCalledTimes(2);
     expect(prisma.comparisonTrial.update).toHaveBeenCalledWith({
@@ -527,7 +527,7 @@ describe('autoRemediationLoopService.startAutoLoop', () => {
     vi.mocked(aiAnalysisService.applyApprovedSuggestions).mockResolvedValue({ applied: 0, failed: 1, errors: [] });
     vi.mocked(prisma.job.findUnique).mockResolvedValue({ id: 'job-1', tenantId: 'tenant-1', output: {} } as any);
 
-    await autoRemediationLoopService.startAutoLoop('trial-1');
+    await autoRemediationLoopService.startAutoLoop(new ComparisonTrialAutoRemediationDriver('trial-1'));
 
     // Stops well short of the round ceiling (10) -- after the stall
     // threshold, not after exhausting rounds.
@@ -563,7 +563,7 @@ describe('autoRemediationLoopService.startAutoLoop', () => {
       .mockResolvedValueOnce(1) // round 2: applies successfully
       .mockResolvedValueOnce(0); // round 3: converged
 
-    await autoRemediationLoopService.startAutoLoop('trial-1');
+    await autoRemediationLoopService.startAutoLoop(new ComparisonTrialAutoRemediationDriver('trial-1'));
 
     expect(aiAnalysisService.analyzeJob).toHaveBeenCalledTimes(3);
     expect(prisma.comparisonTrial.update).toHaveBeenCalledWith({
@@ -585,7 +585,7 @@ describe('autoRemediationLoopService.startAutoLoop', () => {
     mockLockAcquired();
     mockProductiveRound(5, 0);
 
-    await autoRemediationLoopService.startAutoLoop('trial-1');
+    await autoRemediationLoopService.startAutoLoop(new ComparisonTrialAutoRemediationDriver('trial-1'));
 
     expect(aiAnalysisService.analyzeJob).toHaveBeenCalledTimes(1);
     expect(prisma.comparisonTrial.update).toHaveBeenCalledWith({
@@ -600,7 +600,7 @@ describe('autoRemediationLoopService.startAutoLoop', () => {
     mockJobFound();
     vi.mocked(aiAnalysisService.analyzeJob).mockRejectedValue(new Error('Gemini circuit open'));
 
-    await autoRemediationLoopService.startAutoLoop('trial-1');
+    await autoRemediationLoopService.startAutoLoop(new ComparisonTrialAutoRemediationDriver('trial-1'));
 
     expect(remediationCycleLockService.releaseLock).toHaveBeenCalledWith('job-1', 9);
     expect(prisma.comparisonTrial.update).toHaveBeenCalledWith({
@@ -628,7 +628,7 @@ describe('autoRemediationLoopService.startAutoLoop', () => {
     // The write's own failure still propagates (the caller -- /auto-mode/start
     // -- already attaches a .catch() to this fire-and-forget call), but the
     // lock must not leak because of it.
-    await expect(autoRemediationLoopService.startAutoLoop('trial-1')).rejects.toThrow('DB connection reset');
+    await expect(autoRemediationLoopService.startAutoLoop(new ComparisonTrialAutoRemediationDriver('trial-1'))).rejects.toThrow('DB connection reset');
 
     expect(remediationCycleLockService.releaseLock).toHaveBeenCalledWith('job-1', 9);
   });
@@ -719,5 +719,121 @@ describe('autoRemediationLoopService.reconcileIfOrphaned', () => {
     await autoRemediationLoopService.reconcileIfOrphaned('trial-1');
 
     expect(prisma.comparisonTrial.updateMany).not.toHaveBeenCalled();
+  });
+});
+
+// Direct, isolated coverage of the driver extracted from startAutoLoop's own
+// former body -- every prisma call here should be byte-for-byte the same
+// call/data shape startAutoLoop used to make directly against
+// comparisonTrial, confirmed independently of the loop's own control flow
+// (already covered end-to-end by the startAutoLoop tests above, which all
+// pass unchanged with this driver wrapping the same trialId).
+describe('ComparisonTrialAutoRemediationDriver', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('describe() labels the trial for log lines', () => {
+    expect(new ComparisonTrialAutoRemediationDriver('trial-1').describe()).toBe('trial trial-1');
+  });
+
+  describe('getConfig', () => {
+    it('resolves jobId/tenantId when the trial exists, has a job, and is in auto mode', async () => {
+      vi.mocked(prisma.comparisonTrial.findUnique).mockResolvedValue(makeTrial() as any);
+      vi.mocked(prisma.job.findUnique).mockResolvedValue({ id: 'job-1', tenantId: 'tenant-1' } as any);
+
+      const config = await new ComparisonTrialAutoRemediationDriver('trial-1').getConfig();
+
+      expect(prisma.comparisonTrial.findUnique).toHaveBeenCalledWith({ where: { id: 'trial-1' } });
+      expect(prisma.job.findUnique).toHaveBeenCalledWith({ where: { id: 'job-1' } });
+      expect(config).toEqual({ jobId: 'job-1', tenantId: 'tenant-1' });
+    });
+
+    it('returns null when the trial does not exist', async () => {
+      vi.mocked(prisma.comparisonTrial.findUnique).mockResolvedValue(null as any);
+
+      expect(await new ComparisonTrialAutoRemediationDriver('trial-1').getConfig()).toBeNull();
+      expect(prisma.job.findUnique).not.toHaveBeenCalled();
+    });
+
+    it('returns null when the trial has no associated job', async () => {
+      vi.mocked(prisma.comparisonTrial.findUnique).mockResolvedValue(makeTrial({ ninjaJobId: null }) as any);
+
+      expect(await new ComparisonTrialAutoRemediationDriver('trial-1').getConfig()).toBeNull();
+    });
+
+    it('returns null when the trial is not in auto mode', async () => {
+      vi.mocked(prisma.comparisonTrial.findUnique).mockResolvedValue(makeTrial({ mode: 'manual' }) as any);
+
+      expect(await new ComparisonTrialAutoRemediationDriver('trial-1').getConfig()).toBeNull();
+      expect(prisma.job.findUnique).not.toHaveBeenCalled();
+    });
+
+    it('returns null when the associated job no longer exists', async () => {
+      vi.mocked(prisma.comparisonTrial.findUnique).mockResolvedValue(makeTrial() as any);
+      vi.mocked(prisma.job.findUnique).mockResolvedValue(null as any);
+
+      expect(await new ComparisonTrialAutoRemediationDriver('trial-1').getConfig()).toBeNull();
+    });
+  });
+
+  it('resetForNewRun writes the exact fresh-run reset payload startAutoLoop used to write directly', async () => {
+    const startedAt = new Date('2026-01-01T00:00:00Z');
+    await new ComparisonTrialAutoRemediationDriver('trial-1').resetForNewRun(startedAt);
+
+    expect(prisma.comparisonTrial.update).toHaveBeenCalledWith({
+      where: { id: 'trial-1' },
+      data: {
+        autoStatus: 'running',
+        autoStopReason: null,
+        autoStopRequested: false,
+        autoRoundsCompleted: 0,
+        autoCostSpentUsd: 0,
+        autoStartedAt: startedAt,
+        autoStoppedAt: null,
+      },
+    });
+  });
+
+  describe('getRoundState', () => {
+    it('returns the per-round control values from the current trial row', async () => {
+      vi.mocked(prisma.comparisonTrial.findUnique).mockResolvedValue(
+        makeTrial({ autoStopRequested: true, autoMaxRounds: 5, autoCostLimitUsd: 1.5, autoColorContrastMode: 'apply-to-pdf' }) as any
+      );
+
+      const state = await new ComparisonTrialAutoRemediationDriver('trial-1').getRoundState();
+
+      expect(state).toEqual({
+        autoStopRequested: true,
+        autoMaxRounds: 5,
+        autoCostLimitUsd: 1.5,
+        autoColorContrastMode: 'apply-to-pdf',
+      });
+    });
+
+    it('returns null when the trial has disappeared mid-run', async () => {
+      vi.mocked(prisma.comparisonTrial.findUnique).mockResolvedValue(null as any);
+
+      expect(await new ComparisonTrialAutoRemediationDriver('trial-1').getRoundState()).toBeNull();
+    });
+  });
+
+  it('recordRoundProgress writes rounds/cost exactly as startAutoLoop used to', async () => {
+    await new ComparisonTrialAutoRemediationDriver('trial-1').recordRoundProgress(3, 0.42);
+
+    expect(prisma.comparisonTrial.update).toHaveBeenCalledWith({
+      where: { id: 'trial-1' },
+      data: { autoRoundsCompleted: 3, autoCostSpentUsd: 0.42 },
+    });
+  });
+
+  it('markStopped writes the exact terminal payload startAutoLoop used to write directly', async () => {
+    const stoppedAt = new Date('2026-01-01T01:00:00Z');
+    await new ComparisonTrialAutoRemediationDriver('trial-1').markStopped('converged', stoppedAt);
+
+    expect(prisma.comparisonTrial.update).toHaveBeenCalledWith({
+      where: { id: 'trial-1' },
+      data: { autoStatus: 'stopped', autoStopReason: 'converged', autoStopRequested: false, autoStoppedAt: stoppedAt },
+    });
   });
 });
