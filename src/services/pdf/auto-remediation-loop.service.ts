@@ -67,6 +67,122 @@ const STALL_ROUND_LIMIT = 2;
 
 export type AutoStopReason = 'converged' | 'round_limit' | 'budget_limit' | 'manual_stop' | 'stalled' | 'error';
 
+/**
+ * Driver abstraction for startAutoLoop -- lets the SAME loop body (below)
+ * persist its state to either ComparisonTrial (today's only caller, an
+ * admin-created Comparison Study trial) or PdfAutoRemediationRun (a
+ * production, batch-created job, added for the batch-processing feature)
+ * without either becoming a dependency of the other. Extracted from what
+ * used to be startAutoLoop's own direct prisma.comparisonTrial.* calls --
+ * see ComparisonTrialAutoRemediationDriver below for the zero-behavior-
+ * change wrapper of that exact logic.
+ *
+ * Deliberately does NOT cover reconcileIfOrphaned above: that method is
+ * controller-level plumbing specific to Comparison Study's fire-and-forget-
+ * plus-polling flow (GET /auto-mode/status calling it before every read),
+ * not part of the loop body itself -- a batch-created job's crash recovery
+ * goes through the concurrency-budget scheduler's own lease/heartbeat
+ * mechanism instead, with no equivalent polling endpoint to reconcile from.
+ */
+export interface AutoRemediationConfig {
+  jobId: string;
+  tenantId: string;
+}
+
+export interface AutoRemediationRoundState {
+  autoStopRequested: boolean;
+  autoMaxRounds: number;
+  autoCostLimitUsd: number;
+  autoColorContrastMode: string | null;
+}
+
+export interface AutoRemediationDriver {
+  /** Short label for log lines (e.g. `trial abc123`). Not a behavioral
+   *  contract -- callers should not parse this string. */
+  describe(): string;
+  /** Resolves the job/tenant this run targets, and whether it's eligible to
+   *  start at all (e.g. ComparisonTrial.mode === 'auto'). Null means refuse
+   *  to start: the caller logs a warning and returns without acquiring a
+   *  lock or marking anything running. */
+  getConfig(): Promise<AutoRemediationConfig | null>;
+  /** Fresh-run reset, called once after the lock is acquired and before the
+   *  loop begins -- resets round/cost counters and records the start time,
+   *  even over a previous run's leftover values. */
+  resetForNewRun(startedAt: Date): Promise<void>;
+  /** Re-reads the current per-round control values -- called once per loop
+   *  iteration, before running a round (never mid-round). Null means the
+   *  underlying record disappeared (e.g. deleted mid-run); the caller stops
+   *  with 'error'. */
+  getRoundState(): Promise<AutoRemediationRoundState | null>;
+  /** Persists round progress after each completed round. */
+  recordRoundProgress(roundsCompleted: number, costSpentUsd: number): Promise<void>;
+  /** Terminal write, called from the loop's finally block (before the
+   *  remediation-cycle lock is released -- see startAutoLoop's own comment
+   *  on why that ordering matters). */
+  markStopped(stopReason: AutoStopReason, stoppedAt: Date): Promise<void>;
+}
+
+/**
+ * Wraps the exact prisma.comparisonTrial.* calls startAutoLoop used to make
+ * directly -- zero behavior change for Comparison Study. Every read/write,
+ * in the same order, with the same data, as before this driver existed.
+ */
+export class ComparisonTrialAutoRemediationDriver implements AutoRemediationDriver {
+  constructor(private readonly trialId: string) {}
+
+  describe(): string {
+    return `trial ${this.trialId}`;
+  }
+
+  async getConfig(): Promise<AutoRemediationConfig | null> {
+    const trial = await prisma.comparisonTrial.findUnique({ where: { id: this.trialId } });
+    if (!trial?.ninjaJobId || trial.mode !== 'auto') return null;
+    const job = await prisma.job.findUnique({ where: { id: trial.ninjaJobId } });
+    if (!job) return null;
+    return { jobId: trial.ninjaJobId, tenantId: job.tenantId };
+  }
+
+  async resetForNewRun(startedAt: Date): Promise<void> {
+    await prisma.comparisonTrial.update({
+      where: { id: this.trialId },
+      data: {
+        autoStatus: 'running',
+        autoStopReason: null,
+        autoStopRequested: false,
+        autoRoundsCompleted: 0,
+        autoCostSpentUsd: 0,
+        autoStartedAt: startedAt,
+        autoStoppedAt: null,
+      },
+    });
+  }
+
+  async getRoundState(): Promise<AutoRemediationRoundState | null> {
+    const current = await prisma.comparisonTrial.findUnique({ where: { id: this.trialId } });
+    if (!current) return null;
+    return {
+      autoStopRequested: current.autoStopRequested,
+      autoMaxRounds: current.autoMaxRounds,
+      autoCostLimitUsd: current.autoCostLimitUsd,
+      autoColorContrastMode: current.autoColorContrastMode,
+    };
+  }
+
+  async recordRoundProgress(roundsCompleted: number, costSpentUsd: number): Promise<void> {
+    await prisma.comparisonTrial.update({
+      where: { id: this.trialId },
+      data: { autoRoundsCompleted: roundsCompleted, autoCostSpentUsd: costSpentUsd },
+    });
+  }
+
+  async markStopped(stopReason: AutoStopReason, stoppedAt: Date): Promise<void> {
+    await prisma.comparisonTrial.update({
+      where: { id: this.trialId },
+      data: { autoStatus: 'stopped', autoStopReason: stopReason, autoStopRequested: false, autoStoppedAt: stoppedAt },
+    });
+  }
+}
+
 class AutoRemediationLoopService {
   /**
    * Reconciles a trial whose autoStatus is stuck at 'running' because the
@@ -146,33 +262,24 @@ class AutoRemediationLoopService {
   }
 
   /**
-   * Starts (or resumes) an auto-mode run for the given trial. Intended to be
-   * called fire-and-forget from the /auto-mode/start endpoint; all progress
-   * and the terminal result are persisted onto the ComparisonTrial row
-   * itself (autoStatus/autoStopReason/autoRoundsCompleted/autoCostSpentUsd),
-   * which /auto-mode/status reads back.
+   * Starts (or resumes) an auto-mode run for whatever `driver` targets.
+   * Intended to be called fire-and-forget from the /auto-mode/start endpoint
+   * for a ComparisonTrialAutoRemediationDriver (today's only caller); all
+   * progress and the terminal result are persisted via the driver, which
+   * /auto-mode/status reads back for the Comparison Study case. A batch
+   * orchestrator using a JobAutoRemediationDriver awaits this instead, since
+   * it needs to know when the run finishes to release its concurrency lease.
    */
-  async startAutoLoop(trialId: string): Promise<void> {
-    const trial = await prisma.comparisonTrial.findUnique({ where: { id: trialId } });
-    if (!trial?.ninjaJobId) {
-      logger.warn(`[AutoRemediationLoop] Trial ${trialId} not found or has no associated job`);
+  async startAutoLoop(driver: AutoRemediationDriver): Promise<void> {
+    const config = await driver.getConfig();
+    if (!config) {
+      logger.warn(`[AutoRemediationLoop] ${driver.describe()}: not found, missing job, or not in auto mode -- refusing to start`);
       return;
     }
-    if (trial.mode !== 'auto') {
-      logger.warn(`[AutoRemediationLoop] Trial ${trialId} is not in auto mode -- refusing to start`);
-      return;
-    }
+    const { jobId, tenantId } = config;
 
-    const jobId = trial.ninjaJobId;
-    let job;
     let lock;
     try {
-      job = await prisma.job.findUnique({ where: { id: jobId } });
-      if (!job) {
-        logger.warn(`[AutoRemediationLoop] Job ${jobId} not found for trial ${trialId}`);
-        return;
-      }
-
       lock = await remediationCycleLockService.acquireLock(jobId, AUTO_MODE_ACTOR, 'auto_loop');
       if (!lock.acquired) {
         logger.warn(`[AutoRemediationLoop] Could not acquire remediation lock for job ${jobId} -- another cycle is already in progress`);
@@ -184,7 +291,7 @@ class AutoRemediationLoopService {
       // errored -- just log. The /auto-mode/start caller also attaches its
       // own rejection handler as a second line of defense.
       logger.error(
-        `[AutoRemediationLoop] Failed to start auto loop for trial ${trialId} (job ${jobId}): ${err instanceof Error ? err.message : String(err)}`
+        `[AutoRemediationLoop] Failed to start auto loop for ${driver.describe()} (job ${jobId}): ${err instanceof Error ? err.message : String(err)}`
       );
       return;
     }
@@ -194,18 +301,7 @@ class AutoRemediationLoopService {
 
     // Fresh run -- reset the counters even if a previous run left them
     // populated, so a restarted auto-mode session reports its own totals.
-    await prisma.comparisonTrial.update({
-      where: { id: trialId },
-      data: {
-        autoStatus: 'running',
-        autoStopReason: null,
-        autoStopRequested: false,
-        autoRoundsCompleted: 0,
-        autoCostSpentUsd: 0,
-        autoStartedAt: loopStartedAt,
-        autoStoppedAt: null,
-      },
-    });
+    await driver.resetForNewRun(loopStartedAt);
 
     let stopReason: AutoStopReason = 'converged';
     let roundsCompleted = 0;
@@ -214,23 +310,23 @@ class AutoRemediationLoopService {
 
     try {
       while (true) {
-        const current = await prisma.comparisonTrial.findUnique({ where: { id: trialId } });
-        if (!current) {
+        const state = await driver.getRoundState();
+        if (!state) {
           stopReason = 'error';
           break;
         }
         // All three checks happen before starting a round, never mid-round --
         // a round is always allowed to finish once started, so a stop
         // request/ceiling never leaves the PDF half-applied.
-        if (current.autoStopRequested) {
+        if (state.autoStopRequested) {
           stopReason = 'manual_stop';
           break;
         }
-        if (roundsCompleted >= current.autoMaxRounds) {
+        if (roundsCompleted >= state.autoMaxRounds) {
           stopReason = 'round_limit';
           break;
         }
-        if (costSpentUsd >= current.autoCostLimitUsd) {
+        if (costSpentUsd >= state.autoCostLimitUsd) {
           stopReason = 'budget_limit';
           break;
         }
@@ -238,8 +334,8 @@ class AutoRemediationLoopService {
         const { actionableFound, applied } = await this.runRound(
           jobId,
           cycleNumber,
-          job.tenantId,
-          resolveColorContrastMode(current.autoColorContrastMode),
+          tenantId,
+          resolveColorContrastMode(state.autoColorContrastMode),
         );
 
         // A fresh analysis pass (against whatever the *previous* round's
@@ -268,10 +364,7 @@ class AutoRemediationLoopService {
         // same round (ai-analysis.service.ts computes both).
         costSpentUsd += (stats?.gemini?.estimatedCostUsd ?? 0) + (stats?.claude?.estimatedCostUsd ?? 0);
 
-        await prisma.comparisonTrial.update({
-          where: { id: trialId },
-          data: { autoRoundsCompleted: roundsCompleted, autoCostSpentUsd: costSpentUsd },
-        });
+        await driver.recordRoundProgress(roundsCompleted, costSpentUsd);
 
         // A round that found actionable work but applied none of it still
         // consumed a round and Gemini tokens without making progress (e.g.
@@ -291,40 +384,39 @@ class AutoRemediationLoopService {
     } catch (err) {
       stopReason = 'error';
       logger.error(
-        `[AutoRemediationLoop] Job ${jobId} (trial ${trialId}) stopped on error after ${roundsCompleted} round(s): ${err instanceof Error ? err.message : String(err)}`
+        `[AutoRemediationLoop] Job ${jobId} (${driver.describe()}) stopped on error after ${roundsCompleted} round(s): ${err instanceof Error ? err.message : String(err)}`
       );
     } finally {
       remediationCycleLockService.stopHeartbeat(heartbeat);
-      // Terminal trial state is written BEFORE the lock is released (not
-      // after) -- otherwise there's a window where the lock reads as free
-      // while autoStatus still says 'running', during which a status/stop
-      // request could wrongly think this run was orphaned (reconcileIfOrphaned
-      // below), or a brand new run could start and then have ITS OWN
-      // 'running' status clobbered by this write landing late (CodeRabbit/
-      // Codex finding). Writing first closes both: by the time the lock is
-      // actually free, this run's true terminal state is already committed.
+      // Terminal state is written BEFORE the lock is released (not after) --
+      // otherwise there's a window where the lock reads as free while
+      // autoStatus still says 'running', during which a status/stop request
+      // could wrongly think this run was orphaned (reconcileIfOrphaned
+      // above, Comparison Study only), or a brand new run could start and
+      // then have ITS OWN 'running' status clobbered by this write landing
+      // late (CodeRabbit/Codex finding). Writing first closes both: by the
+      // time the lock is actually free, this run's true terminal state is
+      // already committed.
       //
       // The write is wrapped in its own try/finally so a failure here (a
-      // transient DB error, or the trial being deleted concurrently) still
-      // releases the lock -- otherwise, with the heartbeat already stopped,
-      // the job would stay locked for the full 20-minute staleness window
-      // with nothing left to renew it. If the write does fail, autoStatus
-      // is left at 'running' with a now-free lock -- exactly the state
-      // reconcileIfOrphaned above exists to detect and correct later.
+      // transient DB error, or the underlying record being deleted
+      // concurrently) still releases the lock -- otherwise, with the
+      // heartbeat already stopped, the job would stay locked for the full
+      // 20-minute staleness window with nothing left to renew it. If the
+      // write does fail, the driver's own state is left at 'running' with a
+      // now-free lock -- exactly the state reconcileIfOrphaned exists to
+      // detect and correct later (Comparison Study only, for now).
       try {
-        await prisma.comparisonTrial.update({
-          where: { id: trialId },
-          data: { autoStatus: 'stopped', autoStopReason: stopReason, autoStopRequested: false, autoStoppedAt: new Date() },
-        });
+        await driver.markStopped(stopReason, new Date());
       } finally {
         await remediationCycleLockService.releaseLock(jobId, cycleNumber);
       }
       // RemediationCycleEvent has no dedicated rounds/cost columns -- the
-      // authoritative numbers live on ComparisonTrial itself (read by
-      // GET /auto-mode/status). This is just a marker entry in the same
-      // append-only history the manual flow uses, summarized into
-      // errorMessage regardless of outcome since that's the only free-text
-      // field available on the event.
+      // authoritative numbers live wherever the driver persists them (read
+      // by GET /auto-mode/status for Comparison Study). This is just a
+      // marker entry in the same append-only history the manual flow uses,
+      // summarized into errorMessage regardless of outcome since that's the
+      // only free-text field available on the event.
       await remediationCycleHistoryService.logEvent({
         jobId,
         cycleNumber,
@@ -336,7 +428,7 @@ class AutoRemediationLoopService {
         startedAt: loopStartedAt,
       });
       logger.info(
-        `[AutoRemediationLoop] Job ${jobId} (trial ${trialId}) finished: ${roundsCompleted} round(s), $${costSpentUsd.toFixed(4)} spent, stopped: ${stopReason}`
+        `[AutoRemediationLoop] Job ${jobId} (${driver.describe()}) finished: ${roundsCompleted} round(s), $${costSpentUsd.toFixed(4)} spent, stopped: ${stopReason}`
       );
     }
   }
