@@ -24,6 +24,18 @@ const z = (zoneType: CanonicalZoneType, y: number, h: number): OrderableZone => 
   pageNumber: 1, bbox: { x: 50, y, w: 400, h }, zoneType,
 });
 
+// A second page with only production/print-shop slug text -- no real body
+// content, so the detector would find zero zones on it.
+async function makeUntaggedPdfWithBlankSlugPage(): Promise<Uint8Array> {
+  const doc = await PDFDocument.create();
+  const font = await doc.embedFont(StandardFonts.Helvetica);
+  const page1 = doc.addPage([450, H]);
+  page1.drawText('Chapter One', { x: 50, y: 560, size: 18, font });
+  const page2 = doc.addPage([450, H]);
+  page2.drawText('CSHP.indd   2', { x: 20, y: 9, size: 6, font });
+  return doc.save();
+}
+
 // zones in top-left convention; device band = [H-(y+h), H-y] must contain each baseline
 const ZONES: OrderableZone[] = [
   z('section-header', 30, 20),  // band [550,570] ∋ 560
@@ -158,6 +170,31 @@ describe('buildStructTreeFromZones (end-to-end)', () => {
     const topTags = (tree[0].children || []).map((c) => c.tag);
     expect(topTags).not.toContain('Figure');
     expect(topTags).toEqual(['H1']);
+  });
+
+  it('artifact-wraps a page with zero detected zones instead of skipping it entirely', async () => {
+    // Real incident (Curiel, confirmed by an external PAC-tool report): pages
+    // with only print-shop registration marks / production slug text and no
+    // real body content got zero detected zones, so the old per-page loop
+    // (keyed off zonesByPage) skipped them completely -- leaving their raw
+    // text totally unmarked (not even /Artifact), a genuine "Text object not
+    // tagged" violation repeated on every such page in a real 242-page doc.
+    const doc = await PDFDocument.load(await makeUntaggedPdfWithBlankSlugPage());
+    buildStructTreeFromZones(doc, [z('section-header', 30, 20)]); // zones only for page 1
+    const tagged = await doc.save();
+
+    const reloaded = await PDFDocument.load(tagged);
+    const page2 = reloaded.getPage(1);
+    expect(page2.node.get(PDFName.of('StructParents'))).toBeTruthy(); // now processed, not skipped
+
+    const streamObj = reloaded.context.lookup(page2.node.get(PDFName.of('Contents')));
+    const bytes = streamObj instanceof PDFRawStream
+      ? decodePDFRawStream(streamObj).decode()
+      : (streamObj as unknown as { decode(): Uint8Array }).decode();
+    let cs = '';
+    for (let i = 0; i < bytes.length; i++) cs += String.fromCharCode(bytes[i]);
+    expect(cs).toContain('/Artifact BMC');
+    expect(cs).toContain('EMC');
   });
 
   it('is a no-op for a PDF with no zones', async () => {

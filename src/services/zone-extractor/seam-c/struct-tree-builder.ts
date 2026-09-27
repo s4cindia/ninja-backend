@@ -129,9 +129,17 @@ export function buildStructTreeFromZones(
     const arr = zonesByPage.get(z.pageNumber); if (arr) arr.push(z); else zonesByPage.set(z.pageNumber, [z]);
   }
 
-  for (const [pageNum, pageZones] of zonesByPage) {
-    const pageIdx = pageByNumber.get(pageNum);
-    if (pageIdx === undefined) continue;
+  // Process EVERY page, not just ones the detector found a zone on. A page
+  // with zero zones (a blank interstitial, or one with only print-shop
+  // registration marks / slug text) still has raw, un-marked content in its
+  // stream -- skipping it left that content completely untagged (not even
+  // /Artifact), a real PDF/UA violation confirmed live by an external PAC
+  // tool report on a document with several such pages. tagContentStream's
+  // own Artifact fallback (any text/image with no matching band) correctly
+  // handles an empty bands array, so this just needs to actually be called.
+  for (let pageIdx = 0; pageIdx < pages.length; pageIdx++) {
+    const pageNum = pageIdx + 1;
+    const pageZones = zonesByPage.get(pageNum) ?? [];
     const page = pages[pageIdx];
     const H = page.getHeight();
 
