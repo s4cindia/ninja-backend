@@ -22,7 +22,10 @@
         { "name": "PROCESS_ROLE", "value": "worker" },
         { "name": "S3_BUCKET", "value": "ninja-epub-staging" },
         { "name": "S3_REGION", "value": "ap-south-1" },
-        { "name": "VERAPDF_PATH", "value": "/opt/verapdf/verapdf" }
+        { "name": "VERAPDF_PATH", "value": "/opt/verapdf/verapdf" },
+        { "name": "YOLO_SERVICE_URL", "value": "http://ninja-zone-detector.ninja.local:8083" },
+        { "name": "YOLO_WARM_START_HOUR_IST", "value": "9" },
+        { "name": "YOLO_WARM_END_HOUR_IST", "value": "19" }
       ],
       "secrets": [
         { "name": "DATABASE_URL", "valueFrom": "REPLACE_WITH_STAGING_DATABASE_SECRET_ARN" },
