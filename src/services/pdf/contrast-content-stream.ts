@@ -713,6 +713,8 @@ export function findSiblingRuns(
     if (after.length >= maxSiblings) break;
   }
 
+  // Nearest-preceding-first (NOT yet reversed to document order -- that
+  // happens below, only for whatever slice actually gets selected).
   const before: TextRunMatch[] = [];
   for (let i = matchedIndex - 1; i >= 0; i--) {
     const u = units[i];
@@ -721,9 +723,30 @@ export function findSiblingRuns(
     if (m) before.push(m);
     if (before.length >= maxSiblings) break;
   }
-  before.reverse();
 
-  return [...before, ...after].slice(0, maxSiblings);
+  // Interleave by proximity to afterRun rather than concatenating --
+  // CodeRabbit finding on this PR: capping the *combined* list at
+  // maxSiblings after collecting up to maxSiblings from EACH direction
+  // independently let one direction (e.g. several failing preceding runs)
+  // fill the whole budget and silently starve every following sibling,
+  // even ones closer to the match than some of what got kept. Both arrays
+  // are nearest-first here, so index 0 in each is the natural starting
+  // point for a proximity comparison.
+  let bi = 0;
+  let ai = 0;
+  while (bi + ai < maxSiblings && (bi < before.length || ai < after.length)) {
+    const bDist = bi < before.length ? afterRun.start - before[bi].end : Infinity;
+    const aDist = ai < after.length ? after[ai].start - afterRun.end : Infinity;
+    if (bDist <= aDist) bi++;
+    else ai++;
+  }
+
+  // The selected prefix of `before` (nearest bi preceding siblings) must be
+  // reversed back to document order before returning -- callers' width
+  // estimation from siblings[i+1].anchorX assumes ascending order, and no
+  // `before` entry can ever sit after any `after` entry, so this
+  // concatenation alone is enough (no further sort needed).
+  return [...before.slice(0, bi).reverse(), ...after.slice(0, ai)];
 }
 
 /**
