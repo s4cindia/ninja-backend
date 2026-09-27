@@ -212,6 +212,21 @@ export function buildStructTreeFromZones(
       case 'artifact':
         return null; // content already marked /Artifact; not in the /K flow
       case 'block': {
+        const meta = zoneMeta.get(node.zone)!;
+        const hasContent = (zoneMcids.get(meta.index)?.mcids.length ?? 0) > 0;
+        if (!hasContent) {
+          // No marked content (a text run, image Do, or inline image -- see
+          // content-stream.ts) actually falls inside this zone's bbox on the
+          // page. Creating a StructElem here would leave an orphan with no
+          // /K, which fails PDF/UA (an empty structure element) and, for a
+          // Figure specifically, produces an unfixable "missing alt text"
+          // issue for content that doesn't exist. Confirmed live: the
+          // detector flagged a "figure" region on a document's title page
+          // that overlapped no visual content at all (a real false
+          // positive, first surfaced once Seam-C tagging actually ran
+          // end-to-end in production). Drop the zone instead.
+          return null;
+        }
         const { ref, dict } = makeElem(node.tag, parentRef);
         bindLeaf(ref, dict, node.zone);
         if (node.tag === 'Figure' || node.tag === 'Formula') setLayoutBBox(dict, node.zone);
