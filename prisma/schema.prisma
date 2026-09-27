@@ -2280,9 +2280,12 @@ model ComparisonTrial {
   pdfxtCostUsd   Float?
   pdfxtPacResult Json?
 
-  /// 'manual' (operator drives every round, default) | 'auto' (backend loops
-  /// analyze->approve->apply->reaudit on its own until convergence or a limit).
-  mode                String  @default("manual")
+  /// 'manual' (operator drives every round) | 'auto' (backend loops
+  /// analyze->approve->apply->reaudit on its own until convergence or a
+  /// limit, default -- registerTrial relies on this default rather than
+  /// setting it explicitly, so a new trial starts in auto mode without any
+  /// manual Save).
+  mode                String  @default("auto")
   autoMaxRounds       Int     @default(10)
   autoCostLimitUsd    Float   @default(2.0)
   autoRoundsCompleted Int     @default(0)
@@ -2306,18 +2309,24 @@ model ComparisonTrial {
   /// Cooperative cancellation flag -- checked at the top of each round, never
   /// mid-round, so a stop request never leaves a round half-applied.
   autoStopRequested   Boolean @default(false)
-  /// 'guidance-only' | 'disabled' | 'apply-to-pdf', or null (default) to
-  /// inherit the tenant's own aiRemediation.colorContrastMode setting (or
-  /// the backend default if the tenant hasn't set one either) -- exactly
-  /// what auto mode did before this column existed. Must stay nullable with
-  /// no default: Tenant.settings.aiRemediation.colorContrastMode is a real,
+  /// 'guidance-only' | 'disabled' | 'apply-to-pdf', or null to inherit the
+  /// tenant's own aiRemediation.colorContrastMode setting (or the backend
+  /// default if the tenant hasn't set one either) -- exactly what auto mode
+  /// did before this column existed. Must stay nullable with NO SCHEMA
+  /// default: Tenant.settings.aiRemediation.colorContrastMode is a real,
   /// operator-configurable setting (tenant-config.controller.ts), and a
-  /// non-null default here would unconditionally override it for every
-  /// trial, even ones nobody explicitly configured. Only set when an
-  /// operator explicitly overrides contrast handling for this trial's
-  /// auto-mode run. Read fresh each round like autoMaxRounds/
-  /// autoCostLimitUsd, so it can be changed (or cleared back to null) mid-run
-  /// and takes effect starting the next round.
+  /// non-null default at this column level would unconditionally override
+  /// it for every trial, even ones nobody explicitly configured -- there'd
+  /// be no way to tell "operator wants the tenant default" from "operator
+  /// wants apply-to-pdf" once both look the same (non-null) at write time.
+  /// registerTrial sets this explicitly to 'apply-to-pdf' for every NEW
+  /// trial it creates instead -- an intentional, comparison-study-specific
+  /// application default, not a schema-level one, so it doesn't touch the
+  /// tenant-wide default other flows still inherit and stays overridable
+  /// (including back to null/inherit) by an operator editing the trial
+  /// afterward. Read fresh each round like autoMaxRounds/autoCostLimitUsd,
+  /// so it can be changed (or cleared back to null) mid-run and takes
+  /// effect starting the next round.
   autoColorContrastMode String?
 
   status    String   @default("registered") // registered -> ninja_complete -> pdfxt_logged -> validated -> reported
