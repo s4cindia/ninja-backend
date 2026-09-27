@@ -110,8 +110,34 @@ class PdfReauditService {
         const onValidatorComplete = (label: string, _issuesFound: number, completed: number, total: number) => {
           void this.updateReauditProgress(jobId, { completedValidators: completed, totalValidators: total, currentValidator: label });
         };
+        // Real incident (2026-09-27): this call never passed a per-image
+        // callback at all (the 8th runAuditFromBuffer argument was omitted
+        // entirely), so once Alt Text started, postRemediationProgress
+        // stayed frozen on whatever the last-completed NAMED validator was
+        // for the full duration of Alt Text -- on a 3843-image document,
+        // that's the same 3.5+ hour blind spot PR #621 already fixed for
+        // the initial audit, just never extended to this second, separate
+        // call site. Awaited (not fire-and-forget) to match
+        // PdfAltTextValidator.validate()'s own await on this callback.
+        const onAltTextImageProgress = async (completed: number, total: number) => {
+          await this.updateReauditProgress(jobId, { altTextImageProgress: { completed, total } });
+        };
 
-        await this.updateReauditProgress(jobId, { currentPage: 0, totalPages: 0, completedValidators: 0, totalValidators: 0 });
+        // altTextImageProgress explicitly reset to null (not just omitted) --
+        // updateReauditProgress merges into the existing postRemediationProgress
+        // object, so a second Auto Mode round would otherwise keep showing the
+        // PREVIOUS round's final Alt Text count (often completed === total)
+        // until this round's own Alt Text validator finishes extracting every
+        // image and fires its own upfront (0, total) call, misleadingly
+        // reading as "already done" during a potentially long extraction
+        // phase (CodeRabbit catch, PR #625).
+        await this.updateReauditProgress(jobId, {
+          currentPage: 0,
+          totalPages: 0,
+          completedValidators: 0,
+          totalValidators: 0,
+          altTextImageProgress: null,
+        });
 
         reauditReport = await pdfAuditService.runAuditFromBuffer(
           remediatedPdfBuffer,
@@ -120,7 +146,8 @@ class PdfReauditService {
           'comprehensive',
           undefined,
           onProgress,
-          onValidatorComplete
+          onValidatorComplete,
+          onAltTextImageProgress
         );
       } catch (auditError) {
         logger.error(`[PdfReaudit] Audit execution failed:`, auditError);
@@ -468,6 +495,7 @@ class PdfReauditService {
       completedValidators?: number;
       totalValidators?: number;
       currentValidator?: string;
+      altTextImageProgress?: { completed: number; total: number } | null;
     }
   ): Promise<void> {
     try {
