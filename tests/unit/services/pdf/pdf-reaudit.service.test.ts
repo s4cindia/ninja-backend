@@ -407,6 +407,7 @@ describe('PdfReauditService', () => {
         'comprehensive',
         undefined,
         expect.any(Function),
+        expect.any(Function),
         expect.any(Function)
       );
     });
@@ -440,6 +441,37 @@ describe('PdfReauditService', () => {
       );
       expect(progressWrites).toContainEqual(
         expect.objectContaining({ completedValidators: 4, totalValidators: 8, currentValidator: 'Tables' })
+      );
+    });
+
+    it('writes per-image Alt Text progress into job.output.postRemediationProgress (real gap fixed 2026-09-27)', async () => {
+      // Real incident: this call site never passed the 8th
+      // runAuditFromBuffer argument at all, so once Alt Text started,
+      // postRemediationProgress stayed frozen on whatever the last-completed
+      // NAMED validator was for the full 3.5+ hour duration of Alt Text on a
+      // large image-heavy document -- indistinguishable from a genuine hang.
+      vi.mocked(prisma.job.findUnique).mockResolvedValue({
+        id: mockJobId,
+        output: { auditReport: mockOriginalAuditReport },
+      } as any);
+      vi.mocked(prisma.job.update).mockResolvedValue({} as any);
+      vi.mocked(fileStorageService.saveRemediatedFile).mockResolvedValue('/path/to/remediated.pdf');
+
+      vi.mocked(pdfAuditService.runAuditFromBuffer).mockImplementation(
+        async (_buffer, _jobId, _fileName, _scanLevel, _customValidators, _onProgress, _onValidatorComplete, onAltTextImageProgress) => {
+          await onAltTextImageProgress?.(1200, 3843);
+          return { ...mockOriginalAuditReport, jobId: `${mockJobId}-reaudit`, issues: [] };
+        }
+      );
+
+      await pdfReauditService.reauditAndCompare(mockJobId, mockBuffer, mockFileName);
+
+      const progressWrites = vi.mocked(prisma.job.update).mock.calls
+        .map(([args]) => (args.data as any).output?.postRemediationProgress)
+        .filter(Boolean);
+
+      expect(progressWrites).toContainEqual(
+        expect.objectContaining({ altTextImageProgress: { completed: 1200, total: 3843 } })
       );
     });
 
