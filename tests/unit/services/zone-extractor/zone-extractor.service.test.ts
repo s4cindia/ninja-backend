@@ -20,12 +20,22 @@ vi.mock('../../../../src/lib/prisma', () => ({
 }));
 
 vi.mock('../../../../src/services/zone-extractor/docling-client');
+vi.mock('../../../../src/services/zone-extractor/yolo-client');
+vi.mock('../../../../src/services/zone-extractor/yolo-service-scaler');
 
 import { detectZones } from '../../../../src/services/zone-extractor/zone-extractor.service';
 import { detectWithDocling } from '../../../../src/services/zone-extractor/docling-client';
-import type { DoclingServiceResponse } from '../../../../src/services/zone-extractor/types';
+import { detectWithYolo } from '../../../../src/services/zone-extractor/yolo-client';
+import {
+  ensureYoloServiceUp,
+  touchYoloIdleTimer,
+} from '../../../../src/services/zone-extractor/yolo-service-scaler';
+import type { DoclingServiceResponse, YoloServiceResponse } from '../../../../src/services/zone-extractor/types';
 
 const mockedDetect = vi.mocked(detectWithDocling);
+const mockedDetectYolo = vi.mocked(detectWithYolo);
+const mockedEnsureUp = vi.mocked(ensureYoloServiceUp);
+const mockedTouchIdle = vi.mocked(touchYoloIdleTimer);
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -35,6 +45,7 @@ beforeEach(() => {
   });
   mockUpdate.mockResolvedValue({});
   mockCreateMany.mockResolvedValue({ count: 0 });
+  mockedEnsureUp.mockResolvedValue(undefined);
 });
 
 describe('detectZones', () => {
@@ -124,5 +135,52 @@ describe('detectZones', () => {
     await expect(
       detectZones(pdfPath, jobId, tenantId, fileId),
     ).rejects.toThrow('DB_WRITE_FAILED');
+  });
+
+  describe('yolo mode — active-request lease release', () => {
+    it('happy path: ensures the service up and releases the lease once done', async () => {
+      const response: YoloServiceResponse = {
+        jobId,
+        processingTimeMs: 200,
+        zones: [
+          { page: 1, bbox: { x: 0, y: 0, w: 100, h: 50 }, label: 'paragraph', confidence: 0.9 },
+        ],
+      };
+      mockedDetectYolo.mockResolvedValue(response);
+
+      await detectZones(pdfPath, jobId, tenantId, fileId, 'yolo');
+
+      expect(mockedEnsureUp).toHaveBeenCalledOnce();
+      expect(mockedTouchIdle).toHaveBeenCalledOnce();
+    });
+
+    it('releases the lease even when detection throws — otherwise it leaks forever', async () => {
+      mockedDetectYolo.mockRejectedValue(new Error('YOLO_SCALE_TIMEOUT: not healthy'));
+
+      await expect(
+        detectZones(pdfPath, jobId, tenantId, fileId, 'yolo'),
+      ).rejects.toThrow('YOLO_SCALE_TIMEOUT');
+
+      // Must fire even on the error path (finally), or the yolo-service-scaler's
+      // active-request count never drops back to 0 and it can never scale down.
+      expect(mockedTouchIdle).toHaveBeenCalledOnce();
+    });
+
+    it('releases the lease even when the DB transaction fails', async () => {
+      const response: YoloServiceResponse = {
+        jobId,
+        processingTimeMs: 200,
+        zones: [
+          { page: 1, bbox: { x: 0, y: 0, w: 100, h: 50 }, label: 'paragraph', confidence: 0.9 },
+        ],
+      };
+      mockedDetectYolo.mockResolvedValue(response);
+      mockTransaction.mockRejectedValue(new Error('DB_WRITE_FAILED'));
+
+      await expect(
+        detectZones(pdfPath, jobId, tenantId, fileId, 'yolo'),
+      ).rejects.toThrow('DB_WRITE_FAILED');
+      expect(mockedTouchIdle).toHaveBeenCalledOnce();
+    });
   });
 });
