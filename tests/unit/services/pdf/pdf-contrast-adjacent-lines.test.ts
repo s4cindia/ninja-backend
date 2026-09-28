@@ -39,4 +39,29 @@ describe('PdfContrastValidator — adjacent-line spatial dedup', () => {
     expect(contrastIssues.length).toBe(1);
     expect(contrastIssues[0].context).toContain('Failing near-white line below');
   });
+
+  // CodeRabbit finding on this PR: requiring positive X *overlap* (this
+  // fix's first draft) treats every word of a many-word failing line as
+  // independent, since same-line word fragments normally ABUT rather than
+  // overlap in X at all -- capable of exhausting MAX_ISSUES_PER_PAGE (20) on
+  // a single line and starving a genuinely separate failing line elsewhere
+  // on the page. The shipped fix uses a gap-based proximity check instead
+  // (small inter-word gaps consolidate; the matched line's tracked box
+  // extends with each absorbed fragment), so an arbitrarily long line of
+  // small fragments still reports as ONE issue.
+  it('consolidates many adjacent same-line word fragments into one issue instead of one per word', async () => {
+    const src = await PDFDocument.create();
+    const page = src.addPage([1200, 600]);
+    const font = await src.embedFont(StandardFonts.Helvetica);
+    const wordCount = 22;
+    for (let i = 0; i < wordCount; i++) {
+      page.drawText('abcd', { x: 40 + i * 35, y: 450, size: 14, font, color: rgb(0.85, 0.85, 0.85) });
+    }
+    const buffer = Buffer.from(await src.save());
+
+    const report = await pdfAuditService.runAuditFromBuffer(buffer, 'adjacent-fragments-test', 'test.pdf', 'custom', ['contrast']);
+    const contrastIssues = report.issues.filter(i => i.code === 'COLOR-CONTRAST');
+
+    expect(contrastIssues.length).toBe(1);
+  });
 });
