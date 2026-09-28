@@ -30,8 +30,16 @@ export interface RgbColor {
 const RENDER_SCALE = 1.5;
 // Max issues emitted per page (spatial deduplication also applied)
 const MAX_ISSUES_PER_PAGE = 20;
-// Spatial grid cell size in canvas pixels (avoid duplicate issues for nearby text)
-const GRID_CELL_PX = 80;
+// An item's box is a spatial duplicate of an already-recorded one only when
+// their Y-bands overlap by more than this fraction of the shorter box's own
+// height. True fragments of one visual line (the case this dedup exists
+// for -- a pdf generator splitting one line into several pdfjs text items,
+// e.g. per-word color/kerning) share nearly the same baseline and font
+// size, so their Y-bands coincide almost completely. Two genuinely distinct,
+// vertically-adjacent lines merely touch or abut (their boxes' Y-ranges
+// meet at a boundary, if they overlap at all) -- comfortably under this
+// threshold, so this correctly treats them as separate.
+const DEDUP_Y_OVERLAP_RATIO = 0.5;
 // Fraction of the text bounding box's pixels averaged to estimate ink color.
 // The box spans the full font-size height (ascender to baseline), but actual
 // glyph-ink coverage within it is typically far below that — measured at ~6%
@@ -365,7 +373,7 @@ export class PdfContrastValidator {
     const artifactTextItemIndices = this.findArtifactTextItemIndices(textContent.items);
 
     const issues: AuditIssue[] = [];
-    const usedCells = new Set<string>();
+    const usedBoxes: Array<{ x: number; y: number; w: number; h: number }> = [];
     // Distinct background signatures actually seen on THIS page -- folded
     // into the cross-page backgroundSignatureCounts once, after this page's
     // items are done, so a signature repeated across multiple items on the
@@ -431,10 +439,32 @@ export class PdfContrastValidator {
       const top = itemBox.y;
       if (top < 4 || canvasX < 0 || canvasX + itemW > cw || top + itemH > ch) continue;
 
-      // Spatial deduplication
-      const cellKey = `${Math.floor(canvasX / GRID_CELL_PX)},${Math.floor(top / GRID_CELL_PX)}`;
-      if (usedCells.has(cellKey)) continue;
-      usedCells.add(cellKey);
+      // Spatial deduplication -- skip an item whose box substantially
+      // overlaps one already recorded on this page (the SAME visual line,
+      // not a genuinely separate one to independently sample). A fixed-size
+      // grid bucket (the previous approach: floor(x/80),floor(y/80)) merged
+      // any two items landing in the same 80px canvas cell regardless of
+      // direction, which silently swallowed a genuinely distinct ADJACENT
+      // line (one ordinary line-height away, ~15pt/22px at this module's
+      // RENDER_SCALE -- comfortably inside an 80px/53pt cell) into the same
+      // bucket as its neighbor. Confirmed live on Curiel_187961_CSHP.pdf: a
+      // two-line wrapped list item where line 1 (still ratio ~1.06,
+      // catastrophically failing) and line 2 (already fixed, ratio ~15) sat
+      // in the exact same grid cell, so only line 2 was ever sampled and
+      // line 1 was invisible to every subsequent re-audit however visibly
+      // unreadable it stayed. Y-band overlap (relative to the shorter box's
+      // own height) distinguishes the two cases correctly: split fragments
+      // of one line share nearly the same baseline/font-size and their
+      // Y-bands coincide almost completely, while distinct adjacent lines'
+      // boxes merely touch or abut.
+      const isSpatialDuplicate = usedBoxes.some(b => {
+        const yOverlap = Math.min(top + itemH, b.y + b.h) - Math.max(top, b.y);
+        const xOverlap = Math.min(canvasX + itemW, b.x + b.w) - Math.max(canvasX, b.x);
+        if (yOverlap <= 0 || xOverlap <= 0) return false;
+        return yOverlap / Math.min(itemH, b.h) > DEDUP_Y_OVERLAP_RATIO;
+      });
+      if (isSpatialDuplicate) continue;
+      usedBoxes.push(itemBox);
 
       // Background: same tiered/flat-variance search sampleBackgroundRobust
       // already does for fix-verification (PR #513/#514) -- a single fixed

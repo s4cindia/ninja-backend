@@ -23,10 +23,9 @@ describe('PdfContrastValidator — Artifact-tagged text exclusion', () => {
     const src = await PDFDocument.create();
     const page = src.addPage([400, 700]);
     const font = await src.embedFont(StandardFonts.Helvetica);
-    // Two independent white-on-white runs, far enough apart in canvas space
-    // (RENDER_SCALE=1.5 * 200pt = 300px) to land in different GRID_CELL_PX
-    // (80px) spatial-dedup buckets, so both are independently eligible to
-    // be reported.
+    // Two independent white-on-white runs, far enough apart (300pt) that
+    // their boxes share no Y-overlap at all, so both are independently
+    // eligible to be reported by the validator's overlap-based spatial dedup.
     page.drawText('Untouched invisible run', { x: 60, y: 550, size: 14, font, color: rgb(1, 1, 1) });
     page.drawText('Already fixed invisible run', { x: 60, y: 250, size: 14, font, color: rgb(1, 1, 1) });
     const doc = await PDFDocument.load(await src.save());
