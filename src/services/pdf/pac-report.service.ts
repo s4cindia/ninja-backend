@@ -140,6 +140,17 @@ const NINJA_TESTABLE_CONDITIONS: ReadonlySet<string> = new Set([
   '15-003',
   '15-004',
   '15-005',
+
+  // ── Link completeness validator ──────────────────────────────────────────
+  '28-011', // Link annotation not nested within a Link structure element --
+            // was pdfa11y-only (see PDFA11Y_TESTABLE_CONDITIONS's own
+            // history) until pdf-link-completeness.validator.ts started
+            // natively detecting URL-shaped plain text with no underlying
+            // Link annotation at all (a document can have zero annotations
+            // of any kind, as Curiel_187961_CSHP.pdf does, and still fail
+            // this condition). Moved here rather than left duplicated in
+            // both sets since Ninja's own detection no longer depends on an
+            // external binary's availability for this specific condition.
 ]);
 
 /**
@@ -188,7 +199,9 @@ const PDFA11Y_TESTABLE_CONDITIONS: ReadonlySet<string> = new Set([
   '28-005', // Form field missing /TU and no enclosing /Alt
   '28-007', // TrapNet annotation present
   '28-010', // Widget annotation not nested within a Form structure element
-  '28-011', // Link annotation not nested within a Link structure element
+  // NOTE: 28-011 (Link annotation not nested within a Link structure
+  // element) moved to NINJA_TESTABLE_CONDITIONS above -- see that entry's
+  // own comment.
   '28-014', // Media clip data dictionary missing /CT entry
   '28-015', // Media clip data dictionary missing /Alt entry
   '31-030', // Text-showing operator references the .notdef glyph

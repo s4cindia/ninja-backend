@@ -68,7 +68,10 @@ describe('PacReportService.generateReport — veraPDF/pdfa11y ran-flag gating', 
     vi.mocked(prisma.job.findFirst).mockResolvedValue(mockJob({ pdfa11yRan: false }) as never);
 
     const report = await pacReportService.generateReport('job-1', 'tenant-1');
-    const condition = findCondition(report, '28-011'); // pdfa11y-only condition
+    // 28-011 moved to NINJA_TESTABLE_CONDITIONS (pdf-link-completeness.validator.ts
+    // now detects it natively, independent of pdfa11y) -- 28-004 remains a
+    // genuinely pdfa11y-only condition for this generic ran-flag-gating test.
+    const condition = findCondition(report, '28-004');
 
     expect(condition?.status).toBe('UNTESTED');
   });
@@ -77,25 +80,25 @@ describe('PacReportService.generateReport — veraPDF/pdfa11y ran-flag gating', 
     vi.mocked(prisma.job.findFirst).mockResolvedValue(mockJob({ pdfa11yRan: true }) as never);
 
     const report = await pacReportService.generateReport('job-1', 'tenant-1');
-    const condition = findCondition(report, '28-011');
+    const condition = findCondition(report, '28-004');
 
     expect(condition?.status).toBe('PASS');
   });
 
   it('still reports FAIL for a pdfa11y-only condition with a real issue, even if pdfa11yRan is somehow false', async () => {
     const issue: AuditIssue = {
-      id: 'pdfa11y-28-011',
+      id: 'pdfa11y-28-004',
       source: 'pdfa11y',
       severity: 'serious',
-      code: 'MATTERHORN-28-011',
-      message: 'Link annotation not enclosed in a Link structure element',
-      matterhornCheckpoint: '28-011',
+      code: 'MATTERHORN-28-004',
+      message: 'Annotation missing /Contents and no enclosing /Alt',
+      matterhornCheckpoint: '28-004',
       matterhornHow: 'M',
     };
     vi.mocked(prisma.job.findFirst).mockResolvedValue(mockJob({ issues: [issue], pdfa11yRan: false }) as never);
 
     const report = await pacReportService.generateReport('job-1', 'tenant-1');
-    const condition = findCondition(report, '28-011');
+    const condition = findCondition(report, '28-004');
 
     expect(condition?.status).toBe('FAIL');
     expect(condition?.source).toBe('pdfa11y');
@@ -120,6 +123,37 @@ describe('PacReportService.generateReport — veraPDF/pdfa11y ran-flag gating', 
     const condition = findCondition(report, '07-001'); // Ninja-native (DisplayDocTitle)
 
     expect(condition?.status).toBe('PASS');
+  });
+
+  it('marks 28-011 PASS with no pdfa11y/veraPDF run at all -- pdf-link-completeness.validator.ts now tests it natively', async () => {
+    vi.mocked(prisma.job.findFirst).mockResolvedValue(
+      mockJob({ veraPdfRan: false, pdfa11yRan: false }) as never,
+    );
+
+    const report = await pacReportService.generateReport('job-1', 'tenant-1');
+
+    expect(findCondition(report, '28-011')?.status).toBe('PASS');
+  });
+
+  it('still reports FAIL for a real LINK-MISSING-ANNOTATION issue against 28-011', async () => {
+    const issue: AuditIssue = {
+      id: 'link-completeness-1',
+      source: 'link-completeness-validator',
+      severity: 'serious',
+      code: 'LINK-MISSING-ANNOTATION',
+      message: 'Text reads as a hyperlink but has no underlying Link annotation',
+      matterhornCheckpoint: '28-011',
+      matterhornHow: 'M',
+    };
+    vi.mocked(prisma.job.findFirst).mockResolvedValue(
+      mockJob({ issues: [issue], veraPdfRan: false, pdfa11yRan: false }) as never,
+    );
+
+    const report = await pacReportService.generateReport('job-1', 'tenant-1');
+    const condition = findCondition(report, '28-011');
+
+    expect(condition?.status).toBe('FAIL');
+    expect(condition?.source).toBe('ninja');
   });
 
   it('reports 01-005 as UNTESTED (not a false PASS) when no UNTAGGED-CONTENT issue is present', async () => {

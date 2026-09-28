@@ -32,6 +32,7 @@ import { pdfFontToUnicodeValidator } from './validators/pdf-font-tounicode.valid
 import { pdfTableHeaderScopeValidator } from './validators/pdf-table-header-scope.validator';
 import { pdfStructureValidator } from './validators/pdf-structure.validator';
 import { pdfLinkValidator } from './validators/pdf-link.validator';
+import { pdfLinkCompletenessValidator } from './validators/pdf-link-completeness.validator';
 import { pdfFormValidator } from './validators/pdf-form.validator';
 import { pdfBookmarkValidator } from './validators/pdf-bookmark.validator';
 import { pdfSupplementalValidator } from './validators/pdf-supplemental.validator';
@@ -565,6 +566,25 @@ class PdfAuditService extends BaseAuditService<PdfParseResult, PdfValidationResu
           logger.error(`[PdfAudit] PdfLinkValidator failed:`, error);
           result.validatorErrors.push({ validator: 'PdfLinkValidator', error: errorMessage });
           onValidatorComplete?.('Link Text', 0, ++completedValidators, totalValidators, linksStart);
+        }
+
+        // 5b. Link Completeness Validator -- URL-shaped plain text with no
+        // real Link annotation at all (distinct from PdfLinkValidator above,
+        // which only judges the text quality of links that already exist).
+        // No onValidatorComplete call, same convention as the other
+        // sub-validators sharing an existing category slot (e.g. 1b/1c
+        // above) -- totalValidators counts one unit per category, not per
+        // validator within it.
+        try {
+          logger.info(`[PdfAudit] Running PdfLinkCompletenessValidator...`);
+          const linkCompletenessIssues = await pdfLinkCompletenessValidator.validate(parsed);
+          result.linkIssues.push(...linkCompletenessIssues);
+          result.issues.push(...linkCompletenessIssues);
+          logger.info(`[PdfAudit] PdfLinkCompletenessValidator found ${linkCompletenessIssues.length} issues`);
+        } catch (error) {
+          const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+          logger.error(`[PdfAudit] PdfLinkCompletenessValidator failed:`, error);
+          result.validatorErrors.push({ validator: 'PdfLinkCompletenessValidator', error: errorMessage });
         }
       }
 
