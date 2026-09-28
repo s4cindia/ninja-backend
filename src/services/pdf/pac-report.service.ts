@@ -140,17 +140,6 @@ const NINJA_TESTABLE_CONDITIONS: ReadonlySet<string> = new Set([
   '15-003',
   '15-004',
   '15-005',
-
-  // ── Link completeness validator ──────────────────────────────────────────
-  '28-011', // Link annotation not nested within a Link structure element --
-            // was pdfa11y-only (see PDFA11Y_TESTABLE_CONDITIONS's own
-            // history) until pdf-link-completeness.validator.ts started
-            // natively detecting URL-shaped plain text with no underlying
-            // Link annotation at all (a document can have zero annotations
-            // of any kind, as Curiel_187961_CSHP.pdf does, and still fail
-            // this condition). Moved here rather than left duplicated in
-            // both sets since Ninja's own detection no longer depends on an
-            // external binary's availability for this specific condition.
 ]);
 
 /**
@@ -199,9 +188,22 @@ const PDFA11Y_TESTABLE_CONDITIONS: ReadonlySet<string> = new Set([
   '28-005', // Form field missing /TU and no enclosing /Alt
   '28-007', // TrapNet annotation present
   '28-010', // Widget annotation not nested within a Form structure element
-  // NOTE: 28-011 (Link annotation not nested within a Link structure
-  // element) moved to NINJA_TESTABLE_CONDITIONS above -- see that entry's
-  // own comment.
+  // 28-011 stays pdfa11y-only, NOT moved to NINJA_TESTABLE_CONDITIONS --
+  // CodeRabbit finding on PR #637, confirmed real: pdf-link-completeness.
+  // validator.ts only catches URL-shaped text with NO annotation at all; it
+  // explicitly skips (via hasNearbyLinkAnnotation) any text where a Link
+  // annotation already exists nearby, so it never checks whether an
+  // EXISTING annotation is itself properly nested in a Link structure
+  // element -- the literal condition 28-011 describes. Marking it fully
+  // Ninja-testable would let a document with a real, untagged Link
+  // annotation wrongly report PASS purely because this validator never
+  // looks at that case (the same partial-coverage trap 01-005 already
+  // documents above). A real LINK-MISSING-ANNOTATION issue still correctly
+  // reports FAIL regardless (classifyCondition: a present failing issue
+  // always wins over testable-set membership) -- this only affects the
+  // no-failure-found case, which correctly falls back to UNTESTED without
+  // pdfa11y instead of a false PASS.
+  '28-011', // Link annotation not nested within a Link structure element
   '28-014', // Media clip data dictionary missing /CT entry
   '28-015', // Media clip data dictionary missing /Alt entry
   '31-030', // Text-showing operator references the .notdef glyph

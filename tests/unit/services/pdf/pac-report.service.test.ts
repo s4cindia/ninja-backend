@@ -68,10 +68,7 @@ describe('PacReportService.generateReport — veraPDF/pdfa11y ran-flag gating', 
     vi.mocked(prisma.job.findFirst).mockResolvedValue(mockJob({ pdfa11yRan: false }) as never);
 
     const report = await pacReportService.generateReport('job-1', 'tenant-1');
-    // 28-011 moved to NINJA_TESTABLE_CONDITIONS (pdf-link-completeness.validator.ts
-    // now detects it natively, independent of pdfa11y) -- 28-004 remains a
-    // genuinely pdfa11y-only condition for this generic ran-flag-gating test.
-    const condition = findCondition(report, '28-004');
+    const condition = findCondition(report, '28-004'); // genuinely pdfa11y-only
 
     expect(condition?.status).toBe('UNTESTED');
   });
@@ -125,17 +122,23 @@ describe('PacReportService.generateReport — veraPDF/pdfa11y ran-flag gating', 
     expect(condition?.status).toBe('PASS');
   });
 
-  it('marks 28-011 PASS with no pdfa11y/veraPDF run at all -- pdf-link-completeness.validator.ts now tests it natively', async () => {
+  it('marks 28-011 UNTESTED (not PASS) with no pdfa11y run -- pdf-link-completeness.validator.ts only covers HALF this condition', async () => {
+    // CodeRabbit finding on PR #637, confirmed real: the validator only
+    // catches URL-shaped text with NO annotation at all; it never checks
+    // whether an EXISTING Link annotation is itself properly nested in a
+    // Link structure element (the literal condition text). 28-011 stays
+    // pdfa11y-only so a document with that OTHER failure mode doesn't get a
+    // false PASS just because this validator never looks for it.
     vi.mocked(prisma.job.findFirst).mockResolvedValue(
       mockJob({ veraPdfRan: false, pdfa11yRan: false }) as never,
     );
 
     const report = await pacReportService.generateReport('job-1', 'tenant-1');
 
-    expect(findCondition(report, '28-011')?.status).toBe('PASS');
+    expect(findCondition(report, '28-011')?.status).toBe('UNTESTED');
   });
 
-  it('still reports FAIL for a real LINK-MISSING-ANNOTATION issue against 28-011', async () => {
+  it('still reports FAIL for a real LINK-MISSING-ANNOTATION issue against 28-011, even though the condition itself is pdfa11y-only', async () => {
     const issue: AuditIssue = {
       id: 'link-completeness-1',
       source: 'link-completeness-validator',

@@ -81,10 +81,36 @@ describe('PdfLinkCompletenessValidator', () => {
     expect(issues.some(i => i.context?.includes('example.org/two'))).toBe(true);
   });
 
+  it('catches a second URL in the SAME text item, not just the first', async () => {
+    // CodeRabbit finding on PR #637, confirmed real: a single pdf.js text
+    // item can legitimately contain more than one URL (one drawText call =
+    // one item here); an exec()-only match silently dropped every match
+    // after the first.
+    const issues = await linkIssuesFor('See https://example.com/one and https://example.org/two for details.');
+
+    expect(issues.length).toBe(2);
+    expect(issues.some(i => i.context?.includes('example.com/one'))).toBe(true);
+    expect(issues.some(i => i.context?.includes('example.org/two'))).toBe(true);
+  });
+
   it('does not flag ordinary prose with no URL-shaped text at all', async () => {
     const issues = await linkIssuesFor('This is a perfectly ordinary sentence with no web address in it.');
 
     expect(issues.length).toBe(0);
+  });
+
+  it('reports a boundingBox whose top sits above the baseline (covering the glyphs), not below it', async () => {
+    // CodeRabbit finding on PR #637, confirmed real: transform[5] is the
+    // baseline, which sits near the BOTTOM of a line of text -- a box
+    // anchored there extending further down covers blank space under the
+    // line, not the text itself. Page height 300, drawText at y:200,
+    // size:12 -> baseline (top-down) = 300-200 = 100; the box's top should
+    // be ~fontSize above that (88), not AT it (100).
+    const issues = await linkIssuesFor('Visit https://example.com/boxcheck for details.');
+
+    expect(issues.length).toBe(1);
+    expect(issues[0].boundingBox!.y).toBeCloseTo(88, 0);
+    expect(issues[0].boundingBox!.height).toBeCloseTo(12, 0);
   });
 
   it('does not flag a URL that already has a real Link annotation covering it', async () => {

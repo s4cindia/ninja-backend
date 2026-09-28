@@ -40,7 +40,9 @@ import { logger } from '../../../lib/logger';
 // etc.) -- trailing sentence punctuation ("." ending a sentence) is
 // stripped separately below since it's syntactically valid in a URL path
 // and can't be excluded from the character class itself.
-const URL_IN_TEXT_RE = /\b(?:https?:\/\/|www\.)[^\s)\]}>"']+/i;
+// Global flag required for matchAll -- a single text item can legitimately
+// contain more than one URL (CodeRabbit finding on PR #637).
+const URL_IN_TEXT_GLOBAL_RE = /\b(?:https?:\/\/|www\.)[^\s)\]}>"']+/gi;
 const TRAILING_PUNCTUATION_RE = /[.,;:]+$/;
 
 // Floor beneath which a match is almost certainly a stray fragment (e.g. a
@@ -125,31 +127,47 @@ class PdfLinkCompletenessValidator {
     // reasoning applied elsewhere in this codebase.
     const spans: UrlSpan[] = [];
     for (const item of items) {
-      const match = URL_IN_TEXT_RE.exec(item.str);
-      if (!match) continue;
-      const url = match[0].replace(TRAILING_PUNCTUATION_RE, '');
-      if (url.length < MIN_LINK_TEXT_LENGTH) continue;
-      // Requires a domain-name dot somewhere after the scheme/www prefix --
-      // filters obviously-incomplete fragments (e.g. a bare "https://www"
-      // or "https://cyccb" cut off mid-domain by an unrelated line/kerning
-      // split) that aren't a usable link target as printed.
-      if (!/[a-z0-9-]\.[a-z]{2,}/i.test(url)) continue;
-      const box = this.itemBox(item, viewport);
-      if (this.hasNearbyLinkAnnotation(box, existingLinks)) continue;
-      spans.push({ url, box });
+      // matchAll (not a single exec) -- CodeRabbit finding on PR #637,
+      // confirmed real: a single item can legitimately contain more than
+      // one URL (e.g. "See https://a.com or https://b.com"); exec() alone
+      // silently dropped every match after the first.
+      for (const match of item.str.matchAll(URL_IN_TEXT_GLOBAL_RE)) {
+        const url = match[0].replace(TRAILING_PUNCTUATION_RE, '');
+        if (url.length < MIN_LINK_TEXT_LENGTH) continue;
+        // Requires a domain-name dot somewhere after the scheme/www prefix --
+        // filters obviously-incomplete fragments (e.g. a bare "https://www"
+        // or "https://cyccb" cut off mid-domain by an unrelated line/kerning
+        // split) that aren't a usable link target as printed.
+        if (!/[a-z0-9-]\.[a-z]{2,}/i.test(url)) continue;
+        const box = this.itemBox(item, viewport);
+        if (this.hasNearbyLinkAnnotation(box, existingLinks)) continue;
+        spans.push({ url, box });
+      }
     }
 
     return spans;
   }
 
   /** Unscaled PDF-point box, top-left origin (y grows downward) -- matches
-   *  AuditIssue.boundingBox's documented convention and
-   *  text-extractor.service.ts's own processTextItem. */
+   *  AuditIssue.boundingBox's documented convention and the same convention
+   *  structure-analyzer.service.ts's own analyzeLinks uses for
+   *  PdfLink.position (viewport.height - rect[3], the TOP edge, not the
+   *  bottom). CodeRabbit finding on PR #637, confirmed real: transform[5] is
+   *  the glyph's BASELINE, which sits near the BOTTOM of a normal line of
+   *  text (most of a glyph's ink is ABOVE its baseline, extending up by the
+   *  font's ascent). The first version returned a box with its top AT the
+   *  baseline extending fontSize further DOWN -- mostly covering the blank
+   *  space under the line, not the text itself, both for the reported
+   *  boundingBox and for hasNearbyLinkAnnotation's overlap check against
+   *  PdfLink.position (which already used the correct top-edge convention,
+   *  so the two would have silently failed to line up). Subtracting fontSize
+   *  moves the box's top to approximately the ascent line instead. */
   private itemBox(item: { transform: number[]; width?: number }, viewport: pdfjsLib.PageViewport): Box {
     const fontSize = Math.abs(item.transform[0]) || 12;
+    const baselineY = viewport.height - item.transform[5];
     return {
       x: item.transform[4],
-      y: viewport.height - item.transform[5],
+      y: baselineY - fontSize,
       width: item.width ?? 40,
       height: fontSize,
     };
