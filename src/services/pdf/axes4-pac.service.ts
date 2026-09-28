@@ -148,7 +148,13 @@ class Axes4PacService {
       return { ran: false, failures: [] };
     }
 
-    const reserved = await axes4QuotaService.tryReservePages(pageCount);
+    let reserved: boolean;
+    try {
+      reserved = await axes4QuotaService.tryReservePages(pageCount);
+    } catch (err) {
+      logger.warn(`[axes4] Quota tracker threw while reserving pages -- skipping: ${fileName}`, err);
+      return { ran: false, failures: [] };
+    }
     if (!reserved) {
       logger.warn(`[axes4] Skipping ${fileName} -- local quota tracker reports the period budget would be exceeded (${pageCount} pages)`);
       return { ran: false, failures: [] };
@@ -235,9 +241,18 @@ class Axes4PacService {
    *  codebase's other cloud-HTTP-API integration. Throws an Error with an
    *  `axes4Status` property set on a terminal 4xx response, so validate()'s
    *  catch block can log a specific, actionable message per documented
-   *  code (401/403/413/422) rather than a generic failure. */
+   *  code (401/403/413/422) rather than a generic failure.
+   *
+   *  POST is NOT retried on a 5xx response: a job-creation POST that fails
+   *  with a 5xx may have already created the job server-side (and consumed
+   *  a paid page-quota unit) before the error -- retrying risks submitting
+   *  a duplicate job. Only a genuine pre-response connection failure (the
+   *  request never reached axes4) is retried for POST. GET (idempotent --
+   *  fetching an already-created job's details) keeps retrying on 5xx as
+   *  before. */
   private async fetchWithRetry(url: string, init: RequestInit): Promise<Response> {
     const maxAttempts = 3;
+    const retryOn5xx = (init.method ?? 'GET').toUpperCase() === 'GET';
 
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       const controller = new AbortController();
@@ -265,12 +280,12 @@ class Axes4PacService {
         throw error;
       }
 
-      // 5xx -- retry if attempts remain.
-      if (attempt < maxAttempts) {
+      // 5xx -- retry only when safe (see this method's own doc comment).
+      if (retryOn5xx && attempt < maxAttempts) {
         await sleep(3000);
         continue;
       }
-      throw new Error(`AXES4_SERVICE_ERROR: ${response.status} after retries`);
+      throw new Error(`AXES4_SERVICE_ERROR: ${response.status}${retryOn5xx ? ' after retries' : ' (not retried -- non-idempotent request)'}`);
     }
 
     // Unreachable, but TypeScript needs it.

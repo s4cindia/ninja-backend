@@ -91,6 +91,17 @@ describe('validate', () => {
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
+  it('returns ran:false without any HTTP call when the quota tracker throws (e.g. a DB error) instead of resolving', async () => {
+    vi.mocked(axes4QuotaService.tryReservePages).mockRejectedValue(new Error('DB connection lost'));
+    const fetchSpy = vi.fn();
+    vi.stubGlobal('fetch', fetchSpy);
+
+    const result = await axes4PacService.validate(await makePdfBuffer(), 'test.pdf');
+
+    expect(result).toEqual({ ran: false, failures: [] });
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
   it('reserves the real local page count before submitting', async () => {
     const fetchSpy = vi.fn()
       .mockResolvedValueOnce(jsonResponse({ body: { jobId: 'job-1', name: 't.pdf', reports: [{ type: 'PDF/UA', uaIndex: 85.3 }] } }))
@@ -168,10 +179,10 @@ describe('validate', () => {
     expect(result).toEqual({ ran: false, failures: [] });
   });
 
-  it('retries once on a 5xx then succeeds', async () => {
+  it('retries a GET (report details) once on a 5xx then succeeds -- idempotent, safe to retry', async () => {
     const fetchSpy = vi.fn()
-      .mockResolvedValueOnce(new Response('', { status: 503 }))
       .mockResolvedValueOnce(jsonResponse({ body: { jobId: 'job-1', name: 't.pdf', reports: [] } }))
+      .mockResolvedValueOnce(new Response('', { status: 503 }))
       .mockResolvedValueOnce(jsonResponse({ body: { jobId: 'job-1', issues: [] } }));
     vi.stubGlobal('fetch', fetchSpy);
 
@@ -180,6 +191,16 @@ describe('validate', () => {
     expect(result.ran).toBe(true);
     expect(fetchSpy).toHaveBeenCalledTimes(3);
   }, 15_000);
+
+  it('does NOT retry a POST (job submission) on a 5xx -- the job may already exist server-side, so a retry risks a duplicate paid job', async () => {
+    const fetchSpy = vi.fn().mockResolvedValue(new Response('', { status: 503 }));
+    vi.stubGlobal('fetch', fetchSpy);
+
+    const result = await axes4PacService.validate(await makePdfBuffer(), 'test.pdf');
+
+    expect(result).toEqual({ ran: false, failures: [] });
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
 
   it('degrades to ran:false when the request times out', async () => {
     mockConfig.timeoutMs = 10;

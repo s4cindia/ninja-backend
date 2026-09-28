@@ -99,18 +99,22 @@ export class PacReportController {
       // fileStorageService (not raw disk/S3 access) is the right
       // abstraction here.
       let buffer: Buffer | null = null;
+      let source: 'remediated' | 'original' | null = null;
       try {
         if (output?.['remediatedFileUrl'] && typeof output['remediatedFileUrl'] === 'string') {
           buffer = await fileStorageService.downloadFile(output['remediatedFileUrl'] as string);
         } else {
           buffer = await fileStorageService.getRemediatedFile(jobId, fileName);
         }
-      } catch {
+        if (buffer) source = 'remediated';
+      } catch (err) {
         // No remediated file yet -- fall through to the original upload below.
+        logger.warn(`[PacReport] getLiveReport found no remediated file for job ${jobId}, falling back to original upload`, err);
       }
       if (!buffer) {
         try {
           buffer = await fileStorageService.getFile(jobId, fileName);
+          if (buffer) source = 'original';
         } catch (err) {
           logger.error(`[PacReport] getLiveReport could not load any file for job ${jobId}`, err);
         }
@@ -133,6 +137,7 @@ export class PacReportController {
           uaIndex: result.uaIndex,
           failures: result.failures,
           configured: axes4PacService.isAvailable(),
+          source,
         },
       });
     } catch (err: unknown) {

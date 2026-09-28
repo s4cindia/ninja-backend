@@ -23,10 +23,14 @@ vi.mock('../../../src/services/storage/file-storage.service', () => ({
 vi.mock('../../../src/services/pdf/axes4-pac.service', () => ({
   axes4PacService: { validate: vi.fn(), isAvailable: vi.fn() },
 }));
+vi.mock('../../../src/lib/logger', () => ({
+  logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+}));
 
 import prisma from '../../../src/lib/prisma';
 import { fileStorageService } from '../../../src/services/storage/file-storage.service';
 import { axes4PacService } from '../../../src/services/pdf/axes4-pac.service';
+import { logger } from '../../../src/lib/logger';
 import { pacReportController } from '../../../src/controllers/pac-report.controller';
 import type { AuthenticatedRequest } from '../../../src/types/authenticated-request';
 
@@ -88,6 +92,7 @@ describe('PacReportController.getLiveReport', () => {
     expect(fileStorageService.getRemediatedFile).not.toHaveBeenCalled();
     expect(fileStorageService.getFile).not.toHaveBeenCalled();
     expect(axes4PacService.validate).toHaveBeenCalledWith(FAKE_BUFFER, 'doc.pdf');
+    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ source: 'remediated' }) }));
   });
 
   it('falls back to getRemediatedFile when no remediatedFileUrl is recorded', async () => {
@@ -105,6 +110,7 @@ describe('PacReportController.getLiveReport', () => {
 
     expect(fileStorageService.getRemediatedFile).toHaveBeenCalledWith('job-1', 'doc.pdf');
     expect(fileStorageService.getFile).not.toHaveBeenCalled();
+    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ source: 'remediated' }) }));
   });
 
   it('falls back further to the original uploaded file when no remediated file exists at all', async () => {
@@ -123,6 +129,9 @@ describe('PacReportController.getLiveReport', () => {
 
     expect(fileStorageService.getFile).toHaveBeenCalledWith('job-1', 'doc.pdf');
     expect(axes4PacService.validate).toHaveBeenCalledWith(FAKE_BUFFER, 'doc.pdf');
+    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ source: 'original' }) }));
+    // The remediated-file-fetch failure must not be silently swallowed.
+    expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('job-1'), expect.any(Error));
   });
 
   it('returns 404 FILE_NOT_FOUND when no file can be loaded from any source', async () => {
@@ -158,7 +167,7 @@ describe('PacReportController.getLiveReport', () => {
     expect(res.status).toHaveBeenCalledWith(200);
     expect(res.json).toHaveBeenCalledWith({
       success: true,
-      data: { ran: false, uaIndex: undefined, failures: [], configured: false },
+      data: { ran: false, uaIndex: undefined, failures: [], configured: false, source: 'remediated' },
     });
   });
 
@@ -187,6 +196,7 @@ describe('PacReportController.getLiveReport', () => {
         uaIndex: 91.2,
         failures: [{ checkId: 'check-1', description: 'Missing alt text', pageNumber: 3, count: 1 }],
         configured: true,
+        source: 'remediated',
       },
     });
   });

@@ -216,6 +216,15 @@ export const rateLimiters = {
     message: 'Plagiarism check rate limit exceeded. Maximum 5 checks per minute.',
   }),
 
+  // axes4 PAC Cloud live check: bills per page and can take minutes per
+  // call, so this is deliberately much stricter than the other AI-backed
+  // limiters above -- 3 requests per minute per tenant.
+  axes4LiveCheck: rateLimit({
+    windowMs: 60 * 1000,
+    maxRequests: 3,
+    message: 'axes4 live PAC check rate limit exceeded. Maximum 3 checks per minute.',
+  }),
+
   // General API: 100 requests per minute per tenant
   general: rateLimit({
     windowMs: 60 * 1000,

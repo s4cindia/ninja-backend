@@ -8,6 +8,7 @@
 import { Router } from 'express';
 import { authenticate } from '../middleware/auth.middleware';
 import { authorizeJob } from '../middleware/authorize-job.middleware';
+import { rateLimiters } from '../middleware/rate-limit.middleware';
 import { pacReportController } from '../controllers/pac-report.controller';
 
 const router = Router();
@@ -34,6 +35,7 @@ router.post(
   '/:jobId/pac-report/live',
   authenticate,
   authorizeJob,
+  rateLimiters.axes4LiveCheck,
   (req, res) => pacReportController.getLiveReport(req, res),
 );
 
