@@ -2,28 +2,42 @@
  * PDF Batch Concurrency Budget Service
  *
  * Covers the weighted-tier pure functions, the atomic admission
- * compare-and-swap (tryAcquireLease), the polling wrapper (waitForLease),
- * lease release (including double-release/unknown-lease safety), and the
- * stale-lease watchdog (reconcileStaleLeases).
+ * compare-and-swap (tryAcquireLease), the polling wrapper (waitForLease,
+ * including abort-signal cancellation), lease release (including
+ * double-release/unknown-lease safety and the atomic budget/lease
+ * transaction), and the stale-lease watchdog (reconcileStaleLeases,
+ * including its atomic re-check of a lease's heartbeat at release time).
  */
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
-vi.mock('../../../../src/lib/prisma', () => ({
-  default: {
-    pdfConcurrencyBudget: {
-      upsert: vi.fn(),
-      findUniqueOrThrow: vi.fn(),
-      updateMany: vi.fn(),
+// $transaction invokes its callback against a `tx` that shares the SAME
+// pdfConcurrencyBudget/pdfConcurrencyLease mock functions as the top-level
+// client (matching the established pattern in
+// tests/unit/services/pdf/auto-remediation-loop.service.test.ts), so a test
+// can assert via prisma.pdfConcurrencyBudget.updateMany /
+// prisma.pdfConcurrencyLease.create regardless of whether the real code
+// called them through `tx` or directly.
+vi.mock('../../../../src/lib/prisma', () => {
+  const pdfConcurrencyBudget = {
+    upsert: vi.fn(),
+    findUniqueOrThrow: vi.fn(),
+    updateMany: vi.fn(),
+  };
+  const pdfConcurrencyLease = {
+    create: vi.fn(),
+    findUnique: vi.fn(),
+    updateMany: vi.fn(),
+    findMany: vi.fn(),
+  };
+  return {
+    default: {
+      pdfConcurrencyBudget,
+      pdfConcurrencyLease,
+      $transaction: (fn: (tx: unknown) => Promise<unknown>) => fn({ pdfConcurrencyBudget, pdfConcurrencyLease }),
     },
-    pdfConcurrencyLease: {
-      create: vi.fn(),
-      findUnique: vi.fn(),
-      updateMany: vi.fn(),
-      findMany: vi.fn(),
-    },
-  },
-}));
+  };
+});
 
 import prisma from '../../../../src/lib/prisma';
 import {
@@ -93,7 +107,8 @@ describe('tryAcquireLease', () => {
     });
     // The atomic compare-and-swap: admits only if CURRENT unitsInUse (evaluated
     // live by Postgres at UPDATE time, not the value read above) is <=
-    // totalUnits - weightUnits.
+    // totalUnits - weightUnits. Runs inside the same $transaction as the
+    // lease create, so the two can never diverge on a crash mid-way.
     expect(prisma.pdfConcurrencyBudget.updateMany).toHaveBeenCalledWith({
       where: { tenantId: 'tenant-1', unitsInUse: { lte: 7 } }, // 10 - 3
       data: { unitsInUse: { increment: 3 } },
@@ -140,6 +155,25 @@ describe('tryAcquireLease', () => {
       data: { unitsInUse: { increment: 8 } },
     });
   });
+
+  it('throws (fails fast) rather than admitting when weightUnits alone exceeds the tenant total -- this can never fit, not just currently unavailable', async () => {
+    vi.mocked(prisma.pdfConcurrencyBudget.upsert).mockResolvedValue({} as any);
+    vi.mocked(prisma.pdfConcurrencyBudget.findUniqueOrThrow).mockResolvedValue({ tenantId: 'tenant-1', totalUnits: 10, unitsInUse: 0 } as any);
+
+    await expect(concurrencyBudgetService.tryAcquireLease('tenant-1', 'item-1', 'audit', 12)).rejects.toThrow(/exceeds the tenant's total budget/);
+    expect(prisma.pdfConcurrencyBudget.updateMany).not.toHaveBeenCalled();
+  });
+
+  it('admits when weightUnits exactly equals the tenant total (the item takes the whole budget)', async () => {
+    vi.mocked(prisma.pdfConcurrencyBudget.upsert).mockResolvedValue({} as any);
+    vi.mocked(prisma.pdfConcurrencyBudget.findUniqueOrThrow).mockResolvedValue({ tenantId: 'tenant-1', totalUnits: 10, unitsInUse: 0 } as any);
+    vi.mocked(prisma.pdfConcurrencyBudget.updateMany).mockResolvedValue({ count: 1 } as any);
+    vi.mocked(prisma.pdfConcurrencyLease.create).mockResolvedValue({ id: 'lease-1' } as any);
+
+    const result = await concurrencyBudgetService.tryAcquireLease('tenant-1', 'item-1', 'audit', 10);
+
+    expect(result.acquired).toBe(true);
+  });
 });
 
 describe('waitForLease', () => {
@@ -182,16 +216,46 @@ describe('waitForLease', () => {
     expect(leaseId).toBe('lease-eventual');
     expect(prisma.pdfConcurrencyBudget.updateMany).toHaveBeenCalledTimes(3);
   });
+
+  it('aborts immediately (before ever trying to acquire) when the signal is already aborted', async () => {
+    const controller = new AbortController();
+    controller.abort();
+
+    await expect(
+      concurrencyBudgetService.waitForLease('tenant-1', 'item-1', 'audit', 3, 5000, controller.signal)
+    ).rejects.toThrow(/aborted/);
+    expect(prisma.pdfConcurrencyBudget.upsert).not.toHaveBeenCalled();
+  });
+
+  it('cancels an in-progress poll wait the moment the signal aborts, rather than finishing out the interval', async () => {
+    vi.mocked(prisma.pdfConcurrencyBudget.upsert).mockResolvedValue({} as any);
+    vi.mocked(prisma.pdfConcurrencyBudget.findUniqueOrThrow).mockResolvedValue({ tenantId: 'tenant-1', totalUnits: 10, unitsInUse: 10 } as any);
+    vi.mocked(prisma.pdfConcurrencyBudget.updateMany).mockResolvedValue({ count: 0 } as any);
+    const controller = new AbortController();
+
+    const promise = concurrencyBudgetService.waitForLease('tenant-1', 'item-1', 'audit', 3, 5000, controller.signal);
+    const assertion = expect(promise).rejects.toThrow(/aborted/);
+    // First attempt fails, loop enters the poll wait -- abort partway through
+    // the interval instead of letting it run to completion.
+    await vi.advanceTimersByTimeAsync(1000);
+    controller.abort();
+    await assertion;
+
+    // Never reached a second admission attempt -- the abort cut the wait
+    // short instead of a ghost retry sneaking through after the caller gave up.
+    expect(prisma.pdfConcurrencyBudget.updateMany).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe('releaseLease', () => {
-  it('marks the lease released and decrements the tenant budget by its weight', async () => {
+  it('marks the lease released and decrements the tenant budget by its weight, in one transaction', async () => {
     vi.mocked(prisma.pdfConcurrencyLease.findUnique).mockResolvedValue({ id: 'lease-1', tenantId: 'tenant-1', weightUnits: 3, releasedAt: null } as any);
     vi.mocked(prisma.pdfConcurrencyLease.updateMany).mockResolvedValue({ count: 1 } as any);
     vi.mocked(prisma.pdfConcurrencyBudget.updateMany).mockResolvedValue({ count: 1 } as any);
 
-    await concurrencyBudgetService.releaseLease('lease-1');
+    const released = await concurrencyBudgetService.releaseLease('lease-1');
 
+    expect(released).toBe(true);
     expect(prisma.pdfConcurrencyLease.updateMany).toHaveBeenCalledWith({
       where: { id: 'lease-1', releasedAt: null },
       data: { releasedAt: expect.any(Date) },
@@ -205,8 +269,9 @@ describe('releaseLease', () => {
   it('is a no-op for an unknown lease id (logs, does not touch the budget)', async () => {
     vi.mocked(prisma.pdfConcurrencyLease.findUnique).mockResolvedValue(null as any);
 
-    await concurrencyBudgetService.releaseLease('does-not-exist');
+    const released = await concurrencyBudgetService.releaseLease('does-not-exist');
 
+    expect(released).toBe(false);
     expect(prisma.pdfConcurrencyBudget.updateMany).not.toHaveBeenCalled();
   });
 
@@ -218,9 +283,24 @@ describe('releaseLease', () => {
     // already released.
     vi.mocked(prisma.pdfConcurrencyLease.updateMany).mockResolvedValue({ count: 0 } as any);
 
-    await concurrencyBudgetService.releaseLease('lease-1');
+    const released = await concurrencyBudgetService.releaseLease('lease-1');
 
+    expect(released).toBe(false);
     expect(prisma.pdfConcurrencyBudget.updateMany).not.toHaveBeenCalled();
+  });
+
+  it('folds requireStaleBefore into the same atomic compare-and-swap, for the watchdog\'s use', async () => {
+    vi.mocked(prisma.pdfConcurrencyLease.findUnique).mockResolvedValue({ id: 'lease-1', tenantId: 'tenant-1', weightUnits: 3, releasedAt: null } as any);
+    vi.mocked(prisma.pdfConcurrencyLease.updateMany).mockResolvedValue({ count: 1 } as any);
+    vi.mocked(prisma.pdfConcurrencyBudget.updateMany).mockResolvedValue({ count: 1 } as any);
+    const staleThreshold = new Date('2026-01-01T00:00:00Z');
+
+    await concurrencyBudgetService.releaseLease('lease-1', { requireStaleBefore: staleThreshold });
+
+    expect(prisma.pdfConcurrencyLease.updateMany).toHaveBeenCalledWith({
+      where: { id: 'lease-1', releasedAt: null, heartbeatAt: { lt: staleThreshold } },
+      data: { releasedAt: expect.any(Date) },
+    });
   });
 });
 
@@ -266,6 +346,30 @@ describe('reconcileStaleLeases', () => {
       where: { tenantId: 'tenant-2' },
       data: { unitsInUse: { decrement: 8 } },
     });
+    // Each release's compare-and-swap re-requires the SAME captured
+    // staleThreshold from findMany, atomically, rather than trusting the
+    // findMany snapshot alone.
+    expect(prisma.pdfConcurrencyLease.updateMany).toHaveBeenCalledWith({
+      where: { id: 'stale-1', releasedAt: null, heartbeatAt: { lt: expect.any(Date) } },
+      data: { releasedAt: expect.any(Date) },
+    });
+  });
+
+  it('does not count (or decrement the budget for) a lease whose heartbeat refreshed between findMany and the atomic release recheck', async () => {
+    // Real race this closes: a lease heartbeats (still genuinely active)
+    // right after findMany selected it as stale, but before releaseLease
+    // runs its own atomic recheck.
+    vi.mocked(prisma.pdfConcurrencyLease.findMany).mockResolvedValue([
+      { id: 'stale-1', tenantId: 'tenant-1', batchItemId: 'item-1', phase: 'audit', weightUnits: 3, releasedAt: null },
+    ] as any);
+    vi.mocked(prisma.pdfConcurrencyLease.findUnique).mockResolvedValue({ id: 'stale-1', tenantId: 'tenant-1', weightUnits: 3, releasedAt: null } as any);
+    // heartbeatAt no longer < staleThreshold -> the CAS matches 0 rows.
+    vi.mocked(prisma.pdfConcurrencyLease.updateMany).mockResolvedValue({ count: 0 } as any);
+
+    const reconciledCount = await concurrencyBudgetService.reconcileStaleLeases();
+
+    expect(reconciledCount).toBe(0);
+    expect(prisma.pdfConcurrencyBudget.updateMany).not.toHaveBeenCalled();
   });
 
   it('only queries leases that are unreleased and past the staleness threshold', async () => {

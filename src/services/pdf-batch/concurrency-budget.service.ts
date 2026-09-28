@@ -24,6 +24,14 @@
  * used to compute the ceiling threshold) only matters for a rare,
  * out-of-band admin change to the ceiling itself -- not for concurrent
  * lease acquisition, which is what this mechanism exists to serialize.
+ *
+ * The budget-counter update and its paired lease row write (create on
+ * acquire, in reverse on release) run inside a single `prisma.$transaction`
+ * -- otherwise a crash between the two steps would leave `unitsInUse`
+ * permanently out of sync with reality: elevated with no lease for the
+ * watchdog to find (acquire), or a released lease whose weight was never
+ * returned (release). Neither can self-heal without this (CodeRabbit
+ * finding on PR #635).
  */
 
 import prisma from '../../lib/prisma';
@@ -62,6 +70,20 @@ export function computeEffectiveWeight(sizeWeightUnits: number, pageWeightUnits:
   return Math.max(sizeWeightUnits, pageWeightUnits);
 }
 
+/** Rejects a request for more weight than a tenant's budget could EVER grant
+ *  (a misconfigured tier weight above the ceiling, e.g. an env override
+ *  raising PDF_BATCH_WEIGHT_LARGE past PDF_BATCH_BUDGET_TOTAL_UNITS) --
+ *  admission's `lte` check would otherwise never match even at 0 usage,
+ *  hanging waitForLease's poll loop forever (CodeRabbit finding on PR #635). */
+class WeightExceedsBudgetError extends Error {
+  constructor(tenantId: string, weightUnits: number, totalUnits: number) {
+    super(
+      `[ConcurrencyBudget] Cannot admit for tenant ${tenantId}: weight ${weightUnits} exceeds the tenant's total budget of ${totalUnits} units -- this request can never fit under the current ceiling`
+    );
+    this.name = 'WeightExceedsBudgetError';
+  }
+}
+
 class ConcurrencyBudgetService {
   /** Lazily creates a tenant's budget row on first use. Safe under
    *  concurrent first-ever calls for the same tenant -- Prisma's upsert
@@ -80,6 +102,10 @@ class ConcurrencyBudgetService {
    * see waitForLease for a polling wrapper. On success, creates a
    * PdfConcurrencyLease row the caller must eventually release (and should
    * heartbeat while genuinely still using it -- see heartbeatLease).
+   *
+   * Throws WeightExceedsBudgetError if weightUnits alone could never fit
+   * under the tenant's total budget -- a misconfiguration, not a transient
+   * capacity shortage, so it fails fast instead of polling forever.
    */
   async tryAcquireLease(
     tenantId: string,
@@ -89,25 +115,37 @@ class ConcurrencyBudgetService {
   ): Promise<AcquireLeaseResult> {
     await this.ensureBudgetRow(tenantId);
     const budget = await prisma.pdfConcurrencyBudget.findUniqueOrThrow({ where: { tenantId } });
+    if (weightUnits > budget.totalUnits) {
+      throw new WeightExceedsBudgetError(tenantId, weightUnits, budget.totalUnits);
+    }
     const maxUnitsInUseToAdmit = budget.totalUnits - weightUnits;
 
-    const result = await prisma.pdfConcurrencyBudget.updateMany({
-      where: { tenantId, unitsInUse: { lte: maxUnitsInUseToAdmit } },
-      data: { unitsInUse: { increment: weightUnits } },
-    });
-    if (result.count === 0) return { acquired: false };
+    const leaseId = await prisma.$transaction(async (tx) => {
+      const result = await tx.pdfConcurrencyBudget.updateMany({
+        where: { tenantId, unitsInUse: { lte: maxUnitsInUseToAdmit } },
+        data: { unitsInUse: { increment: weightUnits } },
+      });
+      if (result.count === 0) return null;
 
-    const lease = await prisma.pdfConcurrencyLease.create({
-      data: { tenantId, batchItemId, phase, weightUnits },
+      const lease = await tx.pdfConcurrencyLease.create({
+        data: { tenantId, batchItemId, phase, weightUnits },
+      });
+      return lease.id;
     });
-    return { acquired: true, leaseId: lease.id };
+
+    if (leaseId === null) return { acquired: false };
+    return { acquired: true, leaseId };
   }
 
   /**
    * Polls tryAcquireLease (with jitter, to avoid a thundering herd of
-   * queued items all retrying in lockstep) until budget is available.
-   * Callers wanting a bounded wait should race this against their own
-   * timeout -- it does not time out on its own.
+   * queued items all retrying in lockstep) until budget is available, or
+   * until `signal` is aborted. Passing a signal lets a caller race this
+   * against its own timeout WITHOUT leaving an orphaned poll loop running
+   * behind it -- an un-cancelled loop could keep polling after the caller
+   * gave up, later acquire a lease nobody holds a reference to anymore, and
+   * consume tenant budget until stale reconciliation frees it (CodeRabbit
+   * finding on PR #635). Without a signal, waits indefinitely.
    */
   async waitForLease(
     tenantId: string,
@@ -115,13 +153,36 @@ class ConcurrencyBudgetService {
     phase: ConcurrencyLeasePhase,
     weightUnits: number,
     pollMs: number = pdfBatchConfig.admitPollMs,
+    signal?: AbortSignal,
   ): Promise<string> {
     for (;;) {
+      if (signal?.aborted) {
+        throw new Error(`[ConcurrencyBudget] waitForLease aborted for batch item ${batchItemId} before a lease was acquired`);
+      }
       const result = await this.tryAcquireLease(tenantId, batchItemId, phase, weightUnits);
       if (result.acquired) return result.leaseId!;
       const jitterMs = Math.random() * pollMs * 0.3;
-      await new Promise((resolve) => setTimeout(resolve, pollMs + jitterMs));
+      await this.delayOrAbort(pollMs + jitterMs, signal);
     }
+  }
+
+  /** setTimeout that resolves early (by rejecting) the moment `signal`
+   *  aborts, instead of letting the current poll interval run out first. */
+  private delayOrAbort(ms: number, signal?: AbortSignal): Promise<void> {
+    if (!signal) {
+      return new Promise((resolve) => setTimeout(resolve, ms));
+    }
+    return new Promise<void>((resolve, reject) => {
+      const onAbort = () => {
+        clearTimeout(timer);
+        reject(new Error('[ConcurrencyBudget] waitForLease aborted while waiting between poll attempts'));
+      };
+      const timer = setTimeout(() => {
+        signal.removeEventListener('abort', onAbort);
+        resolve();
+      }, ms);
+      signal.addEventListener('abort', onAbort, { once: true });
+    });
   }
 
   /**
@@ -130,27 +191,42 @@ class ConcurrencyBudgetService {
    * silent no-op, so a watchdog reconciliation racing against the lease
    * holder's own cleanup can never double-decrement unitsInUse. Safe to
    * call with an unknown/already-deleted leaseId (logs and returns).
+   *
+   * `requireStaleBefore`, used only by reconcileStaleLeases, folds the
+   * watchdog's staleness check into the SAME atomic compare-and-swap as the
+   * releasedAt check -- so a lease whose heartbeat legitimately refreshes
+   * between the watchdog's query and this call is re-validated against a
+   * live, currently-committed value and correctly left alone, rather than
+   * being released out from under whatever process still holds it
+   * (CodeRabbit finding on PR #635).
+   *
+   * Returns whether THIS call actually performed the release (false for an
+   * unknown lease, an already-released lease, or -- when
+   * requireStaleBefore is set -- a lease no longer stale).
    */
-  async releaseLease(leaseId: string): Promise<void> {
+  async releaseLease(leaseId: string, options?: { requireStaleBefore?: Date }): Promise<boolean> {
     const lease = await prisma.pdfConcurrencyLease.findUnique({ where: { id: leaseId } });
     if (!lease) {
       logger.warn(`[ConcurrencyBudget] releaseLease called for unknown lease ${leaseId} -- ignoring`);
-      return;
+      return false;
     }
 
-    // Compare-and-swap on releasedAt IS NULL -- same reasoning as
-    // tryAcquireLease's admission check: whichever caller's UPDATE commits
-    // first wins; a second concurrent release attempt matches 0 rows and
-    // skips the budget decrement entirely, rather than double-releasing.
-    const result = await prisma.pdfConcurrencyLease.updateMany({
-      where: { id: leaseId, releasedAt: null },
-      data: { releasedAt: new Date() },
-    });
-    if (result.count === 0) return; // already released by someone else
+    return prisma.$transaction(async (tx) => {
+      const result = await tx.pdfConcurrencyLease.updateMany({
+        where: {
+          id: leaseId,
+          releasedAt: null,
+          ...(options?.requireStaleBefore ? { heartbeatAt: { lt: options.requireStaleBefore } } : {}),
+        },
+        data: { releasedAt: new Date() },
+      });
+      if (result.count === 0) return false; // already released, or no longer stale
 
-    await prisma.pdfConcurrencyBudget.updateMany({
-      where: { tenantId: lease.tenantId },
-      data: { unitsInUse: { decrement: lease.weightUnits } },
+      await tx.pdfConcurrencyBudget.updateMany({
+        where: { tenantId: lease.tenantId },
+        data: { unitsInUse: { decrement: lease.weightUnits } },
+      });
+      return true;
     });
   }
 
@@ -177,7 +253,9 @@ class ConcurrencyBudgetService {
    * mid-round, mirroring reconcileIfOrphaned's own crash-recovery rationale
    * in auto-remediation-loop.service.ts). Safe to call repeatedly/on a
    * schedule -- a genuinely still-active lease's own heartbeat keeps it out
-   * of the stale window entirely. Returns the number reconciled.
+   * of the stale window entirely. Returns the number ACTUALLY reconciled
+   * (excludes any lease that re-validated as no-longer-stale inside
+   * releaseLease's atomic recheck).
    */
   async reconcileStaleLeases(): Promise<number> {
     const staleThreshold = new Date(Date.now() - pdfBatchConfig.leaseStaleMs);
@@ -185,14 +263,16 @@ class ConcurrencyBudgetService {
       where: { releasedAt: null, heartbeatAt: { lt: staleThreshold } },
     });
 
+    let reconciledCount = 0;
     for (const lease of staleLeases) {
       logger.warn(
         `[ConcurrencyBudget] Reconciling stale lease ${lease.id} (tenant ${lease.tenantId}, batch item ${lease.batchItemId}, phase ${lease.phase}) -- heartbeat stopped, whatever process held it must have died`
       );
-      await this.releaseLease(lease.id);
+      const released = await this.releaseLease(lease.id, { requireStaleBefore: staleThreshold });
+      if (released) reconciledCount++;
     }
 
-    return staleLeases.length;
+    return reconciledCount;
   }
 }
 

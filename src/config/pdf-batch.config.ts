@@ -17,24 +17,44 @@
  * documented OOM incident on a 377-page document). Both easy to retune via
  * env vars once real batch load data exists.
  */
+
+/** Parses a positive-integer env var, failing fast on a malformed value
+ *  (e.g. a typo'd `PDF_BATCH_WEIGHT_LARGE=abc`) rather than silently
+ *  falling through to `parseInt`'s NaN, which would corrupt the Prisma
+ *  `lte`/`increment` arguments built from these values (CodeRabbit
+ *  finding on PR #635) or, for admitPollMs, turn into an ~1ms retry loop. */
+function positiveIntEnv(name: string, fallback: number): number {
+  const raw = process.env[name];
+  if (raw === undefined || raw === '') return fallback;
+  const trimmed = raw.trim();
+  if (!/^\d+$/.test(trimmed)) {
+    throw new Error(`Invalid ${name}: "${raw}" is not a positive integer`);
+  }
+  const value = Number(trimmed);
+  if (!Number.isSafeInteger(value) || value <= 0) {
+    throw new Error(`Invalid ${name}: "${raw}" is not a positive integer`);
+  }
+  return value;
+}
+
 export const pdfBatchConfig = {
   /** Default per-tenant concurrency budget ceiling, in weight units. */
-  defaultBudgetUnits: parseInt(process.env.PDF_BATCH_BUDGET_TOTAL_UNITS || '10', 10),
+  defaultBudgetUnits: positiveIntEnv('PDF_BATCH_BUDGET_TOTAL_UNITS', 10),
 
   sizeTiers: {
     /** Below this: 'small' weight. */
-    smallMaxMb: parseInt(process.env.PDF_BATCH_SIZE_TIER_SMALL_MAX_MB || '50', 10),
+    smallMaxMb: positiveIntEnv('PDF_BATCH_SIZE_TIER_SMALL_MAX_MB', 50),
     /** Below this (and >= smallMaxMb): 'medium' weight. >= this: 'large'. */
-    mediumMaxMb: parseInt(process.env.PDF_BATCH_SIZE_TIER_MEDIUM_MAX_MB || '500', 10),
+    mediumMaxMb: positiveIntEnv('PDF_BATCH_SIZE_TIER_MEDIUM_MAX_MB', 500),
   },
   pageTiers: {
-    smallMaxPages: parseInt(process.env.PDF_BATCH_PAGE_TIER_SMALL_MAX || '50', 10),
-    mediumMaxPages: parseInt(process.env.PDF_BATCH_PAGE_TIER_MEDIUM_MAX || '300', 10),
+    smallMaxPages: positiveIntEnv('PDF_BATCH_PAGE_TIER_SMALL_MAX', 50),
+    mediumMaxPages: positiveIntEnv('PDF_BATCH_PAGE_TIER_MEDIUM_MAX', 300),
   },
   weightUnits: {
-    small: parseInt(process.env.PDF_BATCH_WEIGHT_SMALL || '1', 10),
-    medium: parseInt(process.env.PDF_BATCH_WEIGHT_MEDIUM || '3', 10),
-    large: parseInt(process.env.PDF_BATCH_WEIGHT_LARGE || '8', 10),
+    small: positiveIntEnv('PDF_BATCH_WEIGHT_SMALL', 1),
+    medium: positiveIntEnv('PDF_BATCH_WEIGHT_MEDIUM', 3),
+    large: positiveIntEnv('PDF_BATCH_WEIGHT_LARGE', 8),
   },
 
   /** A lease whose heartbeat is older than this is presumed abandoned (the
@@ -42,10 +62,10 @@ export const pdfBatchConfig = {
    *  watchdog. Reuses the same 20-minute value remediation-cycle-lock.service.ts
    *  established for the analogous problem, for consistency rather than a
    *  new, independently-tuned number. */
-  leaseStaleMs: parseInt(process.env.PDF_BATCH_LEASE_STALE_MS || String(20 * 60 * 1000), 10),
+  leaseStaleMs: positiveIntEnv('PDF_BATCH_LEASE_STALE_MS', 20 * 60 * 1000),
 
   /** Base poll interval for waitForLease while budget is unavailable. Actual
    *  delay adds up to 30% jitter to avoid a thundering herd of queued items
    *  all retrying in lockstep the moment budget frees up. */
-  admitPollMs: parseInt(process.env.PDF_BATCH_ADMIT_POLL_MS || '5000', 10),
+  admitPollMs: positiveIntEnv('PDF_BATCH_ADMIT_POLL_MS', 5000),
 };
