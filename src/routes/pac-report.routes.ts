@@ -8,6 +8,7 @@
 import { Router } from 'express';
 import { authenticate } from '../middleware/auth.middleware';
 import { authorizeJob } from '../middleware/authorize-job.middleware';
+import { rateLimiters } from '../middleware/rate-limit.middleware';
 import { pacReportController } from '../controllers/pac-report.controller';
 
 const router = Router();
@@ -21,6 +22,21 @@ router.get(
   authenticate,
   authorizeJob,
   (req, res) => pacReportController.getReport(req, res),
+);
+
+/**
+ * POST /api/v1/pdf/:jobId/pac-report/live
+ * Runs the job's document through axes4's real, external PAC Cloud checker
+ * -- separate from the free, instant, simulated report above. Costs real
+ * money per page and can take minutes; never called automatically. See
+ * PacReportController.getLiveReport's own doc comment.
+ */
+router.post(
+  '/:jobId/pac-report/live',
+  authenticate,
+  authorizeJob,
+  rateLimiters.axes4LiveCheck,
+  (req, res) => pacReportController.getLiveReport(req, res),
 );
 
 export default router;

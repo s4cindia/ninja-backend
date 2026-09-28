@@ -77,6 +77,11 @@ jobs:
           REDIS_ARN: ${{ secrets.STAGING_REDIS_SECRET_ARN }}
           ANTHROPIC_ARN: ${{ secrets.STAGING_ANTHROPIC_SECRET_ARN }}
           GEMINI_ARN: ${{ secrets.STAGING_GEMINI_SECRET_ARN }}
+          # axes4 PAC Cloud credentials -- same optional pattern as
+          # ANTHROPIC_ARN/GEMINI_ARN above; see deploy-backend-staging.yml's
+          # own comment on these two for the full rationale.
+          AXES4_API_KEY_ARN: ${{ secrets.STAGING_AXES4_API_KEY_SECRET_ARN }}
+          AXES4_SUBSCRIPTION_ID_ARN: ${{ secrets.STAGING_AXES4_SUBSCRIPTION_ID_SECRET_ARN }}
         run: |
           # Same pattern as deploy-backend-staging.yml's own env/secrets
           # injection -- the static JSON file's own environment/secrets
@@ -101,6 +106,12 @@ jobs:
           fi
           if [ -n "$GEMINI_ARN" ]; then
             SECRETS_ARRAY="$SECRETS_ARRAY"', {"name": "GEMINI_API_KEY", "valueFrom": "'"$GEMINI_ARN"'"}'
+          fi
+          if [ -n "$AXES4_API_KEY_ARN" ]; then
+            SECRETS_ARRAY="$SECRETS_ARRAY"', {"name": "AXES4_API_KEY", "valueFrom": "'"$AXES4_API_KEY_ARN"'"}'
+          fi
+          if [ -n "$AXES4_SUBSCRIPTION_ID_ARN" ]; then
+            SECRETS_ARRAY="$SECRETS_ARRAY"', {"name": "AXES4_SUBSCRIPTION_ID", "valueFrom": "'"$AXES4_SUBSCRIPTION_ID_ARN"'"}'
           fi
           SECRETS_ARRAY="$SECRETS_ARRAY]"
 

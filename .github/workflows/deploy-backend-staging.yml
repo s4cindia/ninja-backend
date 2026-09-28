@@ -142,6 +142,17 @@ jobs:
           REDIS_ARN: ${{ secrets.STAGING_REDIS_SECRET_ARN }}
           ANTHROPIC_ARN: ${{ secrets.STAGING_ANTHROPIC_SECRET_ARN }}
           GEMINI_ARN: ${{ secrets.STAGING_GEMINI_SECRET_ARN }}
+          # axes4 PAC Cloud credentials -- unset (both GH secrets left
+          # empty) is the expected state until a real axes4 subscription
+          # exists (S4C is meeting them to discuss pricing first). Same
+          # optional-injection pattern as ANTHROPIC_ARN/GEMINI_ARN above:
+          # empty means the `if` below skips it, axes4PacService.isAvailable()
+          # stays false, and the whole integration is a safe no-op. Setting
+          # these two GH secrets (to the real key's and subscription ID's own
+          # Secrets Manager ARNs) is the ONLY step needed to turn it on --
+          # see src/config/axes4.config.ts's own header.
+          AXES4_API_KEY_ARN: ${{ secrets.STAGING_AXES4_API_KEY_SECRET_ARN }}
+          AXES4_SUBSCRIPTION_ID_ARN: ${{ secrets.STAGING_AXES4_SUBSCRIPTION_ID_SECRET_ARN }}
           # Web/worker split cutover switch (CodeRabbit catch on PR #615):
           # the rollout for that split needs a way to set PROCESS_ROLE=web
           # on THIS (existing) task once the new worker service is
@@ -162,6 +173,12 @@ jobs:
           if [ -n "$GEMINI_ARN" ]; then
             SECRETS_ARRAY="$SECRETS_ARRAY"', {"name": "GEMINI_API_KEY", "valueFrom": "'"$GEMINI_ARN"'"}'
           fi
+          if [ -n "$AXES4_API_KEY_ARN" ]; then
+            SECRETS_ARRAY="$SECRETS_ARRAY"', {"name": "AXES4_API_KEY", "valueFrom": "'"$AXES4_API_KEY_ARN"'"}'
+          fi
+          if [ -n "$AXES4_SUBSCRIPTION_ID_ARN" ]; then
+            SECRETS_ARRAY="$SECRETS_ARRAY"', {"name": "AXES4_SUBSCRIPTION_ID", "valueFrom": "'"$AXES4_SUBSCRIPTION_ID_ARN"'"}'
+          fi
           SECRETS_ARRAY="$SECRETS_ARRAY]"
 
           # Only inject a PROCESS_ROLE entry when WEB_PROCESS_ROLE is
@@ -178,7 +195,7 @@ jobs:
              --argjson roleEnv "$ROLE_ENV_ARRAY" '
             # Update environment variables (remove API keys - they will be added as secrets)
             (.containerDefinitions[0].environment) |= (
-              map(select(.name != "ACE_SERVICE_URL" and .name != "S3_BUCKET" and .name != "S3_REGION" and .name != "ANTHROPIC_API_KEY" and .name != "GEMINI_API_KEY" and .name != "VERAPDF_PATH" and .name != "PROCESS_ROLE")) +
+              map(select(.name != "ACE_SERVICE_URL" and .name != "S3_BUCKET" and .name != "S3_REGION" and .name != "ANTHROPIC_API_KEY" and .name != "GEMINI_API_KEY" and .name != "AXES4_API_KEY" and .name != "AXES4_SUBSCRIPTION_ID" and .name != "VERAPDF_PATH" and .name != "PROCESS_ROLE")) +
               [
                 {"name": "ACE_SERVICE_URL", "value": $aceurl},
                 {"name": "S3_BUCKET", "value": "ninja-epub-staging"},
@@ -189,7 +206,7 @@ jobs:
             # Add secrets section
             (.containerDefinitions[0].secrets) |= (
               (. // []) |
-              map(select(.name != "REDIS_URL" and .name != "ANTHROPIC_API_KEY" and .name != "GEMINI_API_KEY")) +
+              map(select(.name != "REDIS_URL" and .name != "ANTHROPIC_API_KEY" and .name != "GEMINI_API_KEY" and .name != "AXES4_API_KEY" and .name != "AXES4_SUBSCRIPTION_ID")) +
               $secrets
             )
           ' task-definition.json > task-definition-updated.json
