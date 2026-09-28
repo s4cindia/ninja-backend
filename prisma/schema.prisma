@@ -949,6 +949,22 @@ model PdfConcurrencyLease {
   @@index([tenantId, releasedAt])
 }
 
+/// Tracks cumulative pages sent to axes4's PAC Cloud API against a billing
+/// period's page quota, so Ninja can refuse a doomed call locally (the API's
+/// own 403 "page limit reached" is still the authoritative backstop -- see
+/// axes4-quota.service.ts's own header). scopeKey is a single literal
+/// 'global' row for now (one shared axes4 subscription); kept as a string
+/// rather than a tenantId column so this can become per-tenant later without
+/// a schema change, once the real subscription arrangement with axes4 is
+/// known (see the axes4 integration plan's own open questions).
+model Axes4PageQuota {
+  scopeKey            String   @id
+  pagesUsedThisPeriod Int      @default(0)
+  pagesLimitThisPeriod Int
+  periodResetAt       DateTime
+  updatedAt            DateTime @updatedAt
+}
+
 // ============================================
 // EDITORIAL SERVICES MODELS
 // ============================================
