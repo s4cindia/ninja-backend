@@ -188,6 +188,21 @@ const PDFA11Y_TESTABLE_CONDITIONS: ReadonlySet<string> = new Set([
   '28-005', // Form field missing /TU and no enclosing /Alt
   '28-007', // TrapNet annotation present
   '28-010', // Widget annotation not nested within a Form structure element
+  // 28-011 stays pdfa11y-only, NOT moved to NINJA_TESTABLE_CONDITIONS --
+  // CodeRabbit finding on PR #637, confirmed real: pdf-link-completeness.
+  // validator.ts only catches URL-shaped text with NO annotation at all; it
+  // explicitly skips (via hasNearbyLinkAnnotation) any text where a Link
+  // annotation already exists nearby, so it never checks whether an
+  // EXISTING annotation is itself properly nested in a Link structure
+  // element -- the literal condition 28-011 describes. Marking it fully
+  // Ninja-testable would let a document with a real, untagged Link
+  // annotation wrongly report PASS purely because this validator never
+  // looks at that case (the same partial-coverage trap 01-005 already
+  // documents above). A real LINK-MISSING-ANNOTATION issue still correctly
+  // reports FAIL regardless (classifyCondition: a present failing issue
+  // always wins over testable-set membership) -- this only affects the
+  // no-failure-found case, which correctly falls back to UNTESTED without
+  // pdfa11y instead of a false PASS.
   '28-011', // Link annotation not nested within a Link structure element
   '28-014', // Media clip data dictionary missing /CT entry
   '28-015', // Media clip data dictionary missing /Alt entry
