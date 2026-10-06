@@ -55,7 +55,7 @@ describe('tryReservePages', () => {
     expect(prisma.axes4PageQuota.upsert).toHaveBeenCalledWith({
       where: { scopeKey: 'global' },
       create: { scopeKey: 'global', pagesLimitThisPeriod: 500, periodResetAt: expect.any(Date) },
-      update: {},
+      update: { pagesLimitThisPeriod: 500 },
     });
     // The atomic compare-and-swap: admits only if CURRENT pagesUsedThisPeriod
     // (evaluated live by Postgres at UPDATE time) is <= limit - pageCount.
@@ -64,6 +64,27 @@ describe('tryReservePages', () => {
       data: { pagesUsedThisPeriod: { increment: 50 } },
     });
     expect(reserved).toBe(true);
+  });
+
+  it('reconciles an existing row\'s limit to the current config on every call, not just at creation', async () => {
+    vi.mocked(prisma.axes4PageQuota.upsert).mockResolvedValue({} as any);
+    vi.mocked(prisma.axes4PageQuota.findUniqueOrThrow).mockResolvedValue({
+      scopeKey: 'global',
+      pagesUsedThisPeriod: 100,
+      pagesLimitThisPeriod: 500,
+      periodResetAt: new Date(Date.now() + 1000 * 60 * 60 * 24),
+    } as any);
+    vi.mocked(prisma.axes4PageQuota.updateMany).mockResolvedValue({ count: 1 } as any);
+
+    await axes4QuotaService.tryReservePages(10);
+
+    // update is never {} -- a changed config limit must reach an existing
+    // row, not just a newly-created one. pagesUsedThisPeriod/periodResetAt
+    // are deliberately absent from `update` here: reconciling the limit
+    // must never reset accumulated usage or the period clock.
+    expect(prisma.axes4PageQuota.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({ update: { pagesLimitThisPeriod: 500 } })
+    );
   });
 
   it('refuses (returns false, no throw) when the compare-and-swap matches 0 rows', async () => {
