@@ -82,6 +82,10 @@ jobs:
           # own comment on these two for the full rationale.
           AXES4_API_KEY_ARN: ${{ secrets.STAGING_AXES4_API_KEY_SECRET_ARN }}
           AXES4_SUBSCRIPTION_ID_ARN: ${{ secrets.STAGING_AXES4_SUBSCRIPTION_ID_SECRET_ARN }}
+          # axes4 trial/period quota -- same optional, plain-number pattern
+          # as deploy-backend-staging.yml's own copy of these two.
+          AXES4_QUOTA_PAGES_PER_PERIOD: ${{ vars.AXES4_QUOTA_PAGES_PER_PERIOD }}
+          AXES4_QUOTA_PERIOD_DAYS: ${{ vars.AXES4_QUOTA_PERIOD_DAYS }}
         run: |
           # Same pattern as deploy-backend-staging.yml's own env/secrets
           # injection -- the static JSON file's own environment/secrets
@@ -115,17 +119,25 @@ jobs:
           fi
           SECRETS_ARRAY="$SECRETS_ARRAY]"
 
+          # Only inject AXES4_QUOTA_* when BOTH are set -- same reasoning as
+          # deploy-backend-staging.yml's own copy of this check.
+          AXES4_QUOTA_ENV_ARRAY='[]'
+          if [ -n "$AXES4_QUOTA_PAGES_PER_PERIOD" ] && [ -n "$AXES4_QUOTA_PERIOD_DAYS" ]; then
+            AXES4_QUOTA_ENV_ARRAY='[{"name": "AXES4_QUOTA_PAGES_PER_PERIOD", "value": "'"$AXES4_QUOTA_PAGES_PER_PERIOD"'"}, {"name": "AXES4_QUOTA_PERIOD_DAYS", "value": "'"$AXES4_QUOTA_PERIOD_DAYS"'"}]'
+          fi
+
           jq --arg aceurl "$ACE_URL" \
-             --argjson secrets "$SECRETS_ARRAY" '
+             --argjson secrets "$SECRETS_ARRAY" \
+             --argjson quotaEnv "$AXES4_QUOTA_ENV_ARRAY" '
             (.containerDefinitions[0].environment) |= (
-              map(select(.name != "ACE_SERVICE_URL" and .name != "S3_BUCKET" and .name != "S3_REGION" and .name != "VERAPDF_PATH")) +
+              map(select(.name != "ACE_SERVICE_URL" and .name != "S3_BUCKET" and .name != "S3_REGION" and .name != "VERAPDF_PATH" and .name != "AXES4_QUOTA_PAGES_PER_PERIOD" and .name != "AXES4_QUOTA_PERIOD_DAYS")) +
               [
                 {"name": "ACE_SERVICE_URL", "value": $aceurl},
                 {"name": "S3_BUCKET", "value": "ninja-epub-staging"},
                 {"name": "S3_REGION", "value": "ap-south-1"},
                 {"name": "VERAPDF_PATH", "value": "/opt/verapdf/verapdf"},
                 {"name": "PROCESS_ROLE", "value": "worker"}
-              ]
+              ] + $quotaEnv
             ) |
             (.containerDefinitions[0].secrets) |= $secrets
           ' ${{ env.TASK_DEFINITION_FILE }} > task-definition-updated.json

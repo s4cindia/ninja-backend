@@ -35,9 +35,18 @@ import { axes4Config } from '../../config/axes4.config';
 const GLOBAL_SCOPE_KEY = 'global';
 
 class Axes4QuotaService {
-  /** Lazily creates the quota row on first use. Safe under concurrent
-   *  first-ever calls -- Prisma's upsert compiles to an atomic
-   *  INSERT ... ON CONFLICT DO UPDATE for Postgres. */
+  /** Lazily creates the quota row on first use, and reconciles an existing
+   *  row's limit to the current config on every call -- not just at
+   *  creation. Without this, a config change (e.g. a trial's page limit
+   *  being raised, or a plan change) would silently never reach an
+   *  already-existing row: upsert's own `update` only runs when the row
+   *  is found, and a bare `update: {}` would leave pagesLimitThisPeriod
+   *  frozen at whatever it was first created with, forever (CodeRabbit/
+   *  Codex both caught this independently on PR #639). pagesUsedThisPeriod
+   *  and periodResetAt are deliberately left untouched here -- reconciling
+   *  the limit must never reset accumulated usage or the period clock.
+   *  Safe under concurrent first-ever calls -- Prisma's upsert compiles to
+   *  an atomic INSERT ... ON CONFLICT DO UPDATE for Postgres. */
   private async ensureRow(): Promise<void> {
     await prisma.axes4PageQuota.upsert({
       where: { scopeKey: GLOBAL_SCOPE_KEY },
@@ -46,7 +55,9 @@ class Axes4QuotaService {
         pagesLimitThisPeriod: axes4Config.quota.defaultPagesPerPeriod,
         periodResetAt: this.nextPeriodResetAt(),
       },
-      update: {},
+      update: {
+        pagesLimitThisPeriod: axes4Config.quota.defaultPagesPerPeriod,
+      },
     });
   }
 
