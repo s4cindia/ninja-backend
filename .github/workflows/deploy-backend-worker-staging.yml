@@ -16,6 +16,9 @@ name: Deploy Backend Worker to Staging
   push:
     branches:
       - main
+  # Same manual-redeploy escape hatch as deploy-backend-staging.yml's own
+  # copy of this -- see that file's comment.
+  workflow_dispatch: {}
 
 env:
   AWS_REGION: ap-south-1

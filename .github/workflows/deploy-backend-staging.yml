@@ -4,6 +4,10 @@ name: Deploy Backend to Staging
   push:
     branches:
       - main
+  # Lets a redeploy be triggered without a code change -- needed to pick up
+  # a new/rotated secret or repo variable (e.g. STAGING_AXES4_*_SECRET_ARN,
+  # AXES4_QUOTA_*), since nothing about those changes the committed source.
+  workflow_dispatch: {}
 
 env:
   AWS_REGION: ap-south-1
