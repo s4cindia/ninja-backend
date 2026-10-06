@@ -164,6 +164,13 @@ jobs:
           # WEB_PROCESS_ROLE repo variable to "web" and redeploy when
           # ready to cut over.
           WEB_PROCESS_ROLE: ${{ vars.WEB_PROCESS_ROLE }}
+          # axes4 trial/period quota -- plain numbers, not a secret. Unset
+          # means axes4.config.ts's own conservative placeholder default
+          # (500 pages / 30 days) applies instead; set both repo variables
+          # to the real trial/plan's numbers once they're known (see
+          # axes4-quota.service.ts for how these gate real API calls).
+          AXES4_QUOTA_PAGES_PER_PERIOD: ${{ vars.AXES4_QUOTA_PAGES_PER_PERIOD }}
+          AXES4_QUOTA_PERIOD_DAYS: ${{ vars.AXES4_QUOTA_PERIOD_DAYS }}
         run: |
           # Build secrets array conditionally
           SECRETS_ARRAY='[{"name": "REDIS_URL", "valueFrom": "'"$REDIS_ARN"'"}'
@@ -190,18 +197,28 @@ jobs:
             ROLE_ENV_ARRAY='[{"name": "PROCESS_ROLE", "value": "'"$WEB_PROCESS_ROLE"'"}]'
           fi
 
+          # Only inject AXES4_QUOTA_* when BOTH are set -- a half-set pair
+          # (pages but no days, or vice versa) would leave the quota
+          # service reading one real number and one stale code fallback,
+          # silently mismatched.
+          AXES4_QUOTA_ENV_ARRAY='[]'
+          if [ -n "$AXES4_QUOTA_PAGES_PER_PERIOD" ] && [ -n "$AXES4_QUOTA_PERIOD_DAYS" ]; then
+            AXES4_QUOTA_ENV_ARRAY='[{"name": "AXES4_QUOTA_PAGES_PER_PERIOD", "value": "'"$AXES4_QUOTA_PAGES_PER_PERIOD"'"}, {"name": "AXES4_QUOTA_PERIOD_DAYS", "value": "'"$AXES4_QUOTA_PERIOD_DAYS"'"}]'
+          fi
+
           jq --arg aceurl "$ACE_URL" \
              --argjson secrets "$SECRETS_ARRAY" \
-             --argjson roleEnv "$ROLE_ENV_ARRAY" '
+             --argjson roleEnv "$ROLE_ENV_ARRAY" \
+             --argjson quotaEnv "$AXES4_QUOTA_ENV_ARRAY" '
             # Update environment variables (remove API keys - they will be added as secrets)
             (.containerDefinitions[0].environment) |= (
-              map(select(.name != "ACE_SERVICE_URL" and .name != "S3_BUCKET" and .name != "S3_REGION" and .name != "ANTHROPIC_API_KEY" and .name != "GEMINI_API_KEY" and .name != "AXES4_API_KEY" and .name != "AXES4_SUBSCRIPTION_ID" and .name != "VERAPDF_PATH" and .name != "PROCESS_ROLE")) +
+              map(select(.name != "ACE_SERVICE_URL" and .name != "S3_BUCKET" and .name != "S3_REGION" and .name != "ANTHROPIC_API_KEY" and .name != "GEMINI_API_KEY" and .name != "AXES4_API_KEY" and .name != "AXES4_SUBSCRIPTION_ID" and .name != "VERAPDF_PATH" and .name != "PROCESS_ROLE" and .name != "AXES4_QUOTA_PAGES_PER_PERIOD" and .name != "AXES4_QUOTA_PERIOD_DAYS")) +
               [
                 {"name": "ACE_SERVICE_URL", "value": $aceurl},
                 {"name": "S3_BUCKET", "value": "ninja-epub-staging"},
                 {"name": "S3_REGION", "value": "ap-south-1"},
                 {"name": "VERAPDF_PATH", "value": "/opt/verapdf/verapdf"}
-              ] + $roleEnv
+              ] + $roleEnv + $quotaEnv
             ) |
             # Add secrets section
             (.containerDefinitions[0].secrets) |= (
