@@ -10,7 +10,7 @@ never need to change.
 | Resource | Name | Purpose |
 |---|---|---|
 | S3 bucket | `ninja-terraform-state-223643972423` | Stores `*.tfstate` files, one key per environment (e.g. `production/terraform.tfstate`). Versioned, SSE-AES256 encrypted, all public access blocked. |
-| DynamoDB table | `ninja-terraform-locks` | State locking (prevents two concurrent `terraform apply` runs from corrupting state). Partition key `LockID` (String), on-demand billing. |
+| DynamoDB table | `ninja-terraform-locks` | State locking (prevents two concurrent `terraform apply` runs from corrupting state). Partition key `LockID` (String), on-demand billing. Used alongside S3-native lockfile locking (`use_lockfile = true` in `backend.tf`) from day one, since HashiCorp is deprecating DynamoDB locking — starting with both avoids a future migration. |
 
 Region: `ap-south-1` (same as every other Ninja AWS resource).
 

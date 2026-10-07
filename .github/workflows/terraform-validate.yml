@@ -15,6 +15,9 @@ on:
     paths:
       - "infrastructure/terraform/**"
 
+permissions:
+  contents: read
+
 jobs:
   validate:
     name: Format & Validate
@@ -26,6 +29,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Set up Terraform
         uses: hashicorp/setup-terraform@v3
