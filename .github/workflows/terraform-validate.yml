@@ -1,0 +1,47 @@
+name: Terraform Validate
+
+# Format + syntax validation only -- deliberately never runs `terraform
+# plan`/`apply` in CI, since that would need real production AWS
+# credentials. Every actual apply is run by a human directly against the
+# account, per the production rollout plan's own execution model.
+
+on:
+  pull_request:
+    paths:
+      - "infrastructure/terraform/**"
+  push:
+    branches:
+      - main
+    paths:
+      - "infrastructure/terraform/**"
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Format & Validate
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: infrastructure/terraform/environments/production
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.15.6"
+
+      - name: terraform fmt -check
+        run: terraform fmt -check -recursive ../../
+
+      - name: terraform init (no backend -- no AWS credentials needed/granted in CI)
+        run: terraform init -backend=false
+
+      - name: terraform validate
+        run: terraform validate
