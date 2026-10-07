@@ -1,0 +1,6 @@
+# Copy to terraform.tfvars (gitignored) and adjust if you ever need to
+# override a default -- both variables already have correct defaults for
+# this account/region, so an empty terraform.tfvars is valid too.
+
+aws_region     = "ap-south-1"
+aws_account_id = "223643972423"
