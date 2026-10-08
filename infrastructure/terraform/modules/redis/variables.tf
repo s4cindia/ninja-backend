@@ -17,9 +17,15 @@ variable "node_type" {
 }
 
 variable "engine_version" {
-  description = "Mirrors staging's ninja-staging-redis engine version."
+  # Major.minor only -- AWS's create API for a replication group rejects a
+  # full major.minor.patch string ("7.1.0") for Redis 6+, even though
+  # `aws elasticache describe-cache-clusters` reports staging's version
+  # back in that fuller form. Discovered on the first real `terraform
+  # plan`, not assumed. AWS resolves "7.1" to the current latest 7.1.x
+  # patch automatically.
+  description = "Mirrors staging's ninja-staging-redis engine version (major.minor only)."
   type        = string
-  default     = "7.1.0"
+  default     = "7.1"
 }
 
 variable "auth_token" {
