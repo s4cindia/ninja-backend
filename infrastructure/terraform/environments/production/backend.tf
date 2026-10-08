@@ -5,12 +5,16 @@ terraform {
     bucket = "ninja-terraform-state-223643972423"
     key    = "production/terraform.tfstate"
     region = "ap-south-1"
-    # Both locking mechanisms run side by side from day one -- HashiCorp is
-    # deprecating DynamoDB locking in favor of S3-native conditional-write
-    # locking, but since this is a brand-new backend with no prior applies,
-    # there's no "migrate existing locks" step needed: just start with both.
-    dynamodb_table = "ninja-terraform-locks"
-    use_lockfile   = true
-    encrypt        = true
+    # S3-native locking only -- the ninja-terraform-locks DynamoDB table
+    # (see bootstrap/README.md) turned out to need IAM permissions
+    # (dynamodb:GetItem/PutItem) this account's user doesn't have, discovered
+    # on the very first real `terraform plan`. Since DynamoDB locking never
+    # actually succeeded even once, there's no "migrate existing locks" step
+    # needed -- just drop it in favor of the mechanism HashiCorp is pushing
+    # toward anyway. The table itself is left in place, unused and
+    # zero-cost (PAY_PER_REQUEST with no traffic) -- re-add dynamodb_table
+    # here if its IAM policy is ever fixed and dual-locking is wanted again.
+    use_lockfile = true
+    encrypt      = true
   }
 }

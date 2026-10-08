@@ -10,7 +10,7 @@ never need to change.
 | Resource | Name | Purpose |
 |---|---|---|
 | S3 bucket | `ninja-terraform-state-223643972423` | Stores `*.tfstate` files, one key per environment (e.g. `production/terraform.tfstate`). Versioned, SSE-AES256 encrypted, all public access blocked. |
-| DynamoDB table | `ninja-terraform-locks` | State locking (prevents two concurrent `terraform apply` runs from corrupting state). Partition key `LockID` (String), on-demand billing. Used alongside S3-native lockfile locking (`use_lockfile = true` in `backend.tf`) from day one, since HashiCorp is deprecating DynamoDB locking — starting with both avoids a future migration. |
+| DynamoDB table | `ninja-terraform-locks` | **Unused** — `backend.tf` relies on S3-native lockfile locking (`use_lockfile = true`) only. This table was originally set up for dual locking, but the account's IAM user lacks `dynamodb:GetItem`/`PutItem` on it (discovered on the first real `terraform plan`, 2026-10-08), so it was dropped in favor of the mechanism HashiCorp is deprecating DynamoDB locking in favor of anyway. Left in place, zero-cost (PAY_PER_REQUEST, no traffic) in case its IAM policy is fixed later. |
 
 Region: `ap-south-1` (same as every other Ninja AWS resource).
 
