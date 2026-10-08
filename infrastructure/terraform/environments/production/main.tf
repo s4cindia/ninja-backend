@@ -4,7 +4,7 @@
 # plan is built and approved, rather than all at once:
 #   Phase 2: networking (VPC, subnets, security groups) -- DONE, below
 #   Phase 3: secrets, RDS, ElastiCache Redis -- DONE, below
-#   Phase 4: ALB + target groups
+#   Phase 4: ALB + target groups -- DONE, below
 #   Phase 5: ECS cluster + backend web/worker services
 #   Phase 6: CloudFront
 #   Phase 8: ACE, docling (CPU+GPU), zone-detector, training services
@@ -182,4 +182,16 @@ data "aws_secretsmanager_secret" "anthropic" {
 
 data "aws_secretsmanager_secret" "gemini" {
   name = "ninja/staging/gemini"
+}
+
+# --- Phase 4: ALB + target groups ---
+module "alb" {
+  source = "../../modules/alb"
+
+  environment       = "production"
+  vpc_id            = module.networking.vpc_id
+  public_subnet_ids = module.networking.public_subnet_ids
+  security_group_id = module.networking.alb_security_group_id
+  app_port          = 3000
+  health_check_path = "/health"
 }
