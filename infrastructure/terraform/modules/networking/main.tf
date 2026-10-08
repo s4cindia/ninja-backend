@@ -123,9 +123,23 @@ data "aws_ec2_managed_prefix_list" "cloudfront_origin_facing" {
 }
 
 resource "aws_security_group" "alb" {
-  name        = "ninja-${var.environment}-alb-sg"
+  # name_prefix (not a static name) + create_before_destroy below: this
+  # specific security group just deadlocked a real apply when a prior
+  # change forced its replacement -- a static name collides with its own
+  # replacement while both briefly exist, and destroy-before-create (the
+  # default) can't complete while ecs_tasks' rule still references the old
+  # one, which can't be updated until the new one exists. Deliberately
+  # scoped to ONLY this security group: ecs_tasks/rds/redis are already
+  # attached to live resources (Phase 3's real RDS/Redis), so forcing the
+  # same change onto them would risk the identical deadlock against
+  # production data stores that are actually serving traffic.
+  name_prefix = "ninja-${var.environment}-alb-sg-"
   description = "Ingress from CloudFront's edge network only (443/80); egress to ECS tasks only."
   vpc_id      = aws_vpc.this.id
+
+  lifecycle {
+    create_before_destroy = true
+  }
 
   ingress {
     description     = "HTTPS from CloudFront edges only"
