@@ -83,3 +83,27 @@ output "alb_http_listener_arn" {
 output "web_target_group_arn" {
   value = module.alb.web_target_group_arn
 }
+
+output "s3_bucket_name" {
+  value = module.storage.bucket_name
+}
+
+output "ecs_cluster_name" {
+  value = aws_ecs_cluster.this.name
+}
+
+output "ecs_execution_role_arn" {
+  value = module.iam.execution_role_arn
+}
+
+output "ecs_task_role_arn" {
+  value = module.iam.task_role_arn
+}
+
+output "ecs_web_service_name" {
+  value = module.ecs_web.service_name
+}
+
+output "ecs_worker_service_name" {
+  value = module.ecs_worker.service_name
+}

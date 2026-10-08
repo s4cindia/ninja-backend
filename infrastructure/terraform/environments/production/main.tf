@@ -195,3 +195,139 @@ module "alb" {
   app_port          = 3000
   health_check_path = "/health"
 }
+
+# --- Phase 5: S3 storage, IAM roles, ECS cluster + web/worker services ---
+
+# Real gap caught designing this phase: no earlier phase created a
+# production file-storage bucket. config/index.ts's own S3_BUCKET fallback
+# default is literally the STAGING bucket name ("ninja-epub-staging"), so
+# this has to exist before the task definitions below can safely reference
+# it -- see also Phase 10's planned fail-fast fix for that silent-fallback
+# behavior in the app code itself.
+module "storage" {
+  source = "../../modules/storage"
+
+  environment = "production"
+}
+
+module "iam" {
+  source = "../../modules/iam"
+
+  environment   = "production"
+  s3_bucket_arn = module.storage.bucket_arn
+  secret_arns = [
+    module.database.master_user_secret_arn,
+    aws_secretsmanager_secret.redis_auth_token.arn,
+    aws_secretsmanager_secret.jwt_secret.arn,
+    aws_secretsmanager_secret.jwt_refresh_secret.arn,
+    aws_secretsmanager_secret.download_token_secret.arn,
+    data.aws_secretsmanager_secret.anthropic.arn,
+    data.aws_secretsmanager_secret.gemini.arn,
+  ]
+}
+
+resource "aws_ecs_cluster" "this" {
+  name = "ninja-production-cluster"
+
+  setting {
+    name  = "containerInsights"
+    value = "enabled"
+  }
+
+  tags = {
+    Name = "ninja-production-cluster"
+  }
+}
+
+# DATABASE_URL/REDIS_URL are composed HERE, at container start, from
+# separately-injected plain + secret pieces -- never as a single combined
+# value Terraform itself assembles. This is a direct continuation of the
+# Phase 3 CodeRabbit-driven redesign (PR #643): the RDS password and Redis
+# auth token each flow straight from their own Secrets Manager ARN into the
+# container, and this one-line shell wrapper (no Docker image change
+# needed -- it overrides the image's own CMD) is what turns them into the
+# single connection-string env vars Prisma/ioredis actually read.
+#
+# Assumption, documented rather than silently relied on: AWS's
+# manage_master_user_password-generated RDS password is generated excluding
+# URL-breaking characters (", @, /, space) by default, so naive string
+# concatenation here is safe without shell-level URL-encoding. Revisit if
+# this ever causes a connection failure.
+locals {
+  app_command = [
+    "sh", "-c",
+    "export DATABASE_URL=\"postgresql://$DB_USER:$DB_PASSWORD@$DB_HOST:$DB_PORT/$DB_NAME\"; export REDIS_URL=\"rediss://:$REDIS_AUTH_TOKEN@$REDIS_HOST:$REDIS_PORT\"; exec node dist/index.js"
+  ]
+
+  app_plain_environment = [
+    { name = "DB_HOST", value = module.database.endpoint },
+    { name = "DB_PORT", value = tostring(module.database.port) },
+    { name = "DB_NAME", value = module.database.db_name },
+    { name = "DB_USER", value = module.database.master_username },
+    { name = "REDIS_HOST", value = module.redis.primary_endpoint },
+    { name = "REDIS_PORT", value = tostring(module.redis.port) },
+  ]
+
+  app_secrets = [
+    { name = "DB_PASSWORD", valueFrom = "${module.database.master_user_secret_arn}:password::" },
+    { name = "REDIS_AUTH_TOKEN", valueFrom = aws_secretsmanager_secret.redis_auth_token.arn },
+    { name = "JWT_SECRET", valueFrom = aws_secretsmanager_secret.jwt_secret.arn },
+    { name = "JWT_REFRESH_SECRET", valueFrom = aws_secretsmanager_secret.jwt_refresh_secret.arn },
+    { name = "DOWNLOAD_TOKEN_SECRET", valueFrom = aws_secretsmanager_secret.download_token_secret.arn },
+    { name = "ANTHROPIC_API_KEY", valueFrom = data.aws_secretsmanager_secret.anthropic.arn },
+    { name = "GEMINI_API_KEY", valueFrom = data.aws_secretsmanager_secret.gemini.arn },
+  ]
+}
+
+module "ecs_web" {
+  source = "../../modules/ecs-service"
+
+  environment        = "production"
+  service_role       = "web"
+  cluster_id         = aws_ecs_cluster.this.id
+  cluster_name       = aws_ecs_cluster.this.name
+  execution_role_arn = module.iam.execution_role_arn
+  task_role_arn      = module.iam.task_role_arn
+  private_subnet_ids = module.networking.private_subnet_ids
+  security_group_id  = module.networking.ecs_security_group_id
+  cpu                = 1024
+  memory             = 2048
+  desired_count      = 1
+  s3_bucket_name     = module.storage.bucket_name
+  command            = local.app_command
+  extra_environment  = local.app_plain_environment
+  secrets            = local.app_secrets
+  attach_to_alb      = true
+  target_group_arn   = module.alb.web_target_group_arn
+}
+
+module "ecs_worker" {
+  source = "../../modules/ecs-service"
+
+  environment        = "production"
+  service_role       = "worker"
+  cluster_id         = aws_ecs_cluster.this.id
+  cluster_name       = aws_ecs_cluster.this.name
+  execution_role_arn = module.iam.execution_role_arn
+  task_role_arn      = module.iam.task_role_arn
+  private_subnet_ids = module.networking.private_subnet_ids
+  security_group_id  = module.networking.ecs_security_group_id
+  # Mirrors staging's real ninja-backend-worker-task-definition.json
+  # (cpu/memory) -- PDF/EPUB processing is heavier than the web service's
+  # own request handling.
+  cpu            = 2048
+  memory         = 8192
+  desired_count  = 1
+  s3_bucket_name = module.storage.bucket_name
+  command        = local.app_command
+  # Deliberately NOT including staging's YOLO_SERVICE_URL/YOLO_WARM_*_HOUR_IST
+  # here -- that points at staging's own Cloud Map DNS name
+  # (ninja-zone-detector.ninja.local), which doesn't exist in production's
+  # separate VPC. Production has no zone-detector service yet (Phase 8).
+  # Leaving these unset matches the codebase's own established convention:
+  # Seam-C/YOLO features gate on their own env vars and degrade safely when
+  # unset, same as every other optional integration this session (axes4,
+  # docling, etc.).
+  extra_environment = local.app_plain_environment
+  secrets           = local.app_secrets
+}
