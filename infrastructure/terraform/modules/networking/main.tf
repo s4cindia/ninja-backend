@@ -112,25 +112,35 @@ resource "aws_route_table_association" "private" {
 # Mirrors the ACE staging pattern (ninja-alb-staging's SG -> ace-ecs-sg) rather
 # than inventing a new shape.
 
+# CloudFront (Phase 6) sits in front of this ALB -- the ALB itself must only
+# accept traffic that genuinely came from a CloudFront edge, not the raw
+# internet, or anyone could bypass CloudFront entirely (and whatever WAF/
+# caching/geo rules live there) by hitting the ALB's own public DNS name
+# directly. AWS publishes exactly this as a managed prefix list (CodeRabbit
+# catch on PR #646, applied here rather than suppressed).
+data "aws_ec2_managed_prefix_list" "cloudfront_origin_facing" {
+  name = "com.amazonaws.global.cloudfront.origin-facing"
+}
+
 resource "aws_security_group" "alb" {
   name        = "ninja-${var.environment}-alb-sg"
-  description = "Ingress from the internet on 443/80; egress to ECS tasks only."
+  description = "Ingress from CloudFront's edge network only (443/80); egress to ECS tasks only."
   vpc_id      = aws_vpc.this.id
 
   ingress {
-    description = "HTTPS from anywhere"
-    from_port   = 443
-    to_port     = 443
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
+    description     = "HTTPS from CloudFront edges only"
+    from_port       = 443
+    to_port         = 443
+    protocol        = "tcp"
+    prefix_list_ids = [data.aws_ec2_managed_prefix_list.cloudfront_origin_facing.id]
   }
 
   ingress {
-    description = "HTTP from anywhere (redirect to HTTPS at the listener)"
-    from_port   = 80
-    to_port     = 80
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
+    description     = "HTTP from CloudFront edges only"
+    from_port       = 80
+    to_port         = 80
+    protocol        = "tcp"
+    prefix_list_ids = [data.aws_ec2_managed_prefix_list.cloudfront_origin_facing.id]
   }
 
   egress {

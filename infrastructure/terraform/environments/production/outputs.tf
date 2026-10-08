@@ -69,3 +69,17 @@ output "anthropic_secret_arn" {
 output "gemini_secret_arn" {
   value = data.aws_secretsmanager_secret.gemini.arn
 }
+
+# Consumed by Phase 6 (CloudFront's origin) and Phase 5 (ECS service's
+# load_balancer block).
+output "alb_dns_name" {
+  value = module.alb.alb_dns_name
+}
+
+output "alb_http_listener_arn" {
+  value = module.alb.http_listener_arn
+}
+
+output "web_target_group_arn" {
+  value = module.alb.web_target_group_arn
+}
