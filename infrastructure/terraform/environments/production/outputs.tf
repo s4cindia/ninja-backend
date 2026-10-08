@@ -12,3 +12,60 @@ output "public_subnet_ids" {
 output "private_subnet_ids" {
   value = module.networking.private_subnet_ids
 }
+
+# Consumed by Phase 5's ECS task definition to assemble DATABASE_URL/
+# REDIS_URL at container start -- host/port/name/username are plain (not
+# secret) outputs; the one genuinely secret piece per data store is injected
+# straight from its own ARN (RDS: AWS's managed secret, via a JSON-key
+# selector; Redis: redis_auth_token_secret_arn below).
+output "database_endpoint" {
+  value = module.database.endpoint
+}
+
+output "database_port" {
+  value = module.database.port
+}
+
+output "database_name" {
+  value = module.database.db_name
+}
+
+output "database_master_username" {
+  value = module.database.master_username
+}
+
+output "database_master_user_secret_arn" {
+  value = module.database.master_user_secret_arn
+}
+
+output "redis_primary_endpoint" {
+  value = module.redis.primary_endpoint
+}
+
+output "redis_port" {
+  value = module.redis.port
+}
+
+output "redis_auth_token_secret_arn" {
+  value = aws_secretsmanager_secret.redis_auth_token.arn
+}
+
+output "jwt_secret_arn" {
+  value = aws_secretsmanager_secret.jwt_secret.arn
+}
+
+output "jwt_refresh_secret_arn" {
+  value = aws_secretsmanager_secret.jwt_refresh_secret.arn
+}
+
+output "download_token_secret_arn" {
+  value = aws_secretsmanager_secret.download_token_secret.arn
+}
+
+output "anthropic_secret_arn" {
+  value = data.aws_secretsmanager_secret.anthropic.arn
+}
+
+output "gemini_secret_arn" {
+  value = data.aws_secretsmanager_secret.gemini.arn
+}
