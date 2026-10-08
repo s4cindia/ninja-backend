@@ -14,7 +14,9 @@ output "master_username" {
   value = aws_db_instance.this.username
 }
 
-output "master_password" {
-  value     = jsondecode(data.aws_secretsmanager_secret_version.master_password.secret_string)["password"]
-  sensitive = true
+# ARN of AWS's own managed secret (NOT the decrypted value) -- Phase 5's ECS
+# task definition reads the password directly from this via a JSON-key
+# selector, so the plaintext never passes through Terraform.
+output "master_user_secret_arn" {
+  value = aws_db_instance.this.master_user_secret[0].secret_arn
 }

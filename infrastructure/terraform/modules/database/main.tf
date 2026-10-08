@@ -6,6 +6,14 @@
 # manually-set one -- it never appears in Terraform state, a tfvars file, a
 # chat transcript, or anywhere a human has to type or paste it. AWS creates
 # and owns its own Secrets Manager secret for it automatically.
+#
+# Deliberately does NOT read that managed secret's value back out via a data
+# source (CodeRabbit catch on PR #643's first version) -- doing so would pull
+# the plaintext password into Terraform state for no real benefit. The ECS
+# task definition (Phase 5) injects it directly via that secret's own ARN,
+# using ECS's native JSON-key selector (`valueFrom: "<arn>:password::"`), so
+# the password flows from AWS's managed secret straight into the running
+# container and never passes through Terraform at all.
 
 resource "aws_db_subnet_group" "this" {
   name       = "ninja-${var.environment}-db-subnet-group"
@@ -51,11 +59,4 @@ resource "aws_db_instance" "this" {
     Environment = var.environment
     Application = "ninja"
   }
-}
-
-# Reads back the password from AWS's own managed secret, so the root module
-# can compose a single DATABASE_URL connection string for the app -- Prisma
-# reads one plain `postgresql://...` string, not AWS's structured JSON.
-data "aws_secretsmanager_secret_version" "master_password" {
-  secret_id = aws_db_instance.this.master_user_secret[0].secret_arn
 }

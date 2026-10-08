@@ -13,15 +13,41 @@ output "private_subnet_ids" {
   value = module.networking.private_subnet_ids
 }
 
-# Secret ARNs -- consumed by Phase 5's ECS task definition `secrets` block,
-# the same way deploy-backend-staging.yml's own STAGING_*_SECRET_ARN GitHub
-# secrets are consumed today.
-output "database_url_secret_arn" {
-  value = aws_secretsmanager_secret.database_url.arn
+# Consumed by Phase 5's ECS task definition to assemble DATABASE_URL/
+# REDIS_URL at container start -- host/port/name/username are plain (not
+# secret) outputs; the one genuinely secret piece per data store is injected
+# straight from its own ARN (RDS: AWS's managed secret, via a JSON-key
+# selector; Redis: redis_auth_token_secret_arn below).
+output "database_endpoint" {
+  value = module.database.endpoint
 }
 
-output "redis_url_secret_arn" {
-  value = aws_secretsmanager_secret.redis_url.arn
+output "database_port" {
+  value = module.database.port
+}
+
+output "database_name" {
+  value = module.database.db_name
+}
+
+output "database_master_username" {
+  value = module.database.master_username
+}
+
+output "database_master_user_secret_arn" {
+  value = module.database.master_user_secret_arn
+}
+
+output "redis_primary_endpoint" {
+  value = module.redis.primary_endpoint
+}
+
+output "redis_port" {
+  value = module.redis.port
+}
+
+output "redis_auth_token_secret_arn" {
+  value = aws_secretsmanager_secret.redis_auth_token.arn
 }
 
 output "jwt_secret_arn" {

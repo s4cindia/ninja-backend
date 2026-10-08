@@ -43,16 +43,31 @@ module "networking" {
 resource "random_password" "jwt_secret" {
   length  = 64
   special = false
+
+  # Regenerating this would invalidate every issued JWT in one shot --
+  # require a deliberate `terraform state rm`/import, never an accidental
+  # destroy/replace (CodeRabbit catch on PR #643's first version).
+  lifecycle {
+    prevent_destroy = true
+  }
 }
 
 resource "random_password" "jwt_refresh_secret" {
   length  = 64
   special = false
+
+  lifecycle {
+    prevent_destroy = true
+  }
 }
 
 resource "random_password" "download_token_secret" {
   length  = 64
   special = false
+
+  lifecycle {
+    prevent_destroy = true
+  }
 }
 
 # ElastiCache AUTH tokens have their own character-set restriction (no
@@ -62,6 +77,10 @@ resource "random_password" "redis_auth_token" {
   length           = 64
   special          = true
   override_special = "-_."
+
+  lifecycle {
+    prevent_destroy = true
+  }
 }
 
 module "database" {
@@ -82,38 +101,24 @@ module "redis" {
   auth_token         = random_password.redis_auth_token.result
 }
 
-# Composed connection strings -- Prisma/ioredis each read ONE plain
-# connection-string env var, not separate host/port/user/password fields,
-# so these assemble what the AWS-managed RDS secret and the generated Redis
-# auth token produced above into the exact format the app expects.
-locals {
-  database_url = "postgresql://${module.database.master_username}:${urlencode(module.database.master_password)}@${module.database.endpoint}:${module.database.port}/${module.database.db_name}"
-  # rediss:// (not redis://) -- transit_encryption_enabled on the replication
-  # group above requires TLS; src/lib/redis.ts and src/queues/index.ts both
-  # already auto-detect this scheme and enable TLS accordingly.
-  redis_url = "rediss://:${urlencode(random_password.redis_auth_token.result)}@${module.redis.primary_endpoint}:${module.redis.port}"
-}
-
-resource "aws_secretsmanager_secret" "database_url" {
-  name = "ninja/production/database-url"
-}
-
-resource "aws_secretsmanager_secret_version" "database_url" {
-  secret_id     = aws_secretsmanager_secret.database_url.id
-  secret_string = local.database_url
-}
-
-resource "aws_secretsmanager_secret" "redis_url" {
-  name = "ninja/production/redis-url"
-}
-
-resource "aws_secretsmanager_secret_version" "redis_url" {
-  secret_id     = aws_secretsmanager_secret.redis_url.id
-  secret_string = local.redis_url
-}
+# No composed DATABASE_URL/REDIS_URL secret is created here (removed after
+# a CodeRabbit catch on PR #643's first version): Phase 5's ECS task
+# definition assembles each connection string at container start from
+# individually-injected, non-secret pieces (host/port/dbname/username below,
+# all plain outputs) plus the one genuinely secret piece per data store
+# (RDS: AWS's own managed-secret ARN with a JSON-key selector; Redis: the
+# token secret below) -- so no plaintext credential ever has to pass through
+# Terraform state as a composed string.
 
 resource "aws_secretsmanager_secret" "jwt_secret" {
   name = "ninja/production/jwt-secret"
+  # Explicit (matches the AWS default, but documents intent): a
+  # fat-fingered delete is recoverable for 30 days rather than immediate.
+  recovery_window_in_days = 30
+
+  lifecycle {
+    prevent_destroy = true
+  }
 }
 
 resource "aws_secretsmanager_secret_version" "jwt_secret" {
@@ -122,7 +127,12 @@ resource "aws_secretsmanager_secret_version" "jwt_secret" {
 }
 
 resource "aws_secretsmanager_secret" "jwt_refresh_secret" {
-  name = "ninja/production/jwt-refresh-secret"
+  name                    = "ninja/production/jwt-refresh-secret"
+  recovery_window_in_days = 30
+
+  lifecycle {
+    prevent_destroy = true
+  }
 }
 
 resource "aws_secretsmanager_secret_version" "jwt_refresh_secret" {
@@ -131,7 +141,12 @@ resource "aws_secretsmanager_secret_version" "jwt_refresh_secret" {
 }
 
 resource "aws_secretsmanager_secret" "download_token_secret" {
-  name = "ninja/production/download-token-secret"
+  name                    = "ninja/production/download-token-secret"
+  recovery_window_in_days = 30
+
+  lifecycle {
+    prevent_destroy = true
+  }
 }
 
 resource "aws_secretsmanager_secret_version" "download_token_secret" {
@@ -139,9 +154,28 @@ resource "aws_secretsmanager_secret_version" "download_token_secret" {
   secret_string = random_password.download_token_secret.result
 }
 
+resource "aws_secretsmanager_secret" "redis_auth_token" {
+  name                    = "ninja/production/redis-auth-token"
+  recovery_window_in_days = 30
+
+  lifecycle {
+    prevent_destroy = true
+  }
+}
+
+resource "aws_secretsmanager_secret_version" "redis_auth_token" {
+  secret_id     = aws_secretsmanager_secret.redis_auth_token.id
+  secret_string = random_password.redis_auth_token.result
+}
+
 # Reused (not duplicated) from staging -- per the user's own decision to
 # share the same Anthropic/Gemini keys across both environments. Referenced
 # by name via data source, not copied into a new secret.
+#
+# Cross-environment dependency, flagged explicitly (CodeRabbit catch on PR
+# #643's first version): production's `terraform plan`/`apply` will FAIL if
+# either staging secret is ever renamed or deleted. Keep both retained in
+# staging for as long as production depends on them here.
 data "aws_secretsmanager_secret" "anthropic" {
   name = "ninja/staging/anthropic"
 }
