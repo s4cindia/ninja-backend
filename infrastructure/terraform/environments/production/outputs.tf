@@ -107,3 +107,7 @@ output "ecs_web_service_name" {
 output "ecs_worker_service_name" {
   value = module.ecs_worker.service_name
 }
+
+output "cloudfront_domain_name" {
+  value = module.cloudfront.domain_name
+}
