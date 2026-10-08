@@ -134,7 +134,10 @@ resource "aws_security_group" "alb" {
   # same change onto them would risk the identical deadlock against
   # production data stores that are actually serving traffic.
   name_prefix = "ninja-${var.environment}-alb-sg-"
-  description = "Ingress from CloudFront's edge network only (443/80); egress to ECS tasks only."
+  # No apostrophe (real AWS error on the first live apply attempt: EC2
+  # security group descriptions only allow a-zA-Z0-9. _-:/()#,@[]+=&;{}!$*
+  # -- "CloudFront's" isn't valid).
+  description = "Ingress from the CloudFront edge network only (443/80); egress to ECS tasks only."
   vpc_id      = aws_vpc.this.id
 
   lifecycle {
