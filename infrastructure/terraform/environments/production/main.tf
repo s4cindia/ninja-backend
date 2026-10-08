@@ -331,3 +331,11 @@ module "ecs_worker" {
   extra_environment = local.app_plain_environment
   secrets           = local.app_secrets
 }
+
+# --- Phase 6: CloudFront ---
+module "cloudfront" {
+  source = "../../modules/cloudfront"
+
+  environment  = "production"
+  alb_dns_name = module.alb.alb_dns_name
+}
