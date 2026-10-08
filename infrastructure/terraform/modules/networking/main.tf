@@ -137,20 +137,24 @@ resource "aws_security_group" "alb" {
   # No apostrophe (real AWS error on the first live apply attempt: EC2
   # security group descriptions only allow a-zA-Z0-9. _-:/()#,@[]+=&;{}!$*
   # -- "CloudFront's" isn't valid).
-  description = "Ingress from the CloudFront edge network only (443/80); egress to ECS tasks only."
+  description = "Ingress from the CloudFront edge network only (80); egress to ECS tasks only."
   vpc_id      = aws_vpc.this.id
 
   lifecycle {
     create_before_destroy = true
   }
 
-  ingress {
-    description     = "HTTPS from CloudFront edges only"
-    from_port       = 443
-    to_port         = 443
-    protocol        = "tcp"
-    prefix_list_ids = [data.aws_ec2_managed_prefix_list.cloudfront_origin_facing.id]
-  }
+  # No port 443 rule: real AWS error on the actual apply --
+  # RulesPerSecurityGroupLimitExceeded. A security-group rule referencing a
+  # managed prefix list counts EVERY entry in that list toward the group's
+  # rule quota, not just "1 rule" -- the CloudFront origin-facing list has
+  # 46 real entries (confirmed via `aws ec2 get-managed-prefix-list-entries`
+  # against the real account), so referencing it on both 80 and 443 needed
+  # 92 slots against AWS's default 60-per-group limit. There's no HTTPS
+  # listener yet anyway (Phase 4 built HTTP only, per the no-custom-domain
+  # decision), so this rule was unused dead weight. Re-add it (and request
+  # a quota increase first) if/when a custom domain + ACM cert + HTTPS
+  # listener are added later.
 
   ingress {
     description     = "HTTP from CloudFront edges only"
