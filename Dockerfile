@@ -1,14 +1,33 @@
 # syntax=docker/dockerfile:1.4
 
+# Base images are pinned to the ECR Public Gallery's mirror of the
+# official Docker Hub images, by exact digest. GitHub-hosted runners
+# share IP ranges across huge numbers of unrelated orgs, so Docker Hub's
+# anonymous-pull rate limit (shared per-IP, not per-repo) gets exhausted
+# by OTHER tenants' traffic -- this has twice failed a real deploy with
+# "429 Too Many Requests" resolving docker.io/library/node. ECR Public
+# Gallery (https://gallery.ecr.aws/docker/library/node) is AWS's verified,
+# bit-identical mirror of the same images, specifically to route around
+# this; it isn't subject to Docker Hub's shared-IP throttling. Pinning to
+# a digest (not just switching registries) additionally lets BuildKit
+# skip the remote manifest-resolution round-trip entirely once the layer
+# cache is warm -- a floating tag forces a "check for updates" network
+# call on every build even with a warm cache, which is what let the
+# Docker Hub outage affect an otherwise-cached build in the first place.
+#
+# To bump the Node version: `docker buildx imagetools inspect
+# public.ecr.aws/docker/library/node:<new-tag>` and copy the top-level
+# multi-arch index Digest (not a single-platform manifest digest).
+
 # EPUBCheck download stage (cacheable - rarely changes)
-FROM node:20-alpine AS epubcheck
+FROM public.ecr.aws/docker/library/node:20-alpine@sha256:fb4cd12c85ee03686f6af5362a0b0d56d50c58a04632e6c0fb8363f609372293 AS epubcheck
 RUN apk add --no-cache wget unzip \
     && wget -q https://github.com/w3c/epubcheck/releases/download/v5.1.0/epubcheck-5.1.0.zip -O /tmp/epubcheck.zip \
     && unzip -q /tmp/epubcheck.zip -d /epubcheck \
     && rm /tmp/epubcheck.zip
 
 # Build stage - compile TypeScript
-FROM node:20-alpine AS builder
+FROM public.ecr.aws/docker/library/node:20-alpine@sha256:fb4cd12c85ee03686f6af5362a0b0d56d50c58a04632e6c0fb8363f609372293 AS builder
 WORKDIR /app
 
 # Copy package files first (better layer caching)
@@ -26,7 +45,7 @@ COPY src ./src
 RUN npm run build
 
 # Production stage - use Debian-based image for Prisma/OpenSSL compatibility
-FROM node:20-slim AS production
+FROM public.ecr.aws/docker/library/node:20-slim@sha256:2cf067cfed83d5ea958367df9f966191a942351a2df77d6f0193e162b5febfc0 AS production
 WORKDIR /app
 
 # Install system dependencies (single layer, sorted for cache efficiency)
