@@ -23,6 +23,9 @@ vi.mock('../../../src/services/storage/file-storage.service', () => ({
 vi.mock('../../../src/services/pdf/axes4-pac.service', () => ({
   axes4PacService: { validate: vi.fn(), isAvailable: vi.fn() },
 }));
+vi.mock('../../../src/services/pdf/axes4-quota.service', () => ({
+  axes4QuotaService: { getStatus: vi.fn() },
+}));
 vi.mock('../../../src/lib/logger', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }));
@@ -30,6 +33,7 @@ vi.mock('../../../src/lib/logger', () => ({
 import prisma from '../../../src/lib/prisma';
 import { fileStorageService } from '../../../src/services/storage/file-storage.service';
 import { axes4PacService } from '../../../src/services/pdf/axes4-pac.service';
+import { axes4QuotaService } from '../../../src/services/pdf/axes4-quota.service';
 import { logger } from '../../../src/lib/logger';
 import { pacReportController } from '../../../src/controllers/pac-report.controller';
 import type { AuthenticatedRequest } from '../../../src/types/authenticated-request';
@@ -206,6 +210,66 @@ describe('PacReportController.getLiveReport', () => {
     const res = makeRes();
 
     await pacReportController.getLiveReport(makeReq(), res);
+
+    expect(res.status).toHaveBeenCalledWith(500);
+    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ error: expect.objectContaining({ code: 'INTERNAL_ERROR' }) }));
+  });
+});
+
+describe('PacReportController.getQuotaStatus', () => {
+  it('returns 401 when the request has no authenticated tenant', async () => {
+    const res = makeRes();
+
+    await pacReportController.getQuotaStatus(makeReq({ user: undefined } as any), res);
+
+    expect(res.status).toHaveBeenCalledWith(401);
+    expect(axes4QuotaService.getStatus).not.toHaveBeenCalled();
+  });
+
+  it('returns configured:false without calling getStatus when axes4 is not configured', async () => {
+    vi.mocked(axes4PacService.isAvailable).mockReturnValue(false);
+    const res = makeRes();
+
+    await pacReportController.getQuotaStatus(makeReq(), res);
+
+    expect(axes4QuotaService.getStatus).not.toHaveBeenCalled();
+    expect(res.status).toHaveBeenCalledWith(200);
+    expect(res.json).toHaveBeenCalledWith({
+      success: true,
+      data: { configured: false, pagesUsedThisPeriod: 0, pagesLimitThisPeriod: 0, periodResetAt: null },
+    });
+  });
+
+  it('returns the real quota snapshot when axes4 is configured', async () => {
+    vi.mocked(axes4PacService.isAvailable).mockReturnValue(true);
+    const periodResetAt = new Date('2026-11-01T00:00:00.000Z');
+    vi.mocked(axes4QuotaService.getStatus).mockResolvedValue({
+      pagesUsedThisPeriod: 42,
+      pagesLimitThisPeriod: 1000,
+      periodResetAt,
+    });
+    const res = makeRes();
+
+    await pacReportController.getQuotaStatus(makeReq(), res);
+
+    expect(res.status).toHaveBeenCalledWith(200);
+    expect(res.json).toHaveBeenCalledWith({
+      success: true,
+      data: {
+        configured: true,
+        pagesUsedThisPeriod: 42,
+        pagesLimitThisPeriod: 1000,
+        periodResetAt,
+      },
+    });
+  });
+
+  it('returns 500 INTERNAL_ERROR when getStatus throws unexpectedly', async () => {
+    vi.mocked(axes4PacService.isAvailable).mockReturnValue(true);
+    vi.mocked(axes4QuotaService.getStatus).mockRejectedValue(new Error('db down'));
+    const res = makeRes();
+
+    await pacReportController.getQuotaStatus(makeReq(), res);
 
     expect(res.status).toHaveBeenCalledWith(500);
     expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ error: expect.objectContaining({ code: 'INTERNAL_ERROR' }) }));
