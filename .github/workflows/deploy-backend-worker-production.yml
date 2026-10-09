@@ -1,4 +1,9 @@
-name: Deploy Backend to Production
+name: Deploy Backend Worker to Production
+
+# Mirrors deploy-backend-production.yml exactly, for the worker service --
+# same image, same ECR repo (not environment-specific), just a different
+# ECS service/task family and container name. See that workflow's own
+# comments for the full rationale on each step.
 
 on:
   workflow_dispatch:
@@ -11,15 +16,9 @@ on:
 env:
   AWS_REGION: ap-south-1
   ECR_REPOSITORY: ninja-backend
-  # Real resource names, as actually created by Terraform (Phase 5) -- the
-  # old values here (ninja-cluster / ninja-backend-service-prod /
-  # ninja-backend-task-prod) were leftovers from an abandoned Nov 2025
-  # attempt that never actually provisioned anything (confirmed via direct
-  # AWS audit: none of those resources existed). This workflow would have
-  # failed immediately if run as-is.
   ECS_CLUSTER: ninja-production-cluster
-  ECS_SERVICE: ninja-production-web-service
-  TASK_DEFINITION_FAMILY: ninja-production-web-task
+  ECS_SERVICE: ninja-production-worker-service
+  TASK_DEFINITION_FAMILY: ninja-production-worker-task
 
 jobs:
   validate:
@@ -35,10 +34,10 @@ jobs:
       - name: Confirm production deployment
         run: |
           echo "✅ Production deployment confirmed"
-          echo "🚀 Deploying to Production environment"
+          echo "🚀 Deploying worker to Production environment"
 
   build-and-deploy:
-    name: Build and Deploy to Production
+    name: Build and Deploy Worker to Production
     needs: validate
     runs-on: ubuntu-latest
     environment: production
@@ -60,7 +59,6 @@ jobs:
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
 
-      # Docker BuildKit with GitHub Actions cache (saves ~2-3 min)
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
@@ -92,9 +90,7 @@ jobs:
         uses: aws-actions/amazon-ecs-render-task-definition@v1
         with:
           task-definition: task-definition.json
-          # Matches modules/ecs-service's real container name
-          # ("ninja-backend-${service_role}"), not the old "ninja-backend".
-          container-name: ninja-backend-web
+          container-name: ninja-backend-worker
           image: ${{ steps.image-output.outputs.image }}
 
       - name: Deploy to Amazon ECS
@@ -107,7 +103,7 @@ jobs:
 
       - name: Deployment summary
         run: |
-          echo "## 🚀 Production Deployment Complete" >> $GITHUB_STEP_SUMMARY
+          echo "## 🚀 Production Worker Deployment Complete" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "| Item | Value |" >> $GITHUB_STEP_SUMMARY
           echo "|------|-------|" >> $GITHUB_STEP_SUMMARY
