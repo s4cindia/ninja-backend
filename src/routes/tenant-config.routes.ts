@@ -122,4 +122,31 @@ router.patch(
   tenantConfigController.updatePrhConfig.bind(tenantConfigController)
 );
 
+/**
+ * GET /api/v1/tenant/config/axes4
+ * Get the axes4 PAC Cloud tenant toggle (the enable/disable flag +
+ * audit trail of last-flipped userId / timestamp). Returns
+ * { enabled: false, enabledBy: null, enabledAt: null } when never
+ * touched — disabled by default.
+ */
+router.get(
+  '/axes4',
+  authenticate,
+  tenantConfigController.getAxes4Config.bind(tenantConfigController)
+);
+
+/**
+ * PATCH /api/v1/tenant/config/axes4
+ * Update the axes4 PAC Cloud tenant toggle. ADMIN-ONLY — this gates a
+ * paid, per-page-billed feature. Body: { enabled: boolean }. Audit
+ * trail (enabledBy / enabledAt) is server-stamped from req.user.id and
+ * the current time.
+ */
+router.patch(
+  '/axes4',
+  authenticate,
+  authorize('ADMIN'),
+  tenantConfigController.updateAxes4Config.bind(tenantConfigController)
+);
+
 export default router;
