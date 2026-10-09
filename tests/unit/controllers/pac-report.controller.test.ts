@@ -26,6 +26,9 @@ vi.mock('../../../src/services/pdf/axes4-pac.service', () => ({
 vi.mock('../../../src/services/pdf/axes4-quota.service', () => ({
   axes4QuotaService: { getStatus: vi.fn() },
 }));
+vi.mock('../../../src/services/pdf/axes4-tenant-config.service', () => ({
+  isAxes4EnabledForTenant: vi.fn(),
+}));
 vi.mock('../../../src/lib/logger', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }));
@@ -34,6 +37,7 @@ import prisma from '../../../src/lib/prisma';
 import { fileStorageService } from '../../../src/services/storage/file-storage.service';
 import { axes4PacService } from '../../../src/services/pdf/axes4-pac.service';
 import { axes4QuotaService } from '../../../src/services/pdf/axes4-quota.service';
+import { isAxes4EnabledForTenant } from '../../../src/services/pdf/axes4-tenant-config.service';
 import { logger } from '../../../src/lib/logger';
 import { pacReportController } from '../../../src/controllers/pac-report.controller';
 import type { AuthenticatedRequest } from '../../../src/types/authenticated-request';
@@ -87,7 +91,8 @@ describe('PacReportController.getLiveReport', () => {
     } as any);
     vi.mocked(fileStorageService.downloadFile).mockResolvedValue(FAKE_BUFFER);
     vi.mocked(axes4PacService.validate).mockResolvedValue({ ran: false, failures: [] });
-    vi.mocked(axes4PacService.isAvailable).mockReturnValue(false);
+    vi.mocked(axes4PacService.isAvailable).mockReturnValue(true);
+    vi.mocked(isAxes4EnabledForTenant).mockResolvedValue(true);
     const res = makeRes();
 
     await pacReportController.getLiveReport(makeReq(), res);
@@ -107,7 +112,8 @@ describe('PacReportController.getLiveReport', () => {
     } as any);
     vi.mocked(fileStorageService.getRemediatedFile).mockResolvedValue(FAKE_BUFFER);
     vi.mocked(axes4PacService.validate).mockResolvedValue({ ran: false, failures: [] });
-    vi.mocked(axes4PacService.isAvailable).mockReturnValue(false);
+    vi.mocked(axes4PacService.isAvailable).mockReturnValue(true);
+    vi.mocked(isAxes4EnabledForTenant).mockResolvedValue(true);
     const res = makeRes();
 
     await pacReportController.getLiveReport(makeReq(), res);
@@ -126,7 +132,8 @@ describe('PacReportController.getLiveReport', () => {
     vi.mocked(fileStorageService.getRemediatedFile).mockRejectedValue(new Error('not found'));
     vi.mocked(fileStorageService.getFile).mockResolvedValue(FAKE_BUFFER);
     vi.mocked(axes4PacService.validate).mockResolvedValue({ ran: false, failures: [] });
-    vi.mocked(axes4PacService.isAvailable).mockReturnValue(false);
+    vi.mocked(axes4PacService.isAvailable).mockReturnValue(true);
+    vi.mocked(isAxes4EnabledForTenant).mockResolvedValue(true);
     const res = makeRes();
 
     await pacReportController.getLiveReport(makeReq(), res);
@@ -173,6 +180,31 @@ describe('PacReportController.getLiveReport', () => {
       success: true,
       data: { ran: false, uaIndex: undefined, failures: [], configured: false, source: 'remediated' },
     });
+    // Real enforcement: when not configured, validate() must never be
+    // called at all -- no axes4 API request, no quota reservation.
+    expect(axes4PacService.validate).not.toHaveBeenCalled();
+  });
+
+  it('returns 200 with ran:false and configured:false when the env has real axes4 credentials but THIS tenant has not enabled it -- does not call validate()', async () => {
+    vi.mocked(prisma.job.findFirst).mockResolvedValue({
+      id: 'job-1',
+      input: { fileName: 'doc.pdf' },
+      output: {},
+    } as any);
+    vi.mocked(fileStorageService.getRemediatedFile).mockResolvedValue(FAKE_BUFFER);
+    vi.mocked(axes4PacService.isAvailable).mockReturnValue(true);
+    vi.mocked(isAxes4EnabledForTenant).mockResolvedValue(false);
+    const res = makeRes();
+
+    await pacReportController.getLiveReport(makeReq(), res);
+
+    expect(isAxes4EnabledForTenant).toHaveBeenCalledWith('tenant-1');
+    expect(axes4PacService.validate).not.toHaveBeenCalled();
+    expect(res.status).toHaveBeenCalledWith(200);
+    expect(res.json).toHaveBeenCalledWith({
+      success: true,
+      data: { ran: false, uaIndex: undefined, failures: [], configured: false, source: 'remediated' },
+    });
   });
 
   it('returns 200 with the real result shape on a successful live check', async () => {
@@ -188,6 +220,7 @@ describe('PacReportController.getLiveReport', () => {
       failures: [{ checkId: 'check-1', description: 'Missing alt text', pageNumber: 3, count: 1 }],
     });
     vi.mocked(axes4PacService.isAvailable).mockReturnValue(true);
+    vi.mocked(isAxes4EnabledForTenant).mockResolvedValue(true);
     const res = makeRes();
 
     await pacReportController.getLiveReport(makeReq(), res);
@@ -240,8 +273,25 @@ describe('PacReportController.getQuotaStatus', () => {
     });
   });
 
+  it('returns configured:false without calling getStatus when the env has real credentials but THIS tenant has not enabled axes4', async () => {
+    vi.mocked(axes4PacService.isAvailable).mockReturnValue(true);
+    vi.mocked(isAxes4EnabledForTenant).mockResolvedValue(false);
+    const res = makeRes();
+
+    await pacReportController.getQuotaStatus(makeReq(), res);
+
+    expect(isAxes4EnabledForTenant).toHaveBeenCalledWith('tenant-1');
+    expect(axes4QuotaService.getStatus).not.toHaveBeenCalled();
+    expect(res.status).toHaveBeenCalledWith(200);
+    expect(res.json).toHaveBeenCalledWith({
+      success: true,
+      data: { configured: false, pagesUsedThisPeriod: 0, pagesLimitThisPeriod: 0, periodResetAt: null },
+    });
+  });
+
   it('returns the real quota snapshot when axes4 is configured', async () => {
     vi.mocked(axes4PacService.isAvailable).mockReturnValue(true);
+    vi.mocked(isAxes4EnabledForTenant).mockResolvedValue(true);
     const periodResetAt = new Date('2026-11-01T00:00:00.000Z');
     vi.mocked(axes4QuotaService.getStatus).mockResolvedValue({
       pagesUsedThisPeriod: 42,
@@ -266,6 +316,7 @@ describe('PacReportController.getQuotaStatus', () => {
 
   it('returns 500 INTERNAL_ERROR when getStatus throws unexpectedly', async () => {
     vi.mocked(axes4PacService.isAvailable).mockReturnValue(true);
+    vi.mocked(isAxes4EnabledForTenant).mockResolvedValue(true);
     vi.mocked(axes4QuotaService.getStatus).mockRejectedValue(new Error('db down'));
     const res = makeRes();
 

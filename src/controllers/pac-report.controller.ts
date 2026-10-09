@@ -12,19 +12,20 @@ import prisma from '../lib/prisma';
 import { pacReportService } from '../services/pdf/pac-report.service';
 import { axes4PacService } from '../services/pdf/axes4-pac.service';
 import { axes4QuotaService } from '../services/pdf/axes4-quota.service';
+import { isAxes4EnabledForTenant } from '../services/pdf/axes4-tenant-config.service';
 import { fileStorageService } from '../services/storage/file-storage.service';
 
 export class PacReportController {
   /**
    * GET /api/v1/pdf/axes4/quota
-   * Returns the current axes4 PAC Cloud page-quota status -- a global
-   * (not per-tenant) ledger, see axes4-quota.service.ts's own doc comment
-   * for why. Lets the frontend show "N of M pages used this period" before
-   * a user opts into a live check, rather than only finding out after a
-   * tryReservePages() refusal. `configured` mirrors the live-check
-   * endpoint's own field so a client can hide the whole quota UI when no
-   * real axes4 credentials exist yet (every environment, until a real
-   * subscription is provisioned).
+   * Returns the current axes4 PAC Cloud page-quota status -- the quota
+   * ledger itself is global (not per-tenant), see axes4-quota.service.ts's
+   * own doc comment for why. Lets the frontend show "N of M pages used
+   * this period" before a user opts into a live check, rather than only
+   * finding out after a tryReservePages() refusal. `configured` mirrors
+   * the live-check endpoint's own field (env credentials present AND this
+   * tenant's admin has opted in -- see axes4-tenant-config.service.ts) so
+   * a client can hide the whole quota UI whenever either is false.
    */
   async getQuotaStatus(req: AuthenticatedRequest, res: Response): Promise<Response> {
     try {
@@ -36,7 +37,9 @@ export class PacReportController {
         });
       }
 
-      const configured = axes4PacService.isAvailable();
+      // Short-circuits the tenant lookup when the env isn't even
+      // configured -- the overwhelmingly common case today.
+      const configured = axes4PacService.isAvailable() && await isAxes4EnabledForTenant(req.user.tenantId);
       if (!configured) {
         return res.status(200).json({
           success: true,
@@ -179,7 +182,15 @@ export class PacReportController {
         });
       }
 
-      const result = await axes4PacService.validate(buffer, fileName);
+      // Real enforcement of the per-tenant toggle happens HERE -- when
+      // disabled, axes4PacService.validate() is never called at all, so
+      // no axes4 API request is made and no local quota reservation is
+      // attempted, not just a cosmetic `configured:false` in the
+      // response. See axes4-tenant-config.service.ts's own header.
+      const configured = axes4PacService.isAvailable() && await isAxes4EnabledForTenant(tenantId);
+      const result = configured
+        ? await axes4PacService.validate(buffer, fileName)
+        : { ran: false as const, failures: [], uaIndex: undefined as number | undefined };
 
       return res.status(200).json({
         success: true,
@@ -187,7 +198,7 @@ export class PacReportController {
           ran: result.ran,
           uaIndex: result.uaIndex,
           failures: result.failures,
-          configured: axes4PacService.isAvailable(),
+          configured,
           source,
         },
       });

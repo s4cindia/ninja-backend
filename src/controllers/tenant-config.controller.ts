@@ -7,6 +7,7 @@ import { logger } from '../lib/logger';
 import { z } from 'zod';
 import type { ExplanationSource } from '../services/acr/explanation-catalog.service';
 import { getPrhConfig, updatePrhConfig } from '../services/prh/prh-config.service';
+import { getAxes4TenantConfig, updateAxes4TenantConfig } from '../services/pdf/axes4-tenant-config.service';
 
 /**
  * Zod schema for workflow configuration updates.
@@ -45,6 +46,16 @@ const DEFAULT_TIME_METRICS_CONFIG = {
  */
 const prhConfigUpdateSchema = z.object({
   aiAltTextEnabled: z.boolean(),
+}).strict();
+
+/**
+ * axes4 PAC Cloud tenant toggle — a single feature flag gating whether
+ * this tenant's users can see/run the paid, per-page-billed axes4 live
+ * check at all. Audit-trail fields (enabledBy/enabledAt) are stamped
+ * server-side, same as PRH's own flag above.
+ */
+const axes4ConfigUpdateSchema = z.object({
+  enabled: z.boolean(),
 }).strict();
 
 const aiRemediationConfigUpdateSchema = z.object({
@@ -587,6 +598,59 @@ export class TenantConfigController {
         success: true,
         data: config,
         message: 'PRH UK configuration updated successfully',
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
+   * Get current axes4 PAC Cloud tenant config (the enable/disable flag
+   * + audit trail of last-flipped userId/timestamp). Returns
+   * { enabled: false, enabledBy: null, enabledAt: null } when the
+   * tenant has never touched the setting — disabled by default (see
+   * axes4-tenant-config.service.ts's own header for why).
+   */
+  async getAxes4Config(req: Request, res: Response, next: NextFunction) {
+    try {
+      if (!req.user) throw AppError.unauthorized('Not authenticated');
+      const config = await getAxes4TenantConfig(req.user.tenantId);
+      res.json({ success: true, data: config });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
+   * Update axes4 PAC Cloud tenant config. Admin-only — this gates a
+   * paid, per-page-billed feature, so turning it on is a deliberate
+   * cost decision, not something any tenant user should flip. The
+   * route is wired with `authorize('ADMIN')` so non-admin requests
+   * 403 before reaching this method; defence-in-depth check repeated
+   * here, same pattern as updatePrhConfig above.
+   */
+  async updateAxes4Config(req: Request, res: Response, next: NextFunction) {
+    try {
+      if (!req.user) throw AppError.unauthorized('Not authenticated');
+      if (req.user.role !== 'ADMIN') {
+        throw AppError.forbidden('Only admins can update axes4 configuration');
+      }
+
+      const validationResult = axes4ConfigUpdateSchema.safeParse(req.body);
+      if (!validationResult.success) {
+        throw AppError.badRequest('Invalid axes4 configuration: ' + validationResult.error.message);
+      }
+
+      const config = await updateAxes4TenantConfig(
+        req.user.tenantId,
+        validationResult.data,
+        req.user.id,
+      );
+
+      res.json({
+        success: true,
+        data: config,
+        message: 'axes4 configuration updated successfully',
       });
     } catch (error) {
       next(error);
