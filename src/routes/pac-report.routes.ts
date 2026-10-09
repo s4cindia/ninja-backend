@@ -14,6 +14,18 @@ import { pacReportController } from '../controllers/pac-report.controller';
 const router = Router();
 
 /**
+ * GET /api/v1/pdf/axes4/quota
+ * Returns the current axes4 PAC Cloud page-quota status. Static route,
+ * registered before the parameterized `/:jobId/...` routes below per this
+ * repo's own convention (static routes before parameterized routes).
+ */
+router.get(
+  '/axes4/quota',
+  authenticate,
+  (req, res) => pacReportController.getQuotaStatus(req, res),
+);
+
+/**
  * GET /api/v1/pdf/:jobId/pac-report
  * Returns the full 137-condition Matterhorn compliance report as JSON.
  */

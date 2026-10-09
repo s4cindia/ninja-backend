@@ -11,9 +11,60 @@ import { logger } from '../lib/logger';
 import prisma from '../lib/prisma';
 import { pacReportService } from '../services/pdf/pac-report.service';
 import { axes4PacService } from '../services/pdf/axes4-pac.service';
+import { axes4QuotaService } from '../services/pdf/axes4-quota.service';
 import { fileStorageService } from '../services/storage/file-storage.service';
 
 export class PacReportController {
+  /**
+   * GET /api/v1/pdf/axes4/quota
+   * Returns the current axes4 PAC Cloud page-quota status -- a global
+   * (not per-tenant) ledger, see axes4-quota.service.ts's own doc comment
+   * for why. Lets the frontend show "N of M pages used this period" before
+   * a user opts into a live check, rather than only finding out after a
+   * tryReservePages() refusal. `configured` mirrors the live-check
+   * endpoint's own field so a client can hide the whole quota UI when no
+   * real axes4 credentials exist yet (every environment, until a real
+   * subscription is provisioned).
+   */
+  async getQuotaStatus(req: AuthenticatedRequest, res: Response): Promise<Response> {
+    try {
+      if (!req.user?.tenantId) {
+        return res.status(401).json({
+          success: false,
+          data: {},
+          error: { code: 'UNAUTHORIZED', message: 'Authentication required', details: null },
+        });
+      }
+
+      const configured = axes4PacService.isAvailable();
+      if (!configured) {
+        return res.status(200).json({
+          success: true,
+          data: { configured: false, pagesUsedThisPeriod: 0, pagesLimitThisPeriod: 0, periodResetAt: null },
+        });
+      }
+
+      const status = await axes4QuotaService.getStatus();
+      return res.status(200).json({
+        success: true,
+        data: {
+          configured: true,
+          pagesUsedThisPeriod: status.pagesUsedThisPeriod,
+          pagesLimitThisPeriod: status.pagesLimitThisPeriod,
+          periodResetAt: status.periodResetAt,
+        },
+      });
+    } catch (err: unknown) {
+      const error = err as Error;
+      logger.error(`[PacReport] getQuotaStatus failed`, error);
+      return res.status(500).json({
+        success: false,
+        data: {},
+        error: { code: 'INTERNAL_ERROR', message: 'Failed to load axes4 quota status', details: null },
+      });
+    }
+  }
+
   /**
    * GET /api/v1/pdf/:jobId/pac-report
    * Returns the full 137-condition PAC-equivalent report as JSON.
