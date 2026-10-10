@@ -1,6 +1,13 @@
 # Reusable ECS service module -- parameterized for web vs worker (same
 # shape staging already uses: one Docker image, PROCESS_ROLE env var
 # switches behavior, see src/index.ts). Used twice from the root module.
+# Also reused for a third, unrelated service (ACE microservice, Phase 8)
+# purely for its generic ECS-service plumbing -- see service_role's and
+# container_name's own doc comments in variables.tf.
+
+locals {
+  container_name = coalesce(var.container_name, "ninja-backend-${var.service_role}")
+}
 
 resource "aws_cloudwatch_log_group" "this" {
   name              = "/ecs/ninja-${var.environment}-${var.service_role}"
@@ -22,7 +29,7 @@ resource "aws_ecs_task_definition" "this" {
 
   container_definitions = jsonencode([
     {
-      name        = "ninja-backend-${var.service_role}"
+      name        = local.container_name
       image       = var.image
       essential   = true
       stopTimeout = 120
@@ -80,7 +87,7 @@ resource "aws_ecs_service" "this" {
     for_each = var.attach_to_alb ? [1] : []
     content {
       target_group_arn = var.target_group_arn
-      container_name   = "ninja-backend-${var.service_role}"
+      container_name   = local.container_name
       container_port   = var.app_port
     }
   }

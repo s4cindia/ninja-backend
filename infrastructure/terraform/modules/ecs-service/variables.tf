@@ -3,11 +3,11 @@ variable "environment" {
 }
 
 variable "service_role" {
-  description = "'web' or 'worker' -- becomes the PROCESS_ROLE env var and names resources (matches src/index.ts's own PROCESS_ROLE switch)."
+  description = "'web' or 'worker' -- becomes the PROCESS_ROLE env var and names resources (matches src/index.ts's own PROCESS_ROLE switch). 'ace' is a third, unrelated service (the ACE microservice, Phase 8) built from this same module purely for its generic ECS-service plumbing -- its own image doesn't read PROCESS_ROLE at all, the value is just an unused, harmless env var for that service."
   type        = string
   validation {
-    condition     = contains(["web", "worker"], var.service_role)
-    error_message = "service_role must be \"web\" or \"worker\"."
+    condition     = contains(["web", "worker", "ace"], var.service_role)
+    error_message = "service_role must be \"web\", \"worker\", or \"ace\"."
   }
 }
 
@@ -61,6 +61,12 @@ variable "app_port" {
 
 variable "s3_bucket_name" {
   type = string
+}
+
+variable "container_name" {
+  description = "Defaults to \"ninja-backend-<service_role>\" (web/worker's real image/app identity). Override for a service_role that isn't actually ninja-backend's own image -- e.g. \"ace\" is a separate microservice's image, so its container shouldn't be named as if it were a ninja-backend variant."
+  type        = string
+  default     = null
 }
 
 variable "secrets" {
