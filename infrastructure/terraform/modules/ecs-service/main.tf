@@ -48,7 +48,13 @@ resource "aws_ecs_task_definition" "this" {
       )
       secrets = var.secrets
       healthCheck = {
-        command     = ["CMD-SHELL", "curl -f http://localhost:${var.app_port}/health || exit 1"]
+        # wget, not curl -- a real production incident (ACE's task cycling
+        # every ~12 min, "failed container health checks") traced back to
+        # this: ACE's own image has wget but not curl, so this command
+        # failed with "command not found" every single check. wget is
+        # confirmed installed in both ninja-backend's and ACE's images, so
+        # this is safe for all three services built from this module.
+        command     = ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:${var.app_port}/health || exit 1"]
         interval    = 60
         timeout     = 15
         retries     = 10
