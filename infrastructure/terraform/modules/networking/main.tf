@@ -203,6 +203,29 @@ resource "aws_security_group" "ecs_tasks" {
   }
 }
 
+# Standalone rule resource, not an inline block on aws_security_group.alb --
+# ecs_tasks's own ingress rule above already references aws_security_group.
+# alb.id, so an inline block here referencing aws_security_group.ecs_tasks.id
+# back would make the two security groups depend on each other and deadlock
+# Terraform's graph. A separate rule resource breaks the cycle: it depends on
+# both already-existing security groups without either SG RESOURCE itself
+# depending on the other.
+#
+# Needed for Phase 8's ACE routing: ninja-backend calls http://<alb-dns>/ace
+# (ACE_SERVICE_URL) directly from inside the VPC, not via CloudFront -- the
+# alb security group's CloudFront-only ingress rule above would otherwise
+# silently drop that request before it ever reached the listener/target-group
+# routing that's supposed to forward it to ACE.
+resource "aws_security_group_rule" "alb_ingress_from_ecs_tasks" {
+  type                     = "ingress"
+  from_port                = 80
+  to_port                  = 80
+  protocol                 = "tcp"
+  security_group_id        = aws_security_group.alb.id
+  source_security_group_id = aws_security_group.ecs_tasks.id
+  description              = "HTTP from ninja-backend itself (internal /ace routing)"
+}
+
 resource "aws_security_group" "rds" {
   name        = "ninja-${var.environment}-rds-sg"
   description = "Postgres ingress from ECS tasks only."

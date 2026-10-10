@@ -361,6 +361,20 @@ module "cloudfront" {
 # load balancer -- module.alb's http_listener_arn output exists specifically
 # for this (see modules/alb/outputs.tf's own comment), mirroring staging's
 # real ninja-alb-staging path-routing pattern exactly.
+#
+# ninja-backend calls this over plain HTTP (ACE_SERVICE_URL above), not
+# HTTPS -- a deliberate continuation of Phase 4's own decision, not a new
+# risk introduced here: the ALB has no HTTPS listener at all (CloudFront
+# terminates the public HTTPS connection with its own certificate and talks
+# to the ALB over plain HTTP internally -- modules/alb/main.tf's own
+# comment). This /ace hop is the same VPC-internal, CloudFront-free trust
+# boundary every other backend<->ALB call in this environment already uses.
+#
+# This internal call needs its own security-group rule to even reach the
+# ALB at all -- see modules/networking/main.tf's new
+# aws_security_group_rule.alb_ingress_from_ecs_tasks (the ALB's existing
+# ingress rule only allows CloudFront's own edge network, which this call
+# does not come from).
 
 resource "aws_ecr_repository" "ace" {
   name                 = "ace-microservice"
