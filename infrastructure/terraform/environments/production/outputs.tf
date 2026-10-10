@@ -117,7 +117,7 @@ output "cloudfront_domain_name" {
 # the user's own docker push and the ninja-production-deploy IAM-policy
 # widening step -- both run outside Terraform, see the plan's own notes.
 output "ace_ecr_repository_url" {
-  value = aws_ecr_repository.ace.repository_url
+  value = data.aws_ecr_repository.ace.repository_url
 }
 
 output "ace_service_name" {

@@ -349,9 +349,10 @@ module "cloudfront" {
 # --- Phase 8: ACE microservice (EPUB accessibility checker) ---
 #
 # Small, separate service (own repo, own image -- C:\Users\avrve\projects\
-# ace-microservice) -- not ninja-backend's own image, so it gets its own
-# ECR repo, dedicated security group, and dedicated minimal IAM roles
-# rather than sharing web/worker's. ACE's own design has no database or
+# ace-microservice) -- not ninja-backend's own image, so it gets a
+# dedicated security group and dedicated minimal IAM roles rather than
+# sharing web/worker's (its ECR repo IS shared with staging -- see the data
+# source below). ACE's own design has no database or
 # secrets dependency at all ("No Secrets" per its staging deployment guide),
 # so reusing the shared execution/task roles would hand it GetSecretValue
 # on all 7 production secrets and S3 read/write/delete it never uses --
@@ -376,17 +377,14 @@ module "cloudfront" {
 # ingress rule only allows CloudFront's own edge network, which this call
 # does not come from).
 
-resource "aws_ecr_repository" "ace" {
-  name                 = "ace-microservice"
-  image_tag_mutability = "MUTABLE"
-
-  image_scanning_configuration {
-    scan_on_push = true
-  }
-
-  tags = {
-    Name = "ace-microservice"
-  }
+# Real AWS error on the actual apply: this repo already exists --
+# ECR repositories are account+region scoped, not per-environment, same as
+# ninja-backend's own ECR repo (confirmed in the Phase 0 audit: "ECR repos
+# are NOT environment-specific... reuse as-is"). This is staging's own real
+# ace-microservice repo; production reuses it rather than creating a
+# duplicate, exactly like ninja-backend's shared image already does.
+data "aws_ecr_repository" "ace" {
+  name = "ace-microservice"
 }
 
 resource "aws_security_group" "ace_ecs" {
@@ -504,7 +502,7 @@ module "ecs_ace" {
   cpu           = 1024
   memory        = 2048
   desired_count = 1
-  image         = "${aws_ecr_repository.ace.repository_url}:latest"
+  image         = "${data.aws_ecr_repository.ace.repository_url}:latest"
   app_port      = 3001
   # ACE's own image runs via its own CMD (a start.sh that launches Xvfb then
   # node dist/index.js) -- no DB/Redis composition needed, unlike web/worker.
