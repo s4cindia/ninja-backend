@@ -29,14 +29,16 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 // real code called it through `tx` or directly. vi.hoisted is required here
 // (not just naming these `mock*`) since vi.mock's factory is hoisted above
 // regular top-level const declarations.
-const { mockComparisonTrialUpdateMany, mockQueryRaw } = vi.hoisted(() => ({
+const { mockComparisonTrialUpdateMany, mockPdfAutoRemediationRunUpdateMany, mockQueryRaw } = vi.hoisted(() => ({
   mockComparisonTrialUpdateMany: vi.fn(),
+  mockPdfAutoRemediationRunUpdateMany: vi.fn(),
   mockQueryRaw: vi.fn(),
 }));
 
 vi.mock('../../../../src/lib/prisma', () => ({
   default: {
     comparisonTrial: { findUnique: vi.fn(), update: vi.fn(), updateMany: mockComparisonTrialUpdateMany },
+    pdfAutoRemediationRun: { findUnique: vi.fn(), update: vi.fn(), updateMany: mockPdfAutoRemediationRunUpdateMany },
     job: { findUnique: vi.fn(), update: vi.fn() },
     aiAnalysis: { updateMany: vi.fn(), count: vi.fn(), deleteMany: vi.fn() },
     $queryRaw: mockQueryRaw,
@@ -44,6 +46,7 @@ vi.mock('../../../../src/lib/prisma', () => ({
       fn({
         $queryRaw: mockQueryRaw,
         comparisonTrial: { updateMany: mockComparisonTrialUpdateMany },
+        pdfAutoRemediationRun: { updateMany: mockPdfAutoRemediationRunUpdateMany },
       }),
   },
 }));
@@ -56,7 +59,7 @@ vi.mock('../../../../src/lib/logger', () => ({
 }));
 
 import prisma from '../../../../src/lib/prisma';
-import { autoRemediationLoopService, ComparisonTrialAutoRemediationDriver } from '../../../../src/services/pdf/auto-remediation-loop.service';
+import { autoRemediationLoopService, ComparisonTrialAutoRemediationDriver, JobAutoRemediationDriver } from '../../../../src/services/pdf/auto-remediation-loop.service';
 import { aiAnalysisService } from '../../../../src/services/pdf/ai-analysis.service';
 import { pdfReauditService } from '../../../../src/services/pdf/pdf-reaudit.service';
 import { remediationCycleLockService } from '../../../../src/services/pdf/remediation-cycle-lock.service';
@@ -66,6 +69,18 @@ function makeTrial(overrides: Record<string, unknown> = {}) {
     id: 'trial-1',
     ninjaJobId: 'job-1',
     mode: 'auto',
+    autoMaxRounds: 10,
+    autoCostLimitUsd: 2.0,
+    autoStopRequested: false,
+    autoColorContrastMode: null,
+    ...overrides,
+  };
+}
+
+function makeRun(overrides: Record<string, unknown> = {}) {
+  return {
+    id: 'run-1',
+    jobId: 'job-1',
     autoMaxRounds: 10,
     autoCostLimitUsd: 2.0,
     autoStopRequested: false,
@@ -833,6 +848,176 @@ describe('ComparisonTrialAutoRemediationDriver', () => {
 
     expect(prisma.comparisonTrial.update).toHaveBeenCalledWith({
       where: { id: 'trial-1' },
+      data: { autoStatus: 'stopped', autoStopReason: 'converged', autoStopRequested: false, autoStoppedAt: stoppedAt },
+    });
+  });
+});
+
+// The production, non-trial path's own orphan-recovery -- a direct
+// structural mirror of reconcileIfOrphaned above, targeting
+// PdfAutoRemediationRun instead of ComparisonTrial.
+describe('autoRemediationLoopService.reconcileIfOrphanedJobRun', () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  it('does nothing when the run is not marked running', async () => {
+    vi.mocked(prisma.pdfAutoRemediationRun.findUnique).mockResolvedValue(makeRun({ autoStatus: 'stopped' }) as any);
+
+    await autoRemediationLoopService.reconcileIfOrphanedJobRun('run-1');
+
+    expect(remediationCycleLockService.getLockStatus).not.toHaveBeenCalled();
+    expect(prisma.pdfAutoRemediationRun.updateMany).not.toHaveBeenCalled();
+  });
+
+  it('leaves a genuinely still-running loop alone -- fast-path skips the transaction entirely', async () => {
+    vi.mocked(prisma.pdfAutoRemediationRun.findUnique).mockResolvedValue(makeRun({ autoStatus: 'running' }) as any);
+    vi.mocked(remediationCycleLockService.getLockStatus).mockResolvedValue({ inProgress: true, source: 'auto_loop' } as any);
+
+    await autoRemediationLoopService.reconcileIfOrphanedJobRun('run-1');
+
+    expect(remediationCycleLockService.getLockStatus).toHaveBeenCalledWith('job-1');
+    expect(mockQueryRaw).not.toHaveBeenCalled();
+    expect(prisma.pdfAutoRemediationRun.updateMany).not.toHaveBeenCalled();
+  });
+
+  it("marks an orphaned run 'stopped'/'error' when the row-locked re-check confirms the lock is genuinely free", async () => {
+    vi.mocked(prisma.pdfAutoRemediationRun.findUnique).mockResolvedValue(makeRun({ autoStatus: 'running' }) as any);
+    vi.mocked(remediationCycleLockService.getLockStatus).mockResolvedValue({ inProgress: false } as any);
+    mockQueryRaw.mockResolvedValue([{ remediationCycleLockedAt: null }]);
+    mockPdfAutoRemediationRunUpdateMany.mockResolvedValue({ count: 1 } as any);
+
+    await autoRemediationLoopService.reconcileIfOrphanedJobRun('run-1');
+
+    expect(mockQueryRaw).toHaveBeenCalled();
+    expect(prisma.pdfAutoRemediationRun.updateMany).toHaveBeenCalledWith({
+      where: { id: 'run-1', autoStatus: 'running' },
+      data: { autoStatus: 'stopped', autoStopReason: 'error', autoStopRequested: false, autoStoppedAt: expect.any(Date) },
+    });
+  });
+
+  it("marks an orphaned run 'stopped'/'error' when the row-locked re-check confirms the lock is stale", async () => {
+    vi.mocked(prisma.pdfAutoRemediationRun.findUnique).mockResolvedValue(makeRun({ autoStatus: 'running' }) as any);
+    vi.mocked(remediationCycleLockService.getLockStatus).mockResolvedValue({ inProgress: false } as any);
+    mockQueryRaw.mockResolvedValue([{ remediationCycleLockedAt: new Date(Date.now() - 30 * 60 * 1000) }]);
+    mockPdfAutoRemediationRunUpdateMany.mockResolvedValue({ count: 1 } as any);
+
+    await autoRemediationLoopService.reconcileIfOrphanedJobRun('run-1');
+
+    expect(prisma.pdfAutoRemediationRun.updateMany).toHaveBeenCalledWith({
+      where: { id: 'run-1', autoStatus: 'running' },
+      data: { autoStatus: 'stopped', autoStopReason: 'error', autoStopRequested: false, autoStoppedAt: expect.any(Date) },
+    });
+  });
+
+  it('backs off without writing when the row lock reveals a concurrent run acquired it while waiting', async () => {
+    vi.mocked(prisma.pdfAutoRemediationRun.findUnique).mockResolvedValue(makeRun({ autoStatus: 'running' }) as any);
+    vi.mocked(remediationCycleLockService.getLockStatus).mockResolvedValue({ inProgress: false } as any);
+    mockQueryRaw.mockResolvedValue([{ remediationCycleLockedAt: new Date() }]);
+
+    await autoRemediationLoopService.reconcileIfOrphanedJobRun('run-1');
+
+    expect(prisma.pdfAutoRemediationRun.updateMany).not.toHaveBeenCalled();
+  });
+});
+
+// Direct, isolated coverage of the production, non-trial path's driver --
+// a structural mirror of ComparisonTrialAutoRemediationDriver's own tests
+// above, targeting PdfAutoRemediationRun instead. No `mode` field exists on
+// this table (see the driver's own doc comment), so getConfig has one fewer
+// branch than the trial driver's.
+describe('JobAutoRemediationDriver', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('describe() labels the job-run for log lines', () => {
+    expect(new JobAutoRemediationDriver('run-1').describe()).toBe('job-run run-1');
+  });
+
+  describe('getConfig', () => {
+    it('resolves jobId/tenantId when the run exists and has a job', async () => {
+      vi.mocked(prisma.pdfAutoRemediationRun.findUnique).mockResolvedValue(makeRun() as any);
+      vi.mocked(prisma.job.findUnique).mockResolvedValue({ id: 'job-1', tenantId: 'tenant-1' } as any);
+
+      const config = await new JobAutoRemediationDriver('run-1').getConfig();
+
+      expect(prisma.pdfAutoRemediationRun.findUnique).toHaveBeenCalledWith({ where: { id: 'run-1' } });
+      expect(prisma.job.findUnique).toHaveBeenCalledWith({ where: { id: 'job-1' } });
+      expect(config).toEqual({ jobId: 'job-1', tenantId: 'tenant-1' });
+    });
+
+    it('returns null when the run does not exist', async () => {
+      vi.mocked(prisma.pdfAutoRemediationRun.findUnique).mockResolvedValue(null as any);
+
+      expect(await new JobAutoRemediationDriver('run-1').getConfig()).toBeNull();
+      expect(prisma.job.findUnique).not.toHaveBeenCalled();
+    });
+
+    it('returns null when the associated job no longer exists', async () => {
+      vi.mocked(prisma.pdfAutoRemediationRun.findUnique).mockResolvedValue(makeRun() as any);
+      vi.mocked(prisma.job.findUnique).mockResolvedValue(null as any);
+
+      expect(await new JobAutoRemediationDriver('run-1').getConfig()).toBeNull();
+    });
+  });
+
+  it('resetForNewRun writes the exact fresh-run reset payload the trial driver uses', async () => {
+    const startedAt = new Date('2026-01-01T00:00:00Z');
+    await new JobAutoRemediationDriver('run-1').resetForNewRun(startedAt);
+
+    expect(prisma.pdfAutoRemediationRun.update).toHaveBeenCalledWith({
+      where: { id: 'run-1' },
+      data: {
+        autoStatus: 'running',
+        autoStopReason: null,
+        autoStopRequested: false,
+        autoRoundsCompleted: 0,
+        autoCostSpentUsd: 0,
+        autoStartedAt: startedAt,
+        autoStoppedAt: null,
+      },
+    });
+  });
+
+  describe('getRoundState', () => {
+    it('returns the per-round control values from the current run row', async () => {
+      vi.mocked(prisma.pdfAutoRemediationRun.findUnique).mockResolvedValue(
+        makeRun({ autoStopRequested: true, autoMaxRounds: 5, autoCostLimitUsd: 1.5, autoColorContrastMode: 'apply-to-pdf' }) as any
+      );
+
+      const state = await new JobAutoRemediationDriver('run-1').getRoundState();
+
+      expect(state).toEqual({
+        autoStopRequested: true,
+        autoMaxRounds: 5,
+        autoCostLimitUsd: 1.5,
+        autoColorContrastMode: 'apply-to-pdf',
+      });
+    });
+
+    it('returns null when the run has disappeared mid-run', async () => {
+      vi.mocked(prisma.pdfAutoRemediationRun.findUnique).mockResolvedValue(null as any);
+
+      expect(await new JobAutoRemediationDriver('run-1').getRoundState()).toBeNull();
+    });
+  });
+
+  it('recordRoundProgress writes rounds/cost exactly as the trial driver does', async () => {
+    await new JobAutoRemediationDriver('run-1').recordRoundProgress(3, 0.42);
+
+    expect(prisma.pdfAutoRemediationRun.update).toHaveBeenCalledWith({
+      where: { id: 'run-1' },
+      data: { autoRoundsCompleted: 3, autoCostSpentUsd: 0.42 },
+    });
+  });
+
+  it('markStopped writes the exact terminal payload the trial driver uses', async () => {
+    const stoppedAt = new Date('2026-01-01T01:00:00Z');
+    await new JobAutoRemediationDriver('run-1').markStopped('converged', stoppedAt);
+
+    expect(prisma.pdfAutoRemediationRun.update).toHaveBeenCalledWith({
+      where: { id: 'run-1' },
       data: { autoStatus: 'stopped', autoStopReason: 'converged', autoStopRequested: false, autoStoppedAt: stoppedAt },
     });
   });
