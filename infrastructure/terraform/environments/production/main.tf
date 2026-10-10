@@ -5,9 +5,10 @@
 #   Phase 2: networking (VPC, subnets, security groups) -- DONE, below
 #   Phase 3: secrets, RDS, ElastiCache Redis -- DONE, below
 #   Phase 4: ALB + target groups -- DONE, below
-#   Phase 5: ECS cluster + backend web/worker services
-#   Phase 6: CloudFront
-#   Phase 8: ACE, docling (CPU+GPU), zone-detector, training services
+#   Phase 5: ECS cluster + backend web/worker services -- DONE, below
+#   Phase 6: CloudFront -- DONE, below
+#   Phase 8: ACE microservice -- DONE, below (scope narrowed to ACE-only;
+#     docling CPU+GPU, zone-detector, training services stay staging-only)
 #
 # See the Phase 0 audit findings (nothing production-related exists yet --
 # this is a clean build) for why there's nothing to `import` here.
@@ -266,6 +267,11 @@ locals {
     { name = "DB_USER", value = module.database.master_username },
     { name = "REDIS_HOST", value = module.redis.primary_endpoint },
     { name = "REDIS_PORT", value = tostring(module.redis.port) },
+    # Phase 8 -- same ALB, routed by path (/ace/*) to the ACE microservice's
+    # own target group below. ace-client.service.ts degrades gracefully
+    # (returns null, never throws) if this is ever unset or unreachable, so
+    # there's no ordering requirement between this and the ecs_ace module.
+    { name = "ACE_SERVICE_URL", value = "http://${module.alb.alb_dns_name}/ace" },
   ]
 
   app_secrets = [
@@ -338,4 +344,163 @@ module "cloudfront" {
 
   environment  = "production"
   alb_dns_name = module.alb.alb_dns_name
+}
+
+# --- Phase 8: ACE microservice (EPUB accessibility checker) ---
+#
+# Small, separate service (own repo, own image -- C:\Users\avrve\projects\
+# ace-microservice) -- not ninja-backend's own image, so it gets its own
+# ECR repo, dedicated security group, and dedicated minimal IAM roles
+# rather than sharing web/worker's. ACE's own design has no database or
+# secrets dependency at all ("No Secrets" per its staging deployment guide),
+# so reusing the shared execution/task roles would hand it GetSecretValue
+# on all 7 production secrets and S3 read/write/delete it never uses --
+# these two roles grant neither.
+#
+# Routed off the SAME production ALB by path (/ace/*), not a new
+# load balancer -- module.alb's http_listener_arn output exists specifically
+# for this (see modules/alb/outputs.tf's own comment), mirroring staging's
+# real ninja-alb-staging path-routing pattern exactly.
+
+resource "aws_ecr_repository" "ace" {
+  name                 = "ace-microservice"
+  image_tag_mutability = "MUTABLE"
+
+  image_scanning_configuration {
+    scan_on_push = true
+  }
+
+  tags = {
+    Name = "ace-microservice"
+  }
+}
+
+resource "aws_security_group" "ace_ecs" {
+  name_prefix = "ninja-production-ace-sg-"
+  description = "ACE microservice -- ingress from the production ALB only, on its own port."
+  vpc_id      = module.networking.vpc_id
+
+  lifecycle {
+    create_before_destroy = true
+  }
+
+  ingress {
+    description     = "HTTP from the production ALB only"
+    from_port       = 3001
+    to_port         = 3001
+    protocol        = "tcp"
+    security_groups = [module.networking.alb_security_group_id]
+  }
+
+  egress {
+    description = "All outbound (ECR pulls, CloudWatch Logs)"
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  tags = {
+    Name = "ninja-production-ace-sg"
+  }
+}
+
+data "aws_iam_policy_document" "ace_ecs_tasks_trust" {
+  statement {
+    actions = ["sts:AssumeRole"]
+    principals {
+      type        = "Service"
+      identifiers = ["ecs-tasks.amazonaws.com"]
+    }
+  }
+}
+
+# Standard ECR-pull + CloudWatch-Logs managed policy only -- no inline
+# secrets policy at all (unlike modules/iam's ecs_task_execution), since
+# ACE's task definition injects zero secrets.
+resource "aws_iam_role" "ace_task_execution" {
+  name               = "ninja-production-ace-task-execution-role"
+  assume_role_policy = data.aws_iam_policy_document.ace_ecs_tasks_trust.json
+}
+
+resource "aws_iam_role_policy_attachment" "ace_task_execution_managed" {
+  role       = aws_iam_role.ace_task_execution.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
+}
+
+# Zero inline policies -- ACE's own running code makes no AWS API calls at
+# all (confirmed: no S3/Secrets Manager dependency anywhere in its source).
+resource "aws_iam_role" "ace_task" {
+  name               = "ninja-production-ace-task-role"
+  assume_role_policy = data.aws_iam_policy_document.ace_ecs_tasks_trust.json
+}
+
+resource "aws_lb_target_group" "ace" {
+  name        = "ninja-production-ace-tg"
+  port        = 3001
+  protocol    = "HTTP"
+  vpc_id      = module.networking.vpc_id
+  target_type = "ip"
+
+  health_check {
+    path                = "/health"
+    protocol            = "HTTP"
+    matcher             = "200"
+    interval            = 30
+    timeout             = 10
+    healthy_threshold   = 2
+    unhealthy_threshold = 3
+  }
+
+  tags = {
+    Name = "ninja-production-ace-tg"
+  }
+}
+
+resource "aws_lb_listener_rule" "ace" {
+  listener_arn = module.alb.http_listener_arn
+  priority     = 10 # Matches staging's own ninja-alb-staging rule priority for /ace/*.
+
+  condition {
+    path_pattern {
+      values = ["/ace/*"]
+    }
+  }
+
+  action {
+    type             = "forward"
+    target_group_arn = aws_lb_target_group.ace.arn
+  }
+}
+
+module "ecs_ace" {
+  source = "../../modules/ecs-service"
+
+  environment        = "production"
+  service_role       = "ace"
+  container_name     = "ace-microservice"
+  cluster_id         = aws_ecs_cluster.this.id
+  cluster_name       = aws_ecs_cluster.this.name
+  execution_role_arn = aws_iam_role.ace_task_execution.arn
+  task_role_arn      = aws_iam_role.ace_task.arn
+  private_subnet_ids = module.networking.private_subnet_ids
+  security_group_id  = aws_security_group.ace_ecs.id
+  # Matches staging's real ace-microservice-task sizing
+  # (docs/ACE_Microservices_Guide.md) -- 1 vCPU / 2GB.
+  cpu           = 1024
+  memory        = 2048
+  desired_count = 1
+  image         = "${aws_ecr_repository.ace.repository_url}:latest"
+  app_port      = 3001
+  # ACE's own image runs via its own CMD (a start.sh that launches Xvfb then
+  # node dist/index.js) -- no DB/Redis composition needed, unlike web/worker.
+  command           = null
+  extra_environment = []
+  secrets           = []
+  # Required argument, no default -- becomes an unused S3_BUCKET env var
+  # ACE's own code never reads (its task role has no S3 grant at all, so
+  # this value conveys no actual access).
+  s3_bucket_name   = module.storage.bucket_name
+  attach_to_alb    = true
+  target_group_arn = aws_lb_target_group.ace.arn
 }

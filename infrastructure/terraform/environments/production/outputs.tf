@@ -111,3 +111,23 @@ output "ecs_worker_service_name" {
 output "cloudfront_domain_name" {
   value = module.cloudfront.domain_name
 }
+
+# --- Phase 8: ACE microservice ---
+# ecr_repository_url/task_execution_role_arn/task_role_arn are consumed by
+# the user's own docker push and the ninja-production-deploy IAM-policy
+# widening step -- both run outside Terraform, see the plan's own notes.
+output "ace_ecr_repository_url" {
+  value = aws_ecr_repository.ace.repository_url
+}
+
+output "ace_service_name" {
+  value = module.ecs_ace.service_name
+}
+
+output "ace_task_execution_role_arn" {
+  value = aws_iam_role.ace_task_execution.arn
+}
+
+output "ace_task_role_arn" {
+  value = aws_iam_role.ace_task.arn
+}
