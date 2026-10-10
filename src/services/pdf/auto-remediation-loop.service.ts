@@ -183,6 +183,74 @@ export class ComparisonTrialAutoRemediationDriver implements AutoRemediationDriv
   }
 }
 
+/**
+ * Backs the loop with `PdfAutoRemediationRun` instead of `ComparisonTrial` --
+ * the production, non-trial path (any job, started via
+ * POST /pdf/:jobId/auto-mode/start when the job has no ComparisonTrial). This
+ * table already existed (added for the batch-processing feature) with the
+ * exact same auto-mode field set, just never had a driver written against it.
+ *
+ * No `mode` gate in getConfig() -- unlike ComparisonTrial, PdfAutoRemediationRun
+ * has no `mode` column. The row's existence (created by the controller's own
+ * upsert right before calling startAutoLoop) IS the opt-in signal; there's
+ * nothing else to check eligibility against.
+ */
+export class JobAutoRemediationDriver implements AutoRemediationDriver {
+  constructor(private readonly runId: string) {}
+
+  describe(): string {
+    return `job-run ${this.runId}`;
+  }
+
+  async getConfig(): Promise<AutoRemediationConfig | null> {
+    const run = await prisma.pdfAutoRemediationRun.findUnique({ where: { id: this.runId } });
+    if (!run) return null;
+    const job = await prisma.job.findUnique({ where: { id: run.jobId } });
+    if (!job) return null;
+    return { jobId: run.jobId, tenantId: job.tenantId };
+  }
+
+  async resetForNewRun(startedAt: Date): Promise<void> {
+    await prisma.pdfAutoRemediationRun.update({
+      where: { id: this.runId },
+      data: {
+        autoStatus: 'running',
+        autoStopReason: null,
+        autoStopRequested: false,
+        autoRoundsCompleted: 0,
+        autoCostSpentUsd: 0,
+        autoStartedAt: startedAt,
+        autoStoppedAt: null,
+      },
+    });
+  }
+
+  async getRoundState(): Promise<AutoRemediationRoundState | null> {
+    const current = await prisma.pdfAutoRemediationRun.findUnique({ where: { id: this.runId } });
+    if (!current) return null;
+    return {
+      autoStopRequested: current.autoStopRequested,
+      autoMaxRounds: current.autoMaxRounds,
+      autoCostLimitUsd: current.autoCostLimitUsd,
+      autoColorContrastMode: current.autoColorContrastMode,
+    };
+  }
+
+  async recordRoundProgress(roundsCompleted: number, costSpentUsd: number): Promise<void> {
+    await prisma.pdfAutoRemediationRun.update({
+      where: { id: this.runId },
+      data: { autoRoundsCompleted: roundsCompleted, autoCostSpentUsd: costSpentUsd },
+    });
+  }
+
+  async markStopped(stopReason: AutoStopReason, stoppedAt: Date): Promise<void> {
+    await prisma.pdfAutoRemediationRun.update({
+      where: { id: this.runId },
+      data: { autoStatus: 'stopped', autoStopReason: stopReason, autoStopRequested: false, autoStoppedAt: stoppedAt },
+    });
+  }
+}
+
 class AutoRemediationLoopService {
   /**
    * Reconciles a trial whose autoStatus is stuck at 'running' because the
@@ -256,6 +324,46 @@ class AutoRemediationLoopService {
       if (result.count > 0) {
         logger.warn(
           `[AutoRemediationLoop] Reconciled orphaned run for trial ${trialId} (job ${jobId}) -- its lock is free/stale, so whatever process was running it must have died without cleaning up (e.g. an ECS deploy mid-round)`
+        );
+      }
+    });
+  }
+
+  /**
+   * Same orphan-recovery as reconcileIfOrphaned above, targeting
+   * PdfAutoRemediationRun instead of ComparisonTrial -- the production,
+   * non-trial path's equivalent. See that method's own doc comment for the
+   * full reasoning (liveness via the remediation-cycle lock, the row-lock
+   * transaction, and why this is deliberately scoped to only the free/stale
+   * case); this is a direct structural mirror, not a new design.
+   */
+  async reconcileIfOrphanedJobRun(runId: string): Promise<void> {
+    const run = await prisma.pdfAutoRemediationRun.findUnique({
+      where: { id: runId },
+      select: { autoStatus: true, jobId: true },
+    });
+    if (run?.autoStatus !== 'running') return;
+    const jobId = run.jobId;
+
+    const lockStatus = await remediationCycleLockService.getLockStatus(jobId);
+    if (lockStatus.inProgress) return;
+
+    await prisma.$transaction(async (tx) => {
+      const rows = await tx.$queryRaw<Array<{ remediationCycleLockedAt: Date | null }>>`
+        SELECT "remediationCycleLockedAt" FROM "Job" WHERE id = ${jobId} FOR UPDATE
+      `;
+      const lockedAt = rows[0]?.remediationCycleLockedAt ?? null;
+      const staleThreshold = new Date(Date.now() - STALE_LOCK_MS);
+      const stillOrphaned = lockedAt === null || lockedAt < staleThreshold;
+      if (!stillOrphaned) return;
+
+      const result = await tx.pdfAutoRemediationRun.updateMany({
+        where: { id: runId, autoStatus: 'running' },
+        data: { autoStatus: 'stopped', autoStopReason: 'error', autoStopRequested: false, autoStoppedAt: new Date() },
+      });
+      if (result.count > 0) {
+        logger.warn(
+          `[AutoRemediationLoop] Reconciled orphaned run for job-run ${runId} (job ${jobId}) -- its lock is free/stale, so whatever process was running it must have died without cleaning up (e.g. an ECS deploy mid-round)`
         );
       }
     });
