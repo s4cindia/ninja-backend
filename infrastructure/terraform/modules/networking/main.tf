@@ -142,6 +142,21 @@ resource "aws_security_group" "alb" {
 
   lifecycle {
     create_before_destroy = true
+    # Real bug caught via a -target'd plan before an apply would have
+    # silently deleted a live rule: this resource's own inline ingress
+    # block (below) is NOT the only ingress rule on this SG -- Phase 8
+    # added a second one (alb_ingress_from_ecs_tasks, further down this
+    # file) as a standalone aws_security_group_rule, deliberately, to break
+    # a circular dependency between this SG and ecs_tasks'. But any inline
+    # ingress block on an aws_security_group makes Terraform treat that
+    # list as the COMPLETE authoritative set -- every plan since Phase 8
+    # merged has wanted to revoke the ecs_tasks rule, because it's absent
+    # from this resource's own inline list, even though this resource
+    # never created it. ignore_changes hands ALL ingress management to
+    # standalone aws_security_group_rule resources from here on; the
+    # inline block below becomes bootstrap-only (it created the CloudFront
+    # rule once, but no longer reconciles it on every plan).
+    ignore_changes = [ingress]
   }
 
   # No port 443 rule: real AWS error on the actual apply --
