@@ -272,6 +272,11 @@ locals {
     # (returns null, never throws) if this is ever unset or unreachable, so
     # there's no ordering requirement between this and the ecs_ace module.
     { name = "ACE_SERVICE_URL", value = "http://${module.alb.alb_dns_name}/ace" },
+    # Phase 9 -- the frontend's own CloudFront domain. Express's CORS
+    # middleware (src/index.ts, src/config/index.ts's corsOrigins) rejects
+    # any origin not in this list; without it, config/index.ts's fallback
+    # default (localhost only) silently blocks every real browser request.
+    { name = "CORS_ORIGINS", value = "https://${module.frontend.cloudfront_domain_name}" },
   ]
 
   app_secrets = [
@@ -344,6 +349,19 @@ module "cloudfront" {
 
   environment  = "production"
   alb_dns_name = module.alb.alb_dns_name
+}
+
+# --- Phase 9: frontend static hosting (S3 + CloudFront) ---
+# Separate distribution from the API's own CloudFront above -- mirrors
+# staging's own real topology (two distinct CloudFront domains: frontend and
+# backend), not a combined one. bucket_name reuses the exact name
+# ninja-frontend's existing (previously never-applied) deploy-frontend-
+# production.yml already hardcodes.
+module "frontend" {
+  source = "../../modules/static-site"
+
+  environment = "production"
+  bucket_name = "s4carlisle-ninja-frontend-prod"
 }
 
 # --- Phase 8: ACE microservice (EPUB accessibility checker) ---
