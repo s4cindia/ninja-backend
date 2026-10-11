@@ -131,3 +131,19 @@ output "ace_task_execution_role_arn" {
 output "ace_task_role_arn" {
   value = aws_iam_role.ace_task.arn
 }
+
+# --- Phase 9: frontend static hosting ---
+# cloudfront_distribution_id is AWS-assigned (unknowable before apply) --
+# needed to fix ninja-frontend's deploy-frontend-production.yml's
+# hardcoded CLOUDFRONT_DISTRIBUTION_ID in a follow-up PR once this exists.
+output "frontend_s3_bucket" {
+  value = module.frontend.bucket_name
+}
+
+output "frontend_cloudfront_distribution_id" {
+  value = module.frontend.cloudfront_distribution_id
+}
+
+output "frontend_cloudfront_domain_name" {
+  value = module.frontend.cloudfront_domain_name
+}
