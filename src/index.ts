@@ -119,15 +119,22 @@ if (processRole === 'worker') {
   // Worker role: the full Express app above is built (cheap, declarative)
   // but deliberately never given a listening socket -- none of its routes
   // are reachable over the network from this process. A minimal raw HTTP
-  // listener exists ONLY so the Dockerfile's existing
-  // `HEALTHCHECK CMD curl -f http://localhost:3000/health` keeps working
-  // unmodified. No ALB is ever attached to this service's task definition
-  // (see infrastructure/ecs/ninja-backend-worker-task-definition.json), so
-  // nothing but that local Docker probe ever reaches this port.
+  // listener exists ONLY so the ECS task definition's container health
+  // check (infrastructure/terraform/modules/ecs-service) keeps working. No
+  // ALB is ever attached to this service's task definition, so nothing but
+  // that local probe ever reaches this port.
+  //
+  // Must accept HEAD, not just GET: GNU wget's `--spider` (what the health
+  // check actually runs) sends a HEAD request first and only falls back to
+  // GET on a 500/501 response. Rejecting HEAD here with a 404 meant every
+  // single health check failed from the moment wget replaced curl (#660) --
+  // the task ran cleanly and was simply killed as "unhealthy" on a fixed
+  // ~11-minute cycle. Content-Length is set explicitly too, rather than
+  // relying on chunked encoding, since some HTTP clients' success heuristics
+  // (older wget --spider versions included) key off it.
   server = http.createServer((req, res) => {
-    if (req.method === 'GET' && req.url === '/health') {
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({
+    if ((req.method === 'GET' || req.method === 'HEAD') && req.url === '/health') {
+      const body = JSON.stringify({
         status: 'healthy',
         timestamp: new Date().toISOString(),
         environment: config.nodeEnv,
@@ -135,7 +142,12 @@ if (processRole === 'worker') {
         commitSha: process.env.COMMIT_SHA || 'unknown',
         role: 'worker',
         redis: isRedisConfigured() ? 'connected' : 'not_configured',
-      }));
+      });
+      res.writeHead(200, {
+        'Content-Type': 'application/json',
+        'Content-Length': Buffer.byteLength(body),
+      });
+      res.end(req.method === 'HEAD' ? undefined : body);
       return;
     }
     res.writeHead(404, { 'Content-Type': 'application/json' });
