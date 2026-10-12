@@ -51,6 +51,13 @@ WORKDIR /app
 # Install system dependencies (single layer, sorted for cache efficiency)
 # Pandoc is installed from GitHub releases to pin version 3.1.3 (matching local dev)
 # instead of the Debian apt package which ships an older 2.17.x version.
+# wget is also what the ECS task definition's container health check runs
+# against /health (see infrastructure/terraform/modules/ecs-service) -- it
+# used to get apt-get purge'd below right after the pandoc download, which
+# silently broke every real deploy of this image: the health check failed
+# with "wget: not found" on every single check, so ECS never saw a healthy
+# new task and kept killing and replacing it in an endless ~11-minute
+# cycle. Do not purge it again.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     curl \
@@ -71,7 +78,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
        else echo "Unsupported architecture: $PANDOC_ARCH" && exit 1; fi \
     && dpkg -i /tmp/pandoc.deb \
     && rm /tmp/pandoc.deb \
-    && apt-get purge -y wget && apt-get autoremove -y \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd -g 1001 nodejs && useradd -u 1001 -g nodejs nodejs
 
