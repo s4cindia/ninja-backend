@@ -547,13 +547,20 @@ markdown code fences. Your response must start with "{" and contain nothing else
       // makes retries just as likely to truncate as the first attempt — a
       // stronger-worded retry prompt alone can't fix a budget problem, so
       // this raises the ceiling itself rather than relying on retries to
-      // work around it.
+      // work around it. Raised again 1000 -> 2048 (2026-10-13): still
+      // truncating live (Williams_PDF trial, job 3YW_ih7LyBAy7pfzZuMdx) even
+      // on tiny ~100-char responses, exhausting all 3 parse-retry attempts.
+      // 2048 is the value ai-analysis.service.ts's own MAX_TOKENS fix chain
+      // (PRs #562/#564/#565/#566) converged on for this same model +
+      // short-structured-JSON-plus-image shape — this file was a separate
+      // class never swept into that cleanup, so it was still stuck on an
+      // earlier, smaller value from before that budget was settled.
       const { data } = await geminiService.analyzeImageWithSchema(
         image.base64,
         image.mimeType,
         prompt,
         AssessAltTextResult,
-        { model: 'flash', temperature: 0.3, maxOutputTokens: 1000, responseSchema: ASSESS_ALT_TEXT_SCHEMA },
+        { model: 'flash', temperature: 0.3, maxOutputTokens: 2048, responseSchema: ASSESS_ALT_TEXT_SCHEMA },
         { maxRetries: 2 }
       );
       return { matchesContent: data.matchesContent, suggestedAltText: data.suggestedAltText };
@@ -595,13 +602,14 @@ markdown code fences. Your response must start with "{" and contain nothing else
       // responseSchema alone doesn't guarantee compliance — retry with a
       // correction prompt (same image re-attached) on a parse miss rather
       // than giving up after one attempt. maxOutputTokens raised 300 -> 600 ->
-      // 1000 — see the matching comment in assessAltTextWithAI above for why.
+      // 1000 -> 2048 — see the matching comment in assessAltTextWithAI above
+      // for why.
       const { data } = await geminiService.analyzeImageWithSchema(
         image.base64!,
         image.mimeType,
         prompt,
         ClassifyImageResult,
-        { model: 'flash', temperature: 0.2, maxOutputTokens: 1000, responseSchema: CLASSIFY_IMAGE_SCHEMA },
+        { model: 'flash', temperature: 0.2, maxOutputTokens: 2048, responseSchema: CLASSIFY_IMAGE_SCHEMA },
         { maxRetries: 2 }
       );
 
