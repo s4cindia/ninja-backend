@@ -228,14 +228,14 @@ describe('PDFAltTextValidator', () => {
       const result = await pdfAltTextValidator.validateFromFile('/path/to/test.pdf', true);
 
       expect(geminiService.analyzeImageWithSchema).toHaveBeenCalled();
-      // Regression: quality-assessment calls also need the same 1000-token
-      // budget (was 300, then 600 — see the classification test above for why).
+      // Regression: quality-assessment calls also need the same 2048-token
+      // budget (was 300, then 600, then 1000 — see the classification test above for why).
       expect(geminiService.analyzeImageWithSchema).toHaveBeenCalledWith(
         expect.any(String),
         expect.any(String),
         expect.any(String),
         expect.any(Object),
-        expect.objectContaining({ maxOutputTokens: 1000 }),
+        expect.objectContaining({ maxOutputTokens: 2048 }),
         expect.any(Object)
       );
       expect(result.summary.moderate).toBeGreaterThan(0);
@@ -292,14 +292,17 @@ describe('PDFAltTextValidator', () => {
       );
     });
 
-    it('requests a 1000-token budget for classification (regression: 300, then 600, were both too tight)', async () => {
+    it('requests a 2048-token budget for classification (regression: 300, 600, and 1000 were all too tight)', async () => {
       // A real trial showed the model frequently prefixing responses with an
       // unwanted preamble ("Here is the analysis...") that, combined with a
       // 300-token budget, truncated the JSON mid-string — and since retries
       // reuse the same budget, the same truncation recurred on every attempt.
       // A later real trial (2026-09-25, a 3843-image document) hit the same
       // finishReason:"MAX_TOKENS" truncation again at 600, so the budget was
-      // raised further to 1000.
+      // raised further to 1000. A later trial still (2026-10-13, Williams_PDF,
+      // job 3YW_ih7LyBAy7pfzZuMdx) hit it again even at 1000, so the budget
+      // was raised to 2048 to match ai-analysis.service.ts's own converged
+      // value for this same model + response shape.
       const mockParsedPdf = createMockParsedPdf();
       const mockDocImages = createMockDocumentImages([
         createMockImageWithBase64(1, 0, undefined, false, 'base64data', 'image/jpeg'),
@@ -320,7 +323,7 @@ describe('PDFAltTextValidator', () => {
         expect.any(String),
         expect.any(String),
         expect.any(Object),
-        expect.objectContaining({ maxOutputTokens: 1000 }),
+        expect.objectContaining({ maxOutputTokens: 2048 }),
         expect.any(Object)
       );
     });
