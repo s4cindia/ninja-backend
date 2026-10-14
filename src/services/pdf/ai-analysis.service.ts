@@ -27,6 +27,7 @@ import { fontToUnicodeService } from './font-tounicode.service';
 import { decodePageContent } from './pdf-content-stream-io';
 import { pdfContrastWriterService, resolveColorContrastTargets } from './pdf-contrast-writer.service';
 import { remediationCycleHistoryService } from './remediation-cycle-history.service';
+import { sseService } from '../../sse/sse.service';
 import { AppError } from '../../utils/app-error';
 import { pdfComprehensiveParserService } from './pdf-comprehensive-parser.service';
 import { imageExtractorService, ImageInfo } from './image-extractor.service';
@@ -3219,6 +3220,31 @@ class AiAnalysisService {
     let failed = 0;
     const errors: Array<{ issueId: string; suggestionType: string; reason: string }> = [];
 
+    // Throttled live-progress broadcast for the UI's apply-fixes progress
+    // indicator -- both the manual "Apply AI Fixes" button and the Auto Mode
+    // loop's own apply step go through this same per-suggestion loop. One
+    // SSE event per suggestion would be excessive on a large document
+    // (Williams_PDF alone approves 1000+ suggestions in a single round), so
+    // this fires at most once per PROGRESS_BROADCAST_INTERVAL_MS, plus
+    // unconditionally once after the loop so the UI always lands on the true
+    // final count even if the last throttle window was cut short.
+    const PROGRESS_BROADCAST_INTERVAL_MS = 1500;
+    let lastProgressBroadcastAt = 0;
+    const broadcastApplyProgress = (force = false) => {
+      const now = Date.now();
+      if (!force && now - lastProgressBroadcastAt < PROGRESS_BROADCAST_INTERVAL_MS) return;
+      lastProgressBroadcastAt = now;
+      sseService.broadcastToChannel(`apply-progress:${jobId}`, {
+        type: 'apply_progress',
+        jobId,
+        source,
+        applied,
+        failed,
+        processed: applied + failed,
+        total: approved.length,
+      }, job.tenantId ?? undefined);
+    };
+
     for (const analysis of approved) {
       const { suggestionType, value, issueId } = analysis;
 
@@ -3391,7 +3417,10 @@ class AiAnalysisService {
         errors.push({ issueId: analysis.issueId, suggestionType, reason });
         logger.warn(`[AiAnalysis] applyApprovedSuggestions: error for ${analysis.issueId}: ${reason}`);
       }
+
+      broadcastApplyProgress();
     }
+    broadcastApplyProgress(true);
 
     if (applied === 0) {
       await remediationCycleHistoryService.logEvent({
