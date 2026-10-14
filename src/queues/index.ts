@@ -21,6 +21,7 @@ export const QUEUE_NAMES = {
   CITATION_PROCESSING: 'citation-processing',
   STYLE_PROCESSING: 'style-processing',
   CALIBRATION: 'calibration',
+  AUTO_REMEDIATION: 'auto-remediation',
 } as const;
 
 export type QueueName = typeof QUEUE_NAMES[keyof typeof QUEUE_NAMES];
@@ -85,6 +86,22 @@ export interface BatchProcessingJobResult {
   filesProcessed: number;
   filesRemediated: number;
   filesFailed: number;
+}
+
+// Doesn't map onto the generic JobData/JobResult shape (same reasoning as
+// Batch*JobData above) -- auto-remediation's user-visible state lives on
+// ComparisonTrial/PdfAutoRemediationRun, not on the Job row the generic
+// worker wrapper (createWorker) keeps in sync. The driver re-reads
+// everything else it needs straight from Postgres, so the job payload is
+// deliberately just enough to reconstruct the right driver.
+export interface AutoRemediationJobData {
+  kind: 'trial' | 'jobRun';
+  id: string;
+}
+
+export interface AutoRemediationJobResult {
+  kind: 'trial' | 'jobRun';
+  id: string;
 }
 
 interface BullMQConnectionOptions {
@@ -173,6 +190,7 @@ let _batchProcessingQueue: Queue<BatchProcessingJobData, BatchProcessingJobResul
 let _citationQueue: Queue<JobData, JobResult> | null = null;
 let _styleQueue: Queue<JobData, JobResult> | null = null;
 let _calibrationQueue: Queue<JobData, JobResult> | null = null;
+let _autoRemediationQueue: Queue<AutoRemediationJobData, AutoRemediationJobResult> | null = null;
 let _accessibilityQueueEvents: QueueEvents | null = null;
 let _vpatQueueEvents: QueueEvents | null = null;
 let _fileProcessingQueueEvents: QueueEvents | null = null;
@@ -214,6 +232,16 @@ function ensureQueuesInitialized(): void {
 
   _batchQueue = new Queue<BatchJobData, BatchJobResult>(
     QUEUE_NAMES.BATCH_REMEDIATION,
+    { connection, defaultJobOptions: { ...defaultJobOptions, attempts: 1 }, prefix }
+  );
+
+  // attempts: 1, same as BATCH_REMEDIATION above -- startAutoLoop never
+  // throws (it catches its own errors and always writes a terminal state
+  // before resolving), so BullMQ's retry path only fires if the worker
+  // process itself dies mid-run, and at that point reconcileIfOrphaned/
+  // reconcileIfOrphanedJobRun already handle recovery correctly.
+  _autoRemediationQueue = new Queue<AutoRemediationJobData, AutoRemediationJobResult>(
+    QUEUE_NAMES.AUTO_REMEDIATION,
     { connection, defaultJobOptions: { ...defaultJobOptions, attempts: 1 }, prefix }
   );
 
@@ -312,6 +340,11 @@ export function getBatchProcessingQueue(): Queue<BatchProcessingJobData, BatchPr
   return _batchProcessingQueue;
 }
 
+export function getAutoRemediationQueue(): Queue<AutoRemediationJobData, AutoRemediationJobResult> | null {
+  ensureQueuesInitialized();
+  return _autoRemediationQueue;
+}
+
 export function getCitationQueue(): Queue<JobData, JobResult> | null {
   ensureQueuesInitialized();
   return _citationQueue;
@@ -366,6 +399,7 @@ export async function closeQueues(): Promise<void> {
   if (_fileProcessingQueue) closePromises.push(_fileProcessingQueue.close());
   if (_batchQueue) closePromises.push(_batchQueue.close());
   if (_batchProcessingQueue) closePromises.push(_batchProcessingQueue.close());
+  if (_autoRemediationQueue) closePromises.push(_autoRemediationQueue.close());
   if (_citationQueue) closePromises.push(_citationQueue.close());
   if (_styleQueue) closePromises.push(_styleQueue.close());
   if (_calibrationQueue) closePromises.push(_calibrationQueue.close());
@@ -383,6 +417,7 @@ export async function closeQueues(): Promise<void> {
   _fileProcessingQueue = null;
   _batchQueue = null;
   _batchProcessingQueue = null;
+  _autoRemediationQueue = null;
   _citationQueue = null;
   _styleQueue = null;
   _calibrationQueue = null;

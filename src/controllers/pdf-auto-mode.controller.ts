@@ -35,7 +35,43 @@ import {
   ComparisonTrialAutoRemediationDriver,
   JobAutoRemediationDriver,
 } from '../services/pdf/auto-remediation-loop.service';
+import type { AutoRemediationDriver } from '../services/pdf/auto-remediation-loop.service';
+import { areQueuesAvailable, getAutoRemediationQueue } from '../queues';
 import type { StartAutoModeBody } from '../schemas/pdf-auto-mode.schemas';
+
+/**
+ * Routes a run through the auto-remediation BullMQ queue (worker process --
+ * isolated from the ALB health checks that evicted the web task mid-round on
+ * 2026-10-13, see auto-remediation.processor.ts) when queues are available,
+ * falling back to the original direct in-process call otherwise -- keeps
+ * local dev without Redis configured working exactly as before this change.
+ * `{ jobId: id }` as the BullMQ job ID gives free dedup against a second
+ * concurrent start for the same trial/run, on top of the existing
+ * autoStatus === 'running' check already in both callers below.
+ */
+function enqueueOrRunAutoLoop(kind: 'trial' | 'jobRun', id: string, driver: AutoRemediationDriver): void {
+  if (areQueuesAvailable()) {
+    const queue = getAutoRemediationQueue();
+    if (queue) {
+      queue.add(`auto-remediation-${id}`, { kind, id }, { jobId: id }).catch((err) => {
+        logger.error(
+          `[PdfAutoMode] Failed to enqueue auto loop for ${kind} ${id}, falling back to in-process: ${err instanceof Error ? err.message : String(err)}`
+        );
+        autoRemediationLoopService.startAutoLoop(driver).catch((err2) => {
+          logger.error(
+            `[PdfAutoMode] Unexpected error starting auto loop for ${kind} ${id}: ${err2 instanceof Error ? err2.message : String(err2)}`
+          );
+        });
+      });
+      return;
+    }
+  }
+  autoRemediationLoopService.startAutoLoop(driver).catch((err) => {
+    logger.error(
+      `[PdfAutoMode] Unexpected error starting auto loop for ${kind} ${id}: ${err instanceof Error ? err.message : String(err)}`
+    );
+  });
+}
 
 export class PdfAutoModeController {
   /**
@@ -68,17 +104,11 @@ export class PdfAutoModeController {
           throw AppError.notFound('Trial not found.');
         }
 
-        // Fire-and-forget -- client polls the status endpoint below. Attach a
-        // rejection handler explicitly: startAutoLoop is expected to catch its
-        // own errors internally, but a setup failure before that point (e.g. a
-        // DB blip on the very first lookup) would otherwise be an unhandled
-        // promise rejection.
+        // Fire-and-forget -- client polls the status endpoint below. Runs on
+        // the worker process via the auto-remediation queue when available
+        // (see enqueueOrRunAutoLoop above).
         const trialId = trial.id;
-        autoRemediationLoopService.startAutoLoop(new ComparisonTrialAutoRemediationDriver(trialId)).catch((err) => {
-          logger.error(
-            `[PdfAutoMode] Unexpected error starting auto loop for trial ${trialId}: ${err instanceof Error ? err.message : String(err)}`
-          );
-        });
+        enqueueOrRunAutoLoop('trial', trialId, new ComparisonTrialAutoRemediationDriver(trialId));
 
         res.status(202).json({
           success: true,
@@ -117,11 +147,7 @@ export class PdfAutoModeController {
       });
 
       const runId = run.id;
-      autoRemediationLoopService.startAutoLoop(new JobAutoRemediationDriver(runId)).catch((err) => {
-        logger.error(
-          `[PdfAutoMode] Unexpected error starting auto loop for job-run ${runId}: ${err instanceof Error ? err.message : String(err)}`
-        );
-      });
+      enqueueOrRunAutoLoop('jobRun', runId, new JobAutoRemediationDriver(runId));
 
       res.status(202).json({
         success: true,
