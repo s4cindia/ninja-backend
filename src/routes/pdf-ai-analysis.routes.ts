@@ -10,7 +10,7 @@
 
 import { Router } from 'express';
 import { authenticate } from '../middleware/auth.middleware';
-import { authorizeJob } from '../middleware/authorize-job.middleware';
+import { authorizeJob, authorizeJobForReview } from '../middleware/authorize-job.middleware';
 import { pdfAiAnalysisController } from '../controllers/pdf-ai-analysis.controller';
 
 const router = Router();
@@ -33,7 +33,7 @@ router.post(
 router.get(
   '/:jobId/auto-tag/status',
   authenticate,
-  authorizeJob,
+  authorizeJobForReview,
   pdfAiAnalysisController.getAutoTagStatus.bind(pdfAiAnalysisController)
 );
 
@@ -44,7 +44,7 @@ router.get(
 router.get(
   '/:jobId/auto-tag/report',
   authenticate,
-  authorizeJob,
+  authorizeJobForReview,
   pdfAiAnalysisController.getTaggingReport.bind(pdfAiAnalysisController)
 );
 
@@ -55,7 +55,7 @@ router.get(
 router.get(
   '/:jobId/auto-tag/word',
   authenticate,
-  authorizeJob,
+  authorizeJobForReview,
   pdfAiAnalysisController.downloadWord.bind(pdfAiAnalysisController)
 );
 
@@ -78,7 +78,7 @@ router.post(
 router.get(
   '/:jobId/ai-analysis',
   authenticate,
-  authorizeJob,
+  authorizeJobForReview,
   pdfAiAnalysisController.getAnalysis.bind(pdfAiAnalysisController)
 );
 

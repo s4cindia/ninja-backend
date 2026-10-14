@@ -3,7 +3,7 @@ import multer from 'multer';
 import { epubController } from '../controllers/epub.controller';
 import { epubContentController } from '../controllers/epub-content.controller';
 import { authenticate, authenticateFlexible } from '../middleware/auth.middleware';
-import { authorizeJob } from '../middleware/authorize-job.middleware';
+import { authorizeJob, authorizeJobForReview } from '../middleware/authorize-job.middleware';
 
 const router = Router();
 const upload = multer({
@@ -23,14 +23,14 @@ const upload = multer({
 router.post('/audit/:jobId', authenticate, authorizeJob, epubController.auditEPUB);
 router.post('/audit-upload', authenticate, upload.single('file'), epubController.auditFromBuffer);
 router.post('/audit-file', authenticate, epubController.auditFromFileId);
-router.get('/audit/:jobId/result', authenticate, authorizeJob, epubController.getAuditResult);
-router.get('/job/:jobId/audit/result', authenticate, authorizeJob, epubController.getAuditResult);
-router.get('/job/:jobId', authenticate, authorizeJob, epubController.getJob);
+router.get('/audit/:jobId/result', authenticate, authorizeJobForReview, epubController.getAuditResult);
+router.get('/job/:jobId/audit/result', authenticate, authorizeJobForReview, epubController.getAuditResult);
+router.get('/job/:jobId', authenticate, authorizeJobForReview, epubController.getJob);
 
 router.post('/job/:jobId/remediation', authenticate, authorizeJob, epubController.createRemediationPlan);
-router.get('/job/:jobId/remediation', authenticate, authorizeJob, epubController.getRemediationPlan);
-router.get('/job/:jobId/remediation/summary', authenticate, authorizeJob, epubController.getRemediationSummary);
-router.get('/job/:jobId/remediation/similar-issues', authenticate, authorizeJob, epubController.getSimilarIssuesGrouping);
+router.get('/job/:jobId/remediation', authenticate, authorizeJobForReview, epubController.getRemediationPlan);
+router.get('/job/:jobId/remediation/summary', authenticate, authorizeJobForReview, epubController.getRemediationSummary);
+router.get('/job/:jobId/remediation/similar-issues', authenticate, authorizeJobForReview, epubController.getSimilarIssuesGrouping);
 router.post('/job/:jobId/remediation/start', authenticate, authorizeJob, epubController.startRemediation);
 router.post('/job/:jobId/remediation/quick-fix/batch', authenticate, authorizeJob, epubController.applyBatchQuickFix);
 router.patch('/job/:jobId/remediation/task/:taskId', authenticate, authorizeJob, epubController.updateTaskStatus);
@@ -50,9 +50,9 @@ router.post('/job/:jobId/apply-fix', authenticate, authorizeJob, epubController.
 router.post('/job/:jobId/apply-quick-fix', authenticate, authorizeJob, epubController.applyQuickFix);
 router.post('/job/:jobId/apply-batch-quick-fix', authenticate, authorizeJob, epubController.applyBatchQuickFix);
 router.post('/:jobId/apply-fix', authenticate, authorizeJob, epubController.applyQuickFix);
-router.get('/job/:jobId/download-remediated', authenticate, authorizeJob, epubController.downloadRemediatedFile);
-router.get('/job/:jobId/comparison', authenticate, authorizeJob, epubController.getComparison);
-router.get('/job/:jobId/comparison/summary', authenticate, authorizeJob, epubController.getComparisonSummary);
+router.get('/job/:jobId/download-remediated', authenticate, authorizeJobForReview, epubController.downloadRemediatedFile);
+router.get('/job/:jobId/comparison', authenticate, authorizeJobForReview, epubController.getComparison);
+router.get('/job/:jobId/comparison/summary', authenticate, authorizeJobForReview, epubController.getComparisonSummary);
 router.get('/supported-fixes', authenticate, epubController.getSupportedFixes);
 
 router.post('/batch', authenticate, epubController.createBatch);
@@ -64,16 +64,16 @@ router.get('/batches', authenticate, epubController.listBatches);
 
 // Static / longer-prefix routes BEFORE parameterized routes to
 // prevent route shadowing (per the routes convention).
-router.get('/job/:jobId/export/prh-preflight', authenticate, authorizeJob, epubController.getPrhExportPreflight);
-router.get('/job/:jobId/export', authenticate, authorizeJob, epubController.exportRemediated);
+router.get('/job/:jobId/export/prh-preflight', authenticate, authorizeJobForReview, epubController.getPrhExportPreflight);
+router.get('/job/:jobId/export', authenticate, authorizeJobForReview, epubController.exportRemediated);
 router.post('/export-batch', authenticate, epubController.exportBatch);
-router.get('/job/:jobId/report', authenticate, authorizeJob, epubController.getAccessibilityReport);
-router.get('/job/:jobId/content', authenticate, authorizeJob, epubContentController.getContent);
-router.get('/job/:jobId/scan-epub-types', authenticate, authorizeJob, epubController.scanEpubTypes);
+router.get('/job/:jobId/report', authenticate, authorizeJobForReview, epubController.getAccessibilityReport);
+router.get('/job/:jobId/content', authenticate, authorizeJobForReview, epubContentController.getContent);
+router.get('/job/:jobId/scan-epub-types', authenticate, authorizeJobForReview, epubController.scanEpubTypes);
 router.post('/job/:jobId/task/:taskId/mark-fixed', authenticate, authorizeJob, epubController.markTaskFixed);
 router.post('/job/:jobId/generate-alt-text', authenticate, authorizeJob, epubController.generateImageAltText);
-router.get('/job/:jobId/asset/*', authenticateFlexible, authorizeJob, epubController.getAsset.bind(epubController));
-router.get('/job/:jobId/image/*', authenticateFlexible, authorizeJob, epubController.getImage.bind(epubController));
+router.get('/job/:jobId/asset/*', authenticateFlexible, authorizeJobForReview, epubController.getAsset.bind(epubController));
+router.get('/job/:jobId/image/*', authenticateFlexible, authorizeJobForReview, epubController.getImage.bind(epubController));
 
 router.get('/fix-template/:issueCode', authenticate, epubController.getFixTemplate);
 router.get('/fix-templates', authenticate, epubController.getAllFixTemplates);

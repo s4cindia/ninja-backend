@@ -15,29 +15,74 @@ export const authorizeJob = async (req: Request, res: Response, next: NextFuncti
   try {
     const jobId = req.params.jobId;
     const userId = req.user?.id;
-    
+
     if (!userId) {
-      res.status(401).json({ 
+      res.status(401).json({
         success: false,
         error: { message: 'Authentication required' }
       });
       return;
     }
-    
+
     if (!jobId) {
-      res.status(400).json({ 
+      res.status(400).json({
         success: false,
         error: { message: 'Job ID is required' }
       });
       return;
     }
-    
-    const job = await authorizeJobAccess(jobId, userId);
+
+    const job = await authorizeJobAccess(jobId, userId, { role: req.user?.role, tenantId: req.user?.tenantId });
     req.job = job;
     next();
   } catch (error) {
     logger.warn(`Authorization failed for job ${req.params.jobId}: ${error instanceof Error ? error.message : 'Unknown error'}`);
-    res.status(404).json({ 
+    res.status(404).json({
+      success: false,
+      error: { message: 'Resource not found or access denied' }
+    });
+    return;
+  }
+};
+
+/**
+ * Same as authorizeJob, except it ALSO allows a TEAM_LEADER/VIEWER teammate
+ * of the job's owner to access it (allowTeamReview, see authorizeJobAccess).
+ * Read-only (GET) routes ONLY -- wiring this into a mutating route would
+ * let a reviewer act on a job they don't own, which TeamReview is
+ * explicitly not meant to grant. See the RBAC design doc.
+ */
+export const authorizeJobForReview = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const jobId = req.params.jobId;
+    const userId = req.user?.id;
+
+    if (!userId) {
+      res.status(401).json({
+        success: false,
+        error: { message: 'Authentication required' }
+      });
+      return;
+    }
+
+    if (!jobId) {
+      res.status(400).json({
+        success: false,
+        error: { message: 'Job ID is required' }
+      });
+      return;
+    }
+
+    const job = await authorizeJobAccess(jobId, userId, {
+      role: req.user?.role,
+      tenantId: req.user?.tenantId,
+      allowTeamReview: true,
+    });
+    req.job = job;
+    next();
+  } catch (error) {
+    logger.warn(`Authorization failed for job ${req.params.jobId}: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    res.status(404).json({
       success: false,
       error: { message: 'Resource not found or access denied' }
     });

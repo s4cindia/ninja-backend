@@ -7,7 +7,7 @@
 
 import { Router } from 'express';
 import { authenticate } from '../middleware/auth.middleware';
-import { authorizeJob } from '../middleware/authorize-job.middleware';
+import { authorizeJob, authorizeJobForReview } from '../middleware/authorize-job.middleware';
 import { rateLimiters } from '../middleware/rate-limit.middleware';
 import { pacReportController } from '../controllers/pac-report.controller';
 
@@ -32,7 +32,7 @@ router.get(
 router.get(
   '/:jobId/pac-report',
   authenticate,
-  authorizeJob,
+  authorizeJobForReview,
   (req, res) => pacReportController.getReport(req, res),
 );
 

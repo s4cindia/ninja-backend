@@ -7,7 +7,7 @@
 import { Router } from 'express';
 import multer from 'multer';
 import { authenticate } from '../middleware/auth.middleware';
-import { authorizeJob } from '../middleware/authorize-job.middleware';
+import { authorizeJob, authorizeJobForReview } from '../middleware/authorize-job.middleware';
 import { validate } from '../middleware/validate.middleware';
 import { pdfRemediationController } from '../controllers/pdf-remediation.controller';
 import {
@@ -80,7 +80,7 @@ router.post(
 router.get(
   '/:jobId/remediation/plan',
   authenticate,
-  authorizeJob,
+  authorizeJobForReview,
   validate(getRemediationPlanSchema),
   (req, res) => pdfRemediationController.getPlan(req, res)
 );
@@ -131,7 +131,7 @@ router.post(
 router.get(
   '/:jobId/remediation/preview/:issueId',
   authenticate,
-  authorizeJob,
+  authorizeJobForReview,
   validate(previewFixSchema),
   (req, res) => pdfRemediationController.previewFix(req, res)
 );
@@ -164,7 +164,7 @@ router.post(
 router.get(
   '/:jobId/remediation/download',
   authenticate,
-  authorizeJob,
+  authorizeJobForReview,
   (req, res) => pdfRemediationController.downloadRemediatedPdf(req, res)
 );
 
@@ -212,7 +212,7 @@ router.post(
 router.get(
   '/:jobId/remediation/history',
   authenticate,
-  authorizeJob,
+  authorizeJobForReview,
   (req, res) => pdfRemediationController.getRemediationHistory(req, res)
 );
 
