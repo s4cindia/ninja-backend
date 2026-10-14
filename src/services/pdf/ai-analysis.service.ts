@@ -420,7 +420,13 @@ const TableSummaryResult = z.object({
 // thousands -- the model's own reasoning consumed the whole visible-output
 // budget before the JSON payload. Schema-constrained decoding + a bigger
 // budget fixes it the same way as FORMULA_ACTUALTEXT_SCHEMA/
-// TABLE_SUMMARY_SCHEMA.
+// TABLE_SUMMARY_SCHEMA. classifyImageType's own maxOutputTokens was raised
+// to 2048 later (2026-10-14) -- schema-constraining it here wasn't enough on
+// its own; it was still left at the smaller 512-token budget from this
+// comment's original fix and kept truncating live (Williams_PDF trial,
+// finishReason:"MAX_TOKENS" on "type":"diagram"/"line-chart" responses) until
+// it was brought in line with every other schema-constrained call in this
+// file.
 const IMAGE_CLASSIFICATION_SCHEMA: Schema = {
   type: SchemaType.OBJECT,
   properties: {
@@ -1642,7 +1648,7 @@ class AiAnalysisService {
         mimeType,
         prompt,
         ImageClassificationResult,
-        { model: 'flash', maxOutputTokens: 512, responseSchema: IMAGE_CLASSIFICATION_SCHEMA }
+        { model: 'flash', maxOutputTokens: 2048, responseSchema: IMAGE_CLASSIFICATION_SCHEMA }
       );
       return {
         ...data,
