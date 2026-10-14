@@ -209,10 +209,12 @@ describe('PdfAutoModeController', () => {
 
   describe('getStatus -- trial-linked job', () => {
     it('returns the trial\'s auto-mode fields', async () => {
+      const startedAt = new Date('2026-10-15T01:00:00Z');
       vi.mocked(prisma.comparisonTrial.findUnique).mockResolvedValue({
         mode: 'auto',
         autoStatus: 'running',
         autoStopReason: null,
+        autoStartedAt: startedAt,
         autoRoundsCompleted: 3,
         autoMaxRounds: 10,
         autoCostSpentUsd: 0.42,
@@ -229,6 +231,7 @@ describe('PdfAutoModeController', () => {
           mode: 'auto',
           autoStatus: 'running',
           autoStopReason: null,
+          autoStartedAt: startedAt,
           autoRoundsCompleted: 3,
           autoMaxRounds: 10,
           autoCostSpentUsd: 0.42,
@@ -297,6 +300,7 @@ describe('PdfAutoModeController', () => {
           mode: 'manual',
           autoStatus: null,
           autoStopReason: null,
+          autoStartedAt: null,
           autoRoundsCompleted: 0,
           autoMaxRounds: 10,
           autoCostSpentUsd: 0,
@@ -307,9 +311,11 @@ describe('PdfAutoModeController', () => {
     });
 
     it('returns the run\'s auto-mode fields once a run exists', async () => {
+      const startedAt = new Date('2026-10-15T01:00:00Z');
       vi.mocked(prisma.pdfAutoRemediationRun.findUnique).mockResolvedValue({
         autoStatus: 'running',
         autoStopReason: null,
+        autoStartedAt: startedAt,
         autoRoundsCompleted: 2,
         autoMaxRounds: 5,
         autoCostSpentUsd: 0.1,
@@ -326,6 +332,7 @@ describe('PdfAutoModeController', () => {
           mode: 'auto',
           autoStatus: 'running',
           autoStopReason: null,
+          autoStartedAt: startedAt,
           autoRoundsCompleted: 2,
           autoMaxRounds: 5,
           autoCostSpentUsd: 0.1,
