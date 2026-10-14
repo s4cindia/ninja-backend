@@ -160,4 +160,91 @@ router.get('/batch/:batchId/progress', async (req: Request, res: Response) => {
   }
 });
 
+// Live progress for ai-analysis.service.ts's applyApprovedSuggestions --
+// both the manual "Apply AI Fixes" button and the Auto Mode loop's own apply
+// step broadcast to `apply-progress:${jobId}` as they run. Direct structural
+// mirror of /batch/:batchId/progress above (same auth + tenant-ownership
+// check), scoped to a PDF/EPUB Job instead of a batch.
+router.get('/pdf/:jobId/apply-progress', async (req: Request, res: Response) => {
+  const { jobId } = req.params;
+
+  const token = (req.query.token as string) || req.headers.authorization?.replace('Bearer ', '');
+
+  if (!token) {
+    res.status(401).json({ success: false, error: 'No token provided' });
+    return;
+  }
+
+  try {
+    const jwtSecret = process.env.JWT_SECRET || process.env.AUTH_SECRET;
+    if (!jwtSecret) {
+      logger.error('JWT_SECRET not configured');
+      res.status(500).json({ success: false, error: 'Server configuration error' });
+      return;
+    }
+
+    const decoded = jwt.verify(token, jwtSecret) as {
+      userId: string;
+      tenantId: string;
+      sub?: string;
+    };
+
+    const userId = decoded.userId || decoded.sub;
+    const tenantId = decoded.tenantId;
+
+    if (!userId || !tenantId) {
+      res.status(401).json({ success: false, error: 'Invalid token payload' });
+      return;
+    }
+
+    const user = await prisma.user.findUnique({
+      where: { id: userId },
+      select: { id: true, tenantId: true, deletedAt: true }
+    });
+
+    if (!user) {
+      res.status(401).json({ success: false, error: 'User not found' });
+      return;
+    }
+
+    if (user.deletedAt) {
+      res.status(401).json({ success: false, error: 'User deactivated' });
+      return;
+    }
+
+    if (user.tenantId !== tenantId) {
+      res.status(401).json({ success: false, error: 'Tenant mismatch' });
+      return;
+    }
+
+    const job = await prisma.job.findFirst({
+      where: { id: jobId, tenantId },
+      select: { id: true }
+    });
+
+    if (!job) {
+      logger.warn(`[SSE] Job ${jobId} not found for tenant ${tenantId}`);
+      res.status(404).json({ success: false, error: 'Job not found' });
+      return;
+    }
+
+    logger.info(`[SSE] Client connected for apply-progress on job ${jobId}, user ${userId}`);
+
+    const clientId = sseService.addClient(res, tenantId);
+    sseService.subscribeToChannel(clientId, `apply-progress:${jobId}`);
+    sseService.sendToClient(clientId, { type: 'subscribed', jobId, channel: `apply-progress:${jobId}` });
+  } catch (err) {
+    if (err instanceof jwt.JsonWebTokenError) {
+      res.status(401).json({ success: false, error: 'Invalid token' });
+      return;
+    }
+    if (err instanceof jwt.TokenExpiredError) {
+      res.status(401).json({ success: false, error: 'Token expired' });
+      return;
+    }
+    logger.error(`[SSE] Authentication error: ${err}`);
+    res.status(401).json({ success: false, error: 'Authentication failed' });
+  }
+});
+
 export default router;
