@@ -51,6 +51,7 @@ import trainingRoutes from "./training.routes";
 import mlMetricsRoutes from "./ml-metrics.routes";
 import adminCorpusRoutes from "./admin/corpus.routes";
 import adminUsersRoutes from "./admin/users.routes";
+import adminTeamsRoutes from "./admin/teams.routes";
 import adminComparisonStudyRoutes from "./admin/comparison-study.routes";
 
 const router = Router();
@@ -162,6 +163,7 @@ router.use("/training", trainingRoutes);
 router.use("/ml-metrics", mlMetricsRoutes);
 router.use("/admin", adminCorpusRoutes);
 router.use("/admin", adminUsersRoutes);
+router.use("/admin", adminTeamsRoutes);
 router.use("/admin", adminComparisonStudyRoutes);
 
 export default router;

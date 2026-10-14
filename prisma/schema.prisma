@@ -28,6 +28,7 @@ model Tenant {
   styleValidationJobs StyleValidationJob[]
   integrityCheckJobs  IntegrityCheckJob[]
   plagiarismCheckJobs PlagiarismCheckJob[]
+  teams               Team[]
 }
 
 model User {
@@ -58,6 +59,8 @@ model User {
   editorSessions        EditorSession[]
   notifications         Notification[]
   emptyPageReviews      EmptyPageReview[]
+  teamMemberships       TeamMembership[]
+  teamReviews           TeamReview[]          @relation("TeamReviewer")
 
   @@index([tenantId])
   @@index([email])
@@ -68,6 +71,67 @@ enum UserRole {
   USER
   VIEWER
   OPERATOR
+}
+
+/// A production cell within a tenant -- e.g. "Cell A", one Team Leader plus
+/// several Executives. Orthogonal to UserRole: UserRole gates platform admin
+/// and research tooling, Team/TeamRole gates oversight of production work.
+/// See the RBAC design doc for the full rationale.
+model Team {
+  id        String   @id @default(uuid())
+  tenantId  String
+  tenant    Tenant   @relation(fields: [tenantId], references: [id])
+  name      String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  members TeamMembership[]
+
+  @@index([tenantId])
+}
+
+enum TeamRole {
+  EXECUTIVE
+  TEAM_LEADER
+  VIEWER
+}
+
+/// Many-to-many: a user can belong to more than one team (e.g. a Team Leader
+/// leading two cells), though today's reality is one flat team per person.
+model TeamMembership {
+  id        String   @id @default(uuid())
+  teamId    String
+  team      Team     @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  teamRole  TeamRole
+  createdAt DateTime @default(now())
+
+  @@unique([teamId, userId])
+  @@index([userId])
+}
+
+enum ReviewOutcome {
+  OK
+  NEEDS_CORRECTION
+}
+
+/// A Team Leader's (never a Viewer's) read-only spot-check or final
+/// certificate review of a job they don't own. Non-blocking -- writing one
+/// never gates the owning Executive's finalize flow, it's purely an audit
+/// trail plus an optional "flag for correction" signal.
+model TeamReview {
+  id         String        @id @default(uuid())
+  jobId      String
+  job        Job           @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  reviewedBy String
+  reviewer   User          @relation("TeamReviewer", fields: [reviewedBy], references: [id])
+  reviewedAt DateTime      @default(now())
+  outcome    ReviewOutcome
+  notes      String?
+
+  @@index([jobId])
+  @@index([reviewedBy])
 }
 
 model Product {
@@ -150,6 +214,7 @@ model Job {
   remediationSessions    RemediationSession[]
   remediationCycleEvents RemediationCycleEvent[]
   pdfAutoRemediationRun  PdfAutoRemediationRun?
+  teamReviews            TeamReview[]
 
   @@index([tenantId])
   @@index([status])
