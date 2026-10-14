@@ -12,7 +12,7 @@
 
 import { Router } from 'express';
 import { authenticate } from '../middleware/auth.middleware';
-import { authorizeJob } from '../middleware/authorize-job.middleware';
+import { authorizeJob, authorizeJobForReview } from '../middleware/authorize-job.middleware';
 import { validate } from '../middleware/validate.middleware';
 import { startAutoModeSchema } from '../schemas/pdf-auto-mode.schemas';
 import { pdfAutoModeController } from '../controllers/pdf-auto-mode.controller';
@@ -40,7 +40,7 @@ router.post(
 router.get(
   '/:jobId/auto-mode/status',
   authenticate,
-  authorizeJob,
+  authorizeJobForReview,
   pdfAutoModeController.getStatus.bind(pdfAutoModeController)
 );
 

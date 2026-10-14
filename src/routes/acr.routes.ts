@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import multer from 'multer';
 import { authenticate, authorize } from '../middleware/auth.middleware';
-import { authorizeJob, authorizeAcr } from '../middleware/authorize-job.middleware';
+import { authorizeJob, authorizeJobForReview, authorizeAcr } from '../middleware/authorize-job.middleware';
 import { validate } from '../middleware/validate.middleware';
 import { acrController } from '../controllers/acr.controller';
 import { verificationController } from '../controllers/verification.controller';
@@ -44,9 +44,9 @@ router.get('/editions/:edition', acrController.getEditionInfo.bind(acrController
 router.get('/remarks-requirements', acrController.getRemarksRequirements.bind(acrController));
 router.get('/criterion-guidance', acrController.getCriterionGuidance.bind(acrController));
 router.post('/:jobId/validate-credibility', authorizeJob, acrController.validateCredibility.bind(acrController));
-router.get('/:jobId/can-finalize', authorizeJob, verificationController.canFinalize.bind(verificationController));
+router.get('/:jobId/can-finalize', authorizeJobForReview, verificationController.canFinalize.bind(verificationController));
 router.post('/:jobId/finalize', authorizeJob, acrController.finalizeAcr.bind(acrController));
-router.get('/:jobId/methodology', authorizeJob, acrController.getMethodology.bind(acrController));
+router.get('/:jobId/methodology', authorizeJobForReview, acrController.getMethodology.bind(acrController));
 router.post('/:acrId/export', authorizeAcr, acrController.exportAcr.bind(acrController));
 
 router.get('/:acrId/versions', authorizeAcr, acrController.getVersions.bind(acrController));

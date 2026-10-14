@@ -8,7 +8,7 @@ import { Router, Request } from 'express';
 import multer from 'multer';
 import rateLimit from 'express-rate-limit';
 import { authenticate } from '../middleware/auth.middleware';
-import { authorizeJob } from '../middleware/authorize-job.middleware';
+import { authorizeJob, authorizeJobForReview } from '../middleware/authorize-job.middleware';
 import { pdfController } from '../controllers/pdf.controller';
 import { pdfAcrController } from '../controllers/pdf-acr.controller';
 import { fileStorageService } from '../services/storage/file-storage.service';
@@ -166,7 +166,7 @@ router.post(
 router.get(
   '/job/:jobId/file',
   authenticate,
-  authorizeJob,
+  authorizeJobForReview,
   async (req, res, next) => {
     try {
       const { jobId } = req.params;
@@ -208,7 +208,7 @@ router.get(
 router.get(
   '/job/:jobId/status',
   authenticate,
-  authorizeJob,
+  authorizeJobForReview,
   (req, res) => {
     const job = req.job!;
     return res.json({
@@ -237,7 +237,7 @@ router.get(
 router.get(
   '/job/:jobId/audit/result',
   authenticate,
-  authorizeJob,
+  authorizeJobForReview,
   (req, res) => pdfController.getAuditResult(req, res)
 );
 
@@ -255,7 +255,7 @@ router.get(
 router.get(
   '/job/:jobId/acr',
   authenticate,
-  authorizeJob,
+  authorizeJobForReview,
   (req, res) => pdfAcrController.generateAcr(req, res)
 );
 
@@ -269,7 +269,7 @@ router.get(
 router.get(
   '/job/:jobId/acr/criteria',
   authenticate,
-  authorizeJob,
+  authorizeJobForReview,
   (req, res) => pdfAcrController.getAcrCriteria(req, res)
 );
 
@@ -284,7 +284,7 @@ router.get(
 router.get(
   '/job/:jobId/report',
   authenticate,
-  authorizeJob,
+  authorizeJobForReview,
   async (req, res, next) => {
     try {
       const format = (req.query.format as string) || 'pdf';
