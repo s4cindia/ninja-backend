@@ -369,6 +369,96 @@ class AutoRemediationLoopService {
   }
 
   /**
+   * Called from the auto-remediation worker's SIGTERM handler, before
+   * worker.close() -- see failActiveAutoRemediationBeforeShutdown() in
+   * workers/index.ts, the direct structural mirror of
+   * failActiveJobsBeforeShutdown() already used for the accessibility queue.
+   *
+   * Unlike reconcileIfOrphaned/reconcileIfOrphanedJobRun above, this does
+   * NOT wait for the remediation-cycle lock to go stale (up to 20 min): a
+   * deploy-triggered shutdown is a definite, immediate death of whatever
+   * round this worker had active, not a maybe-still-alive case those two
+   * exist to distinguish. Real incident, 2026-10-14: a deploy SIGKILLed the
+   * worker task mid-round and autoStatus sat at 'running' for ~11 hours
+   * because nothing happened to poll the one endpoint that lazily triggers
+   * reconciliation -- see reconcileAllOrphanedRuns below for the periodic
+   * sweep that closes that gap for crashes (OOM, no graceful SIGTERM at all)
+   * this function can't catch.
+   *
+   * Deliberately does not touch remediationCycleLockService's own lock --
+   * left to go stale on its existing 20-minute timer (acquireLock's own OR
+   * clause already treats a stale lock as free), same as every other crash
+   * path. The only thing this fixes is autoStatus being wrong for however
+   * long it takes a client to poll next.
+   */
+  async forceStopForShutdown(kind: 'trial' | 'jobRun', id: string): Promise<void> {
+    try {
+      if (kind === 'trial') {
+        const result = await prisma.comparisonTrial.updateMany({
+          where: { id, autoStatus: 'running' },
+          data: { autoStatus: 'stopped', autoStopReason: 'error', autoStopRequested: false, autoStoppedAt: new Date() },
+        });
+        if (result.count > 0) {
+          logger.warn(`[AutoRemediationLoop] Force-stopped trial ${id} for worker shutdown (deploy mid-round)`);
+        }
+      } else {
+        const result = await prisma.pdfAutoRemediationRun.updateMany({
+          where: { id, autoStatus: 'running' },
+          data: { autoStatus: 'stopped', autoStopReason: 'error', autoStopRequested: false, autoStoppedAt: new Date() },
+        });
+        if (result.count > 0) {
+          logger.warn(`[AutoRemediationLoop] Force-stopped job-run ${id} for worker shutdown (deploy mid-round)`);
+        }
+      }
+    } catch (err) {
+      logger.warn(
+        `[AutoRemediationLoop] Failed to force-stop ${kind} ${id} during shutdown (non-fatal -- will self-heal via lock staleness + reconcileIfOrphaned): ${err instanceof Error ? err.message : String(err)}`
+      );
+    }
+  }
+
+  /**
+   * Periodic runtime safety net, called from the worker's watchdog interval
+   * (same cadence as cleanupStalePdfJobs in workers/index.ts). Sweeps every
+   * ComparisonTrial/PdfAutoRemediationRun row currently reporting
+   * autoStatus: 'running' through reconcileIfOrphaned/reconcileIfOrphanedJobRun,
+   * instead of relying on a client happening to poll the one status/start/
+   * stop endpoint that triggers reconciliation today.
+   *
+   * Real incident, 2026-10-14: a deploy killed an in-flight auto-mode round;
+   * nothing polled the right endpoint for ~11 hours, so autoStatus stayed at
+   * 'running' the whole time even though the remediation-cycle lock itself
+   * had gone stale after 20 minutes. forceStopForShutdown above covers a
+   * graceful SIGTERM; this covers everything else (OOM kill, a crash with no
+   * signal at all) the same way cleanupStalePdfJobs backstops
+   * failActiveJobsBeforeShutdown for the accessibility queue.
+   *
+   * Each reconcile call is already a no-op for a genuinely still-running
+   * trial (its lock is still fresh) or an already-terminal one, so this is
+   * safe to run unconditionally on every tick with no extra guarding.
+   */
+  async reconcileAllOrphanedRuns(): Promise<void> {
+    try {
+      const [trials, runs] = await Promise.all([
+        prisma.comparisonTrial.findMany({ where: { autoStatus: 'running' }, select: { id: true } }),
+        prisma.pdfAutoRemediationRun.findMany({ where: { autoStatus: 'running' }, select: { id: true } }),
+      ]);
+      for (const trial of trials) {
+        await this.reconcileIfOrphaned(trial.id).catch((err) => {
+          logger.warn(`[AutoRemediationLoop] Periodic reconcile failed for trial ${trial.id}: ${err instanceof Error ? err.message : String(err)}`);
+        });
+      }
+      for (const run of runs) {
+        await this.reconcileIfOrphanedJobRun(run.id).catch((err) => {
+          logger.warn(`[AutoRemediationLoop] Periodic reconcile failed for job-run ${run.id}: ${err instanceof Error ? err.message : String(err)}`);
+        });
+      }
+    } catch (err) {
+      logger.warn(`[AutoRemediationLoop] Periodic orphan-reconcile sweep failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  /**
    * Starts (or resumes) an auto-mode run for whatever `driver` targets.
    * Intended to be called fire-and-forget from the /auto-mode/start endpoint
    * for a ComparisonTrialAutoRemediationDriver (today's only caller); all

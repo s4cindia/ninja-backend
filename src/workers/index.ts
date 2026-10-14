@@ -1,6 +1,7 @@
 import { Job, Queue, Worker } from 'bullmq';
 import { createWorker } from './base.worker';
-import { QUEUE_NAMES, QUEUE_PREFIX, BatchJobData, BatchJobResult, BatchProcessingJobData, BatchProcessingJobResult, AutoRemediationJobData, AutoRemediationJobResult, JobData, JobResult, getBullMQConnection, getCitationQueue, getAccessibilityQueue, JOB_TYPES, areQueuesAvailable } from '../queues';
+import { QUEUE_NAMES, QUEUE_PREFIX, BatchJobData, BatchJobResult, BatchProcessingJobData, BatchProcessingJobResult, AutoRemediationJobData, AutoRemediationJobResult, JobData, JobResult, getBullMQConnection, getCitationQueue, getAccessibilityQueue, getAutoRemediationQueue, JOB_TYPES, areQueuesAvailable } from '../queues';
+import { autoRemediationLoopService } from '../services/pdf/auto-remediation-loop.service';
 import { processAccessibilityJob } from './processors/accessibility.processor';
 import { processVpatJob } from './processors/vpat.processor';
 import { processFileJob } from './processors/file.processor';
@@ -296,6 +297,39 @@ export async function failActiveJobsBeforeShutdown(): Promise<void> {
 }
 
 /**
+ * Runs on SIGTERM, before worker.close() -- direct structural mirror of
+ * failActiveJobsBeforeShutdown above, for the auto-remediation queue.
+ *
+ * Why a separate function rather than reusing failAndCleanActiveJobs: auto-
+ * remediation's user-visible state lives on ComparisonTrial/
+ * PdfAutoRemediationRun, not on a generic Job row, and BullMQ's own active-
+ * job list is keyed by the per-dispatch id (`${trialId|runId}-${Date.now()}`,
+ * see pdf-auto-mode.controller.ts), not the trial/run id itself -- so each
+ * active job's `.data` (`{kind, id}`) is read instead of its BullMQ job id.
+ * See auto-remediation-loop.service.ts's forceStopForShutdown for why this
+ * doesn't wait for the remediation-cycle lock's own 20-minute staleness
+ * window (real incident, 2026-10-14: a worker-service deploy killed an
+ * in-flight round and nothing reconciled autoStatus for ~11 hours).
+ */
+export async function failActiveAutoRemediationBeforeShutdown(): Promise<void> {
+  if (!areQueuesAvailable()) return;
+  try {
+    const queue = getAutoRemediationQueue();
+    if (!queue) return;
+    const activeJobs = await queue.getActive();
+    if (activeJobs.length > 0) {
+      logger.info(`[Shutdown] Force-stopping ${activeJobs.length} active auto-remediation run(s)`);
+    }
+    for (const bullJob of activeJobs) {
+      const { kind, id } = bullJob.data;
+      await autoRemediationLoopService.forceStopForShutdown(kind, id);
+    }
+  } catch (err) {
+    logger.warn(`[Shutdown] Failed to fail active auto-remediation runs before shutdown (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
+/**
  * Periodic runtime safety net (called from the watchdog interval, every
  * WATCHDOG_INTERVAL_MS): catches PDF/EPUB accessibility Job rows stuck at
  * PROCESSING whose updatedAt is stale, regardless of how they got orphaned —
@@ -478,6 +512,9 @@ export function startBackgroundWorkers(): void {
       });
       cleanupStalePdfJobs().catch(err => {
         logger.error('[Watchdog] Periodic PDF/EPUB job cleanup failed:', err);
+      });
+      autoRemediationLoopService.reconcileAllOrphanedRuns().catch(err => {
+        logger.error('[Watchdog] Periodic auto-remediation orphan sweep failed:', err);
       });
     }, WATCHDOG_INTERVAL_MS);
     logger.info(`✅ Stale job watchdog started (every ${WATCHDOG_INTERVAL_MS / 1000}s)`);

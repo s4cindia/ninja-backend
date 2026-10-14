@@ -104,7 +104,11 @@ describe('PdfAutoModeController', () => {
       await pdfAutoModeController.start(makeReq(), res, next);
 
       expect(autoRemediationLoopService.reconcileIfOrphaned).toHaveBeenCalledWith('trial-1');
-      expect(mockQueueAdd).toHaveBeenCalledWith('auto-remediation-trial-1', { kind: 'trial', id: 'trial-1' }, { jobId: 'trial-1' });
+      // jobId is unique per dispatch attempt (`${id}-${Date.now()}`), not the
+      // bare trial id -- see enqueueOrRunAutoLoop's doc comment for why
+      // (2026-10-14 incident: a stable jobId let a crashed run's wedged
+      // BullMQ entry silently block every future start).
+      expect(mockQueueAdd).toHaveBeenCalledWith('auto-remediation-trial-1', { kind: 'trial', id: 'trial-1' }, { jobId: expect.stringMatching(/^trial-1-\d+$/) });
       expect(res.status).toHaveBeenCalledWith(202);
       expect(next).not.toHaveBeenCalled();
     });
@@ -115,7 +119,7 @@ describe('PdfAutoModeController', () => {
 
       await pdfAutoModeController.start(makeReq({ body: { autoMaxRounds: 15 } as any }), res, next);
 
-      expect(mockQueueAdd).toHaveBeenCalledWith('auto-remediation-trial-1', { kind: 'trial', id: 'trial-1' }, { jobId: 'trial-1' });
+      expect(mockQueueAdd).toHaveBeenCalledWith('auto-remediation-trial-1', { kind: 'trial', id: 'trial-1' }, { jobId: expect.stringMatching(/^trial-1-\d+$/) });
       expect(prisma.pdfAutoRemediationRun.upsert).not.toHaveBeenCalled();
       expect(res.status).toHaveBeenCalledWith(202);
       expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ success: true }));
@@ -152,7 +156,7 @@ describe('PdfAutoModeController', () => {
         create: { jobId: 'job-1' },
         update: {},
       });
-      expect(mockQueueAdd).toHaveBeenCalledWith('auto-remediation-run-1', { kind: 'jobRun', id: 'run-1' }, { jobId: 'run-1' });
+      expect(mockQueueAdd).toHaveBeenCalledWith('auto-remediation-run-1', { kind: 'jobRun', id: 'run-1' }, { jobId: expect.stringMatching(/^run-1-\d+$/) });
       expect(res.status).toHaveBeenCalledWith(202);
       expect(next).not.toHaveBeenCalled();
     });
@@ -197,7 +201,7 @@ describe('PdfAutoModeController', () => {
       await pdfAutoModeController.start(makeReq(), res, next);
 
       expect(autoRemediationLoopService.reconcileIfOrphanedJobRun).toHaveBeenCalledWith('run-1');
-      expect(mockQueueAdd).toHaveBeenCalledWith('auto-remediation-run-1', { kind: 'jobRun', id: 'run-1' }, { jobId: 'run-1' });
+      expect(mockQueueAdd).toHaveBeenCalledWith('auto-remediation-run-1', { kind: 'jobRun', id: 'run-1' }, { jobId: expect.stringMatching(/^run-1-\d+$/) });
       expect(res.status).toHaveBeenCalledWith(202);
       expect(next).not.toHaveBeenCalled();
     });

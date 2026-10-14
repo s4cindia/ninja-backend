@@ -45,15 +45,23 @@ import type { StartAutoModeBody } from '../schemas/pdf-auto-mode.schemas';
  * 2026-10-13, see auto-remediation.processor.ts) when queues are available,
  * falling back to the original direct in-process call otherwise -- keeps
  * local dev without Redis configured working exactly as before this change.
- * `{ jobId: id }` as the BullMQ job ID gives free dedup against a second
- * concurrent start for the same trial/run, on top of the existing
- * autoStatus === 'running' check already in both callers below.
+ *
+ * Dispatch id is `${id}-${Date.now()}`, NOT the bare trial/run id. Real
+ * incident, 2026-10-14: a worker-service deploy SIGKILLed the task mid-round,
+ * which never let BullMQ observe a clean complete/fail for that job -- so
+ * its entry under jobId `id` stayed stuck, and every subsequent start click
+ * silently re-added/re-used that same wedged entry (202 response, but the
+ * worker never logged picking it up again). The "free dedup against a
+ * second concurrent start" a stable jobId was meant to buy is already fully
+ * covered, correctly, by the autoStatus === 'running' check in both callers
+ * below plus remediationCycleLockService's own atomic lock -- so there is no
+ * actual loss from making the BullMQ id unique per attempt instead.
  */
 function enqueueOrRunAutoLoop(kind: 'trial' | 'jobRun', id: string, driver: AutoRemediationDriver): void {
   if (areQueuesAvailable()) {
     const queue = getAutoRemediationQueue();
     if (queue) {
-      queue.add(`auto-remediation-${id}`, { kind, id }, { jobId: id }).catch((err) => {
+      queue.add(`auto-remediation-${id}`, { kind, id }, { jobId: `${id}-${Date.now()}` }).catch((err) => {
         logger.error(
           `[PdfAutoMode] Failed to enqueue auto loop for ${kind} ${id}, falling back to in-process: ${err instanceof Error ? err.message : String(err)}`
         );
