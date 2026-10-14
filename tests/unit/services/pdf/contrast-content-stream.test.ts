@@ -927,6 +927,115 @@ EMC
     // the real document.
     expect(findPrecedingColor(stream, secondRunStart)).toEqual([0.184, 0.192, 0.22]);
   });
+
+  // 2026-10-14 incident: ~495 of a single Auto Mode round's apply failures
+  // on one document were all this exact scn/colorspace bail-out --
+  // Williams_PDF.pdf sets its text color via `cs`+`scn` against a named
+  // ICCBased colorspace rather than bare rg/g/k. findPrecedingColor can now
+  // resolve this when the caller supplies a resolver (pdf-contrast-writer.
+  // service.ts's resolveColorSpaceKind, which reads the actual /ColorSpace
+  // resource -- these tests only exercise the token-walk/dispatch side,
+  // using a fake resolver, since this module stays pdf-lib-free).
+  describe('findPrecedingColor -- resolved sc/scn via an injected colorspace resolver', () => {
+    it('resolves scn operands as RGB when the resolver identifies the active colorspace as rgb', () => {
+      const stream = `/CS0 cs
+0.3 0.4 0.5 scn
+BT
+<41> Tj
+ET
+`;
+      const pos = stream.indexOf('ET');
+      const resolve = (name: string) => (name === 'CS0' ? 'rgb' as const : null);
+      expect(findPrecedingColor(stream, pos, resolve)).toEqual([0.3, 0.4, 0.5]);
+    });
+
+    it('resolves scn operands as gray (1 operand) and cmyk (4 operands) the same way g/k do', () => {
+      const grayStream = `/CS0 cs
+0.75 scn
+BT
+<41> Tj
+ET
+`;
+      const resolveGray = (name: string) => (name === 'CS0' ? 'gray' as const : null);
+      expect(findPrecedingColor(grayStream, grayStream.indexOf('ET'), resolveGray)).toEqual([0.75, 0.75, 0.75]);
+
+      const cmykStream = `/CS0 cs
+0 0 0 0.2 scn
+BT
+<41> Tj
+ET
+`;
+      const resolveCmyk = (name: string) => (name === 'CS0' ? 'cmyk' as const : null);
+      const result = findPrecedingColor(cmykStream, cmykStream.indexOf('ET'), resolveCmyk)!;
+      expect(result[0]).toBeCloseTo(0.8);
+      expect(result[1]).toBeCloseTo(0.8);
+      expect(result[2]).toBeCloseTo(0.8);
+    });
+
+    it('still declines when the resolver cannot resolve the active colorspace (e.g. Separation/Indexed/Pattern)', () => {
+      const stream = `/CS0 cs
+1 scn
+BT
+<41> Tj
+ET
+`;
+      const resolve = () => null;
+      expect(findPrecedingColor(stream, stream.indexOf('ET'), resolve)).toBeNull();
+    });
+
+    it('still declines when no resolver is supplied at all -- exact pre-existing behavior, unchanged', () => {
+      const stream = `/CS0 cs
+0.3 0.4 0.5 scn
+BT
+<41> Tj
+ET
+`;
+      expect(findPrecedingColor(stream, stream.indexOf('ET'))).toBeNull();
+    });
+
+    it('declines when scn appears before any cs has set an active colorspace', () => {
+      const stream = `BT
+0.3 0.4 0.5 scn
+<41> Tj
+ET
+`;
+      const resolve = () => 'rgb' as const;
+      expect(findPrecedingColor(stream, stream.indexOf('ET'), resolve)).toBeNull();
+    });
+
+    it('tracks the active colorspace through q/Q exactly like the color itself (PDF32000 graphics state)', () => {
+      const stream = `/CS0 cs
+0.3 0.4 0.5 scn
+q
+/CS1 cs
+0.9 0.9 0.9 scn
+Q
+BT
+<41> Tj
+ET
+`;
+      // CS1 is scoped to the q...Q that already closed -- the position
+      // queried below must see CS0's color (via the RESTORED cs name, CS0),
+      // not CS1's, mirroring the existing closed-q/Q color test above.
+      const resolve = (name: string) => {
+        if (name === 'CS0') return 'rgb' as const;
+        if (name === 'CS1') return 'gray' as const;
+        return null;
+      };
+      expect(findPrecedingColor(stream, stream.indexOf('ET'), resolve)).toEqual([0.3, 0.4, 0.5]);
+    });
+
+    it('resolves a direct device-space name set via cs (no Resources indirection) the same as a resource name', () => {
+      const stream = `/DeviceRGB cs
+0.6 0.6 0.6 scn
+BT
+<41> Tj
+ET
+`;
+      const resolve = (name: string) => (name === 'DeviceRGB' ? 'rgb' as const : null);
+      expect(findPrecedingColor(stream, stream.indexOf('ET'), resolve)).toEqual([0.6, 0.6, 0.6]);
+    });
+  });
 });
 
 describe('findSiblingRuns', () => {

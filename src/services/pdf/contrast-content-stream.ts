@@ -750,12 +750,34 @@ export function findSiblingRuns(
 }
 
 /**
+ * The three device color families this module can interpret into RGB --
+ * shared between g/rg/k (self-describing by operator name) and sc/scn
+ * (colorspace-dependent, resolved separately -- see findPrecedingColor's own
+ * doc comment and resolveColorSpace below).
+ */
+export type DeviceColorKind = 'gray' | 'rgb' | 'cmyk';
+
+function numsToDeviceRgb(kind: DeviceColorKind, nums: number[]): [number, number, number] | null {
+  switch (kind) {
+    case 'gray': return nums.length === 1 ? [nums[0], nums[0], nums[0]] : null;
+    case 'rgb': return nums.length === 3 ? [nums[0], nums[1], nums[2]] : null;
+    case 'cmyk': {
+      if (nums.length !== 4) return null;
+      const [c, m, y, k] = nums;
+      return [(1 - c) * (1 - k), (1 - m) * (1 - k), (1 - y) * (1 - k)];
+    }
+  }
+}
+
+/**
  * Parses a single fill-color op's raw operand text (as located by
  * findFillColorOps -- operands through the operator keyword) into unit
  * (0-1) RGB. Returns null for `sc`/`scn`, whose operand count and meaning
- * depend on the current (untracked-by-this-module) /ColorSpace -- declining
- * rather than guessing a wrong color, same "bail rather than guess"
- * discipline as everywhere else in this file.
+ * depend on the current /ColorSpace -- this function has no way to resolve
+ * that (it only sees one op's own operand text, not the stream state
+ * leading up to it). findPrecedingColor's own token walk handles sc/scn
+ * separately, tracking the active colorspace name via `cs` and resolving it
+ * through an injected callback when one is supplied.
  */
 function parseFillColorOpToRgb(content: string, op: { start: number; end: number }): [number, number, number] | null {
   const parts = content.slice(op.start, op.end).trim().split(/\s+/);
@@ -763,13 +785,9 @@ function parseFillColorOpToRgb(content: string, op: { start: number; end: number
   const nums = parts.slice(0, -1).map(Number);
   if (nums.some(n => Number.isNaN(n))) return null;
   switch (opName) {
-    case 'g': return nums.length === 1 ? [nums[0], nums[0], nums[0]] : null;
-    case 'rg': return nums.length === 3 ? [nums[0], nums[1], nums[2]] : null;
-    case 'k': {
-      if (nums.length !== 4) return null;
-      const [c, m, y, k] = nums;
-      return [(1 - c) * (1 - k), (1 - m) * (1 - k), (1 - y) * (1 - k)];
-    }
+    case 'g': return numsToDeviceRgb('gray', nums);
+    case 'rg': return numsToDeviceRgb('rgb', nums);
+    case 'k': return numsToDeviceRgb('cmyk', nums);
     default: return null;
   }
 }
@@ -817,42 +835,82 @@ function parseFillColorOpToRgb(content: string, op: { start: number; end: number
  * color op of their own) until the next explicit color reset.
  *
  * Declines (returns null) rather than guessing when the color in effect at
- * `beforePos` was last set by `sc`/`scn` (colorspace-dependent, unparseable
- * without tracking /ColorSpace -- same "bail rather than guess" discipline
- * as parseFillColorOpToRgb itself): that op genuinely IS the ambient color
- * right before `beforePos`, so falling back to an earlier op would return a
- * color that's no longer actually in effect there, an active wrong guess
- * rather than a declined unknown. Falls back to pure black ([0,0,0], the
- * PDF default initial fill color per PDF32000-1:2008 §8.6.3) only when NO
- * fill-color op is in effect at all (never set, or every `q` this position
- * is nested in was pushed before any color op ever ran).
+ * `beforePos` was last set by `sc`/`scn` and `resolveColorSpace` is either
+ * not supplied or can't resolve the active /ColorSpace: that op genuinely IS
+ * the ambient color right before `beforePos`, so falling back to an earlier
+ * op would return a color that's no longer actually in effect there, an
+ * active wrong guess rather than a declined unknown. Falls back to pure
+ * black ([0,0,0], the PDF default initial fill color per
+ * PDF32000-1:2008 §8.6.3) only when NO fill-color op is in effect at all
+ * (never set, or every `q` this position is nested in was pushed before any
+ * color op ever ran).
+ *
+ * @param resolveColorSpace Resolves a /ColorSpace resource name (as set by a
+ * `cs` operator) to the device-color family an sc/scn operand list under it
+ * should be interpreted as. Optional and injected rather than looked up
+ * directly here -- this module stays a pure content-stream-string parser
+ * with no pdf-lib/Resources-dictionary dependency; the caller (which already
+ * has the PDFDocument/page) supplies the actual resolution logic. Omitting
+ * it keeps the exact pre-existing behavior (sc/scn always declined), which
+ * every existing caller/test still gets unchanged.
  */
-export function findPrecedingColor(content: string, beforePos: number): [number, number, number] | null {
+export function findPrecedingColor(
+  content: string,
+  beforePos: number,
+  resolveColorSpace?: (csName: string) => DeviceColorKind | null
+): [number, number, number] | null {
   const tokens = tokenize(content);
 
   // 'unset' = the PDF default black, never overridden by any op seen so far
-  // at this stack depth. 'unknown' = last set by an unparseable sc/scn.
+  // at this stack depth. 'unknown' = last set by an unparseable/unresolvable
+  // sc/scn.
   type ColorState = { kind: 'rgb'; rgb: [number, number, number] } | { kind: 'unknown' } | { kind: 'unset' };
 
   let current: ColorState = { kind: 'unset' };
   const stack: ColorState[] = [];
+  // Active non-stroking colorspace resource name (set by `cs`) -- tracked
+  // alongside `current` since a colorspace selection is graphics state too
+  // (PDF32000-1:2008 §8.4, pushed/popped by q/Q exactly like the color
+  // itself), and is needed to interpret a later sc/scn's operand count and
+  // meaning, which the operator name alone can never reveal.
+  let currentCsName: string | null = null;
+  const csStack: Array<string | null> = [];
   let pendingStart: number | null = null;
+  let lastOperand: Token | null = null;
 
   for (const tk of tokens) {
     if (tk.start >= beforePos) break;
     if (tk.t !== 'op') {
       if (pendingStart === null) pendingStart = tk.start;
+      lastOperand = tk;
       continue;
     }
     if (tk.v === 'q') {
       stack.push(current);
+      csStack.push(currentCsName);
     } else if (tk.v === 'Q') {
       current = stack.pop() ?? current; // unbalanced Q: nothing sensible to revert to
+      currentCsName = csStack.length > 0 ? csStack.pop()! : currentCsName;
+    } else if (tk.v === 'cs') {
+      // `cs`'s sole operand is a name token (a device-space name like
+      // /DeviceRGB, or a /Resources /ColorSpace key) -- `lastOperand` is
+      // exactly that token, since cs always takes precisely one operand.
+      currentCsName = lastOperand?.t === 'name' ? lastOperand.v.slice(1) : null;
     } else if (FILL_COLOR_OPS.has(tk.v)) {
-      const rgb = parseFillColorOpToRgb(content, { start: pendingStart ?? tk.start, end: tk.end });
-      current = rgb ? { kind: 'rgb', rgb } : { kind: 'unknown' };
+      const opSpan = { start: pendingStart ?? tk.start, end: tk.end };
+      if ((tk.v === 'sc' || tk.v === 'scn') && currentCsName && resolveColorSpace) {
+        const kind = resolveColorSpace(currentCsName);
+        const parts = content.slice(opSpan.start, opSpan.end).trim().split(/\s+/);
+        const nums = parts.slice(0, -1).map(Number);
+        const rgb = kind && !nums.some(n => Number.isNaN(n)) ? numsToDeviceRgb(kind, nums) : null;
+        current = rgb ? { kind: 'rgb', rgb } : { kind: 'unknown' };
+      } else {
+        const rgb = parseFillColorOpToRgb(content, opSpan);
+        current = rgb ? { kind: 'rgb', rgb } : { kind: 'unknown' };
+      }
     }
     pendingStart = null;
+    lastOperand = null;
   }
 
   if (current.kind === 'rgb') return current.rgb;

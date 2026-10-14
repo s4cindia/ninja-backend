@@ -42,7 +42,7 @@ import {
 import type { TableCell, TableInfo } from './structure-analyzer.service';
 import { locateXObjectInvocation, findNearestMcidForPosition } from './figure-content-tagger';
 import { locateTextRun, locateEnclosingTextObject, computeCtmAt, findPrecedingColor, type TextRunMatch } from './contrast-content-stream';
-import { MIN_APPLY_CONFIDENCE } from './pdf-contrast-writer.service';
+import { MIN_APPLY_CONFIDENCE, resolveColorSpaceKind } from './pdf-contrast-writer.service';
 import { verifyStillNoDetectableInk } from './color-contrast-verification';
 import { tokenize } from '../zone-extractor/seam-c/content-stream';
 import type { ParsedPDF } from './pdf-parser.service';
@@ -3693,7 +3693,7 @@ export class PdfStructureWriterService {
 
     let ambientColorOp = '';
     if (!hasOwnColor && !preambleHasColor) {
-      const ambientColor = findPrecedingColor(content, btStart);
+      const ambientColor = findPrecedingColor(content, btStart, (csName) => resolveColorSpaceKind(doc, pageNumber, csName));
       if (!ambientColor) {
         return fail(`${nested} the ambient fill color to preserve when relocating it could not be determined (an untracked colorspace was last set).`);
       }
