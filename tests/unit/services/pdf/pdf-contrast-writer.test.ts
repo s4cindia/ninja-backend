@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { PDFDocument, StandardFonts, degrees, rgb } from 'pdf-lib';
-import { spliceColorFix, pdfContrastWriterService, resolveColorContrastTargets } from '../../../../src/services/pdf/pdf-contrast-writer.service';
+import { PDFDocument, PDFName, PDFDict, StandardFonts, degrees, rgb } from 'pdf-lib';
+import { spliceColorFix, pdfContrastWriterService, resolveColorContrastTargets, resolveColorSpaceKind } from '../../../../src/services/pdf/pdf-contrast-writer.service';
 import { locateTextRun, findPrecedingColor } from '../../../../src/services/pdf/contrast-content-stream';
 import { decodePageContent, writePageContent } from '../../../../src/services/pdf/pdf-content-stream-io';
 import { pdfAuditService } from '../../../../src/services/pdf/pdf-audit.service';
@@ -159,6 +159,98 @@ describe('findPrecedingColor', () => {
   it('falls back to pure black when no fill-color op precedes this position at all', () => {
     const content = '(no color op before this) Tj\nHERE';
     expect(findPrecedingColor(content, content.indexOf('HERE'))).toEqual([0, 0, 0]);
+  });
+});
+
+// Shared by the resolveColorSpaceKind tests below and the end-to-end
+// fixColorContrast integration test further down this file.
+function addColorSpaceResource(doc: PDFDocument, pageIndex0: number, name: string, value: unknown): void {
+  const page = doc.getPage(pageIndex0);
+  const context = doc.context;
+  let resources = page.node.Resources();
+  if (!resources) {
+    resources = context.obj({}) as PDFDict;
+    page.node.set(PDFName.of('Resources'), resources);
+  }
+  let colorSpaces = resources.lookupMaybe(PDFName.of('ColorSpace'), PDFDict);
+  if (!colorSpaces) {
+    colorSpaces = context.obj({}) as PDFDict;
+    resources.set(PDFName.of('ColorSpace'), colorSpaces);
+  }
+  colorSpaces.set(PDFName.of(name), context.obj(value));
+}
+
+// 2026-10-14 incident: ~495 of a single Auto Mode round's apply failures on
+// one real document (Williams_PDF.pdf, a professionally-typeset/InDesign-
+// style export) were ALL findPrecedingColor's scn/colorspace bail-out --
+// the document sets its text color via `cs`+`scn` against a named ICCBased
+// colorspace rather than bare rg/g/k, which is extremely common in that
+// class of PDF generator. resolveColorSpaceKind is the piece that reads the
+// real /Resources /ColorSpace dictionary to unblock the common cases.
+describe('resolveColorSpaceKind', () => {
+
+  it('resolves a direct device-space name set via cs with no Resources indirection at all', async () => {
+    const doc = await PDFDocument.create();
+    doc.addPage([100, 100]);
+    expect(resolveColorSpaceKind(doc, 1, 'DeviceRGB')).toBe('rgb');
+    expect(resolveColorSpaceKind(doc, 1, 'DeviceGray')).toBe('gray');
+    expect(resolveColorSpaceKind(doc, 1, 'DeviceCMYK')).toBe('cmyk');
+  });
+
+  it('resolves an ICCBased colorspace by its stream dict\'s /N (component count)', async () => {
+    const doc = await PDFDocument.create();
+    doc.addPage([100, 100]);
+    const rgbIcc = doc.context.register(doc.context.stream(new Uint8Array(4), { N: 3 }));
+    const grayIcc = doc.context.register(doc.context.stream(new Uint8Array(4), { N: 1 }));
+    const cmykIcc = doc.context.register(doc.context.stream(new Uint8Array(4), { N: 4 }));
+    addColorSpaceResource(doc, 0, 'CS0', ['ICCBased', rgbIcc]);
+    addColorSpaceResource(doc, 0, 'CS1', ['ICCBased', grayIcc]);
+    addColorSpaceResource(doc, 0, 'CS2', ['ICCBased', cmykIcc]);
+
+    expect(resolveColorSpaceKind(doc, 1, 'CS0')).toBe('rgb');
+    expect(resolveColorSpaceKind(doc, 1, 'CS1')).toBe('gray');
+    expect(resolveColorSpaceKind(doc, 1, 'CS2')).toBe('cmyk');
+  });
+
+  it('resolves CalRGB/CalGray array-form colorspaces the same as their device equivalent', async () => {
+    const doc = await PDFDocument.create();
+    doc.addPage([100, 100]);
+    addColorSpaceResource(doc, 0, 'CS0', ['CalRGB', { WhitePoint: [0.9505, 1.0, 1.089] }]);
+    addColorSpaceResource(doc, 0, 'CS1', ['CalGray', { WhitePoint: [0.9505, 1.0, 1.089] }]);
+
+    expect(resolveColorSpaceKind(doc, 1, 'CS0')).toBe('rgb');
+    expect(resolveColorSpaceKind(doc, 1, 'CS1')).toBe('gray');
+  });
+
+  it('declines (returns null) for colorspace families that need more than a components-count lookup', async () => {
+    const doc = await PDFDocument.create();
+    doc.addPage([100, 100]);
+    addColorSpaceResource(doc, 0, 'CS0', ['Separation', 'Spot1', 'DeviceCMYK', 12]);
+    // Lookup-table element (normally a stream/string) is never read for the
+    // Indexed case -- resolveColorSpaceKind declines as soon as it sees the
+    // family name, so a placeholder number is fine here.
+    addColorSpaceResource(doc, 0, 'CS1', ['Indexed', 'DeviceRGB', 255, 0]);
+    addColorSpaceResource(doc, 0, 'CS2', ['Lab', { WhitePoint: [0.9505, 1.0, 1.089] }]);
+    addColorSpaceResource(doc, 0, 'CS3', 'Pattern');
+
+    expect(resolveColorSpaceKind(doc, 1, 'CS0')).toBeNull();
+    expect(resolveColorSpaceKind(doc, 1, 'CS1')).toBeNull();
+    expect(resolveColorSpaceKind(doc, 1, 'CS2')).toBeNull();
+    expect(resolveColorSpaceKind(doc, 1, 'CS3')).toBeNull();
+  });
+
+  it('declines when the resource name does not exist in /Resources /ColorSpace at all', async () => {
+    const doc = await PDFDocument.create();
+    doc.addPage([100, 100]);
+    addColorSpaceResource(doc, 0, 'CS0', ['ICCBased', doc.context.register(doc.context.stream(new Uint8Array(4), { N: 3 }))]);
+
+    expect(resolveColorSpaceKind(doc, 1, 'NotARealName')).toBeNull();
+  });
+
+  it('declines (does not throw) when the page has no /Resources at all', async () => {
+    const doc = await PDFDocument.create();
+    doc.addPage([100, 100]);
+    expect(resolveColorSpaceKind(doc, 1, 'CS0')).toBeNull();
   });
 });
 
@@ -733,6 +825,54 @@ ET
     // The next run is completely untouched -- no restore/fix op of any
     // kind was ever inserted into or around it.
     expect(finalContent).toContain('BT\n1 0 0 1 50 130 Tm\n(becomes) Tj\nET');
+  });
+
+  // Real incident, 2026-10-14: this is the actual shape of Williams_PDF.pdf's
+  // convention (confirmed live) -- the ambient text color is set once via
+  // `cs`+`scn` against a named ICCBased colorspace, not bare rg/g/k, and the
+  // run being fixed has no color op of its own (inherits that ambient
+  // color). Before resolveColorSpaceKind existed, fixColorContrast's restore
+  // -after-fix lookup had no way to interpret the scn operands and failed
+  // with "untracked colorspace" for ~495 suggestions in a single round on
+  // this real document. This proves the full fixColorContrast integration
+  // (not just the lower-level findPrecedingColor/resolveColorSpaceKind unit
+  // tests above) now succeeds for exactly this shape.
+  it('fixes a run whose ambient color was set via cs+scn against a real ICCBased colorspace (the actual Williams_PDF.pdf incident shape)', async () => {
+    vi.mocked(verifyContrastInRegion).mockResolvedValue({ ratio: 15, passes: true, foreground: '#000000', background: '#ffffff', uncertain: false });
+
+    const src = await PDFDocument.create();
+    src.addPage([500, 700]);
+    const doc = await PDFDocument.load(await src.save());
+
+    const iccRgb = doc.context.register(doc.context.stream(new Uint8Array(4), { N: 3 }));
+    addColorSpaceResource(doc, 0, 'CS0', ['ICCBased', iccRgb]);
+
+    const content = `/CS0 cs
+0.2 0.3 0.4 scn
+BT
+1 0 0 1 50 150 Tm
+(low contrast text) Tj
+ET
+`;
+    writePageContent(doc, 1, content);
+
+    const issue = contrastIssue({
+      boundingBox: { x: 50, y: 700 - 150, width: 100, height: 14, pageWidth: 500, pageHeight: 700 },
+      contrastData: { foreground: '#75767b', background: '#ffffff', ratio: 2.1, requiredRatio: 4.5, isLargeText: false },
+    });
+
+    const result = await pdfContrastWriterService.fixColorContrast(doc, issue);
+
+    expect(result.success).toBe(true);
+    expect(result.error).toBeUndefined();
+
+    // The restore-after-fix value resolves the scn operands as RGB (ICCBased
+    // /N 3) and is written as plain rg, per this module's own documented
+    // convention of always restoring via rg regardless of the original
+    // operator's colorspace.
+    const finalContent = decodePageContent(doc, 1)!;
+    const afterRun = finalContent.slice(finalContent.indexOf('Tj') + 'Tj'.length);
+    expect(afterRun).toContain('0.2 0.3 0.4 rg');
   });
 
   it('fails gracefully when the issue has no contrastData', async () => {

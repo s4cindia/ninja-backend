@@ -57,11 +57,11 @@
  * writes structure-tree tags or metadata), so this stays conservative.
  */
 
-import { PDFDocument } from 'pdf-lib';
+import { PDFDocument, PDFName, PDFDict, PDFArray, PDFRawStream, PDFNumber } from 'pdf-lib';
 import { AuditIssue } from '../audit/base-audit.service';
 import { logger } from '../../lib/logger';
 import { decodePageContent, writePageContent } from './pdf-content-stream-io';
-import { locateTextRun, locateTextRunsForPage, locateEnclosingTextObject, findPrecedingColor, findSiblingRuns, type TextRunMatch, type PageContrastTarget } from './contrast-content-stream';
+import { locateTextRun, locateTextRunsForPage, locateEnclosingTextObject, findPrecedingColor, findSiblingRuns, type TextRunMatch, type PageContrastTarget, type DeviceColorKind } from './contrast-content-stream';
 import { computeCompliantColor } from './color-contrast-correction';
 import { verifyContrastInRegion, verifyBackplateContrast } from './color-contrast-verification';
 import { computeBackplateRect, spliceBackplate } from './pdf-contrast-backplate';
@@ -258,6 +258,91 @@ export function resolveColorContrastTargets(doc: PDFDocument, issues: AuditIssue
   }
 
   return result;
+}
+
+// Device-space names that take the same 1/3/4-operand meaning as g/rg/k
+// whether reached directly via `cs` or indirected through a CalGray/CalRGB
+// wrapper -- the PDF spec defines CalGray/CalRGB as colorimetric refinements
+// of DeviceGray/DeviceRGB with an identical operand count/range, so treating
+// them as their device equivalent for a best-effort restore (not a
+// colorimetrically exact one) is correct, not an approximation like the
+// ICCBased case below.
+const DEVICE_COLORSPACE_KIND: Record<string, DeviceColorKind> = {
+  DeviceGray: 'gray',
+  CalGray: 'gray',
+  DeviceRGB: 'rgb',
+  CalRGB: 'rgb',
+  DeviceCMYK: 'cmyk',
+};
+
+/**
+ * Resolves a /ColorSpace resource name (as set by a content-stream `cs`
+ * operator) to the device-color family an sc/scn operand list under it
+ * should be interpreted as -- sc/scn's own operand count and meaning depend
+ * entirely on the active colorspace (PDF32000-1:2008 §8.6.8), unlike g/rg/k
+ * which are self-describing by operator name alone.
+ *
+ * Real incident, 2026-10-14: ~495 of a single Auto Mode round's apply
+ * failures on one document were ALL this exact "untracked colorspace"
+ * bail-out in findPrecedingColor. A professionally-typeset PDF (InDesign/
+ * Distiller output, which Williams_PDF.pdf is) routinely wraps even plain
+ * black body text in a named ICCBased colorspace rather than emitting bare
+ * DeviceGray/RGB/CMYK directly, so every `cs`-then-`scn` fill in the whole
+ * document was previously unresolvable.
+ *
+ * Only resolves the cases this module can interpret without a full color-
+ * management engine: a direct device-space name (or CalGray/CalRGB, see
+ * DEVICE_COLORSPACE_KIND above), or an ICCBased colorspace -- resolved by
+ * its stream dict's /N (component count: 1/3/4), the same "ignore the
+ * actual ICC profile transform, treat the raw components as the
+ * corresponding device space" approximation every practical PDF tool uses
+ * for this purpose. This is the real-world case the incident above needed.
+ *
+ * Deliberately declines (returns null) for every colorspace family that
+ * needs more than a components-count lookup to resolve correctly --
+ * Indexed (needs the lookup table), Separation/DeviceN (needs evaluating the
+ * tint-transform function -- a spot color's tint value is NOT the same
+ * thing as a gray level), Lab (needs an L*a*b*->RGB conversion), and Pattern
+ * (has no single restorable color at all) -- same "bail rather than guess"
+ * discipline as the rest of this file, not a TODO. Also declines (via the
+ * outer try/catch) on any malformed/unexpected PDF structure -- pdf-lib's
+ * own lookup()/lookupMaybe() throw on a type mismatch rather than returning
+ * null, which this treats the same as "can't resolve" rather than letting
+ * it propagate and fail the whole apply step.
+ */
+export function resolveColorSpaceKind(doc: PDFDocument, pageNumber: number, csName: string): DeviceColorKind | null {
+  const direct = DEVICE_COLORSPACE_KIND[csName];
+  if (direct) return direct;
+
+  try {
+    const page = doc.getPage(pageNumber - 1);
+    const resources = page.node.Resources();
+    if (!resources) return null;
+    const colorSpaces = resources.lookup(PDFName.of('ColorSpace'), PDFDict);
+    const entry = colorSpaces.lookup(PDFName.of(csName));
+
+    // decodeText(), not asString()/toString() -- asString() returns the raw
+    // encoded form INCLUDING the leading '/' (e.g. "/ICCBased"), which would
+    // never match DEVICE_COLORSPACE_KIND's bare keys or the 'ICCBased'
+    // literal below.
+    if (entry instanceof PDFName) {
+      return DEVICE_COLORSPACE_KIND[entry.decodeText()] ?? null;
+    }
+    if (!(entry instanceof PDFArray) || entry.size() === 0) return null;
+
+    const family = entry.lookup(0, PDFName).decodeText();
+    if (family === 'ICCBased') {
+      const stream = entry.lookup(1, PDFRawStream);
+      const n = stream.dict.lookup(PDFName.of('N'), PDFNumber).asNumber();
+      if (n === 1) return 'gray';
+      if (n === 3) return 'rgb';
+      if (n === 4) return 'cmyk';
+      return null;
+    }
+    return DEVICE_COLORSPACE_KIND[family] ?? null;
+  } catch {
+    return null;
+  }
 }
 
 export class PdfContrastWriterService {
@@ -493,7 +578,11 @@ export class PdfContrastWriterService {
     // unrelated content was never relying on. See findPrecedingColor's own
     // doc comment for the full reasoning.
     const fixInsertionPoint = match.internalFillColorOp ? match.internalFillColorOp.start : match.start;
-    const originalRgb = findPrecedingColor(content, fixInsertionPoint);
+    const originalRgb = findPrecedingColor(
+      content,
+      fixInsertionPoint,
+      (csName) => resolveColorSpaceKind(doc, pageNumber, csName)
+    );
     if (!originalRgb) {
       return {
         issueId,
@@ -605,13 +694,17 @@ export class PdfContrastWriterService {
       // "nothing of this run's own overrides the ambient color").
       const trueTextRgb =
         match.restoreColorOverride ??
-        (match.internalFillColorOp ? findPrecedingColor(content, match.internalFillColorOp.end) : originalRgb);
+        (match.internalFillColorOp
+          ? findPrecedingColor(content, match.internalFillColorOp.end, (csName) => resolveColorSpaceKind(doc, pageNumber, csName))
+          : originalRgb);
       if (!trueTextRgb) {
         return { issueId, success: false, before, after: 'unknown', error: 'Could not determine the text run\'s true color for backplate contrast' };
       }
       const backplateColorHex = computeCompliantColor(cd.background, unitRgbToHex(trueTextRgb), EXTREME_TARGET_RATIO).color;
       const rect = computeBackplateRect(boundingBox);
-      const spliced = enclosing ? spliceBackplate(content, enclosing, rect, hexToUnitRgb(backplateColorHex)) : null;
+      const spliced = enclosing
+        ? spliceBackplate(content, enclosing, rect, hexToUnitRgb(backplateColorHex), (csName) => resolveColorSpaceKind(doc, pageNumber, csName))
+        : null;
 
       if (spliced) {
         writePageContent(doc, pageNumber, spliced);

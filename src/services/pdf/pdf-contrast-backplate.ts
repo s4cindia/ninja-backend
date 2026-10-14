@@ -18,7 +18,7 @@
  * contrast-content-stream.ts, which this module's spliceBackplate consumes.
  */
 
-import type { EnclosingTextObject } from './contrast-content-stream';
+import type { EnclosingTextObject, DeviceColorKind } from './contrast-content-stream';
 import { findPrecedingColor } from './contrast-content-stream';
 import { RENDER_SCALE } from './color-contrast-verification';
 
@@ -189,12 +189,13 @@ export function spliceBackplate(
   content: string,
   enclosing: EnclosingTextObject,
   rect: BackplateRect,
-  colorRgb: [number, number, number]
+  colorRgb: [number, number, number],
+  resolveColorSpace?: (csName: string) => DeviceColorKind | null
 ): string | null {
   const { a, d, e, f } = enclosing.ctm;
   if (a === 0 || d === 0) return null;
 
-  const restoreRgb = findPrecedingColor(content, enclosing.btStart);
+  const restoreRgb = findPrecedingColor(content, enclosing.btStart, resolveColorSpace);
   if (!restoreRgb) return null;
 
   const invA = 1 / a;
