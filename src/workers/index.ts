@@ -1,11 +1,12 @@
 import { Job, Queue, Worker } from 'bullmq';
 import { createWorker } from './base.worker';
-import { QUEUE_NAMES, QUEUE_PREFIX, BatchJobData, BatchJobResult, BatchProcessingJobData, BatchProcessingJobResult, JobData, JobResult, getBullMQConnection, getCitationQueue, getAccessibilityQueue, JOB_TYPES, areQueuesAvailable } from '../queues';
+import { QUEUE_NAMES, QUEUE_PREFIX, BatchJobData, BatchJobResult, BatchProcessingJobData, BatchProcessingJobResult, AutoRemediationJobData, AutoRemediationJobResult, JobData, JobResult, getBullMQConnection, getCitationQueue, getAccessibilityQueue, JOB_TYPES, areQueuesAvailable } from '../queues';
 import { processAccessibilityJob } from './processors/accessibility.processor';
 import { processVpatJob } from './processors/vpat.processor';
 import { processFileJob } from './processors/file.processor';
 import { processBatchJob } from './processors/batch.processor';
 import { processBatchProcessingJob } from './processors/batch-processing.processor';
+import { processAutoRemediationJob } from './processors/auto-remediation.processor';
 import { processCitationJob } from './processors/citation.processor';
 import { startWorkflowWorker as createWorkflowQueueWorker } from '../queues/workflow.queue';
 import { processStyleJob } from './processors/style.processor';
@@ -334,11 +335,14 @@ export async function cleanupStalePdfJobs(): Promise<void> {
 
 /**
  * Every CPU/IO-heavy BullMQ consumer except workflow-processing: accessibility,
- * vpat, file, citation, style, calibration, batch-remediation, batch-processing.
- * Belongs on the worker process (PROCESS_ROLE=worker) -- this is the group
- * that was originally implicated in the CPU-starves-health-checks incident
- * (accessibility-validation specifically), and none of the others emit
- * WebSocket events, so all of them are safe to move together.
+ * vpat, file, citation, style, calibration, batch-remediation, batch-processing,
+ * auto-remediation. Belongs on the worker process (PROCESS_ROLE=worker) --
+ * this is the group that was originally implicated in the CPU-starves-
+ * health-checks incident (accessibility-validation specifically; auto-
+ * remediation hit the exact same failure mode on 2026-10-13 while still
+ * running in-process on the web service -- see auto-remediation.processor.ts),
+ * and none of the others emit WebSocket events, so all of them are safe to
+ * move together.
  */
 export function startBackgroundWorkers(): void {
   logger.info('🚀 Starting background job workers...');
@@ -422,6 +426,31 @@ export function startBackgroundWorkers(): void {
         logger.error('[BatchProcessingWorker] Worker error:', err);
       });
       backgroundWorkers.push(batchProcessingWorker);
+
+      // concurrency: 3 -- I/O-bound (Gemini calls) rather than CPU-bound once
+      // off the web process; a starting value, not a measured one (no
+      // existing per-tenant concurrency budget to match against).
+      // lockDuration: 15min -- BullMQ auto-renews this on its own internal
+      // timer as long as the worker process is alive, independent of how
+      // long a single round takes; it only governs how fast a genuinely dead
+      // process's job is marked stalled. If stalled-detection ever
+      // false-positives on a still-alive run, remediationCycleLockService's
+      // own DB-level lock rejects the duplicate dispatch harmlessly.
+      const autoRemediationWorker = new Worker<AutoRemediationJobData, AutoRemediationJobResult>(
+        QUEUE_NAMES.AUTO_REMEDIATION,
+        processAutoRemediationJob,
+        { connection, concurrency: 3, autorun: true, prefix: QUEUE_PREFIX, lockDuration: 15 * 60 * 1000 }
+      );
+      autoRemediationWorker.on('completed', (job) => {
+        logger.info(`📗 Auto-remediation job ${job.id} completed`);
+      });
+      autoRemediationWorker.on('failed', (job, err) => {
+        logger.error(`📕 Auto-remediation job ${job?.id} failed (likely a crashed worker -- reconcileIfOrphaned self-heals on the next status/start/stop request): ${err.message}`);
+      });
+      autoRemediationWorker.on('error', (err) => {
+        logger.error('[AutoRemediationWorker] Worker error:', err);
+      });
+      backgroundWorkers.push(autoRemediationWorker);
     }
   }
 

@@ -69,20 +69,19 @@ export type AutoStopReason = 'converged' | 'round_limit' | 'budget_limit' | 'man
 
 /**
  * Driver abstraction for startAutoLoop -- lets the SAME loop body (below)
- * persist its state to either ComparisonTrial (today's only caller, an
- * admin-created Comparison Study trial) or PdfAutoRemediationRun (a
- * production, batch-created job, added for the batch-processing feature)
- * without either becoming a dependency of the other. Extracted from what
- * used to be startAutoLoop's own direct prisma.comparisonTrial.* calls --
- * see ComparisonTrialAutoRemediationDriver below for the zero-behavior-
- * change wrapper of that exact logic.
+ * persist its state to either ComparisonTrial (an admin-created Comparison
+ * Study trial) or PdfAutoRemediationRun (any job the caller owns, via
+ * POST /pdf/:jobId/auto-mode/start) without either becoming a dependency of
+ * the other. Extracted from what used to be startAutoLoop's own direct
+ * prisma.comparisonTrial.* calls -- see ComparisonTrialAutoRemediationDriver
+ * below for the zero-behavior-change wrapper of that exact logic.
  *
- * Deliberately does NOT cover reconcileIfOrphaned above: that method is
- * controller-level plumbing specific to Comparison Study's fire-and-forget-
- * plus-polling flow (GET /auto-mode/status calling it before every read),
- * not part of the loop body itself -- a batch-created job's crash recovery
- * goes through the concurrency-budget scheduler's own lease/heartbeat
- * mechanism instead, with no equivalent polling endpoint to reconcile from.
+ * Deliberately does NOT cover reconcileIfOrphaned/reconcileIfOrphanedJobRun
+ * above: both are controller-level plumbing (pdf-auto-mode.controller.ts's
+ * start/status/stop handlers call the matching one before treating an
+ * existing 'running' row as authoritative), not part of the loop body
+ * itself. Both trial and job-run paths go through the exact same
+ * reconcile-on-read pattern today -- there is no separate scheduler.
  */
 export interface AutoRemediationConfig {
   jobId: string;

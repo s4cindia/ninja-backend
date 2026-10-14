@@ -32,10 +32,20 @@ vi.mock('../../../src/services/pdf/auto-remediation-loop.service', async (import
     },
   };
 });
+// Queue availability -- the controller enqueues onto the worker process's
+// auto-remediation queue when Redis/BullMQ is available, falling back to
+// the original direct in-process call otherwise (local dev without Redis).
+vi.mock('../../../src/queues', () => ({
+  areQueuesAvailable: vi.fn(),
+  getAutoRemediationQueue: vi.fn(),
+}));
 
 import prisma from '../../../src/lib/prisma';
 import { pdfAutoModeController } from '../../../src/controllers/pdf-auto-mode.controller';
-import { autoRemediationLoopService, ComparisonTrialAutoRemediationDriver, JobAutoRemediationDriver } from '../../../src/services/pdf/auto-remediation-loop.service';
+import { autoRemediationLoopService, ComparisonTrialAutoRemediationDriver } from '../../../src/services/pdf/auto-remediation-loop.service';
+import { areQueuesAvailable, getAutoRemediationQueue } from '../../../src/queues';
+
+const mockQueueAdd = vi.fn();
 
 function makeRes(): Response {
   const res: any = {};
@@ -59,6 +69,11 @@ const next = vi.fn();
 describe('PdfAutoModeController', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    // Default: queues available, matching real deployed behavior. Individual
+    // tests override this to false to exercise the in-process fallback.
+    vi.mocked(areQueuesAvailable).mockReturnValue(true);
+    vi.mocked(getAutoRemediationQueue).mockReturnValue({ add: mockQueueAdd } as any);
+    mockQueueAdd.mockResolvedValue(undefined);
   });
 
   describe('start -- trial-linked job', () => {
@@ -84,28 +99,39 @@ describe('PdfAutoModeController', () => {
       vi.mocked(prisma.comparisonTrial.findUnique)
         .mockResolvedValueOnce({ id: 'trial-1', mode: 'auto', autoStatus: 'running' } as any)
         .mockResolvedValueOnce({ id: 'trial-1', mode: 'auto', autoStatus: 'stopped', autoStopReason: 'error' } as any);
-      vi.mocked(autoRemediationLoopService.startAutoLoop).mockResolvedValue(undefined);
       const res = makeRes();
 
       await pdfAutoModeController.start(makeReq(), res, next);
 
       expect(autoRemediationLoopService.reconcileIfOrphaned).toHaveBeenCalledWith('trial-1');
-      expect(autoRemediationLoopService.startAutoLoop).toHaveBeenCalledWith(new ComparisonTrialAutoRemediationDriver('trial-1'));
+      expect(mockQueueAdd).toHaveBeenCalledWith('auto-remediation-trial-1', { kind: 'trial', id: 'trial-1' }, { jobId: 'trial-1' });
       expect(res.status).toHaveBeenCalledWith(202);
       expect(next).not.toHaveBeenCalled();
     });
 
     it('kicks off the loop and responds 202 when eligible, ignoring any request body (trial config is pre-set via the admin endpoint)', async () => {
       vi.mocked(prisma.comparisonTrial.findUnique).mockResolvedValue({ id: 'trial-1', mode: 'auto', autoStatus: null } as any);
-      vi.mocked(autoRemediationLoopService.startAutoLoop).mockResolvedValue(undefined);
       const res = makeRes();
 
       await pdfAutoModeController.start(makeReq({ body: { autoMaxRounds: 15 } as any }), res, next);
 
-      expect(autoRemediationLoopService.startAutoLoop).toHaveBeenCalledWith(new ComparisonTrialAutoRemediationDriver('trial-1'));
+      expect(mockQueueAdd).toHaveBeenCalledWith('auto-remediation-trial-1', { kind: 'trial', id: 'trial-1' }, { jobId: 'trial-1' });
       expect(prisma.pdfAutoRemediationRun.upsert).not.toHaveBeenCalled();
       expect(res.status).toHaveBeenCalledWith(202);
       expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ success: true }));
+    });
+
+    it('falls back to calling startAutoLoop directly in-process when queues are unavailable (e.g. local dev without Redis)', async () => {
+      vi.mocked(prisma.comparisonTrial.findUnique).mockResolvedValue({ id: 'trial-1', mode: 'auto', autoStatus: null } as any);
+      vi.mocked(areQueuesAvailable).mockReturnValue(false);
+      vi.mocked(autoRemediationLoopService.startAutoLoop).mockResolvedValue(undefined);
+      const res = makeRes();
+
+      await pdfAutoModeController.start(makeReq(), res, next);
+
+      expect(mockQueueAdd).not.toHaveBeenCalled();
+      expect(autoRemediationLoopService.startAutoLoop).toHaveBeenCalledWith(new ComparisonTrialAutoRemediationDriver('trial-1'));
+      expect(res.status).toHaveBeenCalledWith(202);
     });
   });
 
@@ -117,7 +143,6 @@ describe('PdfAutoModeController', () => {
     it('upserts a PdfAutoRemediationRun with defaults and starts the loop when no body overrides are given', async () => {
       vi.mocked(prisma.pdfAutoRemediationRun.findUnique).mockResolvedValue(null as any);
       vi.mocked(prisma.pdfAutoRemediationRun.upsert).mockResolvedValue({ id: 'run-1', jobId: 'job-1' } as any);
-      vi.mocked(autoRemediationLoopService.startAutoLoop).mockResolvedValue(undefined);
       const res = makeRes();
 
       await pdfAutoModeController.start(makeReq(), res, next);
@@ -127,7 +152,7 @@ describe('PdfAutoModeController', () => {
         create: { jobId: 'job-1' },
         update: {},
       });
-      expect(autoRemediationLoopService.startAutoLoop).toHaveBeenCalledWith(new JobAutoRemediationDriver('run-1'));
+      expect(mockQueueAdd).toHaveBeenCalledWith('auto-remediation-run-1', { kind: 'jobRun', id: 'run-1' }, { jobId: 'run-1' });
       expect(res.status).toHaveBeenCalledWith(202);
       expect(next).not.toHaveBeenCalled();
     });
@@ -167,13 +192,12 @@ describe('PdfAutoModeController', () => {
         .mockResolvedValueOnce({ id: 'run-1', jobId: 'job-1', autoStatus: 'running' } as any)
         .mockResolvedValueOnce({ id: 'run-1', jobId: 'job-1', autoStatus: 'stopped', autoStopReason: 'error' } as any);
       vi.mocked(prisma.pdfAutoRemediationRun.upsert).mockResolvedValue({ id: 'run-1', jobId: 'job-1' } as any);
-      vi.mocked(autoRemediationLoopService.startAutoLoop).mockResolvedValue(undefined);
       const res = makeRes();
 
       await pdfAutoModeController.start(makeReq(), res, next);
 
       expect(autoRemediationLoopService.reconcileIfOrphanedJobRun).toHaveBeenCalledWith('run-1');
-      expect(autoRemediationLoopService.startAutoLoop).toHaveBeenCalledWith(new JobAutoRemediationDriver('run-1'));
+      expect(mockQueueAdd).toHaveBeenCalledWith('auto-remediation-run-1', { kind: 'jobRun', id: 'run-1' }, { jobId: 'run-1' });
       expect(res.status).toHaveBeenCalledWith(202);
       expect(next).not.toHaveBeenCalled();
     });
