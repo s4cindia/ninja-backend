@@ -10,7 +10,7 @@ import { notFoundHandler } from './middleware/not-found.middleware';
 import routes from './routes';
 import { closeQueues } from './queues';
 import { closeRedisConnection } from './lib/redis';
-import { startBackgroundWorkers, stopBackgroundWorkers, startWorkflowQueueWorker, stopWorkflowQueueWorker, failActiveJobsBeforeShutdown } from './workers';
+import { startBackgroundWorkers, stopBackgroundWorkers, startWorkflowQueueWorker, stopWorkflowQueueWorker, failActiveJobsBeforeShutdown, failActiveAutoRemediationBeforeShutdown } from './workers';
 import { startWorkflowRecovery, stopWorkflowRecovery } from './services/workflow/workflow-recovery.service';
 import { isRedisConfigured } from './config/redis.config';
 import { sseService } from './sse/sse.service';
@@ -264,8 +264,10 @@ const gracefulShutdown = async () => {
       // at 120s regardless of the task definition, far short of a real PDF
       // job's runtime, so that wait can never finish before SIGKILL anyway.
       // See failActiveJobsBeforeShutdown()'s own doc comment for the incident
-      // this fixes.
+      // this fixes. failActiveAutoRemediationBeforeShutdown is the same fix
+      // for the auto-remediation queue (2026-10-14 incident).
       await failActiveJobsBeforeShutdown();
+      await failActiveAutoRemediationBeforeShutdown();
       await stopBackgroundWorkers();
     }
     if (runsWorkflowWorker) {

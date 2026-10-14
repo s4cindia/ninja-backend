@@ -37,8 +37,8 @@ const { mockComparisonTrialUpdateMany, mockPdfAutoRemediationRunUpdateMany, mock
 
 vi.mock('../../../../src/lib/prisma', () => ({
   default: {
-    comparisonTrial: { findUnique: vi.fn(), update: vi.fn(), updateMany: mockComparisonTrialUpdateMany },
-    pdfAutoRemediationRun: { findUnique: vi.fn(), update: vi.fn(), updateMany: mockPdfAutoRemediationRunUpdateMany },
+    comparisonTrial: { findUnique: vi.fn(), findMany: vi.fn(), update: vi.fn(), updateMany: mockComparisonTrialUpdateMany },
+    pdfAutoRemediationRun: { findUnique: vi.fn(), findMany: vi.fn(), update: vi.fn(), updateMany: mockPdfAutoRemediationRunUpdateMany },
     job: { findUnique: vi.fn(), update: vi.fn() },
     aiAnalysis: { updateMany: vi.fn(), count: vi.fn(), deleteMany: vi.fn() },
     $queryRaw: mockQueryRaw,
@@ -1020,5 +1020,71 @@ describe('JobAutoRemediationDriver', () => {
       where: { id: 'run-1' },
       data: { autoStatus: 'stopped', autoStopReason: 'converged', autoStopRequested: false, autoStoppedAt: stoppedAt },
     });
+  });
+});
+
+// 2026-10-14 incident: a worker-service deploy SIGKILLed the task mid-round;
+// autoStatus stayed at 'running' for ~11 hours because nothing polled the
+// one endpoint that lazily reconciles it. forceStopForShutdown (called from
+// the worker's SIGTERM handler) and reconcileAllOrphanedRuns (called from
+// the watchdog interval) close that gap -- see their own doc comments in
+// auto-remediation-loop.service.ts for the full reasoning.
+describe('autoRemediationLoopService.forceStopForShutdown', () => {
+  it('force-stops a running trial, unconditionally (no lock-staleness wait)', async () => {
+    mockComparisonTrialUpdateMany.mockResolvedValue({ count: 1 });
+
+    await autoRemediationLoopService.forceStopForShutdown('trial', 'trial-1');
+
+    expect(mockComparisonTrialUpdateMany).toHaveBeenCalledWith({
+      where: { id: 'trial-1', autoStatus: 'running' },
+      data: { autoStatus: 'stopped', autoStopReason: 'error', autoStopRequested: false, autoStoppedAt: expect.any(Date) },
+    });
+  });
+
+  it('force-stops a running job-run', async () => {
+    mockPdfAutoRemediationRunUpdateMany.mockResolvedValue({ count: 1 });
+
+    await autoRemediationLoopService.forceStopForShutdown('jobRun', 'run-1');
+
+    expect(mockPdfAutoRemediationRunUpdateMany).toHaveBeenCalledWith({
+      where: { id: 'run-1', autoStatus: 'running' },
+      data: { autoStatus: 'stopped', autoStopReason: 'error', autoStopRequested: false, autoStoppedAt: expect.any(Date) },
+    });
+  });
+
+  it('swallows a DB failure instead of throwing -- non-fatal, self-heals via lock staleness', async () => {
+    mockComparisonTrialUpdateMany.mockRejectedValue(new Error('db down'));
+
+    await expect(autoRemediationLoopService.forceStopForShutdown('trial', 'trial-1')).resolves.toBeUndefined();
+  });
+});
+
+describe('autoRemediationLoopService.reconcileAllOrphanedRuns', () => {
+  it('reconciles every trial/job-run currently reporting autoStatus running', async () => {
+    vi.mocked(prisma.comparisonTrial.findMany).mockResolvedValue([{ id: 'trial-1' }, { id: 'trial-2' }] as any);
+    vi.mocked(prisma.pdfAutoRemediationRun.findMany).mockResolvedValue([{ id: 'run-1' }] as any);
+    const reconcileSpy = vi.spyOn(autoRemediationLoopService, 'reconcileIfOrphaned').mockResolvedValue(undefined);
+    const reconcileRunSpy = vi.spyOn(autoRemediationLoopService, 'reconcileIfOrphanedJobRun').mockResolvedValue(undefined);
+
+    await autoRemediationLoopService.reconcileAllOrphanedRuns();
+
+    expect(prisma.comparisonTrial.findMany).toHaveBeenCalledWith({ where: { autoStatus: 'running' }, select: { id: true } });
+    expect(prisma.pdfAutoRemediationRun.findMany).toHaveBeenCalledWith({ where: { autoStatus: 'running' }, select: { id: true } });
+    expect(reconcileSpy).toHaveBeenCalledWith('trial-1');
+    expect(reconcileSpy).toHaveBeenCalledWith('trial-2');
+    expect(reconcileRunSpy).toHaveBeenCalledWith('run-1');
+
+    reconcileSpy.mockRestore();
+    reconcileRunSpy.mockRestore();
+  });
+
+  it('does not throw when an individual reconcile call fails', async () => {
+    vi.mocked(prisma.comparisonTrial.findMany).mockResolvedValue([{ id: 'trial-1' }] as any);
+    vi.mocked(prisma.pdfAutoRemediationRun.findMany).mockResolvedValue([] as any);
+    const reconcileSpy = vi.spyOn(autoRemediationLoopService, 'reconcileIfOrphaned').mockRejectedValue(new Error('boom'));
+
+    await expect(autoRemediationLoopService.reconcileAllOrphanedRuns()).resolves.toBeUndefined();
+
+    reconcileSpy.mockRestore();
   });
 });
