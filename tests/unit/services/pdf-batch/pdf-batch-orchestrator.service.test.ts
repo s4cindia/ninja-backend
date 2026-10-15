@@ -125,6 +125,26 @@ describe('PdfBatchOrchestratorService.processItem', () => {
     expect(mockJobCreate).toHaveBeenCalledWith(expect.objectContaining({
       data: expect.objectContaining({ type: 'PDF_ACCESSIBILITY', tenantId: 'tenant-1', userId: 'user-1' }),
     }));
+    // QUEUED_FOR_BUDGET / HELD_FOR_BUDGET while waiting on a lease, not
+    // AUDITING/REMEDIATING -- a long budget wait shouldn't misrepresent
+    // itself as work already in progress.
+    expect(mockPdfBatchItemUpdate).toHaveBeenCalledWith({
+      where: { id: 'item-1' },
+      data: expect.objectContaining({ status: 'QUEUED_FOR_BUDGET' }),
+    });
+    expect(mockPdfBatchItemUpdate).toHaveBeenCalledWith({
+      where: { id: 'item-1' },
+      data: { status: 'AUDITING', activeLeaseId: 'lease-1' },
+    });
+    expect(mockPdfBatchItemUpdate).toHaveBeenCalledWith({
+      where: { id: 'item-1' },
+      data: expect.objectContaining({ status: 'HELD_FOR_BUDGET' }),
+    });
+    expect(mockPdfBatchItemUpdate).toHaveBeenCalledWith({
+      where: { id: 'item-1' },
+      data: { status: 'REMEDIATING', activeLeaseId: 'lease-1' },
+    });
+
     expect(mockWaitForLease).toHaveBeenCalledWith('tenant-1', 'item-1', 'audit', 1, undefined, expect.anything());
     expect(mockRunAuditFromBuffer).toHaveBeenCalledWith(Buffer.from('pdf-bytes'), 'job-1', 'book.pdf', 'comprehensive');
 

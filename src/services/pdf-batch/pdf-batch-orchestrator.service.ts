@@ -164,13 +164,17 @@ class PdfBatchOrchestratorService {
       },
     });
 
+    // QUEUED_FOR_BUDGET until the lease actually comes through -- waiting
+    // on a full tenant budget can take a while, and showing AUDITING before
+    // any real work has started would misrepresent what's actually
+    // happening (both to a UI poller and to anyone reading the row directly).
     await prisma.pdfBatchItem.update({
       where: { id: item.id },
-      data: { status: 'AUDITING', auditJobId: job.id, auditStartedAt: new Date() },
+      data: { status: 'QUEUED_FOR_BUDGET', auditJobId: job.id, auditStartedAt: new Date() },
     });
 
     const leaseId = await this.waitForLeaseCancellable(batch.id, batch.tenantId, item.id, 'audit', item.sizeWeightUnits);
-    await prisma.pdfBatchItem.update({ where: { id: item.id }, data: { activeLeaseId: leaseId } });
+    await prisma.pdfBatchItem.update({ where: { id: item.id }, data: { status: 'AUDITING', activeLeaseId: leaseId } });
     const heartbeat = this.startHeartbeat(leaseId);
 
     try {
@@ -225,13 +229,15 @@ class PdfBatchOrchestratorService {
     const item = await prisma.pdfBatchItem.findUniqueOrThrow({ where: { id: itemId } });
     const effectiveWeightUnits = item.effectiveWeightUnits ?? item.sizeWeightUnits;
 
+    // HELD_FOR_BUDGET until the lease comes through -- same reasoning as
+    // QUEUED_FOR_BUDGET in runAuditPhase.
     await prisma.pdfBatchItem.update({
       where: { id: itemId },
-      data: { status: 'REMEDIATING', remediationStartedAt: new Date() },
+      data: { status: 'HELD_FOR_BUDGET', remediationStartedAt: new Date() },
     });
 
     const leaseId = await this.waitForLeaseCancellable(batch.id, batch.tenantId, itemId, 'auto_remediation', effectiveWeightUnits);
-    await prisma.pdfBatchItem.update({ where: { id: itemId }, data: { activeLeaseId: leaseId } });
+    await prisma.pdfBatchItem.update({ where: { id: itemId }, data: { status: 'REMEDIATING', activeLeaseId: leaseId } });
     const heartbeat = this.startHeartbeat(leaseId);
 
     try {
