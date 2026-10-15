@@ -6,7 +6,6 @@
  * batch.controller.ts's dispatchBatchProcessing and PR #666's identical fix
  * for Comparison Study Auto Mode.
  */
-/* eslint-disable @typescript-eslint/no-explicit-any */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 const mockBatchUpdate = vi.fn();
