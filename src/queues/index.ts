@@ -22,6 +22,7 @@ export const QUEUE_NAMES = {
   STYLE_PROCESSING: 'style-processing',
   CALIBRATION: 'calibration',
   AUTO_REMEDIATION: 'auto-remediation',
+  PDF_BATCH_ITEM: 'pdf-batch-item',
 } as const;
 
 export type QueueName = typeof QUEUE_NAMES[keyof typeof QUEUE_NAMES];
@@ -102,6 +103,24 @@ export interface AutoRemediationJobData {
 export interface AutoRemediationJobResult {
   kind: 'trial' | 'jobRun';
   id: string;
+}
+
+// One job per PdfBatchItem (not one per whole PdfBatch) -- each item's
+// audit+remediate lifecycle is a natural unit of work, and this lets
+// BullMQ's own worker `concurrency` give process-level fan-out on top of
+// the DB-level weighted concurrency budget (concurrency-budget.service.ts)
+// as the real cross-task admission control, instead of one giant job
+// trying to internally run many hours-long concurrent tasks in a single
+// event loop. Minimal payload, same reasoning as AutoRemediationJobData --
+// the orchestrator re-reads everything else from Postgres.
+export interface PdfBatchItemJobData {
+  batchId: string;
+  itemId: string;
+}
+
+export interface PdfBatchItemJobResult {
+  batchId: string;
+  itemId: string;
 }
 
 interface BullMQConnectionOptions {
@@ -191,6 +210,7 @@ let _citationQueue: Queue<JobData, JobResult> | null = null;
 let _styleQueue: Queue<JobData, JobResult> | null = null;
 let _calibrationQueue: Queue<JobData, JobResult> | null = null;
 let _autoRemediationQueue: Queue<AutoRemediationJobData, AutoRemediationJobResult> | null = null;
+let _pdfBatchItemQueue: Queue<PdfBatchItemJobData, PdfBatchItemJobResult> | null = null;
 let _accessibilityQueueEvents: QueueEvents | null = null;
 let _vpatQueueEvents: QueueEvents | null = null;
 let _fileProcessingQueueEvents: QueueEvents | null = null;
@@ -261,6 +281,18 @@ function ensureQueuesInitialized(): void {
         },
       },
     }
+  );
+
+  // attempts: 1 -- the orchestrator's own processor catches its own errors
+  // and marks the PdfBatchItem FAILED (releasing any held lease) rather than
+  // rethrowing in the ordinary failure case; a silent BullMQ-level retry
+  // would re-acquire leases and re-run expensive AI work against an item
+  // Postgres already shows as terminally FAILED. If the worker process
+  // itself dies mid-item, reconcileStaleLeases's heartbeat-based staleness
+  // check is the recovery path, not a BullMQ retry.
+  _pdfBatchItemQueue = new Queue<PdfBatchItemJobData, PdfBatchItemJobResult>(
+    QUEUE_NAMES.PDF_BATCH_ITEM,
+    { connection, defaultJobOptions: { ...defaultJobOptions, attempts: 1 }, prefix }
   );
 
   _accessibilityQueueEvents = new QueueEvents(QUEUE_NAMES.ACCESSIBILITY, {
@@ -340,6 +372,11 @@ export function getBatchProcessingQueue(): Queue<BatchProcessingJobData, BatchPr
   return _batchProcessingQueue;
 }
 
+export function getPdfBatchItemQueue(): Queue<PdfBatchItemJobData, PdfBatchItemJobResult> | null {
+  ensureQueuesInitialized();
+  return _pdfBatchItemQueue;
+}
+
 export function getAutoRemediationQueue(): Queue<AutoRemediationJobData, AutoRemediationJobResult> | null {
   ensureQueuesInitialized();
   return _autoRemediationQueue;
@@ -400,6 +437,7 @@ export async function closeQueues(): Promise<void> {
   if (_batchQueue) closePromises.push(_batchQueue.close());
   if (_batchProcessingQueue) closePromises.push(_batchProcessingQueue.close());
   if (_autoRemediationQueue) closePromises.push(_autoRemediationQueue.close());
+  if (_pdfBatchItemQueue) closePromises.push(_pdfBatchItemQueue.close());
   if (_citationQueue) closePromises.push(_citationQueue.close());
   if (_styleQueue) closePromises.push(_styleQueue.close());
   if (_calibrationQueue) closePromises.push(_calibrationQueue.close());
@@ -418,6 +456,7 @@ export async function closeQueues(): Promise<void> {
   _batchQueue = null;
   _batchProcessingQueue = null;
   _autoRemediationQueue = null;
+  _pdfBatchItemQueue = null;
   _citationQueue = null;
   _styleQueue = null;
   _calibrationQueue = null;

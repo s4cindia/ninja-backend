@@ -1,13 +1,15 @@
 import { Job, Queue, Worker } from 'bullmq';
 import { createWorker } from './base.worker';
-import { QUEUE_NAMES, QUEUE_PREFIX, BatchJobData, BatchJobResult, BatchProcessingJobData, BatchProcessingJobResult, AutoRemediationJobData, AutoRemediationJobResult, JobData, JobResult, getBullMQConnection, getCitationQueue, getAccessibilityQueue, getAutoRemediationQueue, JOB_TYPES, areQueuesAvailable } from '../queues';
+import { QUEUE_NAMES, QUEUE_PREFIX, BatchJobData, BatchJobResult, BatchProcessingJobData, BatchProcessingJobResult, AutoRemediationJobData, AutoRemediationJobResult, PdfBatchItemJobData, PdfBatchItemJobResult, JobData, JobResult, getBullMQConnection, getCitationQueue, getAccessibilityQueue, getAutoRemediationQueue, JOB_TYPES, areQueuesAvailable } from '../queues';
 import { autoRemediationLoopService } from '../services/pdf/auto-remediation-loop.service';
+import { concurrencyBudgetService } from '../services/pdf-batch/concurrency-budget.service';
 import { processAccessibilityJob } from './processors/accessibility.processor';
 import { processVpatJob } from './processors/vpat.processor';
 import { processFileJob } from './processors/file.processor';
 import { processBatchJob } from './processors/batch.processor';
 import { processBatchProcessingJob } from './processors/batch-processing.processor';
 import { processAutoRemediationJob } from './processors/auto-remediation.processor';
+import { processPdfBatchItemJob } from './processors/pdf-batch-item.processor';
 import { processCitationJob } from './processors/citation.processor';
 import { startWorkflowWorker as createWorkflowQueueWorker } from '../queues/workflow.queue';
 import { processStyleJob } from './processors/style.processor';
@@ -485,6 +487,29 @@ export function startBackgroundWorkers(): void {
         logger.error('[AutoRemediationWorker] Worker error:', err);
       });
       backgroundWorkers.push(autoRemediationWorker);
+
+      // concurrency: 5 -- items spend most of their time blocked inside
+      // waitForLease (I/O-bound polling) or awaiting Gemini calls inside the
+      // Auto Mode loop, not CPU-bound; the per-tenant weighted concurrency
+      // budget (concurrency-budget.service.ts), not this setting, is the
+      // real admission control. lockDuration + BullMQ's own auto-renewal
+      // (same as autoRemediationWorker above) since a single item's
+      // remediation phase can run for hours.
+      const pdfBatchItemWorker = new Worker<PdfBatchItemJobData, PdfBatchItemJobResult>(
+        QUEUE_NAMES.PDF_BATCH_ITEM,
+        processPdfBatchItemJob,
+        { connection, concurrency: 5, autorun: true, prefix: QUEUE_PREFIX, lockDuration: 15 * 60 * 1000 }
+      );
+      pdfBatchItemWorker.on('completed', (job) => {
+        logger.info(`📗 PDF batch item job ${job.id} completed`);
+      });
+      pdfBatchItemWorker.on('failed', (job, err) => {
+        logger.error(`📕 PDF batch item job ${job?.id} failed (likely a crashed worker -- reconcileStaleLeases self-heals the item's lease on the next watchdog tick): ${err.message}`);
+      });
+      pdfBatchItemWorker.on('error', (err) => {
+        logger.error('[PdfBatchItemWorker] Worker error:', err);
+      });
+      backgroundWorkers.push(pdfBatchItemWorker);
     }
   }
 
@@ -515,6 +540,13 @@ export function startBackgroundWorkers(): void {
       });
       autoRemediationLoopService.reconcileAllOrphanedRuns().catch(err => {
         logger.error('[Watchdog] Periodic auto-remediation orphan sweep failed:', err);
+      });
+      // Nothing else in the repo schedules this -- without it, a lease held
+      // by a worker process that crashed mid-item (not a clean SIGTERM)
+      // would never be reclaimed, permanently shrinking that tenant's
+      // effective concurrency budget.
+      concurrencyBudgetService.reconcileStaleLeases().catch(err => {
+        logger.error('[Watchdog] Periodic PDF batch stale-lease sweep failed:', err);
       });
     }, WATCHDOG_INTERVAL_MS);
     logger.info(`✅ Stale job watchdog started (every ${WATCHDOG_INTERVAL_MS / 1000}s)`);
