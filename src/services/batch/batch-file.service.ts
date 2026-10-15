@@ -1,11 +1,12 @@
+import { randomUUID } from 'crypto';
+import * as path from 'path';
 import prisma from '../../lib/prisma';
 import { logger } from '../../lib/logger';
 import { BatchFile } from '@prisma/client';
-import * as fs from 'fs/promises';
-import * as path from 'path';
+import { fileStorageService } from '../storage/file-storage.service';
+import { s3Service } from '../s3.service';
 
 const MAX_FILE_SIZE = 100 * 1024 * 1024; // 100MB
-const BATCH_UPLOAD_DIR = process.env.BATCH_UPLOAD_DIR || './data/batches';
 
 class BatchFileService {
   async uploadFiles(
@@ -18,17 +19,21 @@ class BatchFileService {
       this.validateFile(file);
 
       const uniqueFilename = this.generateUniqueFilename(file.filename);
-      const storagePath = await this.uploadToStorage(batchId, uniqueFilename, file.buffer);
+      // Precompute the id so it can be used as the storage key in the same
+      // pass -- avoids a create-then-update round trip just to learn the id.
+      const fileId = randomUUID();
+      const storagePath = await fileStorageService.saveFile(fileId, uniqueFilename, file.buffer);
 
       const batchFile = await prisma.batchFile.create({
         data: {
+          id: fileId,
           batchId,
           fileName: uniqueFilename,
           originalName: file.filename,
           fileSize: file.size,
           mimeType: 'application/epub+zip',
           storagePath,
-          storageType: 'LOCAL',
+          storageType: s3Service.isConfigured() ? 'S3' : 'LOCAL',
           status: 'UPLOADED',
         },
       });
@@ -47,11 +52,17 @@ class BatchFileService {
       throw new Error(`File not found: ${fileId}`);
     }
 
-    return await fs.readFile(file.storagePath);
+    return this.getFileByBatchFile(file);
   }
 
   async getFileByBatchFile(batchFile: BatchFile): Promise<Buffer> {
-    return await fs.readFile(batchFile.storagePath);
+    const buffer = await fileStorageService.getFile(batchFile.id, batchFile.fileName);
+
+    if (!buffer) {
+      throw new Error(`File not found in storage: ${batchFile.id}`);
+    }
+
+    return buffer;
   }
 
   async saveRemediatedFile(
@@ -64,8 +75,8 @@ class BatchFileService {
       throw new Error(`File not found: ${fileId}`);
     }
 
-    const remediatedPath = file.storagePath.replace('.epub', '_remediated.epub');
-    await fs.writeFile(remediatedPath, buffer);
+    const remediatedFileName = this.remediatedFileName(file.fileName);
+    const remediatedPath = await fileStorageService.saveRemediatedFile(file.id, remediatedFileName, buffer);
 
     await prisma.batchFile.update({
       where: { id: fileId },
@@ -89,7 +100,7 @@ class BatchFileService {
       throw new Error('Cannot delete files from batch that is not in DRAFT status');
     }
 
-    await fs.unlink(file.storagePath).catch(() => {});
+    await fileStorageService.deleteFile(file.id, file.fileName).catch(() => {});
 
     await prisma.batchFile.delete({ where: { id: fileId } });
 
@@ -114,18 +125,6 @@ class BatchFileService {
     }
   }
 
-  private async uploadToStorage(
-    batchId: string,
-    filename: string,
-    buffer: Buffer
-  ): Promise<string> {
-    const batchDir = path.join(BATCH_UPLOAD_DIR, batchId);
-    await fs.mkdir(batchDir, { recursive: true });
-    const filePath = path.join(batchDir, filename);
-    await fs.writeFile(filePath, buffer);
-    return filePath;
-  }
-
   private generateUniqueFilename(originalFilename: string): string {
     const timestamp = Date.now();
     const random = Math.random().toString(36).substring(2, 8);
@@ -133,6 +132,15 @@ class BatchFileService {
     const basename = path.basename(originalFilename, ext);
     const sanitized = basename.replace(/[^a-zA-Z0-9-_]/g, '-');
     return `${sanitized}-${timestamp}-${random}${ext}`;
+  }
+
+  // Extension-aware -- the old `.replace('.epub', '_remediated.epub')` would
+  // silently no-op (leaving the filename unchanged, clobbering the original
+  // on save) for any non-.epub file, e.g. a .pdf.
+  private remediatedFileName(fileName: string): string {
+    const ext = path.extname(fileName);
+    const base = ext ? fileName.slice(0, -ext.length) : fileName;
+    return `${base}_remediated${ext}`;
   }
 }
 
