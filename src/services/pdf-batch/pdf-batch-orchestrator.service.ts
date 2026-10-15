@@ -286,6 +286,77 @@ class PdfBatchOrchestratorService {
     }
   }
 
+  /**
+   * Watchdog: finds items stuck in AUDITING/REMEDIATING whose underlying
+   * lease is already gone (released, or missing outright) -- meaning
+   * whatever process was holding it died before reaching its own `finally`
+   * (processItem's own cleanup, or runAuditPhase/runRemediationPhase's),
+   * which would otherwise have transitioned the item's status itself.
+   * concurrency-budget.service.ts's reconcileStaleLeases frees the
+   * underlying LEASE (so the tenant's budget self-heals) but has -- by
+   * design -- zero awareness of PdfBatchItem as a domain object, so it can
+   * never correct the item's own status; this is that missing other half,
+   * mirroring auto-remediation-loop.service.ts's reconcileAllOrphanedRuns
+   * for job-native Auto Mode.
+   *
+   * Real incident this closes: a batch item hung inside the audit's PDF
+   * parser (no timeout existed anywhere -- see pdf-audit.service.ts's
+   * withAuditTimeout) and sat in AUDITING for ~24h, surviving two full
+   * worker redeploys, because nothing ever revisited its status once the
+   * process handling it was gone.
+   *
+   * MUST run after concurrencyBudgetService.reconcileStaleLeases() in the
+   * same watchdog tick (see workers/index.ts) -- that call is what
+   * actually releases a genuinely-stale lease; by the time this runs, "no
+   * active lease" reliably means "definitely orphaned," not "maybe just
+   * hasn't gone stale yet," so there is no need to duplicate its own
+   * heartbeat-staleness check here.
+   *
+   * Deliberately does NOT cover QUEUED_FOR_BUDGET/HELD_FOR_BUDGET -- those
+   * states hold no lease yet (nothing to check for staleness), and a
+   * time-based cutoff instead would risk failing an item that's genuinely,
+   * legitimately still waiting on a saturated tenant budget. No reliable
+   * orphan signal exists for that case yet.
+   */
+  async reconcileOrphanedItems(): Promise<number> {
+    const candidates = await prisma.pdfBatchItem.findMany({
+      where: { status: { in: ['AUDITING', 'REMEDIATING'] } },
+    });
+
+    let reconciledCount = 0;
+    for (const item of candidates) {
+      const lease = item.activeLeaseId
+        ? await prisma.pdfConcurrencyLease.findUnique({ where: { id: item.activeLeaseId } })
+        : null;
+      const isOrphaned = !lease || lease.releasedAt !== null;
+      if (!isOrphaned) continue;
+
+      // CAS on the status actually observed above -- if the real
+      // orchestrator is (rarely) mid-transition right now, this leaves it
+      // alone rather than racing it, instead of blindly overwriting
+      // whatever its status is by the time this UPDATE runs.
+      const { count } = await prisma.pdfBatchItem.updateMany({
+        where: { id: item.id, status: item.status },
+        data: {
+          status: 'FAILED',
+          error: `Processing stopped unexpectedly while ${item.status === 'AUDITING' ? 'auditing' : 'remediating'} -- the worker handling this item crashed, hung, or was restarted mid-task. No automatic retry exists; re-add this file to a new batch to retry it.`,
+          activeLeaseId: null,
+        },
+      });
+      if (count === 0) continue;
+
+      reconciledCount++;
+      logger.warn(
+        `[PdfBatchOrchestrator] Reconciled orphaned item ${item.id} (batch ${item.batchId}, was ${item.status}) -- its lease was already gone/released with no status transition to match`
+      );
+      await this.finalizeBatchIfComplete(item.batchId).catch((err) => {
+        logger.error(`[PdfBatchOrchestrator] Failed to finalize batch ${item.batchId} after reconciling orphaned item ${item.id}: ${err instanceof Error ? err.message : String(err)}`);
+      });
+    }
+
+    return reconciledCount;
+  }
+
   /** Race-safe: every item's processItem call reaches this on completion,
    *  so many can observe "all items terminal" at once. Only the call that
    *  actually flips PROCESSING -> COMPLETED via the conditional updateMany

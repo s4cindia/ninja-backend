@@ -3,6 +3,7 @@ import { createWorker } from './base.worker';
 import { QUEUE_NAMES, QUEUE_PREFIX, BatchJobData, BatchJobResult, BatchProcessingJobData, BatchProcessingJobResult, AutoRemediationJobData, AutoRemediationJobResult, PdfBatchItemJobData, PdfBatchItemJobResult, JobData, JobResult, getBullMQConnection, getCitationQueue, getAccessibilityQueue, getAutoRemediationQueue, JOB_TYPES, areQueuesAvailable } from '../queues';
 import { autoRemediationLoopService } from '../services/pdf/auto-remediation-loop.service';
 import { concurrencyBudgetService } from '../services/pdf-batch/concurrency-budget.service';
+import { pdfBatchOrchestratorService } from '../services/pdf-batch/pdf-batch-orchestrator.service';
 import { processAccessibilityJob } from './processors/accessibility.processor';
 import { processVpatJob } from './processors/vpat.processor';
 import { processFileJob } from './processors/file.processor';
@@ -504,7 +505,7 @@ export function startBackgroundWorkers(): void {
         logger.info(`📗 PDF batch item job ${job.id} completed`);
       });
       pdfBatchItemWorker.on('failed', (job, err) => {
-        logger.error(`📕 PDF batch item job ${job?.id} failed (likely a crashed worker -- reconcileStaleLeases self-heals the item's lease on the next watchdog tick): ${err.message}`);
+        logger.error(`📕 PDF batch item job ${job?.id} failed (likely a crashed worker -- reconcileStaleLeases frees its lease and reconcileOrphanedItems corrects its status, both on the next watchdog tick): ${err.message}`);
       });
       pdfBatchItemWorker.on('error', (err) => {
         logger.error('[PdfBatchItemWorker] Worker error:', err);
@@ -545,9 +546,19 @@ export function startBackgroundWorkers(): void {
       // by a worker process that crashed mid-item (not a clean SIGTERM)
       // would never be reclaimed, permanently shrinking that tenant's
       // effective concurrency budget.
-      concurrencyBudgetService.reconcileStaleLeases().catch(err => {
-        logger.error('[Watchdog] Periodic PDF batch stale-lease sweep failed:', err);
-      });
+      //
+      // reconcileOrphanedItems MUST run after reconcileStaleLeases (not in
+      // parallel, not reordered) -- it depends on genuinely-stale leases
+      // already being released by the time it checks, see its own doc
+      // comment. Without it, the item's own status (AUDITING/REMEDIATING)
+      // would stay wrong forever even after its lease self-heals -- real
+      // incident: an item survived two full worker redeploys still showing
+      // AUDITING, ~24h after the process that owned it was gone.
+      concurrencyBudgetService.reconcileStaleLeases()
+        .then(() => pdfBatchOrchestratorService.reconcileOrphanedItems())
+        .catch(err => {
+          logger.error('[Watchdog] Periodic PDF batch stale-lease/orphaned-item sweep failed:', err);
+        });
     }, WATCHDOG_INTERVAL_MS);
     logger.info(`✅ Stale job watchdog started (every ${WATCHDOG_INTERVAL_MS / 1000}s)`);
   } else {

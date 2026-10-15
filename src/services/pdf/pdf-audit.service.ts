@@ -12,6 +12,7 @@ import os from 'os';
 import path from 'path';
 import { PDFDocument } from 'pdf-lib';
 import { logger } from '../../lib/logger';
+import { pdfConfig } from '../../config/pdf.config';
 import { BaseAuditService, AuditIssue, AuditReport } from '../audit/base-audit.service';
 import {
   pdfComprehensiveParserService,
@@ -1367,30 +1368,44 @@ class PdfAuditService extends BaseAuditService<PdfParseResult, PdfValidationResu
       // Reset issue counter
       this.issueCounter = 0;
 
-      // Parse the buffer
-      logger.info(`[PdfAudit] Parsing buffer...`);
-      parsed = await this.parseBuffer(buffer, fileName, onProgress);
-      logger.info(`[PdfAudit] Buffer parsed successfully`);
+      // parsed/externalValidatorTempDir are assigned from the closure's
+      // RETURN value, synchronously, rather than mutated from inside it --
+      // a `let` captured and reassigned only inside a nested async closure
+      // loses TS's ability to narrow it back to a concrete type for the
+      // `finally` block below. If the timeout fires first, this function
+      // has already given up on the hang; whatever the closure allocated
+      // after that point (rare, since the parse itself is what hangs) goes
+      // uncleaned, same as the un-cleaned, un-bounded hang this replaces.
+      const { report, parseResult, tempDir } = await this.withAuditTimeout(fileName, async () => {
+        // Parse the buffer
+        logger.info(`[PdfAudit] Parsing buffer...`);
+        const parseResult = await this.parseBuffer(buffer, fileName, onProgress);
+        logger.info(`[PdfAudit] Buffer parsed successfully`);
 
-      // Write temp file for veraPDF/pdfa11y if either binary is available.
-      // Both are CLI tools that require a real file path on disk.
-      if (veraPdfService.isAvailable() || pdfa11yService.isAvailable()) {
-        externalValidatorTempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'ninja-pdf-validator-'));
-        const tempFilePath = path.join(externalValidatorTempDir, `${jobId}.pdf`);
-        await fs.writeFile(tempFilePath, buffer);
-        parsed.filePath = tempFilePath;
-        logger.info(`[PdfAudit] Wrote temp file for veraPDF/pdfa11y: ${tempFilePath}`);
-      }
+        // Write temp file for veraPDF/pdfa11y if either binary is available.
+        // Both are CLI tools that require a real file path on disk.
+        let tempDir: string | null = null;
+        if (veraPdfService.isAvailable() || pdfa11yService.isAvailable()) {
+          tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'ninja-pdf-validator-'));
+          const tempFilePath = path.join(tempDir, `${jobId}.pdf`);
+          await fs.writeFile(tempFilePath, buffer);
+          parseResult.filePath = tempFilePath;
+          logger.info(`[PdfAudit] Wrote temp file for veraPDF/pdfa11y: ${tempFilePath}`);
+        }
 
-      // Validate
-      logger.info(`[PdfAudit] Validating with ${scanLevel} scan level...`);
-      const validation = await this.validate(parsed, scanLevel, customValidators, onValidatorComplete, onAltTextImageProgress);
-      logger.info(`[PdfAudit] Validation complete`);
+        // Validate
+        logger.info(`[PdfAudit] Validating with ${scanLevel} scan level...`);
+        const validation = await this.validate(parseResult, scanLevel, customValidators, onValidatorComplete, onAltTextImageProgress);
+        logger.info(`[PdfAudit] Validation complete`);
 
-      // Generate report
-      logger.info(`[PdfAudit] Generating report...`);
-      const report = await this.generateReport(validation, jobId, fileName, parsed);
-      logger.info(`[PdfAudit] Audit complete - Score: ${report.score}, Issues: ${report.issues.length}`);
+        // Generate report
+        logger.info(`[PdfAudit] Generating report...`);
+        const r = await this.generateReport(validation, jobId, fileName, parseResult);
+        logger.info(`[PdfAudit] Audit complete - Score: ${r.score}, Issues: ${r.issues.length}`);
+        return { report: r, parseResult, tempDir };
+      });
+      parsed = parseResult;
+      externalValidatorTempDir = tempDir;
 
       return report;
     } catch (error) {
@@ -1412,6 +1427,29 @@ class PdfAuditService extends BaseAuditService<PdfParseResult, PdfValidationResu
           logger.warn(`[PdfAudit] Failed to remove veraPDF/pdfa11y temp dir: ${e instanceof Error ? e.message : String(e)}`);
         });
       }
+    }
+  }
+
+  /** Bounds `work` to pdfConfig.auditTimeoutMs so a hung parser/validator
+   *  (real incident: a parse that logged its start and then nothing, ever,
+   *  for ~24h) fails fast instead of permanently wedging whatever slot
+   *  (BullMQ worker concurrency, a PDF batch item's weighted budget unit)
+   *  is waiting on it. `work` itself is NOT cancelled on timeout -- Node
+   *  has no general way to abort an arbitrary in-flight async chain -- this
+   *  only stops THIS caller from waiting on it forever. */
+  private async withAuditTimeout<T>(fileName: string, work: () => Promise<T>): Promise<T> {
+    let timer: ReturnType<typeof setTimeout>;
+    const timeout = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => {
+        reject(new Error(
+          `[PdfAudit] Audit timed out after ${pdfConfig.auditTimeoutMs}ms for ${fileName} -- the parser or a validator likely hung`
+        ));
+      }, pdfConfig.auditTimeoutMs);
+    });
+    try {
+      return await Promise.race([work(), timeout]);
+    } finally {
+      clearTimeout(timer!);
     }
   }
 }

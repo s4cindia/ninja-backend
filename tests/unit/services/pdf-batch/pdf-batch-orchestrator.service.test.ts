@@ -11,7 +11,10 @@ const mockPdfBatchUpdateMany = vi.fn();
 const mockPdfBatchItemFindUnique = vi.fn();
 const mockPdfBatchItemFindUniqueOrThrow = vi.fn();
 const mockPdfBatchItemUpdate = vi.fn();
+const mockPdfBatchItemUpdateMany = vi.fn();
+const mockPdfBatchItemFindMany = vi.fn();
 const mockPdfBatchItemCount = vi.fn();
+const mockPdfConcurrencyLeaseFindUnique = vi.fn();
 const mockJobCreate = vi.fn();
 const mockJobUpdate = vi.fn();
 const mockJobFindUnique = vi.fn();
@@ -27,7 +30,12 @@ vi.mock('../../../../src/lib/prisma', () => ({
       findUnique: (...args: unknown[]) => mockPdfBatchItemFindUnique(...args),
       findUniqueOrThrow: (...args: unknown[]) => mockPdfBatchItemFindUniqueOrThrow(...args),
       update: (...args: unknown[]) => mockPdfBatchItemUpdate(...args),
+      updateMany: (...args: unknown[]) => mockPdfBatchItemUpdateMany(...args),
+      findMany: (...args: unknown[]) => mockPdfBatchItemFindMany(...args),
       count: (...args: unknown[]) => mockPdfBatchItemCount(...args),
+    },
+    pdfConcurrencyLease: {
+      findUnique: (...args: unknown[]) => mockPdfConcurrencyLeaseFindUnique(...args),
     },
     job: {
       create: (...args: unknown[]) => mockJobCreate(...args),
@@ -266,6 +274,82 @@ describe('PdfBatchOrchestratorService.processItem', () => {
     await pdfBatchOrchestratorService.processItem('batch-1', 'item-1');
 
     expect(mockJobCreate).not.toHaveBeenCalled();
+    expect(mockPdfBatchUpdateMany).not.toHaveBeenCalled();
+  });
+});
+
+describe('PdfBatchOrchestratorService.reconcileOrphanedItems', () => {
+  const orphanedItem = { id: 'item-orphan', batchId: 'batch-1', status: 'AUDITING', activeLeaseId: 'lease-dead' };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockPdfBatchItemUpdateMany.mockResolvedValue({ count: 1 });
+    mockPdfBatchItemCount.mockResolvedValue(0);
+    mockPdfBatchUpdateMany.mockResolvedValue({ count: 1 });
+  });
+
+  it('does nothing when there are no AUDITING/REMEDIATING items', async () => {
+    mockPdfBatchItemFindMany.mockResolvedValue([]);
+
+    const reconciled = await pdfBatchOrchestratorService.reconcileOrphanedItems();
+
+    expect(reconciled).toBe(0);
+    expect(mockPdfBatchItemUpdateMany).not.toHaveBeenCalled();
+  });
+
+  it('leaves an item alone when its lease is still active (not orphaned)', async () => {
+    mockPdfBatchItemFindMany.mockResolvedValue([orphanedItem]);
+    mockPdfConcurrencyLeaseFindUnique.mockResolvedValue({ id: 'lease-dead', releasedAt: null });
+
+    const reconciled = await pdfBatchOrchestratorService.reconcileOrphanedItems();
+
+    expect(reconciled).toBe(0);
+    expect(mockPdfBatchItemUpdateMany).not.toHaveBeenCalled();
+  });
+
+  it('marks FAILED (and finalizes the batch) when the lease was already released -- the process that held it died without transitioning the item', async () => {
+    mockPdfBatchItemFindMany.mockResolvedValue([orphanedItem]);
+    mockPdfConcurrencyLeaseFindUnique.mockResolvedValue({ id: 'lease-dead', releasedAt: new Date() });
+    mockPdfBatchItemCount
+      .mockResolvedValueOnce(1) // totalCount
+      .mockResolvedValueOnce(1); // terminalCount -- this was the last one
+
+    const reconciled = await pdfBatchOrchestratorService.reconcileOrphanedItems();
+
+    expect(reconciled).toBe(1);
+    expect(mockPdfBatchItemUpdateMany).toHaveBeenCalledWith({
+      where: { id: 'item-orphan', status: 'AUDITING' },
+      data: expect.objectContaining({ status: 'FAILED', activeLeaseId: null }),
+    });
+    expect(mockPdfBatchUpdateMany).toHaveBeenCalledWith({
+      where: { id: 'batch-1', status: 'PROCESSING' },
+      data: expect.objectContaining({ status: 'COMPLETED' }),
+    });
+  });
+
+  it('marks FAILED when there is no lease at all (activeLeaseId missing while supposedly active)', async () => {
+    mockPdfBatchItemFindMany.mockResolvedValue([{ ...orphanedItem, activeLeaseId: null }]);
+
+    const reconciled = await pdfBatchOrchestratorService.reconcileOrphanedItems();
+
+    expect(reconciled).toBe(1);
+    expect(mockPdfConcurrencyLeaseFindUnique).not.toHaveBeenCalled();
+    expect(mockPdfBatchItemUpdateMany).toHaveBeenCalledWith({
+      where: { id: 'item-orphan', status: 'AUDITING' },
+      data: expect.objectContaining({ status: 'FAILED' }),
+    });
+  });
+
+  it('does not double-count a race where the item changed state between the read and the CAS update', async () => {
+    mockPdfBatchItemFindMany.mockResolvedValue([orphanedItem]);
+    mockPdfConcurrencyLeaseFindUnique.mockResolvedValue({ id: 'lease-dead', releasedAt: new Date() });
+    // The real orchestrator itself transitioned the item in the meantime --
+    // the CAS matches 0 rows.
+    mockPdfBatchItemUpdateMany.mockResolvedValue({ count: 0 });
+
+    const reconciled = await pdfBatchOrchestratorService.reconcileOrphanedItems();
+
+    expect(reconciled).toBe(0);
     expect(mockPdfBatchUpdateMany).not.toHaveBeenCalled();
   });
 });
