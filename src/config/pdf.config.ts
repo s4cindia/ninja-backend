@@ -51,6 +51,18 @@ export const pdfConfig = {
   maxContrastPages: parseInt(process.env.MAX_CONTRAST_PAGES || '0', 10),
   supportedVersions: ['1.0', '1.1', '1.2', '1.3', '1.4', '1.5', '1.6', '1.7', '2.0'],
   workerSrc: 'pdfjs-dist/build/pdf.worker.mjs',
-  timeout: 120000,
+  // Real incident (2026-10-15): a real document (Math_Olszewski_PDF.pdf, a
+  // PDF batch item) hung inside PdfComprehensiveParser.parse -- no further
+  // log output, ever -- and sat there for ~24h with nothing to catch it,
+  // permanently wedging a worker's concurrency slot (and, for a batch item,
+  // a tenant's weighted budget unit, since the lease heartbeat keeps
+  // renewing independently of whether real progress is happening). There
+  // was previously no timeout anywhere in runAuditFromBuffer at all -- the
+  // old `timeout: 120000` field here was dead code, never actually wired
+  // up to anything. 15 minutes is deliberately generous: comfortably above
+  // any legitimately slow real audit seen in this codebase's history (even
+  // 2GB/multi-hundred-page documents), so this should only ever fire on a
+  // genuine hang, not a slow-but-working comprehensive scan.
+  auditTimeoutMs: parseInt(process.env.PDF_AUDIT_TIMEOUT_MS || String(15 * 60 * 1000), 10),
   chunkSize: 10,
 };
