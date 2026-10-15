@@ -18,7 +18,8 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 // can assert via prisma.pdfConcurrencyBudget.updateMany /
 // prisma.pdfConcurrencyLease.create regardless of whether the real code
 // called them through `tx` or directly.
-vi.mock('../../../../src/lib/prisma', () => {
+vi.mock('../../../../src/lib/prisma', async () => {
+  const actual = await vi.importActual<typeof import('@prisma/client')>('@prisma/client');
   const pdfConcurrencyBudget = {
     upsert: vi.fn(),
     findUniqueOrThrow: vi.fn(),
@@ -36,16 +37,24 @@ vi.mock('../../../../src/lib/prisma', () => {
       pdfConcurrencyLease,
       $transaction: (fn: (tx: unknown) => Promise<unknown>) => fn({ pdfConcurrencyBudget, pdfConcurrencyLease }),
     },
+    Prisma: actual.Prisma,
   };
 });
 
-import prisma from '../../../../src/lib/prisma';
+import prisma, { Prisma } from '../../../../src/lib/prisma';
 import {
   concurrencyBudgetService,
   computeSizeWeight,
   computePageWeight,
   computeEffectiveWeight,
 } from '../../../../src/services/pdf-batch/concurrency-budget.service';
+
+function p2002(): InstanceType<typeof Prisma.PrismaClientKnownRequestError> {
+  return new Prisma.PrismaClientKnownRequestError('Unique constraint failed on the fields: (`tenantId`)', {
+    code: 'P2002',
+    clientVersion: '5.22.0',
+  });
+}
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -162,6 +171,32 @@ describe('tryAcquireLease', () => {
 
     await expect(concurrencyBudgetService.tryAcquireLease('tenant-1', 'item-1', 'audit', 12)).rejects.toThrow(/exceeds the tenant's total budget/);
     expect(prisma.pdfConcurrencyBudget.updateMany).not.toHaveBeenCalled();
+  });
+
+  it('treats a P2002 from ensureBudgetRow as success -- another concurrent caller already created the tenant row', async () => {
+    // Real race this closes: two batch items for a brand-new tenant both
+    // call ensureBudgetRow at once; Prisma's upsert is not atomic against
+    // a concurrent create for the same unique key, so the loser's INSERT
+    // hits the unique constraint instead of falling back to its own update
+    // branch. By the time that error surfaces, the row already exists
+    // (the winner created it), so this should proceed exactly as if the
+    // upsert itself had succeeded.
+    vi.mocked(prisma.pdfConcurrencyBudget.upsert).mockRejectedValue(p2002());
+    vi.mocked(prisma.pdfConcurrencyBudget.findUniqueOrThrow).mockResolvedValue({ tenantId: 'tenant-1', totalUnits: 10, unitsInUse: 0 } as any);
+    vi.mocked(prisma.pdfConcurrencyBudget.updateMany).mockResolvedValue({ count: 1 } as any);
+    vi.mocked(prisma.pdfConcurrencyLease.create).mockResolvedValue({ id: 'lease-1' } as any);
+
+    const result = await concurrencyBudgetService.tryAcquireLease('tenant-1', 'item-1', 'audit', 3);
+
+    expect(result).toEqual({ acquired: true, leaseId: 'lease-1' });
+  });
+
+  it('rethrows a non-P2002 error from ensureBudgetRow', async () => {
+    const dbError = new Error('connection reset');
+    vi.mocked(prisma.pdfConcurrencyBudget.upsert).mockRejectedValue(dbError);
+
+    await expect(concurrencyBudgetService.tryAcquireLease('tenant-1', 'item-1', 'audit', 3)).rejects.toThrow('connection reset');
+    expect(prisma.pdfConcurrencyBudget.findUniqueOrThrow).not.toHaveBeenCalled();
   });
 
   it('admits when weightUnits exactly equals the tenant total (the item takes the whole budget)', async () => {

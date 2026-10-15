@@ -34,7 +34,7 @@
  * finding on PR #635).
  */
 
-import prisma from '../../lib/prisma';
+import prisma, { Prisma } from '../../lib/prisma';
 import { logger } from '../../lib/logger';
 import { pdfBatchConfig } from '../../config/pdf-batch.config';
 
@@ -85,15 +85,29 @@ class WeightExceedsBudgetError extends Error {
 }
 
 class ConcurrencyBudgetService {
-  /** Lazily creates a tenant's budget row on first use. Safe under
-   *  concurrent first-ever calls for the same tenant -- Prisma's upsert
-   *  compiles to an atomic INSERT ... ON CONFLICT DO UPDATE for Postgres. */
+  /** Lazily creates a tenant's budget row on first use. Prisma's upsert is
+   *  NOT atomic against a concurrent create for the same unique key --
+   *  under real concurrency (multiple batch items for a brand-new tenant
+   *  all calling this at once), two callers can both see "doesn't exist"
+   *  and race to INSERT; the loser gets a P2002 unique-constraint error
+   *  instead of falling back to its own update branch. Caught and treated
+   *  as success here: by the time that error surfaces, the row this method
+   *  promises to ensure exists already does (whichever caller won the
+   *  race created it) -- which is exactly the postcondition the caller
+   *  needs. */
   private async ensureBudgetRow(tenantId: string): Promise<void> {
-    await prisma.pdfConcurrencyBudget.upsert({
-      where: { tenantId },
-      create: { tenantId, totalUnits: pdfBatchConfig.defaultBudgetUnits },
-      update: {},
-    });
+    try {
+      await prisma.pdfConcurrencyBudget.upsert({
+        where: { tenantId },
+        create: { tenantId, totalUnits: pdfBatchConfig.defaultBudgetUnits },
+        update: {},
+      });
+    } catch (err) {
+      if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
+        return;
+      }
+      throw err;
+    }
   }
 
   /**
