@@ -289,6 +289,11 @@ class PdfBatchController {
             originalName: i.originalName,
             fileSize: i.fileSize.toString(),
             status: i.status,
+            // Loose ref to the item's Job -- lets the frontend reuse the
+            // existing GET /pdf/:jobId/remediation/download flow (same one
+            // the single-document UI already uses) instead of needing a
+            // pdf-batch-specific download route.
+            auditJobId: i.auditJobId,
             auditScore: i.auditScore,
             issuesFound: i.issuesFound,
             pageCount: i.pageCount,
@@ -297,7 +302,9 @@ class PdfBatchController {
             remediatedFilePath: i.remediatedFilePath,
             error: i.error,
             uploadedAt: i.uploadedAt,
+            auditStartedAt: i.auditStartedAt,
             auditCompletedAt: i.auditCompletedAt,
+            remediationStartedAt: i.remediationStartedAt,
             remediationCompletedAt: i.remediationCompletedAt,
           })),
         },
