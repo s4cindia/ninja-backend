@@ -1010,6 +1010,12 @@ model PdfConcurrencyLease {
   heartbeatAt DateTime  @default(now())
   releasedAt  DateTime?
 
+  // Also: a Postgres partial unique index on (batchItemId) WHERE
+  // releasedAt IS NULL enforces at most one ACTIVE lease per item -- not
+  // representable here (Prisma's schema language has no WHERE-clause
+  // index syntax), added by migration 20261015000000_add_pdf_batch_lease_uniqueness
+  // instead. CodeRabbit finding on PR #633, closed once this service got
+  // its first real caller.
   @@index([batchItemId])
   @@index([tenantId, releasedAt])
 }
