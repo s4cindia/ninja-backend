@@ -75,7 +75,14 @@ class BatchOrchestratorService {
     logger.info(`Removed file ${fileId} from batch ${batchId}`);
   }
 
-  async startBatchProcessing(batchId: string): Promise<Batch> {
+  /**
+   * Validates a batch is startable and transitions it from DRAFT to QUEUED.
+   * Split out of startBatchProcessing so batch.controller.ts can do this
+   * (cheap, synchronous) step itself before enqueueing the actual (CPU-heavy)
+   * processing onto the BATCH_PROCESSING worker queue, instead of running it
+   * in-process on the web service -- see dispatchBatchProcessing there.
+   */
+  async prepareBatchForProcessing(batchId: string): Promise<Batch> {
     const batch = await this.getBatch(batchId);
 
     if (batch.status !== 'DRAFT') {
@@ -86,14 +93,26 @@ class BatchOrchestratorService {
       throw new Error('Cannot start batch with no files');
     }
 
-    await prisma.batch.update({
+    return prisma.batch.update({
       where: { id: batchId },
       data: {
         status: 'QUEUED',
         startedAt: new Date(),
       },
     });
+  }
 
+  /**
+   * Fire-and-forget kickoff of processBatchSync with the shared
+   * mark-FAILED + email/notification error handling. Callers must have
+   * already moved the batch to QUEUED (via prepareBatchForProcessing) --
+   * used by startBatchProcessing's in-process fallback below, and by
+   * batch.controller.ts's dispatchBatchProcessing if enqueueing itself fails.
+   * The BATCH_PROCESSING worker (batch-processing.processor.ts) does NOT use
+   * this -- it awaits processBatchSync directly so BullMQ can track job
+   * success/failure, with its own (simpler, no-email) FAILED-marking.
+   */
+  runBatchProcessing(batchId: string): void {
     this.processBatchSync(batchId).catch(async (err) => {
       logger.error(`Batch ${batchId} processing failed:`, err);
       const errMsg = err instanceof Error ? err.message : 'Unknown error';
@@ -130,7 +149,19 @@ class BatchOrchestratorService {
         ).catch((notifErr: Error) => logger.error(`[Batch ${batchId}] Failed to create failure notification: ${notifErr.message}`));
       }).catch(() => {});
     });
+  }
 
+  /**
+   * Direct in-process fallback for environments without queues configured
+   * (e.g. local dev without Redis). See batch.controller.ts's
+   * dispatchBatchProcessing for the queue-based path used everywhere else --
+   * that CPU-heavy work running fire-and-forget on the web (ALB-health-
+   * checked) service is the same bug class that caused the real Williams_PDF
+   * Auto Mode outage, fixed for that feature in PR #666.
+   */
+  async startBatchProcessing(batchId: string): Promise<Batch> {
+    await this.prepareBatchForProcessing(batchId);
+    this.runBatchProcessing(batchId);
     return this.getBatch(batchId);
   }
 

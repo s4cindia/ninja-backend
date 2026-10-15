@@ -1,10 +1,12 @@
 import { Request, Response } from 'express';
+import { Batch } from '@prisma/client';
 import { AuthenticatedRequest } from '../types/authenticated-request';
 import { batchOrchestratorService } from '../services/batch/batch-orchestrator.service';
 import { batchAcrGeneratorService } from '../services/acr/batch-acr-generator.service';
 import { batchQuickFixService } from '../services/batch/batch-quick-fix.service';
 import { queueService } from '../services/queue.service';
 import { s3Service } from '../services/s3.service';
+import { areQueuesAvailable, getBatchProcessingQueue } from '../queues';
 import prisma from '../lib/prisma';
 import { logger } from '../lib/logger';
 
@@ -124,7 +126,7 @@ class BatchController {
 
       await batchOrchestratorService.getBatchForUser(batchId, tenantId);
 
-      const batch = await batchOrchestratorService.startBatchProcessing(batchId);
+      const batch = await this.dispatchBatchProcessing(batchId, tenantId);
 
       return res.json({
         success: true,
@@ -145,6 +147,38 @@ class BatchController {
         },
       });
     }
+  }
+
+  /**
+   * Routes batch processing through the BATCH_PROCESSING BullMQ queue
+   * (worker process -- isolated from the ALB health checks that can evict
+   * the web task mid-run) when queues are available, falling back to the
+   * original direct in-process call otherwise -- keeps local dev without
+   * Redis configured working exactly as before this change. Same pattern as
+   * pdf-auto-mode.controller.ts's enqueueOrRunAutoLoop (PR #666), fixing the
+   * same bug class here: batchOrchestratorService.processBatchSync used to
+   * always run fire-and-forget on the web service.
+   *
+   * Dispatch id includes Date.now() (not the bare batchId) for the same
+   * reason enqueueOrRunAutoLoop does -- a wedged/never-completed BullMQ
+   * entry from a crashed worker must not block a retry from reusing the
+   * same id.
+   */
+  private async dispatchBatchProcessing(batchId: string, tenantId: string): Promise<Batch> {
+    if (areQueuesAvailable()) {
+      const queue = getBatchProcessingQueue();
+      if (queue) {
+        const batch = await batchOrchestratorService.prepareBatchForProcessing(batchId);
+        queue.add(`batch-processing-${batchId}`, { batchId, tenantId }, { jobId: `${batchId}-${Date.now()}` }).catch((err) => {
+          logger.error(
+            `[Batch] Failed to enqueue batch ${batchId}, falling back to in-process: ${err instanceof Error ? err.message : String(err)}`
+          );
+          batchOrchestratorService.runBatchProcessing(batchId);
+        });
+        return batch;
+      }
+    }
+    return batchOrchestratorService.startBatchProcessing(batchId);
   }
 
   async getBatch(req: AuthenticatedRequest, res: Response) {
