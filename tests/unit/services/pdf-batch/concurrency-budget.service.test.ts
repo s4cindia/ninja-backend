@@ -49,8 +49,8 @@ import {
   computeEffectiveWeight,
 } from '../../../../src/services/pdf-batch/concurrency-budget.service';
 
-function p2002(): InstanceType<typeof Prisma.PrismaClientKnownRequestError> {
-  return new Prisma.PrismaClientKnownRequestError('Unique constraint failed on the fields: (`tenantId`)', {
+function p2002(field: string = 'tenantId'): InstanceType<typeof Prisma.PrismaClientKnownRequestError> {
+  return new Prisma.PrismaClientKnownRequestError(`Unique constraint failed on the fields: (\`${field}\`)`, {
     code: 'P2002',
     clientVersion: '5.22.0',
   });
@@ -197,6 +197,34 @@ describe('tryAcquireLease', () => {
 
     await expect(concurrencyBudgetService.tryAcquireLease('tenant-1', 'item-1', 'audit', 3)).rejects.toThrow('connection reset');
     expect(prisma.pdfConcurrencyBudget.findUniqueOrThrow).not.toHaveBeenCalled();
+  });
+
+  it('treats a P2002 on lease create as "not admitted" rather than crashing -- the item already holds an active lease', async () => {
+    // Real race this closes (PdfBatch "Test Batch 02" incident): BullMQ's
+    // stalled-job recovery reprocesses an item whose original attempt is
+    // still alive and holding an active lease (the staleness watchdog
+    // hasn't caught up yet) -- the retry's lease create() hits the
+    // partial unique index on PdfConcurrencyLease(batchItemId) WHERE
+    // releasedAt IS NULL. Treating this as "not admitted yet" lets the
+    // caller just poll again via waitForLease instead of the item being
+    // crashed to FAILED outright.
+    vi.mocked(prisma.pdfConcurrencyBudget.upsert).mockResolvedValue({} as any);
+    vi.mocked(prisma.pdfConcurrencyBudget.findUniqueOrThrow).mockResolvedValue({ tenantId: 'tenant-1', totalUnits: 10, unitsInUse: 0 } as any);
+    vi.mocked(prisma.pdfConcurrencyBudget.updateMany).mockResolvedValue({ count: 1 } as any);
+    vi.mocked(prisma.pdfConcurrencyLease.create).mockRejectedValue(p2002('batchItemId'));
+
+    const result = await concurrencyBudgetService.tryAcquireLease('tenant-1', 'item-1', 'audit', 3);
+
+    expect(result).toEqual({ acquired: false });
+  });
+
+  it('rethrows a non-P2002 error from the lease create transaction', async () => {
+    vi.mocked(prisma.pdfConcurrencyBudget.upsert).mockResolvedValue({} as any);
+    vi.mocked(prisma.pdfConcurrencyBudget.findUniqueOrThrow).mockResolvedValue({ tenantId: 'tenant-1', totalUnits: 10, unitsInUse: 0 } as any);
+    vi.mocked(prisma.pdfConcurrencyBudget.updateMany).mockResolvedValue({ count: 1 } as any);
+    vi.mocked(prisma.pdfConcurrencyLease.create).mockRejectedValue(new Error('connection reset'));
+
+    await expect(concurrencyBudgetService.tryAcquireLease('tenant-1', 'item-1', 'audit', 3)).rejects.toThrow('connection reset');
   });
 
   it('admits when weightUnits exactly equals the tenant total (the item takes the whole budget)', async () => {
