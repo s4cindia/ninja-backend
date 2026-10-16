@@ -265,7 +265,31 @@ describe('PdfBatchOrchestratorService.processItem', () => {
 
     await pdfBatchOrchestratorService.processItem('batch-1', 'item-1');
 
+    // The QUEUED->PROCESSING transition still fires (every item makes this
+    // idempotent call) -- only the COMPLETED finalization should be absent.
+    expect(mockPdfBatchUpdateMany).not.toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ status: 'COMPLETED' }) })
+    );
+  });
+
+  it('flips the batch from QUEUED to PROCESSING when an item starts (idempotent CAS)', async () => {
+    await pdfBatchOrchestratorService.processItem('batch-1', 'item-1');
+
+    expect(mockPdfBatchUpdateMany).toHaveBeenCalledWith({
+      where: { id: 'batch-1', status: 'QUEUED' },
+      data: { status: 'PROCESSING' },
+    });
+  });
+
+  it('ignores re-dispatch of an item that is already terminal -- e.g. BullMQ stalled-job recovery reprocessing an item whose original attempt actually already finished', async () => {
+    mockPdfBatchItemFindUnique.mockResolvedValue({ ...draftItem, status: 'FAILED' });
+
+    await pdfBatchOrchestratorService.processItem('batch-1', 'item-1');
+
+    expect(mockJobCreate).not.toHaveBeenCalled();
+    expect(mockWaitForLease).not.toHaveBeenCalled();
     expect(mockPdfBatchUpdateMany).not.toHaveBeenCalled();
+    expect(mockPdfBatchItemUpdate).not.toHaveBeenCalled();
   });
 
   it('returns without touching anything if the item no longer exists (e.g. deleted mid-flight)', async () => {

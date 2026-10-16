@@ -41,6 +41,12 @@ const HEARTBEAT_INTERVAL_MS = 5 * 60 * 1000;
 // used rather than only being checked at phase boundaries.
 const CANCELLATION_POLL_MS = 10 * 1000;
 
+// An item in any of these statuses is done -- processItem has already run
+// it to completion once. Shared between the idempotent re-dispatch guard
+// below and finalizeBatchIfComplete's own terminal check, so the two can
+// never drift apart.
+const TERMINAL_ITEM_STATUSES = ['REMEDIATED', 'FAILED', 'SKIPPED'] as const;
+
 class PdfBatchOrchestratorService {
   async processItem(batchId: string, itemId: string): Promise<void> {
     const [batch, item] = await Promise.all([
@@ -56,6 +62,29 @@ class PdfBatchOrchestratorService {
       logger.warn(`[PdfBatchOrchestrator] Item ${itemId} not found (batch ${batchId}) -- skipping, likely deleted`);
       return;
     }
+
+    // Idempotent guard against BullMQ re-dispatching this same item -- e.g.
+    // its stalled-job recovery reprocessing a job whose original attempt
+    // actually already finished (lockDuration exceeded without the
+    // original attempt actually dying). Redoing a terminal item's full
+    // audit/remediation lifecycle a second time would silently overwrite
+    // its already-final result, not just waste work.
+    if ((TERMINAL_ITEM_STATUSES as readonly string[]).includes(item.status)) {
+      logger.warn(`[PdfBatchOrchestrator] Item ${itemId} is already ${item.status} -- ignoring re-dispatch`);
+      return;
+    }
+
+    // First item to actually start processing flips the batch out of
+    // QUEUED -- nothing else in the codebase ever makes this transition
+    // (real incident: PdfBatch "Test Batch 02" stayed QUEUED forever even
+    // after every item reached a terminal status, because
+    // finalizeBatchIfComplete's CAS only matches status 'PROCESSING').
+    // Idempotent CAS: a concurrent item making the same call after the
+    // first one wins is a harmless no-op (count: 0).
+    await prisma.pdfBatch.updateMany({
+      where: { id: batchId, status: 'QUEUED' },
+      data: { status: 'PROCESSING' },
+    });
 
     try {
       if (await this.isCancelled(batchId)) {
@@ -363,10 +392,9 @@ class PdfBatchOrchestratorService {
    *  does the finalization -- same atomic-CAS philosophy as
    *  concurrency-budget.service.ts / remediation-cycle-lock.service.ts. */
   private async finalizeBatchIfComplete(batchId: string): Promise<void> {
-    const TERMINAL = ['REMEDIATED', 'FAILED', 'SKIPPED'] as const;
     const [totalCount, terminalCount] = await Promise.all([
       prisma.pdfBatchItem.count({ where: { batchId } }),
-      prisma.pdfBatchItem.count({ where: { batchId, status: { in: [...TERMINAL] } } }),
+      prisma.pdfBatchItem.count({ where: { batchId, status: { in: [...TERMINAL_ITEM_STATUSES] } } }),
     ]);
 
     if (totalCount === 0 || terminalCount < totalCount) return;

@@ -134,18 +134,37 @@ class ConcurrencyBudgetService {
     }
     const maxUnitsInUseToAdmit = budget.totalUnits - weightUnits;
 
-    const leaseId = await prisma.$transaction(async (tx) => {
-      const result = await tx.pdfConcurrencyBudget.updateMany({
-        where: { tenantId, unitsInUse: { lte: maxUnitsInUseToAdmit } },
-        data: { unitsInUse: { increment: weightUnits } },
-      });
-      if (result.count === 0) return null;
+    let leaseId: string | null;
+    try {
+      leaseId = await prisma.$transaction(async (tx) => {
+        const result = await tx.pdfConcurrencyBudget.updateMany({
+          where: { tenantId, unitsInUse: { lte: maxUnitsInUseToAdmit } },
+          data: { unitsInUse: { increment: weightUnits } },
+        });
+        if (result.count === 0) return null;
 
-      const lease = await tx.pdfConcurrencyLease.create({
-        data: { tenantId, batchItemId, phase, weightUnits },
+        const lease = await tx.pdfConcurrencyLease.create({
+          data: { tenantId, batchItemId, phase, weightUnits },
+        });
+        return lease.id;
       });
-      return lease.id;
-    });
+    } catch (err) {
+      // batchItemId already holds an active lease (partial unique index on
+      // PdfConcurrencyLease(batchItemId) WHERE releasedAt IS NULL) -- most
+      // likely BullMQ's own stalled-job recovery reprocessing this item
+      // while the original attempt's lease hasn't been reconciled as stale
+      // yet (that watchdog runs on its own schedule, independent of
+      // BullMQ's lockDuration -- the two clocks aren't synchronized, so
+      // this can legitimately race). The transaction already rolled back
+      // the budget increment; treat this exactly like "not admitted yet"
+      // so the caller just polls again via waitForLease, instead of
+      // crashing the item outright (real incident: PdfBatch "Test Batch
+      // 02", both items FAILED instantly on a worker restart mid-audit).
+      if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
+        return { acquired: false };
+      }
+      throw err;
+    }
 
     if (leaseId === null) return { acquired: false };
     return { acquired: true, leaseId };
