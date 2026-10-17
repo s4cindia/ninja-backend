@@ -103,11 +103,22 @@ class GeminiService {
         : {}),
     };
 
-    return client.getGenerativeModel({
-      model: modelName,
-      generationConfig,
-      systemInstruction: options.systemInstruction,
-    });
+    return client.getGenerativeModel(
+      {
+        model: modelName,
+        generationConfig,
+        systemInstruction: options.systemInstruction,
+      },
+      // Without this, a stuck network call (confirmed live: a Gemini vision
+      // call during PDF alt-text validation hung forever -- no error, no
+      // retry, nothing, for 14+ minutes until the *outer* 900s audit timeout
+      // finally gave up on the whole document) waits indefinitely: the SDK
+      // has no default timeout, so retryWithBackoff below never even gets a
+      // chance to retry a call that never resolves OR rejects. This bounds
+      // every request this model issues so a hang becomes a rejection
+      // retryWithBackoff can act on instead.
+      { timeout: aiConfig.gemini.timeout }
+    );
   }
 
   /**

@@ -125,6 +125,44 @@ describe('GeminiService circuit breaker', () => {
   });
 });
 
+describe('GeminiService request timeout', () => {
+  let geminiService: typeof import('../../../../src/services/ai/gemini.service').geminiService;
+
+  beforeEach(async () => {
+    vi.resetModules();
+    generateContentMock.mockReset();
+    getGenerativeModelMock.mockClear();
+    getGenerativeModelMock.mockReturnValue({ generateContent: generateContentMock });
+    ({ geminiService } = await import('../../../../src/services/ai/gemini.service'));
+  });
+
+  it('passes aiConfig.gemini.timeout as requestOptions so a stuck network call cannot hang forever', async () => {
+    generateContentMock.mockResolvedValue(mockResponse('ok'));
+
+    await geminiService.generateText('prompt', { model: 'flash' });
+
+    expect(getGenerativeModelMock).toHaveBeenCalledTimes(1);
+    // Second positional arg is RequestOptions, per the @google/generative-ai SDK --
+    // this is what bounds every request this model instance issues.
+    expect(getGenerativeModelMock.mock.calls[0][1]).toEqual({ timeout: 60000 });
+  });
+
+  it('retries (without tripping the circuit breaker) on the SDK abort error a real timeout produces', async () => {
+    // Mirrors @google/generative-ai's own GoogleGenerativeAIAbortError wording
+    // (dist/index.js) for a request the SDK aborted via requestOptions.timeout --
+    // confirms this doesn't get misclassified as an infrastructure error.
+    generateContentMock
+      .mockRejectedValueOnce(new Error('Request aborted when fetching https://generativelanguage.googleapis.com/...: The user aborted a request.'))
+      .mockResolvedValueOnce(mockResponse('recovered'));
+
+    const result = await geminiService.generateText('prompt', { model: 'flash' });
+
+    expect(result.text).toBe('recovered');
+    expect(geminiService.getCircuitStatus().open).toBe(false);
+    expect(generateContentMock).toHaveBeenCalledTimes(2);
+  });
+});
+
 describe('GeminiService structured output (responseSchema)', () => {
   let geminiService: typeof import('../../../../src/services/ai/gemini.service').geminiService;
 
