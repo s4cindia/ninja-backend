@@ -282,20 +282,44 @@ class PdfComprehensiveParserService {
     // Extract text and images in parallel (independent operations)
     // Text extraction emits per-batch page progress covering pages 1→totalPages.
     // Image extraction runs alongside but doesn't emit its own progress.
+    //
+    // Diagnostic timing (2026-10-17): a real 2040-page/330MB document
+    // (FMHE_PDF.pdf) spent ~14m54s of its 15-minute audit budget entirely
+    // inside this method, with only "Extracting..."/"Analyzing..."/"Parse
+    // complete" as milestones -- no way to tell which of text extraction,
+    // image extraction, structure analysis, or form-field extraction (the
+    // latter a known-suspect sequential per-page loop, same anti-pattern
+    // PR #686 just fixed in the alt-text validator) actually owns that
+    // time. Logging each phase's own elapsed ms turns the next occurrence
+    // into a direct breakdown instead of another guess.
     logger.info(`[PdfComprehensiveParser] Extracting text and images in parallel...`);
-    const [documentText, documentImages] = await Promise.all([
-      textExtractorService.extractText(parsedPdf, {}, onProgress
+    const extractStartedAt = Date.now();
+    const timedExtractText = textExtractorService
+      .extractText(parsedPdf, {}, onProgress
         ? (processed, total) => onProgress(Math.min(processed, total), total)
-        : undefined),
-      imageExtractorService.extractImages(parsedPdf),
-    ]);
+        : undefined)
+      .then((result) => {
+        logger.info(`[PdfComprehensiveParser] Text extraction done in ${Date.now() - extractStartedAt}ms`);
+        return result;
+      });
+    const timedExtractImages = imageExtractorService
+      .extractImages(parsedPdf)
+      .then((result) => {
+        logger.info(`[PdfComprehensiveParser] Image extraction done in ${Date.now() - extractStartedAt}ms`);
+        return result;
+      });
+    const [documentText, documentImages] = await Promise.all([timedExtractText, timedExtractImages]);
 
     // Structure analysis runs after (internally re-extracts text for heading analysis)
     logger.info(`[PdfComprehensiveParser] Analyzing structure...`);
+    const structureStartedAt = Date.now();
     const documentStructure = await structureAnalyzerService.analyzeStructure(parsedPdf);
+    logger.info(`[PdfComprehensiveParser] Structure analysis done in ${Date.now() - structureStartedAt}ms`);
 
     // Extract form fields using pdfjs annotation API (non-fatal if it fails)
+    const formFieldsStartedAt = Date.now();
     const documentFormFields = await this.extractAllFormFields(parsedPdf.pdfjsDoc, structure.pageCount);
+    logger.info(`[PdfComprehensiveParser] Form field extraction done in ${Date.now() - formFieldsStartedAt}ms`);
 
     // Signal completion of all extraction phases
     onProgress?.(totalPages, totalPages);
