@@ -19,6 +19,7 @@ const mockJobCreate = vi.fn();
 const mockJobUpdate = vi.fn();
 const mockJobFindUnique = vi.fn();
 const mockAutoRemediationRunUpsert = vi.fn();
+const mockAutoRemediationRunFindUnique = vi.fn();
 
 vi.mock('../../../../src/lib/prisma', () => ({
   default: {
@@ -44,6 +45,7 @@ vi.mock('../../../../src/lib/prisma', () => ({
     },
     pdfAutoRemediationRun: {
       upsert: (...args: unknown[]) => mockAutoRemediationRunUpsert(...args),
+      findUnique: (...args: unknown[]) => mockAutoRemediationRunFindUnique(...args),
     },
   },
 }));
@@ -118,6 +120,7 @@ describe('PdfBatchOrchestratorService.processItem', () => {
       score: 80, issues: [{ id: 'i1' }, { id: 'i2' }], metadata: { pageCount: 50 },
     });
     mockAutoRemediationRunUpsert.mockResolvedValue({ id: 'run-1', jobId: 'job-1' });
+    mockAutoRemediationRunFindUnique.mockResolvedValue({ id: 'run-1', jobId: 'job-1', autoStopReason: 'converged', autoRoundsCompleted: 3 });
     mockStartAutoLoop.mockResolvedValue(undefined);
     mockJobFindUnique.mockResolvedValue({ id: 'job-1', output: { remediatedFileUrl: 'job-storage/job-1/remediated/book.pdf' } });
     mockListForJob.mockResolvedValue([
@@ -243,6 +246,39 @@ describe('PdfBatchOrchestratorService.processItem', () => {
     });
     expect(mockReleaseLease).toHaveBeenCalledWith('lease-1');
     expect(mockStartAutoLoop).not.toHaveBeenCalled();
+  });
+
+  it('marks the item FAILED (not REMEDIATED) when the auto-mode loop stops immediately with zero rounds completed -- real incident, 2026-10-17: startAutoLoop never throws, so this used to silently fall through to a misleading "Remediated" badge with 0 fixes and no download link', async () => {
+    mockAutoRemediationRunFindUnique.mockResolvedValue({ id: 'run-1', jobId: 'job-1', autoStopReason: 'error', autoRoundsCompleted: 0 });
+
+    await pdfBatchOrchestratorService.processItem('batch-1', 'item-1');
+
+    expect(mockPdfBatchItemUpdate).toHaveBeenCalledWith({
+      where: { id: 'item-1' },
+      data: expect.objectContaining({
+        status: 'FAILED',
+        error: expect.stringContaining('no rounds completed'),
+      }),
+    });
+    expect(mockPdfBatchItemUpdate).not.toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ status: 'REMEDIATED' }) })
+    );
+    // The held remediation lease still gets released even though this
+    // throws instead of returning normally (runRemediationPhase's own
+    // finally block).
+    expect(mockReleaseLease).toHaveBeenCalledWith('lease-1');
+    expect(mockReleaseLease).toHaveBeenCalledTimes(2);
+  });
+
+  it('still marks the item REMEDIATED when the loop stops on an error after completing at least one round (partial progress preserved, not discarded)', async () => {
+    mockAutoRemediationRunFindUnique.mockResolvedValue({ id: 'run-1', jobId: 'job-1', autoStopReason: 'error', autoRoundsCompleted: 2 });
+
+    await pdfBatchOrchestratorService.processItem('batch-1', 'item-1');
+
+    expect(mockPdfBatchItemUpdate).toHaveBeenCalledWith({
+      where: { id: 'item-1' },
+      data: expect.objectContaining({ status: 'REMEDIATED' }),
+    });
   });
 
   it('finalizes the batch to COMPLETED only once every item is terminal (race-safe CAS)', async () => {

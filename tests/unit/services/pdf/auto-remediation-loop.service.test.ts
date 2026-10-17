@@ -59,6 +59,7 @@ vi.mock('../../../../src/lib/logger', () => ({
 }));
 
 import prisma from '../../../../src/lib/prisma';
+import { logger } from '../../../../src/lib/logger';
 import { autoRemediationLoopService, ComparisonTrialAutoRemediationDriver, JobAutoRemediationDriver } from '../../../../src/services/pdf/auto-remediation-loop.service';
 import { aiAnalysisService } from '../../../../src/services/pdf/ai-analysis.service';
 import { pdfReauditService } from '../../../../src/services/pdf/pdf-reaudit.service';
@@ -622,6 +623,28 @@ describe('autoRemediationLoopService.startAutoLoop', () => {
       where: { id: 'trial-1' },
       data: { autoStatus: 'stopped', autoStopReason: 'error', autoStopRequested: false, autoStoppedAt: expect.any(Date) },
     });
+  });
+
+  it('logs an error and stops with zero rounds (not silently) when getRoundState() returns null right after getConfig() found the same record -- real incident, 2026-10-17: this branch previously logged nothing at all, indistinguishable from the "hang" every other PDF-batch investigation that session turned out NOT to be', async () => {
+    let call = 0;
+    vi.mocked(prisma.comparisonTrial.findUnique).mockImplementation(() => {
+      call++;
+      // 1st call: getConfig() succeeds. 2nd call: getRoundState() -- the
+      // record has vanished.
+      return Promise.resolve(call === 1 ? (makeTrial() as any) : null);
+    });
+    mockLockAcquired(9);
+    mockJobFound();
+
+    await autoRemediationLoopService.startAutoLoop(new ComparisonTrialAutoRemediationDriver('trial-1'));
+
+    expect(logger.error).toHaveBeenCalledWith(expect.stringContaining('getRoundState() returned null'));
+    expect(aiAnalysisService.analyzeJob).not.toHaveBeenCalled();
+    expect(prisma.comparisonTrial.update).toHaveBeenCalledWith({
+      where: { id: 'trial-1' },
+      data: { autoStatus: 'stopped', autoStopReason: 'error', autoStopRequested: false, autoStoppedAt: expect.any(Date) },
+    });
+    expect(remediationCycleLockService.releaseLock).toHaveBeenCalledWith('job-1', 9);
   });
 
   it('still releases the lock even when writing the terminal trial status itself fails (Codex finding)', async () => {
