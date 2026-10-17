@@ -20,6 +20,19 @@ export function getRedisClient(): Redis {
       maxRetriesPerRequest: null,
       enableReadyCheck: false,
       connectTimeout: 10_000,
+      // Real incident (2026-10-17): with maxRetriesPerRequest: null, a command
+      // issued while this client is mid-reconnect just queues forever waiting
+      // for the connection to come back -- no error, no rejection, nothing. A
+      // Gemini-audit alt-text call hung for 14+ minutes because of exactly
+      // this, inside geminiRateLimiter's redis.multi().exec(), with no
+      // downstream timeout able to catch it since the promise never settled.
+      // commandTimeout bounds every command on THIS client (not the separate
+      // BullMQ connection in queues/index.ts, which legitimately needs
+      // maxRetriesPerRequest: null for its blocking commands) so a stuck
+      // reconnect rejects instead of hanging -- callers' existing
+      // try/catch-and-fail-open logic (e.g. RedisRateLimiter.acquire,
+      // checkRateLimit) can then actually run.
+      commandTimeout: 10_000,
       keepAlive: 30_000,
       retryStrategy: (times: number) => {
         if (times > 20) {
