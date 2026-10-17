@@ -64,5 +64,19 @@ export const pdfConfig = {
   // 2GB/multi-hundred-page documents), so this should only ever fire on a
   // genuine hang, not a slow-but-working comprehensive scan.
   auditTimeoutMs: parseInt(process.env.PDF_AUDIT_TIMEOUT_MS || String(15 * 60 * 1000), 10),
+  // Real incident (2026-10-17): PdfAltTextValidator processed every image
+  // strictly sequentially (one Gemini vision call awaited at a time before
+  // starting the next), which looked identical to a hang in the logs --
+  // total silence between "Found N images" and the final auditTimeoutMs
+  // timeout above, since there's no per-image logging and no error to
+  // retry/catch on the happy path. For an image-heavy document (506 images
+  // on Math_Olszewski_PDF.pdf, 5934 on FMHE_PDF.pdf), real per-image Gemini
+  // latency alone adds up past the 15-minute budget with nothing actually
+  // broken. 8 is a conservative starting point -- high enough to cut
+  // wall-clock time meaningfully, low enough to stay well under Gemini's
+  // own rate limits (geminiRateLimiter's own limit is 60/min and advisory
+  // only, so the real ceiling is Gemini's API, which retryWithBackoff
+  // already handles via 429 backoff).
+  altTextConcurrency: parseInt(process.env.PDF_ALT_TEXT_CONCURRENCY || '8', 10),
   chunkSize: 10,
 };

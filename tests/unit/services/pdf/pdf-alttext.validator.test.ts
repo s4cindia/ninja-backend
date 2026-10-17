@@ -245,6 +245,61 @@ describe('PDFAltTextValidator', () => {
       expect(qualityIssue?.suggestion).toContain('quarterly revenue growth');
     });
 
+    it('processes images concurrently and preserves document order in the output regardless of completion order (real incident fix, 2026-10-17)', async () => {
+      // Real incident: validate() used to await one image at a time --
+      // with 506 (Math_Olszewski_PDF.pdf) or 5934 (FMHE_PDF.pdf) images,
+      // real per-image Gemini latency alone added up past the 15-minute
+      // audit timeout even though nothing was actually broken. This proves
+      // the fix: multiple images are in flight at once (all 4 Gemini calls
+      // start before any of them resolves), and the output still comes back
+      // in document order even when the SLOWEST-TO-START image is the
+      // FIRST to resolve.
+      const mockParsedPdf = createMockParsedPdf();
+      const mockDocImages = createMockDocumentImages([
+        createMockImageWithBase64(1, 0, undefined, false, 'base64-0', 'image/jpeg'),
+        createMockImageWithBase64(1, 1, undefined, false, 'base64-1', 'image/jpeg'),
+        createMockImageWithBase64(1, 2, undefined, false, 'base64-2', 'image/jpeg'),
+        createMockImageWithBase64(1, 3, undefined, false, 'base64-3', 'image/jpeg'),
+      ]);
+      vi.mocked(imageExtractorService.extractImages).mockResolvedValue(mockDocImages);
+
+      const callOrder: string[] = [];
+      const pending: Array<(value: unknown) => void> = [];
+      vi.mocked(geminiService.analyzeImageWithSchema).mockImplementation((base64) => {
+        callOrder.push(base64 as string);
+        return new Promise(resolve => {
+          pending.push(resolve);
+        });
+      });
+
+      const validatePromise = pdfAltTextValidator.validate(mockParsedPdf, true);
+
+      // All 4 images' Gemini calls must start before any of them resolves --
+      // proves the loop no longer awaits one image fully before starting
+      // the next.
+      await vi.waitFor(() => expect(callOrder).toHaveLength(4));
+
+      // Resolve in REVERSE call order: the image that started LAST finishes
+      // FIRST. If the output followed completion order instead of document
+      // order, issues[0..3] would come back scrambled.
+      [...pending].reverse().forEach((resolve, i) => {
+        const base64 = callOrder[callOrder.length - 1 - i];
+        resolve({
+          data: { isDecorative: false, altText: `alt text for ${base64}`, confidence: 0.9 },
+          usage: { promptTokens: 10, completionTokens: 5, totalTokens: 15 },
+          attempts: 1,
+        });
+      });
+
+      const result = await validatePromise;
+
+      expect(result.issues).toHaveLength(4);
+      expect(result.issues[0].suggestion).toContain('base64-0');
+      expect(result.issues[1].suggestion).toContain('base64-1');
+      expect(result.issues[2].suggestion).toContain('base64-2');
+      expect(result.issues[3].suggestion).toContain('base64-3');
+    });
+
     it('should handle AI service failures gracefully', async () => {
       const mockParsedPdf = createMockParsedPdf();
       const longAltText = 'This is a very long alt text that exceeds the recommended maximum length of 125 characters and should be flagged as a quality issue even without AI analysis';

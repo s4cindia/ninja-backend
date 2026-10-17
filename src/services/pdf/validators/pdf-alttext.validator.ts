@@ -15,6 +15,7 @@ import { pdfParserService, ParsedPDF } from '../pdf-parser.service';
 import { geminiService } from '../../ai/gemini.service';
 import { GeminiBlockedResponseError } from '../../ai/gemini-errors';
 import { logger } from '../../../lib/logger';
+import { pdfConfig } from '../../../config/pdf.config';
 
 // Gemini-side schema (forces valid JSON matching this shape — no markdown
 // fences, no preamble, no truncated-before-closing-brace responses) plus a
@@ -176,7 +177,18 @@ class PDFAltTextValidator {
       parsedPdf.structure.pages.map(p => [p.pageNumber, { width: p.width, height: p.height }])
     );
 
-    // Validate each image
+    // Validate each image. Flattened up front (instead of the nested
+    // pages/images loop) so a pool of workers can pull from one shared
+    // queue -- see the concurrency comment below for why this isn't a
+    // plain sequential loop any more.
+    const allImages: Array<{ image: ImageInfo; pageSize: { width: number; height: number } }> = [];
+    for (const pageImages of documentImages.pages) {
+      for (const image of pageImages.images) {
+        const pageSize = pageDims.get(image.pageNumber) ?? { width: 0, height: 0 };
+        allImages.push({ image, pageSize });
+      }
+    }
+
     const totalImages = documentImages.totalImages;
     let imagesCompleted = 0;
     // Fired once immediately, before the loop -- separately from the
@@ -194,25 +206,52 @@ class PDFAltTextValidator {
     // (or fast) any individual image turns out to be.
     const PROGRESS_THROTTLE_MS = 30_000;
     let lastProgressAt = Date.now();
-    for (const pageImages of documentImages.pages) {
-      for (const image of pageImages.images) {
-        const pageSize = pageDims.get(image.pageNumber) ?? { width: 0, height: 0 };
-        const imageIssues = await this.validateImage(image, useAI, pageSize);
-        issues.push(...imageIssues);
-        imagesCompleted++;
-        const isLast = imagesCompleted === totalImages;
-        if (onProgress && (isLast || Date.now() - lastProgressAt >= PROGRESS_THROTTLE_MS)) {
-          lastProgressAt = Date.now();
-          // Awaited (not fire-and-forget): the caller's callback does a
-          // read-modify-write of Job.input, as does onValidatorComplete
-          // right after this method returns. Without awaiting here, the
-          // final-image call could still be in flight when
-          // onValidatorComplete's own read-modify-write starts, and whichever
-          // write lands last would silently clobber the other's field
-          // (CodeRabbit catch, PR #621).
-          await onProgress(imagesCompleted, totalImages);
-        }
+    // Serializes onProgress calls across concurrent workers -- the
+    // caller's callback does a read-modify-write of Job.input (see
+    // PR #621), so two workers finishing close together must never await
+    // it at the same time, only ever one after another.
+    let progressChain: Promise<void> = Promise.resolve();
+    const maybeReportProgress = (): void => {
+      if (!onProgress) return;
+      const isLast = imagesCompleted === totalImages;
+      if (isLast || Date.now() - lastProgressAt >= PROGRESS_THROTTLE_MS) {
+        lastProgressAt = Date.now();
+        const completedSnapshot = imagesCompleted;
+        progressChain = progressChain.then(() => onProgress(completedSnapshot, totalImages));
       }
+    };
+
+    // Real incident (2026-10-17): this used to be a single-file-at-a-time
+    // sequential loop -- 506 images (Math_Olszewski_PDF.pdf) or 5934 images
+    // (FMHE_PDF.pdf), one Gemini vision call awaited at a time. That looked
+    // identical to a hang (total log silence, no errors to retry) but was
+    // really just real per-image latency adding up past the 15-minute
+    // audit budget with nothing actually broken. A small worker pool pulls
+    // from the same flattened queue instead, cutting wall-clock time by
+    // roughly altTextConcurrency's factor. resultsByIndex keeps issues in
+    // document order regardless of which worker finishes which image first.
+    const resultsByIndex: AuditIssue[][] = new Array(allImages.length);
+    let nextIndex = 0;
+    const worker = async (): Promise<void> => {
+      while (true) {
+        const i = nextIndex++;
+        if (i >= allImages.length) return;
+        const { image, pageSize } = allImages[i];
+        resultsByIndex[i] = await this.validateImage(image, useAI, pageSize);
+        imagesCompleted++;
+        maybeReportProgress();
+      }
+    };
+    const workerCount = Math.max(1, Math.min(pdfConfig.altTextConcurrency, allImages.length));
+    await Promise.all(Array.from({ length: workerCount }, () => worker()));
+    // Make sure every queued progress write has actually landed before this
+    // method returns -- onValidatorComplete does its own read-modify-write
+    // of Job.input right after, and it must never race a still-in-flight
+    // progress write from this loop.
+    await progressChain;
+
+    for (const imageIssues of resultsByIndex) {
+      issues.push(...imageIssues);
     }
 
     // Calculate summary
