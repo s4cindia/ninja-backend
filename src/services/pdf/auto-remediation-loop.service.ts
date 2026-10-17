@@ -509,6 +509,18 @@ class AutoRemediationLoopService {
       while (true) {
         const state = await driver.getRoundState();
         if (!state) {
+          // Real incident (2026-10-17, PdfBatch): fired with zero rounds
+          // completed, moments after driver.getConfig() found this same
+          // record -- root cause still unconfirmed (a genuine delete? a
+          // Neon serverless connection-pooling read-after-write gap?).
+          // This branch previously logged nothing at all, making it
+          // indistinguishable from total log silence -- the exact signature
+          // every other PDF-batch "hang" investigated this session turned
+          // out NOT to be. Always log it now so a recurrence is diagnosable
+          // without re-deriving this from code reading.
+          logger.error(
+            `[AutoRemediationLoop] ${driver.describe()}: getRoundState() returned null after getConfig() succeeded -- stopping with zero rounds`
+          );
           stopReason = 'error';
           break;
         }

@@ -283,6 +283,26 @@ class PdfBatchOrchestratorService {
       // autoStatus, per PR #666/#669's guarantees.
       await autoRemediationLoopService.startAutoLoop(new JobAutoRemediationDriver(run.id));
 
+      // Real incident (2026-10-17): startAutoLoop can stop immediately with
+      // zero rounds completed, zero cost, and (until the companion fix in
+      // auto-remediation-loop.service.ts) zero logging anywhere --
+      // getRoundState() returned null moments after the same record was
+      // found via getConfig() just before it; root cause still unconfirmed
+      // (confirmed NOT a lock-contention race -- that path logs its own
+      // warning and we saw none). Before this check, that silently fell
+      // through to the REMEDIATED write below regardless of outcome,
+      // surfacing a misleading "Remediated" badge in the UI with 0 issues
+      // fixed and no download link, no retry affordance -- exactly what the
+      // audit phase's own FAILED path already handles correctly. Throwing
+      // here reuses that same existing, correct error-handling path
+      // (processItem's catch, below) instead of duplicating it.
+      const finalRun = await prisma.pdfAutoRemediationRun.findUnique({ where: { id: run.id } });
+      if (finalRun?.autoStopReason === 'error' && finalRun.autoRoundsCompleted === 0) {
+        throw new Error(
+          'Remediation failed to start: auto-mode stopped immediately with no rounds completed (see the remediation history for this job)'
+        );
+      }
+
       const finalJob = await prisma.job.findUnique({ where: { id: jobId } });
       const output = (finalJob?.output ?? {}) as Record<string, unknown>;
       const remediatedFilePath = (output.remediatedFileUrl as string | undefined) ?? null;
