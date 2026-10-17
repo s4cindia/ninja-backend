@@ -158,8 +158,15 @@ class GeminiService {
           GeminiService.RATE_LIMIT_CHECK_TIMEOUT_MS
         );
       });
+      // Diagnostic timing (2026-10-17): elapsed-ms on the success path too,
+      // not just the timeout/failure path -- so a live occurrence can
+      // distinguish "this resolved quickly, the hang is elsewhere" from
+      // "this itself is slow but under the 5s bound" with a real number
+      // instead of inferring it from the absence of a warning.
+      const startedAt = Date.now();
       try {
         await Promise.race([geminiRateLimiter.acquire(), timeout]);
+        logger.info(`[Gemini Service] Rate limit check passed in ${Date.now() - startedAt}ms`);
       } finally {
         clearTimeout(timer!);
       }
@@ -180,10 +187,23 @@ class GeminiService {
     let lastError: Error | undefined;
 
     for (let attempt = 0; attempt <= retries; attempt++) {
+      // Diagnostic instrumentation (2026-10-17): a live PDF-audit incident
+      // showed total silence for 13+ minutes around exactly this call, with
+      // neither this function's own retry-warning log below nor any
+      // SDK-level timeout error ever firing -- meaning operation() itself
+      // never settled, one way or the other. These before/after/elapsed-ms
+      // logs turn the next occurrence into direct proof of whether that's
+      // still true (operation() genuinely hangs past its own requestOptions
+      // .timeout), instead of inference from log silence.
+      const startedAt = Date.now();
+      logger.info(`[Gemini] Dispatching API call (attempt ${attempt + 1}/${retries + 1})...`);
       try {
-        return await operation();
+        const result = await operation();
+        logger.info(`[Gemini] API call succeeded in ${Date.now() - startedAt}ms (attempt ${attempt + 1}/${retries + 1})`);
+        return result;
       } catch (error) {
         lastError = error as Error;
+        logger.warn(`[Gemini] API call failed after ${Date.now() - startedAt}ms (attempt ${attempt + 1}/${retries + 1}): ${lastError.message}`);
 
         if (this.isInfrastructureError(error)) {
           this.tripCircuit(lastError.message);
