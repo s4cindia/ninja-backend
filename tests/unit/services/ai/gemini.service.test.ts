@@ -15,8 +15,10 @@ vi.mock('@google/generative-ai', () => ({
   SchemaType: { OBJECT: 'OBJECT', STRING: 'STRING', BOOLEAN: 'BOOLEAN', NUMBER: 'NUMBER' },
 }));
 
+const acquireMock = vi.fn().mockResolvedValue(undefined);
+
 vi.mock('../../../../src/utils/rate-limiter', () => ({
-  geminiRateLimiter: { acquire: vi.fn().mockResolvedValue(undefined) },
+  geminiRateLimiter: { acquire: acquireMock },
 }));
 
 vi.mock('../../../../src/config/ai.config', () => ({
@@ -133,7 +135,31 @@ describe('GeminiService request timeout', () => {
     generateContentMock.mockReset();
     getGenerativeModelMock.mockClear();
     getGenerativeModelMock.mockReturnValue({ generateContent: generateContentMock });
+    acquireMock.mockReset();
+    acquireMock.mockResolvedValue(undefined);
     ({ geminiService } = await import('../../../../src/services/ai/gemini.service'));
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('proceeds with the Gemini call even if the Redis rate limit check hangs forever (not relying on Redis commandTimeout)', async () => {
+    // A real incident (2026-10-17): geminiRateLimiter.acquire() hung
+    // indefinitely even with commandTimeout configured on the underlying
+    // Redis client (redis.multi()'s own Pipeline bypasses that wiring --
+    // see checkRateLimit's doc comment). This call never resolving or
+    // rejecting is exactly that failure mode.
+    acquireMock.mockReturnValue(new Promise(() => {}));
+    generateContentMock.mockResolvedValue(mockResponse('ok'));
+
+    vi.useFakeTimers();
+    const resultPromise = geminiService.generateText('prompt', { model: 'flash' });
+    await vi.advanceTimersByTimeAsync(5_000);
+    const result = await resultPromise;
+
+    expect(result.text).toBe('ok');
+    expect(generateContentMock).toHaveBeenCalledTimes(1);
   });
 
   it('passes aiConfig.gemini.timeout as requestOptions so a stuck network call cannot hang forever', async () => {
