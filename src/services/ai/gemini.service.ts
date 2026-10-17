@@ -42,6 +42,11 @@ class GeminiService {
   private circuitOpenUntil = 0;
   private circuitReason: string | null = null;
 
+  // Bounds checkRateLimit()'s Redis round-trip -- see that method's doc
+  // comment for why this can't just rely on the Redis client's own
+  // commandTimeout.
+  private static readonly RATE_LIMIT_CHECK_TIMEOUT_MS = 5_000;
+
   private isInfrastructureError(error: unknown): boolean {
     if (!(error instanceof Error)) return false;
     const msg = error.message.toLowerCase();
@@ -132,7 +137,32 @@ class GeminiService {
     try {
       // Use Redis-based rate limiter for multi-instance safety
       // If Redis is unavailable, this will skip and retry logic handles 429s
-      await geminiRateLimiter.acquire();
+      //
+      // Raced against our OWN timeout rather than trusted to the Redis
+      // client's commandTimeout -- confirmed live (2026-10-17) that
+      // geminiRateLimiter.acquire() can still hang indefinitely even with
+      // commandTimeout configured: redis.multi() returns a Pipeline whose
+      // own sendCommand() (ioredis's Pipeline.js) bypasses the
+      // single-command commandTimeout wiring entirely, and even a
+      // sub-command timeout inside a MULTI/EXEC batch would surface as an
+      // error ENTRY in the results array rather than a rejection -- a shape
+      // RedisRateLimiter.acquire()'s own result parsing doesn't account
+      // for. Bounding it here with the same Promise.race pattern
+      // pdf-audit.service.ts's withAuditTimeout already uses (and which
+      // has fired precisely on schedule in every live test so far) makes
+      // this safe regardless of that ioredis-internals question.
+      let timer: ReturnType<typeof setTimeout>;
+      const timeout = new Promise<never>((_, reject) => {
+        timer = setTimeout(
+          () => reject(new Error('Gemini rate limit check timed out')),
+          GeminiService.RATE_LIMIT_CHECK_TIMEOUT_MS
+        );
+      });
+      try {
+        await Promise.race([geminiRateLimiter.acquire(), timeout]);
+      } finally {
+        clearTimeout(timer!);
+      }
     } catch (error) {
       // Log but don't block - retryWithBackoff will handle 429 responses
       logger.warn('[Gemini Service] Rate limit check failed, proceeding with request:', error);
