@@ -322,12 +322,26 @@ class PdfBatchOrchestratorService {
 
     try {
       // Row's existence is the opt-in signal startAutoLoop checks for (see
-      // JobAutoRemediationDriver's own doc comment) -- mirrors
-      // pdf-auto-mode.controller.ts's upsert exactly, no config overrides.
+      // JobAutoRemediationDriver's own doc comment). Carries the batch's own
+      // Auto Mode overrides (set once at POST .../start, see
+      // pdf-batch.controller.ts's startBatch) onto this item's own run --
+      // each item still gets its own independent budget/round count, not a
+      // shared pool across the batch. Omitted/null batch fields fall back
+      // to PdfAutoRemediationRun's own schema defaults, same conditional-
+      // spread convention pdf-auto-mode.controller.ts's upsert uses.
       const run = await prisma.pdfAutoRemediationRun.upsert({
         where: { jobId },
-        create: { jobId },
-        update: {},
+        create: {
+          jobId,
+          ...(batch.autoMaxRounds != null && { autoMaxRounds: batch.autoMaxRounds }),
+          ...(batch.autoCostLimitUsd != null && { autoCostLimitUsd: batch.autoCostLimitUsd }),
+          ...(batch.autoColorContrastMode != null && { autoColorContrastMode: batch.autoColorContrastMode }),
+        },
+        update: {
+          ...(batch.autoMaxRounds != null && { autoMaxRounds: batch.autoMaxRounds }),
+          ...(batch.autoCostLimitUsd != null && { autoCostLimitUsd: batch.autoCostLimitUsd }),
+          ...(batch.autoColorContrastMode != null && { autoColorContrastMode: batch.autoColorContrastMode }),
+        },
       });
 
       // Never throws -- always resolves having written a terminal

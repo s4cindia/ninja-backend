@@ -14,6 +14,7 @@ import { AuthenticatedRequest } from '../types/authenticated-request';
 import { areQueuesAvailable, getPdfBatchItemQueue } from '../queues';
 import { pdfBatchOrchestratorService } from '../services/pdf-batch/pdf-batch-orchestrator.service';
 import { computeSizeWeight } from '../services/pdf-batch/concurrency-budget.service';
+import type { PdfBatchStartBody } from '../schemas/pdf-batch.schemas';
 import prisma from '../lib/prisma';
 import { logger } from '../lib/logger';
 
@@ -169,9 +170,16 @@ class PdfBatchController {
         return res.status(400).json({ success: false, error: { message: 'Cannot start a batch with no files', code: 'PDF_BATCH_EMPTY' } });
       }
 
+      const body = (req.body ?? {}) as NonNullable<PdfBatchStartBody>;
       const updated = await prisma.pdfBatch.update({
         where: { id: batchId },
-        data: { status: 'QUEUED', startedAt: new Date() },
+        data: {
+          status: 'QUEUED',
+          startedAt: new Date(),
+          ...(body.autoMaxRounds !== undefined && { autoMaxRounds: body.autoMaxRounds }),
+          ...(body.autoCostLimitUsd !== undefined && { autoCostLimitUsd: body.autoCostLimitUsd }),
+          ...(body.autoColorContrastMode !== undefined && { autoColorContrastMode: body.autoColorContrastMode }),
+        },
       });
 
       for (const item of batch.items) {

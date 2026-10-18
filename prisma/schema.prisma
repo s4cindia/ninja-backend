@@ -850,6 +850,18 @@ model PdfBatch {
   tenant Tenant         @relation(fields: [tenantId], references: [id])
   user   User           @relation(fields: [userId], references: [id])
 
+  /// Optional per-batch Auto Mode overrides, set once at POST .../start and
+  /// applied uniformly to every item's own PdfAutoRemediationRun (each item
+  /// still gets its own independent budget/round count -- NOT a shared pool
+  /// across the batch). NULL means "use the system default" (10 rounds,
+  /// $2.00, inherited contrast mode), exactly like an unset field on
+  /// PdfAutoRemediationRun today. See pdf-batch-orchestrator.service.ts's
+  /// runRemediationPhase for where these actually get read and copied onto
+  /// each item's run.
+  autoMaxRounds          Int?
+  autoCostLimitUsd       Float?
+  autoColorContrastMode  String?
+
   createdAt   DateTime  @default(now())
   startedAt   DateTime?
   completedAt DateTime?
