@@ -6,6 +6,7 @@ import {
   pdfBatchCreateSchema,
   pdfBatchAddItemsSchema,
   pdfBatchListSchema,
+  pdfBatchStartSchema,
 } from '../schemas/pdf-batch.schemas';
 
 const router = Router();
@@ -42,6 +43,7 @@ router.post(
   '/:batchId/start',
   authenticate,
   authorize('ADMIN', 'USER'),
+  validate({ body: pdfBatchStartSchema }),
   pdfBatchController.startBatch.bind(pdfBatchController)
 );
 

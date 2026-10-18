@@ -204,6 +204,31 @@ describe('PdfBatchController', () => {
       expect(res.status).toHaveBeenCalledWith(400);
       expect(mockPdfBatchUpdate).not.toHaveBeenCalled();
     });
+
+    it('persists Auto Mode overrides onto the batch row when provided -- applied uniformly to every item later via the orchestrator, not stored per-item here', async () => {
+      mockPdfBatchFindFirst.mockResolvedValue(draftBatchWithItems);
+      mockPdfBatchUpdate.mockResolvedValue({ id: 'batch-1', status: 'QUEUED', totalFiles: 2, startedAt: new Date() });
+      const res = makeRes();
+
+      await pdfBatchController.startBatch(
+        makeReq({
+          params: { batchId: 'batch-1' },
+          body: { autoMaxRounds: 3, autoCostLimitUsd: 0.5, autoColorContrastMode: 'disabled' },
+        }),
+        res
+      );
+
+      expect(mockPdfBatchUpdate).toHaveBeenCalledWith({
+        where: { id: 'batch-1' },
+        data: {
+          status: 'QUEUED',
+          startedAt: expect.any(Date),
+          autoMaxRounds: 3,
+          autoCostLimitUsd: 0.5,
+          autoColorContrastMode: 'disabled',
+        },
+      });
+    });
   });
 
   describe('cancelBatch', () => {

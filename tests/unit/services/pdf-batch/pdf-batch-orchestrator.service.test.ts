@@ -225,6 +225,37 @@ describe('PdfBatchOrchestratorService.processItem', () => {
     expect(mockReleaseLease).toHaveBeenCalledTimes(2);
   });
 
+  it('carries the batch\'s own Auto Mode overrides onto this item\'s PdfAutoRemediationRun -- each item still gets its own independent budget/round count, not a shared pool', async () => {
+    mockPdfBatchFindUnique.mockResolvedValue({
+      ...batch,
+      autoMaxRounds: 3,
+      autoCostLimitUsd: 0.5,
+      autoColorContrastMode: 'disabled',
+    });
+
+    await pdfBatchOrchestratorService.processItem('batch-1', 'item-1');
+
+    const overrideFields = { autoMaxRounds: 3, autoCostLimitUsd: 0.5, autoColorContrastMode: 'disabled' };
+    expect(mockAutoRemediationRunUpsert).toHaveBeenCalledWith({
+      where: { jobId: 'job-1' },
+      create: { jobId: 'job-1', ...overrideFields },
+      update: overrideFields,
+    });
+  });
+
+  it('leaves the PdfAutoRemediationRun upsert with no overrides when the batch has no Auto Mode settings -- NULL means "use the system default", same as today', async () => {
+    mockPdfBatchFindUnique.mockResolvedValue({
+      ...batch,
+      autoMaxRounds: null,
+      autoCostLimitUsd: null,
+      autoColorContrastMode: null,
+    });
+
+    await pdfBatchOrchestratorService.processItem('batch-1', 'item-1');
+
+    expect(mockAutoRemediationRunUpsert).toHaveBeenCalledWith({ where: { jobId: 'job-1' }, create: { jobId: 'job-1' }, update: {} });
+  });
+
   it('audits the tagged buffer (not the original) when autoTagIfNeeded actually tags an untagged PDF, and merges autoTagMeta into job.output', async () => {
     const taggedBuffer = Buffer.from('tagged-pdf-bytes');
     mockAutoTagIfNeeded.mockResolvedValue({
