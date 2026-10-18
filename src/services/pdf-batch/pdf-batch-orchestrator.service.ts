@@ -24,6 +24,7 @@ import prisma from '../../lib/prisma';
 import { logger } from '../../lib/logger';
 import { fileStorageService } from '../storage/file-storage.service';
 import { pdfAuditService } from '../pdf/pdf-audit.service';
+import { autoTagIfNeeded } from '../pdf/pdf-auto-tag-orchestrator.service';
 import { autoRemediationLoopService, JobAutoRemediationDriver } from '../pdf/auto-remediation-loop.service';
 import { remediationCycleHistoryService } from '../pdf/remediation-cycle-history.service';
 import {
@@ -223,7 +224,19 @@ class PdfBatchOrchestratorService {
       // instead of mis-marking the item REMEDIATED regardless.
       await fileStorageService.saveFile(job.id, item.originalName, buffer);
 
-      const report = await pdfAuditService.runAuditFromBuffer(buffer, job.id, item.originalName, 'comprehensive');
+      // Real incident (2026-10-18): this orchestrator never auto-tagged an
+      // untagged PDF before auditing it -- it called pdfAuditService
+      // .runAuditFromBuffer directly, bypassing accessibility.processor.ts
+      // entirely, which is the ONLY place the Seam C / Adobe AutoTag
+      // decision (shared via pdf-auto-tag-orchestrator.service.ts, 2026-10-18
+      // extraction) ever lived. Every batch item skipped tagging regardless
+      // of whether it needed it -- the same class of gap PR #452 fixed for
+      // direct UI uploads, now closed here too. No forceAutoTag equivalent
+      // for batch items yet (out of scope -- see the plan's Comparison
+      // Study-only framing for that flag).
+      const { auditBuffer, autoTagMeta } = await autoTagIfNeeded(buffer, job.id, item.originalName, false);
+
+      const report = await pdfAuditService.runAuditFromBuffer(auditBuffer, job.id, item.originalName, 'comprehensive');
 
       await prisma.job.update({
         where: { id: job.id },
@@ -236,6 +249,7 @@ class PdfBatchOrchestratorService {
             scanLevel: 'comprehensive',
             type: 'PDF_ACCESSIBILITY',
             dbJobId: job.id,
+            ...autoTagMeta,
           } as unknown as Prisma.InputJsonObject,
         },
       });

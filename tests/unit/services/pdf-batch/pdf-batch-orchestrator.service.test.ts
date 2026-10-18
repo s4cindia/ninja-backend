@@ -63,6 +63,11 @@ vi.mock('../../../../src/services/storage/file-storage.service', () => ({
   },
 }));
 
+const mockAutoTagIfNeeded = vi.fn();
+vi.mock('../../../../src/services/pdf/pdf-auto-tag-orchestrator.service', () => ({
+  autoTagIfNeeded: (...args: unknown[]) => mockAutoTagIfNeeded(...args),
+}));
+
 const mockRunAuditFromBuffer = vi.fn();
 vi.mock('../../../../src/services/pdf/pdf-audit.service', () => ({
   pdfAuditService: { runAuditFromBuffer: (...args: unknown[]) => mockRunAuditFromBuffer(...args) },
@@ -121,6 +126,13 @@ describe('PdfBatchOrchestratorService.processItem', () => {
     mockHeartbeatLease.mockResolvedValue(undefined);
     mockDownloadFile.mockResolvedValue(Buffer.from('pdf-bytes'));
     mockSaveFile.mockResolvedValue('job-storage/job-1/book.pdf');
+    // Default: already tagged, nothing to do -- matches the real function's
+    // own "no-op" outcome, just explicit instead of incidental.
+    mockAutoTagIfNeeded.mockResolvedValue({
+      auditBuffer: Buffer.from('pdf-bytes'),
+      isTagged: true,
+      autoTagMeta: { autoTagStatus: 'skipped', autoTagSkipReason: 'already-tagged' },
+    });
     mockRunAuditFromBuffer.mockResolvedValue({
       score: 80, issues: [{ id: 'i1' }, { id: 'i2' }], metadata: { pageCount: 50 },
     });
@@ -168,6 +180,13 @@ describe('PdfBatchOrchestratorService.processItem', () => {
     // fileStorageService.getFile(jobId, fileName), which only ever finds
     // something here saveFile wrote first.
     expect(mockSaveFile).toHaveBeenCalledWith('job-1', 'book.pdf', Buffer.from('pdf-bytes'));
+    // Real incident (2026-10-18): this orchestrator never ran Seam C /
+    // Adobe AutoTag at all -- it called pdfAuditService.runAuditFromBuffer
+    // directly, bypassing accessibility.processor.ts entirely (the only
+    // place that decision ever lived). No forceAutoTag equivalent for batch
+    // items (out of scope -- see pdf-auto-tag-orchestrator.service.ts's own
+    // doc comment).
+    expect(mockAutoTagIfNeeded).toHaveBeenCalledWith(Buffer.from('pdf-bytes'), 'job-1', 'book.pdf', false);
     expect(mockRunAuditFromBuffer).toHaveBeenCalledWith(Buffer.from('pdf-bytes'), 'job-1', 'book.pdf', 'comprehensive');
 
     // AUDITED update carries the real audit results through.
@@ -194,6 +213,25 @@ describe('PdfBatchOrchestratorService.processItem', () => {
     // Both phases' leases released, none left dangling.
     expect(mockReleaseLease).toHaveBeenCalledWith('lease-1');
     expect(mockReleaseLease).toHaveBeenCalledTimes(2);
+  });
+
+  it('audits the tagged buffer (not the original) when autoTagIfNeeded actually tags an untagged PDF, and merges autoTagMeta into job.output', async () => {
+    const taggedBuffer = Buffer.from('tagged-pdf-bytes');
+    mockAutoTagIfNeeded.mockResolvedValue({
+      auditBuffer: taggedBuffer,
+      isTagged: false,
+      autoTagMeta: { autoTagStatus: 'complete', taggerSource: 'seam-c' },
+    });
+
+    await pdfBatchOrchestratorService.processItem('batch-1', 'item-1');
+
+    expect(mockRunAuditFromBuffer).toHaveBeenCalledWith(taggedBuffer, 'job-1', 'book.pdf', 'comprehensive');
+    expect(mockJobUpdate).toHaveBeenCalledWith({
+      where: { id: 'job-1' },
+      data: expect.objectContaining({
+        output: expect.objectContaining({ autoTagStatus: 'complete', taggerSource: 'seam-c' }),
+      }),
+    });
   });
 
   it('marks the item SKIPPED without running anything if the batch is already cancelled', async () => {
