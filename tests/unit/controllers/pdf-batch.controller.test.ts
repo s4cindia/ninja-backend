@@ -234,7 +234,7 @@ describe('PdfBatchController', () => {
       mockPdfBatchFindFirst.mockResolvedValue({
         id: 'batch-1', name: 'B', status: 'PROCESSING', totalFiles: 2, createdAt: new Date(), startedAt: new Date(), completedAt: null,
         items: [
-          { id: 'item-1', fileName: 'a.pdf', originalName: 'a.pdf', fileSize: BigInt(10), status: 'AUDITED', auditScore: 90, issuesFound: 3, pageCount: 5, issuesAutoFixed: null, issuesGuidanceOnly: null, remediatedFilePath: null, error: null, uploadedAt: new Date(), auditCompletedAt: new Date(), remediationCompletedAt: null },
+          { id: 'item-1', fileName: 'a.pdf', originalName: 'a.pdf', fileSize: BigInt(10), status: 'AUDITED', auditScore: 90, issuesFound: 3, pageCount: 5, issuesAutoFixed: null, issuesGuidanceOnly: null, remediatedFilePath: null, error: null, uploadedAt: new Date(), auditJobId: 'job-1', auditStartedAt: new Date('2026-10-18T00:00:00Z'), auditCompletedAt: new Date(), remediationStartedAt: null, remediationCompletedAt: null },
         ],
       });
       mockPdfBatchItemGroupBy.mockResolvedValue([{ status: 'AUDITED', _count: { status: 1 } }]);
@@ -246,6 +246,14 @@ describe('PdfBatchController', () => {
       const payload = (res.json as any).mock.calls[0][0];
       expect(payload.data.statusCounts).toEqual({ AUDITED: 1 });
       expect(payload.data.items[0].fileSize).toBe('10'); // BigInt serialized to string
+      // Real bug (2026-10-18): these three were on the Prisma row (written by
+      // the orchestrator since PR #678) but never actually included in this
+      // response -- PdfBatchItemElapsed's ticker and PdfBatchResultsList's
+      // download button both silently depended on fields that were always
+      // undefined.
+      expect(payload.data.items[0].auditJobId).toBe('job-1');
+      expect(payload.data.items[0].auditStartedAt).toEqual(new Date('2026-10-18T00:00:00Z'));
+      expect(payload.data.items[0].remediationStartedAt).toBeNull();
     });
 
     it('returns 404 for a batch the caller does not own', async () => {
