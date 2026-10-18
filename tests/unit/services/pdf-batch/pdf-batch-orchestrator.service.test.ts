@@ -55,8 +55,12 @@ vi.mock('../../../../src/lib/logger', () => ({
 }));
 
 const mockDownloadFile = vi.fn();
+const mockSaveFile = vi.fn();
 vi.mock('../../../../src/services/storage/file-storage.service', () => ({
-  fileStorageService: { downloadFile: (...args: unknown[]) => mockDownloadFile(...args) },
+  fileStorageService: {
+    downloadFile: (...args: unknown[]) => mockDownloadFile(...args),
+    saveFile: (...args: unknown[]) => mockSaveFile(...args),
+  },
 }));
 
 const mockRunAuditFromBuffer = vi.fn();
@@ -116,6 +120,7 @@ describe('PdfBatchOrchestratorService.processItem', () => {
     mockReleaseLease.mockResolvedValue(true);
     mockHeartbeatLease.mockResolvedValue(undefined);
     mockDownloadFile.mockResolvedValue(Buffer.from('pdf-bytes'));
+    mockSaveFile.mockResolvedValue('job-storage/job-1/book.pdf');
     mockRunAuditFromBuffer.mockResolvedValue({
       score: 80, issues: [{ id: 'i1' }, { id: 'i2' }], metadata: { pageCount: 50 },
     });
@@ -157,6 +162,12 @@ describe('PdfBatchOrchestratorService.processItem', () => {
     });
 
     expect(mockWaitForLease).toHaveBeenCalledWith('tenant-1', 'item-1', 'audit', 1, undefined, expect.anything());
+    // Real incident (2026-10-18): without this, every batch item's
+    // remediation phase failed on its first round with "PDF file not found
+    // in storage" -- ai-analysis.service.ts's analyzeJob() loads the PDF via
+    // fileStorageService.getFile(jobId, fileName), which only ever finds
+    // something here saveFile wrote first.
+    expect(mockSaveFile).toHaveBeenCalledWith('job-1', 'book.pdf', Buffer.from('pdf-bytes'));
     expect(mockRunAuditFromBuffer).toHaveBeenCalledWith(Buffer.from('pdf-bytes'), 'job-1', 'book.pdf', 'comprehensive');
 
     // AUDITED update carries the real audit results through.
