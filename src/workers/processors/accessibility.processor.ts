@@ -5,6 +5,7 @@ import { JobData, JobResult, JOB_TYPES } from '../../queues';
 import { queueService } from '../../services/queue.service';
 import { pdfAuditService } from '../../services/pdf/pdf-audit.service';
 import { autoTagIfNeeded } from '../../services/pdf/pdf-auto-tag-orchestrator.service';
+import { createAuditProgressCallbacks } from '../../services/pdf/pdf-audit-progress-tracker';
 import { aiAnalysisService } from '../../services/pdf/ai-analysis.service';
 import { pdfModifierService } from '../../services/pdf/pdf-modifier.service';
 import { pdfStructureWriterService } from '../../services/pdf/pdf-structure-writer.service';
@@ -229,115 +230,19 @@ async function processPdfAccessibility(
   await queueService.updateJobProgress(dbJobId, auditStartPct);
 
   // ── 3. Run accessibility audit [auditStartPct–88%] ──────────────────────────
-  // Progress callback: maps page progress across the audit range.
-  // First call stores totalPages in job.input for the frontend.
-  //
-  // Every call site that invokes this (pdf-comprehensive-parser.service.ts,
-  // fired once per page-batch -- dozens of times on a large document) does so
-  // as `onProgress?.(...)`, fire-and-forget, with no `await` and no `.catch`.
-  // Since this is an async function, TypeScript's `() => void` callback type
-  // hides the fact that it returns a Promise, so none of those call sites
-  // can be flagged for not handling it. If a Prisma/Redis call below ever
-  // rejects (a connection blip, pool exhaustion under load), that becomes a
-  // genuinely unhandled promise rejection -- and with no global
-  // unhandledRejection handler anywhere in this codebase, Node terminates
-  // the WHOLE process by default, taking down every other in-flight job and
-  // the API itself, not just this one page's progress update. Confirmed
-  // live: a 377-page document (proportionally far more onProgress/
-  // onValidatorComplete invocations than anything tested before) reliably
-  // reproduced a full container restart mid-audit, recorded as "Server
-  // restarted while job was processing" by the startup orphaned-job
-  // cleanup in src/workers/index.ts. The try/catch here (and on
-  // onValidatorComplete below) guarantees this callback can never reject,
-  // regardless of how many unawaited fire-and-forget call sites invoke it --
-  // a failed progress write becomes a non-fatal warning instead of a process
-  // crash.
-  let totalPagesStored = false;
-  // Tracked so onAltTextImageProgress below can re-write the same value
-  // (see its own doc comment for why it never computes a new one).
-  let lastKnownPct = auditStartPct;
-  const onProgress = async (currentPage: number, totalPages: number) => {
-    try {
-      if (!totalPagesStored && totalPages > 0) {
-        const ej = await prisma.job.findUnique({ where: { id: dbJobId }, select: { input: true } });
-        const ei = ej?.input && typeof ej.input === 'object' && !Array.isArray(ej.input)
-          ? ej.input as Record<string, unknown> : {};
-        await prisma.job.update({
-          where: { id: dbJobId },
-          data: { input: { ...ei, totalPages } as Prisma.InputJsonObject },
-        });
-        // Only mark stored once the write actually succeeds -- setting this
-        // before the await (as an earlier draft did) meant a transient
-        // failure here left it permanently true, silently skipping this
-        // persistence block for the rest of the audit even after the
-        // transient condition cleared (a real CodeRabbit + Codex finding).
-        totalPagesStored = true;
-        logger.info(`[PDF Worker] Job ${dbJobId}: ${totalPages} pages to audit`);
-      }
-      if (totalPages > 0) {
-        const pct = auditStartPct + Math.round((currentPage / totalPages) * auditPctRange);
-        lastKnownPct = pct;
-        await job.updateProgress(pct);
-        await queueService.updateJobProgress(dbJobId, pct);
-      }
-    } catch (err) {
-      logger.warn(`[PDF Worker] onProgress callback failed for job ${dbJobId} (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
-    }
-  };
-
-  // Validator progress callback: advances 88–95%. Same unhandled-rejection
-  // risk and fix as onProgress above -- every one of its 16 call sites in
-  // pdf-audit.service.ts is also an unawaited `onValidatorComplete?.(...)`.
-  const validatorProgress: Array<{ label: string; issuesFound: number; startedAt: string; completedAt: string }> = [];
-  const onValidatorComplete = async (label: string, issuesFound: number, completed: number, total: number, startedAt: Date) => {
-    try {
-      validatorProgress.push({ label, issuesFound, startedAt: startedAt.toISOString(), completedAt: new Date().toISOString() });
-      logger.info(`[PDF Worker] Validator "${label}" done: ${issuesFound} issues (${completed}/${total})`);
-      const pct = 88 + Math.round((completed / total) * 7); // 88–95%
-      lastKnownPct = pct;
-      await job.updateProgress(pct);
-      await queueService.updateJobProgress(dbJobId, pct);
-      const ej = await prisma.job.findUnique({ where: { id: dbJobId }, select: { input: true } });
-      const ei = ej?.input && typeof ej.input === 'object' && !Array.isArray(ej.input)
-        ? ej.input as Record<string, unknown> : {};
-      await prisma.job.update({
-        where: { id: dbJobId },
-        data: { input: { ...ei, validatorProgress: [...validatorProgress] } as Prisma.InputJsonObject },
-      });
-    } catch (err) {
-      logger.warn(`[PDF Worker] onValidatorComplete callback failed for job ${dbJobId}, validator "${label}" (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
-    }
-  };
-
-  // Alt Text sub-progress: touches Job.updatedAt every ~30s while
-  // PDFAltTextValidator works through a large image set, independent of
-  // onValidatorComplete above (which only fires once, after ALL images are
-  // done). Real incident (2026-09-25): a 3843-image document ran this step
-  // for 20+ minutes with no intervening update, which the new
-  // cleanupStalePdfJobs watchdog (src/workers/index.ts) then wrongly killed
-  // as "orphaned" -- it was still genuinely working, just not reporting in.
-  // Deliberately re-writes lastKnownPct rather than computing a new value:
-  // guessing at Alt Text's share of the 88-95% validator range here risks
-  // the progress bar visibly jumping backward relative to what
-  // onValidatorComplete will report once this validator actually finishes.
-  // Also records real per-image progress in job.input for visibility into
-  // exactly this kind of long-running phase (the only thing available while
-  // investigating the incident above was a frozen top-level percentage).
-  const onAltTextImageProgress = async (completed: number, total: number) => {
-    try {
-      logger.info(`[PDF Worker] Alt Text progress for job ${dbJobId}: ${completed}/${total} images`);
-      await queueService.updateJobProgress(dbJobId, lastKnownPct);
-      const ej = await prisma.job.findUnique({ where: { id: dbJobId }, select: { input: true } });
-      const ei = ej?.input && typeof ej.input === 'object' && !Array.isArray(ej.input)
-        ? ej.input as Record<string, unknown> : {};
-      await prisma.job.update({
-        where: { id: dbJobId },
-        data: { input: { ...ei, altTextImageProgress: { completed, total } } as Prisma.InputJsonObject },
-      });
-    } catch (err) {
-      logger.warn(`[PDF Worker] onAltTextImageProgress callback failed for job ${dbJobId} (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
-    }
-  };
+  // Progress callbacks (page/validator/alt-text-image progress, all written
+  // into job.input + job.progress so GET /jobs/:id can report them) are
+  // shared with pdf-batch-orchestrator.service.ts -- see
+  // pdf-audit-progress-tracker.ts's own doc comment for the real incident
+  // (a 377-page document, an unhandled rejection with no global handler,
+  // a full container restart mid-audit) that makes every callback here
+  // swallow its own errors instead of ever rejecting.
+  const { onProgress, onValidatorComplete, onAltTextImageProgress, getLastKnownPercent } = createAuditProgressCallbacks({
+    jobId: dbJobId,
+    extractionStartPct: auditStartPct,
+    extractionPctRange: auditPctRange,
+    onPercent: (pct) => job.updateProgress(pct),
+  });
 
   logger.info(`[PDF Worker] Running audit for job ${dbJobId}, file: ${fileName}`);
   const scanLevel = 'comprehensive';
@@ -384,7 +289,7 @@ async function processPdfAccessibility(
       clearInterval(heartbeatInterval);
       return;
     }
-    inFlightHeartbeat = queueService.updateJobProgress(dbJobId, lastKnownPct).catch(err => {
+    inFlightHeartbeat = queueService.updateJobProgress(dbJobId, getLastKnownPercent()).catch(err => {
       logger.warn(`[PDF Worker] Heartbeat update failed for job ${dbJobId} (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
     });
   }, HEARTBEAT_MS);

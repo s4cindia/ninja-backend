@@ -187,7 +187,17 @@ describe('PdfBatchOrchestratorService.processItem', () => {
     // items (out of scope -- see pdf-auto-tag-orchestrator.service.ts's own
     // doc comment).
     expect(mockAutoTagIfNeeded).toHaveBeenCalledWith(Buffer.from('pdf-bytes'), 'job-1', 'book.pdf', false);
-    expect(mockRunAuditFromBuffer).toHaveBeenCalledWith(Buffer.from('pdf-bytes'), 'job-1', 'book.pdf', 'comprehensive');
+    // Real gap (2026-10-18): this call used to pass none of runAuditFromBuffer's
+    // progress callbacks, so a batch item's Job.input never got totalPages/
+    // validatorProgress written -- GET /jobs/:auditJobId had nothing to show
+    // during a batch item's audit phase, unlike the single-file worker's
+    // equivalent call. Runs against autoTagIfNeeded's own returned
+    // auditBuffer (here the same bytes, per this suite's mock), not the raw
+    // downloaded buffer.
+    expect(mockRunAuditFromBuffer).toHaveBeenCalledWith(
+      Buffer.from('pdf-bytes'), 'job-1', 'book.pdf', 'comprehensive',
+      undefined, expect.any(Function), expect.any(Function), expect.any(Function)
+    );
 
     // AUDITED update carries the real audit results through.
     expect(mockPdfBatchItemUpdate).toHaveBeenCalledWith({
@@ -225,7 +235,10 @@ describe('PdfBatchOrchestratorService.processItem', () => {
 
     await pdfBatchOrchestratorService.processItem('batch-1', 'item-1');
 
-    expect(mockRunAuditFromBuffer).toHaveBeenCalledWith(taggedBuffer, 'job-1', 'book.pdf', 'comprehensive');
+    expect(mockRunAuditFromBuffer).toHaveBeenCalledWith(
+      taggedBuffer, 'job-1', 'book.pdf', 'comprehensive',
+      undefined, expect.any(Function), expect.any(Function), expect.any(Function)
+    );
     expect(mockJobUpdate).toHaveBeenCalledWith({
       where: { id: 'job-1' },
       data: expect.objectContaining({

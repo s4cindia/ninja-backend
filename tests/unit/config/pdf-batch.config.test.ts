@@ -48,8 +48,8 @@ describe('pdfBatchConfig', () => {
   it('uses the documented defaults when no env vars are set', async () => {
     const pdfBatchConfig = await loadConfig();
     expect(pdfBatchConfig.defaultBudgetUnits).toBe(10);
-    expect(pdfBatchConfig.weightUnits).toEqual({ small: 1, medium: 3, large: 8 });
-    expect(pdfBatchConfig.sizeTiers).toEqual({ smallMaxMb: 50, mediumMaxMb: 500 });
+    expect(pdfBatchConfig.weightUnits).toEqual({ small: 1, medium: 3, large: 10 });
+    expect(pdfBatchConfig.sizeTiers).toEqual({ smallMaxMb: 50, mediumMaxMb: 150 });
     expect(pdfBatchConfig.pageTiers).toEqual({ smallMaxPages: 50, mediumMaxPages: 300 });
     expect(pdfBatchConfig.leaseStaleMs).toBe(20 * 60 * 1000);
     expect(pdfBatchConfig.admitPollMs).toBe(5000);
@@ -79,6 +79,6 @@ describe('pdfBatchConfig', () => {
   it('treats an empty-string override as unset (falls back to the default)', async () => {
     process.env.PDF_BATCH_WEIGHT_LARGE = '';
     const pdfBatchConfig = await loadConfig();
-    expect(pdfBatchConfig.weightUnits.large).toBe(8);
+    expect(pdfBatchConfig.weightUnits.large).toBe(10);
   });
 });

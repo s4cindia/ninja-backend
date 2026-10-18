@@ -325,9 +325,14 @@ module "ecs_worker" {
   security_group_id  = module.networking.ecs_security_group_id
   # Mirrors staging's real ninja-backend-worker-task-definition.json
   # (cpu/memory) -- PDF/EPUB processing is heavier than the web service's
-  # own request handling.
-  cpu            = 2048
-  memory         = 8192
+  # own request handling. Raised from 2048/8192 on 2026-10-18 to match
+  # staging's own post-incident bump (see pdf-batch.config.ts's header
+  # comment and this same file's ninja-backend-worker-task-definition.json
+  # for the OOM incident this responds to) -- production hasn't run real
+  # batch traffic yet, but there's no reason to deploy it under the exact
+  # configuration that just OOM-killed staging twice.
+  cpu            = 4096
+  memory         = 16384
   desired_count  = 1
   s3_bucket_name = module.storage.bucket_name
   command        = local.app_command
@@ -339,8 +344,16 @@ module "ecs_worker" {
   # Seam-C/YOLO features gate on their own env vars and degrade safely when
   # unset, same as every other optional integration this session (axes4,
   # docling, etc.).
-  extra_environment = local.app_plain_environment
-  secrets           = local.app_secrets
+  # NODE_OPTIONS max-old-space-size matches the worker's own memory bump
+  # above (leaving ~2GB of the 16GB task limit for non-V8 memory -- Buffers,
+  # native library allocations -- the same margin staging's task definition
+  # uses) -- worker-only, so it's concat'd onto the shared plain-env list
+  # here rather than added to local.app_plain_environment, which the web
+  # service (module.ecs_web above) also uses and has no need for this.
+  extra_environment = concat(local.app_plain_environment, [
+    { name = "NODE_OPTIONS", value = "--max-old-space-size=14336" },
+  ])
+  secrets = local.app_secrets
 }
 
 # --- Phase 6: CloudFront ---

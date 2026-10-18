@@ -297,7 +297,18 @@ class PdfBatchController {
             remediatedFilePath: i.remediatedFilePath,
             error: i.error,
             uploadedAt: i.uploadedAt,
+            // Real bug (2026-10-18): PR #678 added these three fields to the
+            // schema and had the orchestrator write them, but never actually
+            // included them here -- so every consumer on the frontend has
+            // been receiving undefined for all three: PdfBatchItemElapsed's
+            // elapsed-time ticker has never rendered anything (its anchor
+            // timestamps were always missing), and PdfBatchResultsList's
+            // download button has never worked for a remediated item (it
+            // needs auditJobId to build the download URL).
+            auditJobId: i.auditJobId,
+            auditStartedAt: i.auditStartedAt,
             auditCompletedAt: i.auditCompletedAt,
+            remediationStartedAt: i.remediationStartedAt,
             remediationCompletedAt: i.remediationCompletedAt,
           })),
         },
