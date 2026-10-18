@@ -52,6 +52,16 @@ jobs:
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
 
+      # Real incident (2026-10-18): see deploy-backend-staging.yml's own copy
+      # of this step for the full rationale -- anonymous pulls of the
+      # Dockerfile's public.ecr.aws base images hit a rate/data limit after
+      # a handful of deploys in quick succession; an authenticated pull (same
+      # AWS credentials already configured above) gets a much higher limit.
+      - name: Login to Amazon ECR Public (raises the anonymous-pull rate limit on public.ecr.aws base images)
+        uses: aws-actions/amazon-ecr-login@v2
+        with:
+          registry-type: public
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
