@@ -36,6 +36,22 @@ jobs:
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
 
+      # Real incident (2026-10-18): the Dockerfile's base images all come
+      # from public.ecr.aws (AWS's own mirror of Docker Hub's node images),
+      # and ANONYMOUS pulls from it hit a surprisingly low rate/data limit --
+      # "429 Too Many Requests: toomanyrequests: Data limit exceeded" -- after
+      # just a handful of deploys in quick succession, failing the build
+      # before it even reaches application code. An authenticated pull (same
+      # AWS credentials already configured above) gets a dramatically higher
+      # limit; this step just needs to run before the build so Docker's
+      # credential helper config covers public.ecr.aws too. ECR Public is
+      # always in us-east-1 regardless of AWS_REGION above -- the action
+      # handles that internally.
+      - name: Login to Amazon ECR Public (raises the anonymous-pull rate limit on public.ecr.aws base images)
+        uses: aws-actions/amazon-ecr-login@v2
+        with:
+          registry-type: public
+
       # Docker BuildKit with GitHub Actions cache (saves ~2-3 min)
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
