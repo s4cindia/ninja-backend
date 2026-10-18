@@ -7,13 +7,31 @@
  * size/page count rather than a flat file count. Mirrors pdf.config.ts's
  * own env-var-overridable style.
  *
- * Tier boundaries and weight values are the user's own explicit numbers
- * from the approved batch-processing plan (small <50MB=1, medium
- * 50-500MB=3, large 500MB-2GB=8; ceiling 10 units/tenant). Page-count tiers
- * mirror the same boundaries -- not independently specified, but the same
- * reasoning applies (a small-byte-size PDF can still be page-heavy, e.g.
- * mostly text or vector-heavy scans, and per-page validators scale with
- * page count independent of file size -- see pdf.config.ts's own
+ * Tier boundaries and weight values originally came from the approved
+ * batch-processing plan (small <50MB=1, medium 50-500MB=3, large
+ * 500MB-2GB=8; ceiling 10 units/tenant). Retuned 2026-10-18 after a real
+ * incident: two tenant-admitted items (a 330MB "medium" file at weight 3
+ * and a 20MB "small" file at weight 1, summing to 4 of the 10-unit
+ * ceiling) ran their audit phases concurrently and OOM-killed the worker
+ * container twice in one window (confirmed via `aws ecs describe-tasks`:
+ * exitCode 137 / "OutOfMemoryError"). The old 500MB medium ceiling and
+ * weight-3 cost badly understated a mid-sized real document's actual
+ * memory footprint during the audit phase -- PdfComprehensiveParser holds
+ * the whole buffer plus every extracted page/image in memory at once, and
+ * PdfAltTextValidator (PR #686) runs an 8-way parallel image pool on top of
+ * that -- so the tenant budget let two memory-heavy audits share one
+ * process instead of serializing them. mediumMaxMb lowered to 150MB (a
+ * document FMHE_PDF.pdf's size now correctly falls under "large"), and
+ * weightUnits.large raised to equal defaultBudgetUnits (10) so any
+ * large-tier item's audit/remediation lease fully monopolizes its tenant's
+ * budget -- no other item, regardless of size, is admitted alongside it
+ * until it releases. Paired with an ECS worker memory/CPU increase
+ * (infrastructure/ecs/ninja-backend-worker-task-definition.json) as
+ * defense in depth for a single huge file alone. Page-count tiers mirror
+ * the same size-tier boundaries -- not independently specified, but the
+ * same reasoning applies (a small-byte-size PDF can still be page-heavy,
+ * e.g. mostly text or vector-heavy scans, and per-page validators scale
+ * with page count independent of file size -- see pdf.config.ts's own
  * documented OOM incident on a 377-page document). Both easy to retune via
  * env vars once real batch load data exists.
  */
@@ -45,7 +63,7 @@ export const pdfBatchConfig = {
     /** Below this: 'small' weight. */
     smallMaxMb: positiveIntEnv('PDF_BATCH_SIZE_TIER_SMALL_MAX_MB', 50),
     /** Below this (and >= smallMaxMb): 'medium' weight. >= this: 'large'. */
-    mediumMaxMb: positiveIntEnv('PDF_BATCH_SIZE_TIER_MEDIUM_MAX_MB', 500),
+    mediumMaxMb: positiveIntEnv('PDF_BATCH_SIZE_TIER_MEDIUM_MAX_MB', 150),
   },
   pageTiers: {
     smallMaxPages: positiveIntEnv('PDF_BATCH_PAGE_TIER_SMALL_MAX', 50),
@@ -54,7 +72,11 @@ export const pdfBatchConfig = {
   weightUnits: {
     small: positiveIntEnv('PDF_BATCH_WEIGHT_SMALL', 1),
     medium: positiveIntEnv('PDF_BATCH_WEIGHT_MEDIUM', 3),
-    large: positiveIntEnv('PDF_BATCH_WEIGHT_LARGE', 8),
+    // Equal to defaultBudgetUnits below -- a large-tier item's lease always
+    // fully saturates its tenant's budget, serializing it against every
+    // other item (see this file's own header comment for the incident that
+    // motivated this).
+    large: positiveIntEnv('PDF_BATCH_WEIGHT_LARGE', 10),
   },
 
   /** A lease whose heartbeat is older than this is presumed abandoned (the
