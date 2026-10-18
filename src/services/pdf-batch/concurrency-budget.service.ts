@@ -32,11 +32,26 @@
  * watchdog to find (acquire), or a released lease whose weight was never
  * returned (release). Neither can self-heal without this (CodeRabbit
  * finding on PR #635).
+ *
+ * Both transactions pass an explicit `timeout` well above Prisma's 5000ms
+ * default (real incident, 2026-10-19: every item in a tenant polls
+ * tryAcquireLease/waitForLease against this SAME single-row
+ * PdfConcurrencyBudget, so Postgres row-locking can make one transaction
+ * queue briefly behind another's lock on that row; a real production
+ * transaction took 5561ms -- just 561ms over the default -- and Prisma
+ * killed it outright with no retry, permanently failing that batch item).
+ * Each transaction here only ever does one `updateMany` plus one
+ * `create`/`update`, so a genuinely hung transaction still fails loudly
+ * well before this new ceiling -- this isn't masking real slowness, just
+ * giving ordinary lock-wait contention realistic headroom.
  */
 
 import prisma, { Prisma } from '../../lib/prisma';
 import { logger } from '../../lib/logger';
 import { pdfBatchConfig } from '../../config/pdf-batch.config';
+
+/** See this file's own header comment for the incident that motivated this. */
+const LEASE_TRANSACTION_TIMEOUT_MS = 15_000;
 
 export type ConcurrencyLeasePhase = 'audit' | 'auto_remediation';
 
@@ -147,7 +162,7 @@ class ConcurrencyBudgetService {
           data: { tenantId, batchItemId, phase, weightUnits },
         });
         return lease.id;
-      });
+      }, { timeout: LEASE_TRANSACTION_TIMEOUT_MS });
     } catch (err) {
       // batchItemId already holds an active lease (partial unique index on
       // PdfConcurrencyLease(batchItemId) WHERE releasedAt IS NULL) -- most
@@ -260,7 +275,7 @@ class ConcurrencyBudgetService {
         data: { unitsInUse: { decrement: lease.weightUnits } },
       });
       return true;
-    });
+    }, { timeout: LEASE_TRANSACTION_TIMEOUT_MS });
   }
 
   /** Re-stamps heartbeatAt for a lease still genuinely in use -- keeps a
