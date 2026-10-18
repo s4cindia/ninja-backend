@@ -24,6 +24,7 @@ import prisma from '../../lib/prisma';
 import { logger } from '../../lib/logger';
 import { fileStorageService } from '../storage/file-storage.service';
 import { pdfAuditService } from '../pdf/pdf-audit.service';
+import { createAuditProgressCallbacks } from '../pdf/pdf-audit-progress-tracker';
 import { autoRemediationLoopService, JobAutoRemediationDriver } from '../pdf/auto-remediation-loop.service';
 import { remediationCycleHistoryService } from '../pdf/remediation-cycle-history.service';
 import {
@@ -223,7 +224,28 @@ class PdfBatchOrchestratorService {
       // instead of mis-marking the item REMEDIATED regardless.
       await fileStorageService.saveFile(job.id, item.originalName, buffer);
 
-      const report = await pdfAuditService.runAuditFromBuffer(buffer, job.id, item.originalName, 'comprehensive');
+      // Real gap (2026-10-18): this call never passed progress callbacks,
+      // unlike accessibility.processor.ts's equivalent call -- so a batch
+      // item's Job.input never got totalPages/validatorProgress written,
+      // leaving GET /jobs/:auditJobId (and the PdfJobProgressPanel UI that
+      // polls it) with nothing to show during a batch item's audit phase.
+      // createAuditProgressCallbacks uses the single-file worker's own
+      // default percentage scheme (20-88% extraction, 88-95% validators),
+      // which is what that UI component's page-number math is hard-coded
+      // to -- using the same defaults here means it works against a batch
+      // item's job with zero frontend changes.
+      const { onProgress, onValidatorComplete, onAltTextImageProgress } = createAuditProgressCallbacks({ jobId: job.id });
+
+      const report = await pdfAuditService.runAuditFromBuffer(
+        buffer,
+        job.id,
+        item.originalName,
+        'comprehensive',
+        undefined,
+        onProgress,
+        onValidatorComplete,
+        onAltTextImageProgress
+      );
 
       await prisma.job.update({
         where: { id: job.id },
