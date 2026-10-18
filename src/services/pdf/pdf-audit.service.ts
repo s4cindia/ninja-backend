@@ -1376,10 +1376,27 @@ class PdfAuditService extends BaseAuditService<PdfParseResult, PdfValidationResu
       // has already given up on the hang; whatever the closure allocated
       // after that point (rare, since the parse itself is what hangs) goes
       // uncleaned, same as the un-cleaned, un-bounded hang this replaces.
-      const { report, parseResult, tempDir } = await this.withAuditTimeout(fileName, async () => {
+      const { report, parseResult, tempDir } = await this.withAuditTimeout(fileName, async (resetTimeout) => {
+        // Every progress callback the caller supplied also resets the
+        // staleness clock above -- see withAuditTimeout's own doc comment.
+        // Wrapping here (once) rather than inside the parser/each validator
+        // means none of that code needs to know this timeout exists.
+        const wrappedOnProgress = onProgress
+          ? (currentPage: number, totalPages: number) => { resetTimeout(); return onProgress(currentPage, totalPages); }
+          : undefined;
+        const wrappedOnValidatorComplete = onValidatorComplete
+          ? (label: string, issuesFound: number, completed: number, total: number, startedAt: Date) => {
+              resetTimeout();
+              return onValidatorComplete(label, issuesFound, completed, total, startedAt);
+            }
+          : undefined;
+        const wrappedOnAltTextImageProgress = onAltTextImageProgress
+          ? (completed: number, total: number) => { resetTimeout(); return onAltTextImageProgress(completed, total); }
+          : undefined;
+
         // Parse the buffer
         logger.info(`[PdfAudit] Parsing buffer...`);
-        const parseResult = await this.parseBuffer(buffer, fileName, onProgress);
+        const parseResult = await this.parseBuffer(buffer, fileName, wrappedOnProgress);
         logger.info(`[PdfAudit] Buffer parsed successfully`);
 
         // Write temp file for veraPDF/pdfa11y if either binary is available.
@@ -1395,7 +1412,7 @@ class PdfAuditService extends BaseAuditService<PdfParseResult, PdfValidationResu
 
         // Validate
         logger.info(`[PdfAudit] Validating with ${scanLevel} scan level...`);
-        const validation = await this.validate(parseResult, scanLevel, customValidators, onValidatorComplete, onAltTextImageProgress);
+        const validation = await this.validate(parseResult, scanLevel, customValidators, wrappedOnValidatorComplete, wrappedOnAltTextImageProgress);
         logger.info(`[PdfAudit] Validation complete`);
 
         // Generate report
@@ -1430,24 +1447,42 @@ class PdfAuditService extends BaseAuditService<PdfParseResult, PdfValidationResu
     }
   }
 
-  /** Bounds `work` to pdfConfig.auditTimeoutMs so a hung parser/validator
-   *  (real incident: a parse that logged its start and then nothing, ever,
-   *  for ~24h) fails fast instead of permanently wedging whatever slot
+  /** Bounds `work` to a MAX GAP of pdfConfig.auditTimeoutMs between progress
+   *  events, not a fixed total duration -- so a hung parser/validator (real
+   *  incident: a parse that logged its start and then nothing, ever, for
+   *  ~24h) still fails fast instead of permanently wedging whatever slot
    *  (BullMQ worker concurrency, a PDF batch item's weighted budget unit)
-   *  is waiting on it. `work` itself is NOT cancelled on timeout -- Node
-   *  has no general way to abort an arbitrary in-flight async chain -- this
-   *  only stops THIS caller from waiting on it forever. */
-  private async withAuditTimeout<T>(fileName: string, work: () => Promise<T>): Promise<T> {
+   *  is waiting on it, WITHOUT also killing a legitimately slow-but-working
+   *  audit on a huge document (real incident, 2026-10-19: FMHE_PDF.pdf's
+   *  5934-image Alt Text pass needs ~53 minutes of real Gemini latency with
+   *  nothing broken -- the OLD fixed-duration version of this timeout had
+   *  no way to tell that apart from a genuine hang, even though
+   *  pdf-alttext.validator.ts already reports progress every 30s). `work`
+   *  receives a `resetTimeout` callback -- the caller is responsible for
+   *  calling it from every progress callback it already has (see
+   *  runAuditFromBuffer below). `work` itself is NOT cancelled on timeout --
+   *  Node has no general way to abort an arbitrary in-flight async chain --
+   *  this only stops THIS caller from waiting on it forever. */
+  private async withAuditTimeout<T>(fileName: string, work: (resetTimeout: () => void) => Promise<T>): Promise<T> {
     let timer: ReturnType<typeof setTimeout>;
-    const timeout = new Promise<never>((_, reject) => {
+    let rejectTimeout: (err: Error) => void;
+    const scheduleTimeout = () => {
       timer = setTimeout(() => {
-        reject(new Error(
-          `[PdfAudit] Audit timed out after ${pdfConfig.auditTimeoutMs}ms for ${fileName} -- the parser or a validator likely hung`
+        rejectTimeout(new Error(
+          `[PdfAudit] Audit for ${fileName} had no progress for ${pdfConfig.auditTimeoutMs}ms -- the parser or a validator likely hung`
         ));
       }, pdfConfig.auditTimeoutMs);
+    };
+    const timeout = new Promise<never>((_, reject) => {
+      rejectTimeout = reject;
+      scheduleTimeout();
     });
+    const resetTimeout = () => {
+      clearTimeout(timer);
+      scheduleTimeout();
+    };
     try {
-      return await Promise.race([work(), timeout]);
+      return await Promise.race([work(resetTimeout), timeout]);
     } finally {
       clearTimeout(timer!);
     }
