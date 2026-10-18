@@ -208,6 +208,21 @@ class PdfBatchOrchestratorService {
 
     try {
       const buffer = await fileStorageService.downloadFile(item.storagePath);
+
+      // Real incident (2026-10-18): every single batch item's remediation
+      // phase failed on its very first round with "PDF file not found in
+      // storage for job <id>" -- ai-analysis.service.ts's analyzeJob()
+      // loads the PDF via fileStorageService.getFile(jobId, fileName) (the
+      // job-storage/<jobId>/<fileName> convention pdf.controller.ts's
+      // single-file upload flow establishes by calling saveFile before
+      // dispatching its own audit job), but this orchestrator ran the
+      // audit straight from item.storagePath (the batch item's own upload
+      // location) without ever persisting the buffer under that job-centric
+      // key. This masked every batch remediation as a silent no-op (0
+      // rounds, 0 issues fixed) until PR #689 made that failure visible
+      // instead of mis-marking the item REMEDIATED regardless.
+      await fileStorageService.saveFile(job.id, item.originalName, buffer);
+
       const report = await pdfAuditService.runAuditFromBuffer(buffer, job.id, item.originalName, 'comprehensive');
 
       await prisma.job.update({
