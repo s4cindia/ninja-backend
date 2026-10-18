@@ -167,4 +167,19 @@ PR_DESCRIPTION.md
 data/epub-storage/*
 !data/epub-storage/.gitkeep
 tmp/pdf-backups/
+
+# Terraform (infrastructure/terraform/**) -- local/ephemeral only; real state
+# lives in the S3 backend (backend.tf), never committed here.
+**/.terraform/
+*.tfplan
+*.tfstate
+*.tfstate.*
+crash.log
+crash.*.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+.terraformrc
+terraform.rc
 uploads/
