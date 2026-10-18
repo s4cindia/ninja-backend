@@ -4,57 +4,16 @@ import { PDFDocument, PDFName, PDFString, PDFDict, PDFArray, PDFRef } from 'pdf-
 import { JobData, JobResult, JOB_TYPES } from '../../queues';
 import { queueService } from '../../services/queue.service';
 import { pdfAuditService } from '../../services/pdf/pdf-audit.service';
+import { autoTagIfNeeded } from '../../services/pdf/pdf-auto-tag-orchestrator.service';
 import { createAuditProgressCallbacks } from '../../services/pdf/pdf-audit-progress-tracker';
-import { pdfParserService } from '../../services/pdf/pdf-parser.service';
-import { adobeAutoTagService } from '../../services/pdf/adobe-autotag.service';
-import { seamCTagService } from '../../services/pdf/seam-c-tag.service';
 import { aiAnalysisService } from '../../services/pdf/ai-analysis.service';
 import { pdfModifierService } from '../../services/pdf/pdf-modifier.service';
 import { pdfStructureWriterService } from '../../services/pdf/pdf-structure-writer.service';
-import { checkStructureTreeCompleteness } from '../../services/pdf/structure-tree-completeness';
-import { prepareDocumentForRetag } from '../../services/pdf/strip-marked-content';
 import { fileStorageService } from '../../services/storage/file-storage.service';
 import { aiConfig } from '../../config/ai.config';
 import { pdfConfig } from '../../config/pdf.config';
 import prisma from '../../lib/prisma';
 import { logger } from '../../lib/logger';
-
-// ─── Structure tree completeness (Stage 1) ───────────────────────────────────
-
-/**
- * Runs when the worker is about to trust an existing structure tree instead
- * of tagging (either the isTagged pre-check skipped tagging outright, or
- * Seam C's own SEAM_C_ALREADY_TAGGED backstop refused to run). Both of
- * those gates only check that /StructTreeRoot exists — this measures
- * whether it's actually worth trusting. Read-only; never affects control
- * flow, only what gets logged and recorded on the job. Failures here are
- * non-fatal — a completeness check that itself breaks shouldn't block the
- * pipeline it's just observing.
- */
-async function logStructureCompleteness(buffer: Buffer, dbJobId: string): Promise<Record<string, unknown>> {
-  try {
-    const doc = await PDFDocument.load(buffer);
-    const completeness = checkStructureTreeCompleteness(doc);
-    if (!completeness) return {};
-    if (completeness.isEmptyShell) {
-      logger.warn(
-        `[PDF Worker] Existing structure tree for job ${dbJobId} is an empty shell — ` +
-        `${completeness.totalElements} element(s), 0 semantically tagged (no Figure/P/H/Table/etc). ` +
-        `Writers that need a real content-typed element (e.g. alt-text) will find nothing to attach to.`
-      );
-    } else if (completeness.isHeadingShell) {
-      logger.warn(
-        `[PDF Worker] Existing structure tree for job ${dbJobId} has ${completeness.semanticElements} ` +
-        `semantic element(s) but 0 heading tags (H1-H9) — fixHeadingHierarchy will find nothing to ` +
-        `rename regardless of how many heading-skip issues detection reports.`
-      );
-    }
-    return { structureTreeCompleteness: completeness };
-  } catch (err) {
-    logger.warn(`[PDF Worker] Structure tree completeness check failed for job ${dbJobId} (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
-    return {};
-  }
-}
 
 // ─── Language utilities (Step 8) ─────────────────────────────────────────────
 
@@ -247,26 +206,10 @@ async function processPdfAccessibility(
     throw new Error(`PDF file exceeds maximum size of ${pdfConfig.maxFileSizeMB}MB`);
   }
 
-  // Quick tagged check — lightweight parse to detect PDF structure tree presence
-  let isTagged = false;
-  try {
-    const parsedMeta = await pdfParserService.parseBuffer(fileBuffer, fileName);
-    isTagged = parsedMeta.structure.metadata.isTagged ?? false;
-    await pdfParserService.close(parsedMeta).catch(() => {});
-  } catch (tagCheckErr) {
-    logger.warn(`[PDF Worker] Tagged check failed (assuming untagged): ${tagCheckErr instanceof Error ? tagCheckErr.message : String(tagCheckErr)}`);
-  }
-
-  logger.info(`[PDF Worker] PDF isTagged=${isTagged} for job ${dbJobId}`);
   await job.updateProgress(20);
   await queueService.updateJobProgress(dbJobId, 20);
 
-  // ── 2. Adobe AutoTag if untagged [20–40%] ───────────────────────────────────
-  let auditBuffer = fileBuffer;
-  let autoTagMeta: Record<string, unknown> = {};
-  // Seam C is the DEFAULT tagger; Adobe is the fallback. Tag any untagged PDF when
-  // at least one tagger is available.
-  //
+  // ── 2. Seam C / Adobe AutoTag if untagged [20–40%] ──────────────────────────
   // forceAutoTag bypasses the isTagged check. It exists for Comparison Study
   // trials specifically: the /MarkInfo /Marked flag isTagged relies on only
   // means a PDF *claims* structure — plenty of real documents set it while
@@ -276,180 +219,9 @@ async function processPdfAccessibility(
   // measuring what Ninja's pipeline actually produces against pdfxt on the
   // same starting document.
   const forceAutoTag = Boolean(options?.forceAutoTag);
+  const { auditBuffer: taggedBuffer, isTagged, autoTagMeta } = await autoTagIfNeeded(fileBuffer, dbJobId, fileName, forceAutoTag);
+  let auditBuffer = taggedBuffer;
   const shouldAutoTag = (forceAutoTag || !isTagged) && (aiConfig.seamC.enabled || aiConfig.adobe.enabled);
-
-  if (shouldAutoTag) {
-    if (isTagged && forceAutoTag) {
-      logger.info(`[PDF Worker] PDF is already tagged, but forceAutoTag is set — tagging anyway (${aiConfig.seamC.enabled ? 'Seam C' : 'Adobe'}) for job ${dbJobId}`);
-    } else {
-      logger.info(`[PDF Worker] PDF is untagged — tagging (${aiConfig.seamC.enabled ? 'Seam C' : 'Adobe'}) for job ${dbJobId}`);
-    }
-
-    // Record autoTagProgress start in job.input
-    const ejStart = await prisma.job.findUnique({ where: { id: dbJobId }, select: { input: true } });
-    const eiStart = ejStart?.input && typeof ejStart.input === 'object' && !Array.isArray(ejStart.input)
-      ? ejStart.input as Record<string, unknown> : {};
-    await prisma.job.update({
-      where: { id: dbJobId },
-      data: { input: { ...eiStart, autoTagProgress: { startedAt: new Date().toISOString(), status: 'running' } } as Prisma.InputJsonObject },
-    });
-
-    // Tags `bufferToTag` with whichever service is available and persists a
-    // successful result exactly like a normal tagging pass — sets
-    // auditBuffer/autoTagMeta and the job.input progress record. Shared by
-    // the primary attempt and the strip-and-retag path below (see
-    // alreadyTagged handling) so a successful retag is indistinguishable
-    // from a normal first-time tag, bookkeeping-wise.
-    const tagAndPersist = async (bufferToTag: Buffer): Promise<void> => {
-      let autoTagResult: {
-        taggedPdfBuffer: Buffer;
-        reportBuffer: Buffer | null;
-        wordBuffer: Buffer | null;
-        elementCounts: unknown;
-        parsedFlags: unknown;
-      };
-      let taggerSource: 'seam-c' | 'adobe' = 'adobe';
-      if (aiConfig.seamC.enabled) {
-        try {
-          autoTagResult = await seamCTagService.tagPdf(bufferToTag, dbJobId);
-          taggerSource = 'seam-c';
-        } catch (seamErr) {
-          if (!aiConfig.adobe.enabled) throw seamErr;
-          logger.warn(`[PDF Worker] Seam C tagging failed, falling back to Adobe: ${seamErr instanceof Error ? seamErr.message : String(seamErr)}`);
-          autoTagResult = await adobeAutoTagService.tagPdf(bufferToTag, { generateReport: true, exportWord: true });
-        }
-      } else {
-        autoTagResult = await adobeAutoTagService.tagPdf(bufferToTag, { generateReport: true, exportWord: true });
-      }
-      auditBuffer = autoTagResult.taggedPdfBuffer;
-
-      // Save tagged PDF as remediated file + report XML + Word export
-      await fileStorageService.saveRemediatedFile(dbJobId, fileName, autoTagResult.taggedPdfBuffer);
-      if (autoTagResult.reportBuffer) {
-        await fileStorageService.saveFile(dbJobId, 'autotag-report.xlsx', autoTagResult.reportBuffer);
-      }
-      if (autoTagResult.wordBuffer) {
-        const docxName = fileName.replace(/\.pdf$/i, '.docx');
-        await fileStorageService.saveFile(dbJobId, docxName, autoTagResult.wordBuffer);
-      }
-
-      // Persist autoTagProgress completion in job.input
-      const ejDone = await prisma.job.findUnique({ where: { id: dbJobId }, select: { input: true } });
-      const eiDone = ejDone?.input && typeof ejDone.input === 'object' && !Array.isArray(ejDone.input)
-        ? ejDone.input as Record<string, unknown> : {};
-      const prevProgress = eiDone.autoTagProgress as Record<string, unknown> ?? {};
-      await prisma.job.update({
-        where: { id: dbJobId },
-        data: {
-          input: {
-            ...eiDone,
-            autoTagProgress: {
-              ...prevProgress,
-              completedAt: new Date().toISOString(),
-              status: 'complete',
-              elementCounts: autoTagResult.elementCounts,
-              adobeFlags: autoTagResult.parsedFlags,
-            },
-          } as unknown as Prisma.InputJsonObject,
-        },
-      });
-
-      autoTagMeta = {
-        autoTagStatus: 'complete',
-        taggerSource,
-        hasTaggingReport: !!autoTagResult.reportBuffer,
-        hasWordExport: !!autoTagResult.wordBuffer,
-        autoTagElementCounts: autoTagResult.elementCounts,
-      };
-      logger.info(`[PDF Worker] ${taggerSource} tagging complete for job ${dbJobId}`);
-    };
-
-    try {
-      await tagAndPersist(fileBuffer);
-    } catch (tagErr) {
-      const errMessage = tagErr instanceof Error ? tagErr.message : String(tagErr);
-      // Seam C's own struct-tree-builder refuses to run on a document that
-      // already has a real /StructTreeRoot (see struct-tree-builder.ts) —
-      // re-tagging it would produce duplicate/conflicting MCIDs. That's not
-      // a failure: it's the same "don't clobber genuinely good existing
-      // structure" outcome as the isTagged pre-check below, just discovered
-      // one step later because forceAutoTag (Comparison Study trials) makes
-      // the worker attempt tagging instead of pre-emptively skipping it.
-      const alreadyTagged = errMessage.startsWith('SEAM_C_ALREADY_TAGGED');
-
-      let completenessMeta: Record<string, unknown> = {};
-      let retagSucceeded = false;
-
-      if (alreadyTagged) {
-        completenessMeta = await logStructureCompleteness(fileBuffer, dbJobId);
-        const completeness = completenessMeta.structureTreeCompleteness as
-          { isEmptyShell: boolean; isHeadingShell: boolean } | undefined;
-
-        // Bundled with forceAutoTag rather than a separate flag: forceAutoTag
-        // is already scoped to Comparison Study trials only (the safety
-        // boundary), and prepareDocumentForRetag's own all-or-nothing bail
-        // plus this try/catch's fallback mean a failed attempt here can
-        // never leave the document worse off than just using the existing
-        // (empty-shell/heading-shell) structure — only better or unchanged.
-        //
-        // isHeadingShell alongside isEmptyShell: a tree can clear the
-        // isEmptyShell bar on a couple of Figure/P tags while carrying zero
-        // heading tags — semanticElements lumps every content type
-        // together, so it doesn't see that gap on its own. Without this,
-        // fixHeadingHierarchy silently has nothing to rename on a document
-        // whose heading-skip issues detection still reports every round.
-        if ((completeness?.isEmptyShell || completeness?.isHeadingShell) && forceAutoTag) {
-          const reason = completeness?.isEmptyShell ? 'an empty shell' : 'missing heading tags';
-          logger.info(`[PDF Worker] Existing structure is ${reason} and forceAutoTag is set — attempting strip-and-retag for job ${dbJobId}`);
-          try {
-            const doc = await PDFDocument.load(fileBuffer);
-            const prepResult = prepareDocumentForRetag(doc);
-            if (prepResult.success) {
-              const strippedBuffer = Buffer.from(await doc.save());
-              await tagAndPersist(strippedBuffer);
-              autoTagMeta = { ...autoTagMeta, retagOutcome: 'success', ...completenessMeta };
-              logger.info(`[PDF Worker] Strip-and-retag succeeded for job ${dbJobId} (${prepResult.pagesStripped}/${prepResult.totalPages} pages stripped)`);
-              retagSucceeded = true;
-            } else {
-              logger.warn(`[PDF Worker] Strip-and-retag aborted for job ${dbJobId} — page ${prepResult.bailedOnPage ?? 'n/a'} could not be safely stripped; using existing structure as-is`);
-              completenessMeta = { ...completenessMeta, retagOutcome: 'failed-strip-bailed' };
-            }
-          } catch (retagErr) {
-            logger.warn(`[PDF Worker] Strip-and-retag failed for job ${dbJobId} (falling back to existing structure): ${retagErr instanceof Error ? retagErr.message : String(retagErr)}`);
-            completenessMeta = { ...completenessMeta, retagOutcome: 'failed-retag-error' };
-          }
-        }
-
-        if (!retagSucceeded) {
-          logger.info(`[PDF Worker] Document already has real structure — proceeding with audit of existing tagging for job ${dbJobId}`);
-        }
-      } else {
-        logger.warn(`[PDF Worker] Adobe AutoTag failed (continuing with untagged): ${errMessage}`);
-      }
-
-      if (!retagSucceeded) {
-        // Record outcome in job.input
-        const ejFail = await prisma.job.findUnique({ where: { id: dbJobId }, select: { input: true } });
-        const eiFail = ejFail?.input && typeof ejFail.input === 'object' && !Array.isArray(ejFail.input)
-          ? ejFail.input as Record<string, unknown> : {};
-        const prevFail = eiFail.autoTagProgress as Record<string, unknown> ?? {};
-        await prisma.job.update({
-          where: { id: dbJobId },
-          data: { input: { ...eiFail, autoTagProgress: { ...prevFail, completedAt: new Date().toISOString(), status: alreadyTagged ? 'skipped' : 'failed' } } as Prisma.InputJsonObject },
-        });
-
-        autoTagMeta = alreadyTagged
-          ? { autoTagStatus: 'skipped', autoTagSkipReason: 'already-tagged', ...completenessMeta }
-          : { autoTagStatus: 'failed', autoTagError: errMessage };
-      }
-    }
-  } else {
-    autoTagMeta = isTagged
-      ? { autoTagStatus: 'skipped', autoTagSkipReason: 'already-tagged', ...(await logStructureCompleteness(fileBuffer, dbJobId)) }
-      : { autoTagStatus: 'skipped', autoTagSkipReason: 'no-tagger-configured' };
-    if (isTagged) logger.info(`[PDF Worker] PDF is already tagged — skipping tagging for job ${dbJobId}`);
-    else logger.info(`[PDF Worker] No tagger configured — skipping tagging for job ${dbJobId}`);
-  }
 
   // Advance to audit start (40% if auto-tag ran, stays at 20% if skipped)
   const auditStartPct = shouldAutoTag ? 40 : 20;
