@@ -168,7 +168,15 @@ describe('PdfBatchOrchestratorService.processItem', () => {
     // fileStorageService.getFile(jobId, fileName), which only ever finds
     // something here saveFile wrote first.
     expect(mockSaveFile).toHaveBeenCalledWith('job-1', 'book.pdf', Buffer.from('pdf-bytes'));
-    expect(mockRunAuditFromBuffer).toHaveBeenCalledWith(Buffer.from('pdf-bytes'), 'job-1', 'book.pdf', 'comprehensive');
+    // Real gap (2026-10-18): this call used to pass none of runAuditFromBuffer's
+    // progress callbacks, so a batch item's Job.input never got totalPages/
+    // validatorProgress written -- GET /jobs/:auditJobId had nothing to show
+    // during a batch item's audit phase, unlike the single-file worker's
+    // equivalent call.
+    expect(mockRunAuditFromBuffer).toHaveBeenCalledWith(
+      Buffer.from('pdf-bytes'), 'job-1', 'book.pdf', 'comprehensive',
+      undefined, expect.any(Function), expect.any(Function), expect.any(Function)
+    );
 
     // AUDITED update carries the real audit results through.
     expect(mockPdfBatchItemUpdate).toHaveBeenCalledWith({
