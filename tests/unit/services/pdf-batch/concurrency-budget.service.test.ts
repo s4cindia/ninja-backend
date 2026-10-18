@@ -68,11 +68,11 @@ describe('computeSizeWeight', () => {
   it('is "medium" (3) at exactly the small tier boundary', () => {
     expect(computeSizeWeight(50 * MB)).toBe(3);
   });
-  it('is "medium" (3) just under the medium tier boundary (500MB)', () => {
-    expect(computeSizeWeight(499 * MB)).toBe(3);
+  it('is "medium" (3) just under the medium tier boundary (150MB)', () => {
+    expect(computeSizeWeight(149 * MB)).toBe(3);
   });
-  it('is "large" (8) at exactly the medium tier boundary', () => {
-    expect(computeSizeWeight(500 * MB)).toBe(8);
+  it('is "large" (10) at exactly the medium tier boundary', () => {
+    expect(computeSizeWeight(150 * MB)).toBe(10);
   });
   it('accepts a BigInt (PdfBatchItem.fileSize is BigInt, not Int)', () => {
     expect(computeSizeWeight(BigInt(10 * MB))).toBe(1);
@@ -86,8 +86,8 @@ describe('computePageWeight', () => {
   it('is "medium" (3) at exactly the small tier boundary', () => {
     expect(computePageWeight(50)).toBe(3);
   });
-  it('is "large" (8) at exactly the medium tier boundary (300 pages)', () => {
-    expect(computePageWeight(300)).toBe(8);
+  it('is "large" (10) at exactly the medium tier boundary (300 pages)', () => {
+    expect(computePageWeight(300)).toBe(10);
   });
 });
 
@@ -139,15 +139,30 @@ describe('tryAcquireLease', () => {
     expect(prisma.pdfConcurrencyLease.create).not.toHaveBeenCalled();
   });
 
-  it('a large file alone (weight 8) is admitted under a fresh 10-unit budget, matching the "1 large alone" example', async () => {
+  it('a large file alone (weight 10) is admitted under a fresh 10-unit budget, matching the "1 large alone" example', async () => {
     vi.mocked(prisma.pdfConcurrencyBudget.upsert).mockResolvedValue({} as any);
     vi.mocked(prisma.pdfConcurrencyBudget.findUniqueOrThrow).mockResolvedValue({ tenantId: 'tenant-1', totalUnits: 10, unitsInUse: 0 } as any);
     vi.mocked(prisma.pdfConcurrencyBudget.updateMany).mockResolvedValue({ count: 1 } as any);
     vi.mocked(prisma.pdfConcurrencyLease.create).mockResolvedValue({ id: 'lease-large' } as any);
 
-    const result = await concurrencyBudgetService.tryAcquireLease('tenant-1', 'item-large', 'audit', 8);
+    const result = await concurrencyBudgetService.tryAcquireLease('tenant-1', 'item-large', 'audit', 10);
 
     expect(result.acquired).toBe(true);
+  });
+
+  it('regression (2026-10-18 OOM incident): once a large item (weight 10) holds the whole budget, even a 1-unit small item is refused -- large items now fully serialize against everything else', async () => {
+    vi.mocked(prisma.pdfConcurrencyBudget.upsert).mockResolvedValue({} as any);
+    // The large item's lease is already live: unitsInUse reflects its weight.
+    vi.mocked(prisma.pdfConcurrencyBudget.findUniqueOrThrow).mockResolvedValue({ tenantId: 'tenant-1', totalUnits: 10, unitsInUse: 10 } as any);
+    // Postgres's own `lte` check (10 - 1 = 9, current unitsInUse 10 > 9) is
+    // what actually refuses this in production -- the mock mirrors that by
+    // matching 0 rows, same as every other "refused" test in this file.
+    vi.mocked(prisma.pdfConcurrencyBudget.updateMany).mockResolvedValue({ count: 0 } as any);
+
+    const result = await concurrencyBudgetService.tryAcquireLease('tenant-1', 'item-small', 'audit', 1);
+
+    expect(result).toEqual({ acquired: false });
+    expect(prisma.pdfConcurrencyLease.create).not.toHaveBeenCalled();
   });
 
   it('isolates budgets per tenant -- the admission check is scoped to tenantId', async () => {

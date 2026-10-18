@@ -2,8 +2,8 @@
   "family": "ninja-backend-worker-task",
   "networkMode": "awsvpc",
   "requiresCompatibilities": ["FARGATE"],
-  "cpu": "2048",
-  "memory": "8192",
+  "cpu": "4096",
+  "memory": "16384",
   "executionRoleArn": "arn:aws:iam::223643972423:role/ecsTaskExecutionRole",
   "taskRoleArn": "arn:aws:iam::223643972423:role/ninja-backend-task-role",
   "containerDefinitions": [
@@ -26,7 +26,7 @@
         { "name": "YOLO_SERVICE_URL", "value": "http://ninja-zone-detector.ninja.local:8083" },
         { "name": "YOLO_WARM_START_HOUR_IST", "value": "9" },
         { "name": "YOLO_WARM_END_HOUR_IST", "value": "19" },
-        { "name": "NODE_OPTIONS", "value": "--max-old-space-size=6144" }
+        { "name": "NODE_OPTIONS", "value": "--max-old-space-size=14336" }
       ],
       "secrets": [
         { "name": "DATABASE_URL", "valueFrom": "REPLACE_WITH_STAGING_DATABASE_SECRET_ARN" },
