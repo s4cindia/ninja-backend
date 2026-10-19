@@ -324,7 +324,14 @@ export class PdfContrastValidator {
 
     for (const page of pages) {
       if (page.content.length === 0) {
+        // CodeRabbit finding on this PR, confirmed real: without this call,
+        // a document whose pages are ALL empty-content would never call
+        // onProgress at all -- not even the guaranteed final call -- since
+        // this branch used to skip straight past maybeReportProgress(),
+        // reintroducing the exact hang-detection false positive this fix
+        // exists to close.
         completed++;
+        await maybeReportProgress();
         continue;
       }
       try {

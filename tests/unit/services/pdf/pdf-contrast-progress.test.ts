@@ -94,17 +94,32 @@ describe('PdfContrastValidator -- onProgress callback', () => {
     expect(onProgress).toHaveBeenNthCalledWith(2, 3, 3);
   });
 
-  it('counts a page skipped for empty content toward completed, without itself triggering a call', async () => {
+  it('counts a page skipped for empty content toward completed, subject to the same throttle as any other page', async () => {
     const { parsed } = buildFakeParsed(2, { emptyContentPages: [1] });
     const onProgress = vi.fn();
 
     await pdfContrastValidator.validate(parsed, onProgress);
 
-    // Page 1 (empty content) is skipped before maybeReportProgress is ever
-    // consulted -- only page 2's finally block reports, but by then
-    // completed already reflects both pages.
+    // Page 1 (empty content) goes through maybeReportProgress too, but it's
+    // not the last page and no wall-clock time has passed, so it's throttled
+    // same as any other mid-run page -- only page 2's call survives.
     expect(onProgress).toHaveBeenCalledTimes(1);
     expect(onProgress).toHaveBeenCalledWith(2, 2);
+  });
+
+  it('still calls onProgress with the final count when every page has empty content (CodeRabbit finding, PR #700)', async () => {
+    // Without this, a document whose pages are ALL empty-content would never
+    // call onProgress at all -- not even the guaranteed final call -- since
+    // the empty-content branch used to skip maybeReportProgress() entirely,
+    // reintroducing the exact hang-detection false positive this fix exists
+    // to close.
+    const { parsed } = buildFakeParsed(3, { emptyContentPages: [1, 2, 3] });
+    const onProgress = vi.fn();
+
+    await pdfContrastValidator.validate(parsed, onProgress);
+
+    expect(onProgress).toHaveBeenCalledTimes(1);
+    expect(onProgress).toHaveBeenCalledWith(3, 3);
   });
 
   it('is optional -- validate() still works with no onProgress argument', async () => {
