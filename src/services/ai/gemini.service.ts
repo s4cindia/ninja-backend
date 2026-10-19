@@ -42,11 +42,6 @@ class GeminiService {
   private circuitOpenUntil = 0;
   private circuitReason: string | null = null;
 
-  // Bounds checkRateLimit()'s Redis round-trip -- see that method's doc
-  // comment for why this can't just rely on the Redis client's own
-  // commandTimeout.
-  private static readonly RATE_LIMIT_CHECK_TIMEOUT_MS = 5_000;
-
   private isInfrastructureError(error: unknown): boolean {
     if (!(error instanceof Error)) return false;
     const msg = error.message.toLowerCase();
@@ -132,44 +127,27 @@ class GeminiService {
    *
    * This is safe for multi-instance deployments (ECS Fargate, Kubernetes)
    * where in-process counters would allow N × limit requests.
+   *
+   * Used to race geminiRateLimiter.acquire() against its own 5s timeout here
+   * (added 2026-10-17 for a real ioredis Pipeline-hang risk -- see
+   * RedisRateLimiter.acquire()'s own comment, which now owns that same
+   * protection directly). Real incident (2026-10-19): racing the ENTIRE
+   * acquire() call here also cut short its legitimate post-check wait
+   * (up to a full window, 60s) the moment the per-window count exceeded the
+   * limit -- every subsequent caller that window "timed out" after 5s and
+   * proceeded anyway, letting a single large job (FMHE_PDF.pdf's
+   * 11991-issue AI analysis pass) blow past the configured 60/min limit by
+   * nearly 2x. The Redis round-trip is now bounded at its own source
+   * instead, where it can't also clip a legitimate wait that was never the
+   * hang risk in the first place.
    */
   private async checkRateLimit(): Promise<void> {
     try {
       // Use Redis-based rate limiter for multi-instance safety
       // If Redis is unavailable, this will skip and retry logic handles 429s
-      //
-      // Raced against our OWN timeout rather than trusted to the Redis
-      // client's commandTimeout -- confirmed live (2026-10-17) that
-      // geminiRateLimiter.acquire() can still hang indefinitely even with
-      // commandTimeout configured: redis.multi() returns a Pipeline whose
-      // own sendCommand() (ioredis's Pipeline.js) bypasses the
-      // single-command commandTimeout wiring entirely, and even a
-      // sub-command timeout inside a MULTI/EXEC batch would surface as an
-      // error ENTRY in the results array rather than a rejection -- a shape
-      // RedisRateLimiter.acquire()'s own result parsing doesn't account
-      // for. Bounding it here with the same Promise.race pattern
-      // pdf-audit.service.ts's withAuditTimeout already uses (and which
-      // has fired precisely on schedule in every live test so far) makes
-      // this safe regardless of that ioredis-internals question.
-      let timer: ReturnType<typeof setTimeout>;
-      const timeout = new Promise<never>((_, reject) => {
-        timer = setTimeout(
-          () => reject(new Error('Gemini rate limit check timed out')),
-          GeminiService.RATE_LIMIT_CHECK_TIMEOUT_MS
-        );
-      });
-      // Diagnostic timing (2026-10-17): elapsed-ms on the success path too,
-      // not just the timeout/failure path -- so a live occurrence can
-      // distinguish "this resolved quickly, the hang is elsewhere" from
-      // "this itself is slow but under the 5s bound" with a real number
-      // instead of inferring it from the absence of a warning.
       const startedAt = Date.now();
-      try {
-        await Promise.race([geminiRateLimiter.acquire(), timeout]);
-        logger.info(`[Gemini Service] Rate limit check passed in ${Date.now() - startedAt}ms`);
-      } finally {
-        clearTimeout(timer!);
-      }
+      await geminiRateLimiter.acquire();
+      logger.info(`[Gemini Service] Rate limit check passed in ${Date.now() - startedAt}ms`);
     } catch (error) {
       // Log but don't block - retryWithBackoff will handle 429 responses
       logger.warn('[Gemini Service] Rate limit check failed, proceeding with request:', error);

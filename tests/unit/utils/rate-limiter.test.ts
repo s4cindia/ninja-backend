@@ -3,10 +3,11 @@
  *
  * Tests for token bucket rate limiter and tenant usage tracker
  */
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import {
   RateLimiter,
   RedisTenantUsageTracker,
+  RedisRateLimiter,
   RateLimitError,
 } from '../../../src/utils/rate-limiter';
 
@@ -17,6 +18,21 @@ vi.mock('../../../src/lib/logger', () => ({
     warn: vi.fn(),
     debug: vi.fn(),
   },
+}));
+
+// Defaults match the real isRedisConfigured()'s own behavior in this test
+// environment (no REDIS_URL set, so false) -- the RedisTenantUsageTracker
+// tests below rely on exactly this "unconfigured" default for their own
+// graceful-fallback coverage. Only the RedisRateLimiter tests override these
+// per-test to exercise the real Redis-backed path.
+let redisConfigured = false;
+let fakeRedisClient: unknown = null;
+
+vi.mock('../../../src/config/redis.config', () => ({
+  isRedisConfigured: () => redisConfigured,
+}));
+vi.mock('../../../src/lib/redis', () => ({
+  getRedisClient: () => fakeRedisClient,
 }));
 
 describe('RateLimiter', () => {
@@ -193,5 +209,73 @@ describe('RedisTenantUsageTracker', () => {
 
       expect(tracker).toBeDefined();
     });
+  });
+});
+
+describe('RedisRateLimiter', () => {
+  function makeFakeRedis(execImpl: () => Promise<Array<[Error | null, unknown]> | null>) {
+    const pipeline = {
+      incr: vi.fn().mockReturnThis(),
+      pexpire: vi.fn().mockReturnThis(),
+      exec: vi.fn().mockImplementation(execImpl),
+    };
+    return { multi: vi.fn().mockReturnValue(pipeline) };
+  }
+
+  beforeEach(() => {
+    redisConfigured = true;
+  });
+
+  afterEach(() => {
+    redisConfigured = false;
+    fakeRedisClient = null;
+    vi.useRealTimers();
+  });
+
+  it('proceeds immediately when the count is within the limit', async () => {
+    fakeRedisClient = makeFakeRedis(async () => [[null, 1]]);
+    const limiter = new RedisRateLimiter({ name: 'Test', maxRequests: 60, windowMs: 60_000 });
+
+    await expect(limiter.acquire()).resolves.toBeUndefined();
+  });
+
+  it('fails open within its own short timeout if the Redis multi/exec call hangs forever (real incident, 2026-10-17: geminiRateLimiter.acquire() hung indefinitely even with commandTimeout configured, since redis.multi()\'s own Pipeline bypasses that wiring)', async () => {
+    fakeRedisClient = makeFakeRedis(() => new Promise(() => {}));
+    const limiter = new RedisRateLimiter({ name: 'Test', maxRequests: 60, windowMs: 60_000 });
+
+    vi.useFakeTimers();
+    const acquirePromise = limiter.acquire();
+    await vi.advanceTimersByTimeAsync(5_000);
+
+    await expect(acquirePromise).resolves.toBeUndefined();
+  });
+
+  it('waits out the full remaining window when the limit is exceeded, instead of being cut short by the Redis-hang timeout (real incident, 2026-10-19: this let FMHE_PDF.pdf\'s 11991-issue AI analysis pass blow past the configured 60/min Gemini limit by nearly 2x, since every caller past the limit used to "time out" after 5s and proceed anyway)', async () => {
+    fakeRedisClient = makeFakeRedis(async () => [[null, 61]]); // 1 over the limit of 60
+    const limiter = new RedisRateLimiter({ name: 'Test', maxRequests: 60, windowMs: 60_000 });
+
+    vi.useFakeTimers();
+    // Pin to an exact minute boundary so waitTime (windowMs - now % windowMs)
+    // is deterministically the full 60s, not whatever now % windowMs happens
+    // to be at the real moment this test runs.
+    vi.setSystemTime(new Date('2026-01-01T00:00:00.000Z'));
+    let resolved = false;
+    limiter.acquire().then(() => { resolved = true; });
+
+    // Past the old 5s external-timeout bug's cutoff, but short of the real
+    // window wait -- the bug would have already resolved this by now.
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(resolved).toBe(false);
+
+    // Let the rest of the (up to windowMs) wait elapse for real.
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(resolved).toBe(true);
+  });
+
+  it('fails open when Redis returns an error synchronously (not just on a hang)', async () => {
+    fakeRedisClient = makeFakeRedis(() => Promise.reject(new Error('ECONNREFUSED')));
+    const limiter = new RedisRateLimiter({ name: 'Test', maxRequests: 60, windowMs: 60_000 });
+
+    await expect(limiter.acquire()).resolves.toBeUndefined();
   });
 });
