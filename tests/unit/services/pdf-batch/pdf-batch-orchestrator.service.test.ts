@@ -300,6 +300,36 @@ describe('PdfBatchOrchestratorService.processItem', () => {
     });
   });
 
+  it('strips NUL bytes from the audit report before persisting job.output (real incident, 2026-10-19: FMHE_PDF.pdf)', async () => {
+    // pdfjs emits U+0000 for an unmapped glyph on STEM/CID-font PDFs (this
+    // exact document had 2560 of 3457 fonts missing /ToUnicode) -- a raw NUL
+    // byte anywhere in an issue's message/context string aborts the WHOLE
+    // Postgres write with "unsupported Unicode escape sequence... \u0000
+    // cannot be converted to text" (error 22P05), failing the item even
+    // though the audit itself succeeded. The single-file worker's equivalent
+    // write already guards against this (queueService.updateJobStatus); this
+    // orchestrator calls prisma.job.update directly and never got the same
+    // protection until now.
+    mockRunAuditFromBuffer.mockResolvedValue({
+      score: 61,
+      issues: [{ id: 'i1', message: 'Font glyph decoded as \u0000 (unmapped)' }],
+      metadata: { pageCount: 2040 },
+    });
+
+    await pdfBatchOrchestratorService.processItem('batch-1', 'item-1');
+
+    expect(mockJobUpdate).toHaveBeenCalledWith({
+      where: { id: 'job-1' },
+      data: expect.objectContaining({
+        output: expect.objectContaining({
+          auditReport: expect.objectContaining({
+            issues: [{ id: 'i1', message: 'Font glyph decoded as  (unmapped)' }],
+          }),
+        }),
+      }),
+    });
+  });
+
   it('marks the item SKIPPED without running anything if the batch is already cancelled', async () => {
     mockPdfBatchFindUnique.mockResolvedValue({ ...batch, status: 'CANCELLED' });
 
