@@ -331,9 +331,21 @@ module "ecs_worker" {
   # for the OOM incident this responds to) -- production hasn't run real
   # batch traffic yet, but there's no reason to deploy it under the exact
   # configuration that just OOM-killed staging twice.
-  cpu            = 4096
-  memory         = 16384
-  desired_count  = 1
+  cpu    = 4096
+  memory = 16384
+  # Raised from 1 on 2026-10-19 to match staging's own scale-out, for the
+  # same reasoning as the cpu/memory bump's own comment above: the
+  # concurrency budget (PdfConcurrencyBudget, see pdf-batch.config.ts) is
+  # scoped per-TENANT, not per-container, so a single worker task was a hard
+  # ceiling on how many different tenants' batches could ever process truly
+  # concurrently, regardless of how much budget any one tenant had free.
+  # Deliberately NOT paired with a defaultBudgetUnits increase -- that would
+  # let two "large" (weight = defaultBudgetUnits, by design) items land on
+  # the SAME single container simultaneously, reintroducing the exact OOM
+  # this file's own memory bump was a response to. This only adds a second
+  # container for BullMQ to distribute work across; one tenant's own large
+  # items still serialize against each other exactly as before.
+  desired_count  = 2
   s3_bucket_name = module.storage.bucket_name
   command        = local.app_command
   # Deliberately NOT including staging's YOLO_SERVICE_URL/YOLO_WARM_*_HOUR_IST
