@@ -383,6 +383,51 @@ describe('PdfBatchOrchestratorService.processItem', () => {
     });
   });
 
+  it('still releases the lease if flipping the item/job to AUDITING/PROCESSING fails right after acquiring it (CodeRabbit finding, PR #701)', async () => {
+    mockPdfBatchItemUpdate.mockImplementation((args: { data?: { status?: string } }) => {
+      if (args.data?.status === 'AUDITING') return Promise.reject(new Error('transient DB error'));
+      return Promise.resolve(draftItem);
+    });
+
+    await pdfBatchOrchestratorService.processItem('batch-1', 'item-1');
+
+    // The lease WAS acquired (waitForLease resolved) before this failure --
+    // without moving the AUDITING/PROCESSING flips inside the try whose
+    // finally releases it, this would leak forever.
+    expect(mockReleaseLease).toHaveBeenCalledWith('lease-1');
+    expect(mockPdfBatchItemUpdate).toHaveBeenCalledWith({
+      where: { id: 'item-1' },
+      data: expect.objectContaining({ status: 'FAILED', error: 'transient DB error' }),
+    });
+  });
+
+  it('finalizes the orphaned job directly via its own job.id when linking it to the item fails (CodeRabbit finding, PR #701)', async () => {
+    // The very first pdfBatchItem.update call is the QUEUED_FOR_BUDGET link
+    // write (auditJobId: job.id) -- fail only that one.
+    let linkAttempted = false;
+    mockPdfBatchItemUpdate.mockImplementation((args: { data?: { status?: string } }) => {
+      if (args.data?.status === 'QUEUED_FOR_BUDGET' && !linkAttempted) {
+        linkAttempted = true;
+        return Promise.reject(new Error('connection pool exhausted'));
+      }
+      return Promise.resolve(draftItem);
+    });
+
+    await pdfBatchOrchestratorService.processItem('batch-1', 'item-1');
+
+    // Never reached the lease wait at all -- the link failure throws first.
+    expect(mockWaitForLease).not.toHaveBeenCalled();
+    // finalizeDanglingQueuedJob (processItem's catch block) can't find this
+    // job via the item -- the link write that would have set auditJobId is
+    // exactly what failed. The inline fallback inside runAuditPhase itself
+    // (using the locally-known job.id, not an item lookup) is what actually
+    // finalizes it here.
+    expect(mockJobUpdateMany).toHaveBeenCalledWith({
+      where: { id: 'job-1', status: 'QUEUED' },
+      data: expect.objectContaining({ status: 'FAILED', error: 'connection pool exhausted' }),
+    });
+  });
+
   it('marks the item FAILED when the audit itself throws, after releasing the held lease', async () => {
     mockRunAuditFromBuffer.mockRejectedValue(new Error('pdf-lib: invalid PDF structure'));
 
