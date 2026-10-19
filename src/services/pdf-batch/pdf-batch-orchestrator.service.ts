@@ -123,6 +123,7 @@ class PdfBatchOrchestratorService {
         }).catch((updateErr) => {
           logger.error(`[PdfBatchOrchestrator] Failed to mark item ${itemId} FAILED: ${updateErr instanceof Error ? updateErr.message : String(updateErr)}`);
         });
+        await this.finalizeDanglingQueuedJob(itemId, 'FAILED', message);
       }
     } finally {
       await this.finalizeBatchIfComplete(batchId).catch((err) => {
@@ -142,6 +143,28 @@ class PdfBatchOrchestratorService {
       data: { status: 'SKIPPED', activeLeaseId: null },
     }).catch((err) => {
       logger.error(`[PdfBatchOrchestrator] Failed to mark item ${itemId} SKIPPED: ${err instanceof Error ? err.message : String(err)}`);
+    });
+    await this.finalizeDanglingQueuedJob(itemId, 'CANCELLED');
+  }
+
+  /** runAuditPhase now creates the item's Job row as 'QUEUED' (invisible to
+   *  cleanupStalePdfJobs's watchdog, see that method's own doc comment) until
+   *  its concurrency-budget lease actually comes through. If the item is
+   *  cancelled or fails WHILE still queued -- before the lease is granted and
+   *  the job ever flips to 'PROCESSING' -- nothing else in the codebase would
+   *  otherwise ever resolve that Job row: the watchdog's query only matches
+   *  'PROCESSING', so a 'QUEUED' job would sit there forever once its owning
+   *  batch item has already reached a terminal status. Only touches a job
+   *  still genuinely QUEUED -- one that already reached PROCESSING/COMPLETED
+   *  has its own real outcome this must never overwrite. */
+  private async finalizeDanglingQueuedJob(itemId: string, status: 'CANCELLED' | 'FAILED', error?: string): Promise<void> {
+    const item = await prisma.pdfBatchItem.findUnique({ where: { id: itemId }, select: { auditJobId: true } }).catch(() => null);
+    if (!item?.auditJobId) return;
+    await prisma.job.updateMany({
+      where: { id: item.auditJobId, status: 'QUEUED' },
+      data: { status, completedAt: new Date(), ...(error ? { error } : {}) },
+    }).catch((err) => {
+      logger.error(`[PdfBatchOrchestrator] Failed to finalize dangling queued job for item ${itemId}: ${err instanceof Error ? err.message : String(err)}`);
     });
   }
 
@@ -178,20 +201,33 @@ class PdfBatchOrchestratorService {
   /** Creates the item's Job row, runs the audit, and persists audit results
    *  + the page-based effective weight onto the item. Returns the Job id. */
   private async runAuditPhase(batch: PdfBatch, item: PdfBatchItem): Promise<string> {
+    // Real incident (2026-10-19): this used to create the job already
+    // status: 'PROCESSING' with a real startedAt, BEFORE the lease wait
+    // below -- which can legitimately run 30-90+ minutes when a large item
+    // is monopolizing the tenant's whole concurrency budget (by design, see
+    // pdf-batch.config.ts). cleanupStalePdfJobs (src/workers/index.ts) kills
+    // any 'PROCESSING' job whose updatedAt goes stale for 20+ minutes, with
+    // no awareness that a batch item can legitimately sit queued that long
+    // before real work even starts -- so FMHE_PDF.pdf's audit was killed as
+    // "orphaned" after 20 minutes of pure queueing, never having done a
+    // single second of real work. JobStatus.QUEUED (the schema's own
+    // default, startedAt left null) is invisible to that watchdog's query
+    // (status: 'PROCESSING' only) -- the same distinction the batch item's
+    // own QUEUED_FOR_BUDGET vs AUDITING status already makes below, just not
+    // mirrored onto the Job row until now.
     const job = await prisma.job.create({
       data: {
         id: nanoid(),
         tenantId: batch.tenantId,
         userId: batch.userId,
         type: 'PDF_ACCESSIBILITY',
-        status: 'PROCESSING',
+        status: 'QUEUED',
         input: {
           fileName: item.originalName,
           batchId: batch.id,
           batchItemId: item.id,
           size: Number(item.fileSize),
         } as unknown as Prisma.InputJsonObject,
-        startedAt: new Date(),
       },
     });
 
@@ -199,16 +235,47 @@ class PdfBatchOrchestratorService {
     // on a full tenant budget can take a while, and showing AUDITING before
     // any real work has started would misrepresent what's actually
     // happening (both to a UI poller and to anyone reading the row directly).
-    await prisma.pdfBatchItem.update({
-      where: { id: item.id },
-      data: { status: 'QUEUED_FOR_BUDGET', auditJobId: job.id, auditStartedAt: new Date() },
-    });
+    try {
+      await prisma.pdfBatchItem.update({
+        where: { id: item.id },
+        data: { status: 'QUEUED_FOR_BUDGET', auditJobId: job.id, auditStartedAt: new Date() },
+      });
+    } catch (linkErr) {
+      // CodeRabbit finding on this PR, confirmed real: if this specific write
+      // fails, the item's auditJobId link never lands, so finalizeDanglingQueuedJob
+      // (processItem's catch block, below) has no way to find this job by
+      // looking at the item -- it would stay QUEUED forever otherwise. job.id
+      // is still known locally here, so finalize it directly instead of
+      // relying on that downstream lookup succeeding.
+      await prisma.job.updateMany({
+        where: { id: job.id, status: 'QUEUED' },
+        data: {
+          status: 'FAILED',
+          completedAt: new Date(),
+          error: linkErr instanceof Error ? linkErr.message : String(linkErr),
+        },
+      }).catch((err) => {
+        logger.error(`[PdfBatchOrchestrator] Failed to finalize orphaned job ${job.id} after link failure: ${err instanceof Error ? err.message : String(err)}`);
+      });
+      throw linkErr;
+    }
 
     const leaseId = await this.waitForLeaseCancellable(batch.id, batch.tenantId, item.id, 'audit', item.sizeWeightUnits);
-    await prisma.pdfBatchItem.update({ where: { id: item.id }, data: { status: 'AUDITING', activeLeaseId: leaseId } });
     const heartbeat = this.startHeartbeat(leaseId);
 
     try {
+      // CodeRabbit finding on this PR, confirmed real: both of these used to
+      // run BEFORE this try (whose finally releases the lease acquired just
+      // above) -- a failure in either would leak the lease forever, since
+      // nothing downstream of runAuditPhase ever releases a lease it never
+      // acquired a reference to.
+      await prisma.pdfBatchItem.update({ where: { id: item.id }, data: { status: 'AUDITING', activeLeaseId: leaseId } });
+      // Only now does real work start -- flip the Job row to 'PROCESSING'
+      // with its real startedAt, so the stale-job watchdog's 20-minute clock
+      // starts from here, not from whenever this item was first admitted to
+      // the batch queue.
+      await prisma.job.update({ where: { id: job.id }, data: { status: 'PROCESSING', startedAt: new Date() } });
+
       const buffer = await fileStorageService.downloadFile(item.storagePath);
 
       // Real incident (2026-10-18): every single batch item's remediation

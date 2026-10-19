@@ -17,6 +17,7 @@ const mockPdfBatchItemCount = vi.fn();
 const mockPdfConcurrencyLeaseFindUnique = vi.fn();
 const mockJobCreate = vi.fn();
 const mockJobUpdate = vi.fn();
+const mockJobUpdateMany = vi.fn();
 const mockJobFindUnique = vi.fn();
 const mockAutoRemediationRunUpsert = vi.fn();
 const mockAutoRemediationRunFindUnique = vi.fn();
@@ -41,6 +42,7 @@ vi.mock('../../../../src/lib/prisma', () => ({
     job: {
       create: (...args: unknown[]) => mockJobCreate(...args),
       update: (...args: unknown[]) => mockJobUpdate(...args),
+      updateMany: (...args: unknown[]) => mockJobUpdateMany(...args),
       findUnique: (...args: unknown[]) => mockJobFindUnique(...args),
     },
     pdfAutoRemediationRun: {
@@ -116,11 +118,15 @@ describe('PdfBatchOrchestratorService.processItem', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockPdfBatchFindUnique.mockResolvedValue(batch);
-    mockPdfBatchItemFindUnique.mockResolvedValue(draftItem);
+    // auditJobId: 'job-1' matches what mockJobCreate resolves below -- a
+    // later findUnique (e.g. finalizeDanglingQueuedJob's own lookup) sees
+    // the same id runAuditPhase's QUEUED_FOR_BUDGET update actually persisted.
+    mockPdfBatchItemFindUnique.mockResolvedValue({ ...draftItem, auditJobId: 'job-1' });
     mockPdfBatchItemFindUniqueOrThrow.mockResolvedValue({ ...draftItem, effectiveWeightUnits: 2 });
     mockPdfBatchItemUpdate.mockResolvedValue(draftItem);
     mockPdfBatchUpdateMany.mockResolvedValue({ count: 1 });
     mockJobCreate.mockResolvedValue({ id: 'job-1' });
+    mockJobUpdateMany.mockResolvedValue({ count: 1 });
     mockWaitForLease.mockResolvedValue('lease-1');
     mockReleaseLease.mockResolvedValue(true);
     mockHeartbeatLease.mockResolvedValue(undefined);
@@ -153,6 +159,22 @@ describe('PdfBatchOrchestratorService.processItem', () => {
     expect(mockJobCreate).toHaveBeenCalledWith(expect.objectContaining({
       data: expect.objectContaining({ type: 'PDF_ACCESSIBILITY', tenantId: 'tenant-1', userId: 'user-1' }),
     }));
+    // Real incident (2026-10-19): this used to create the job already
+    // 'PROCESSING' with a real startedAt, so cleanupStalePdfJobs's 20-minute
+    // staleness watchdog killed FMHE_PDF.pdf's audit job as "orphaned" after
+    // 20 minutes of pure QUEUED_FOR_BUDGET waiting (large items legitimately
+    // monopolize the whole tenant budget for 30-90+ minutes, by design) --
+    // it never did a single second of real work. 'QUEUED' (the schema's own
+    // default) is invisible to that watchdog's query (status: 'PROCESSING'
+    // only); only once the lease is actually granted does the job flip to
+    // 'PROCESSING' with its real startedAt.
+    expect(mockJobCreate).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({ status: 'QUEUED' }),
+    }));
+    expect(mockJobUpdate).toHaveBeenCalledWith({
+      where: { id: 'job-1' },
+      data: { status: 'PROCESSING', startedAt: expect.any(Date) },
+    });
     // QUEUED_FOR_BUDGET / HELD_FOR_BUDGET while waiting on a lease, not
     // AUDITING/REMEDIATING -- a long budget wait shouldn't misrepresent
     // itself as work already in progress.
@@ -326,6 +348,84 @@ describe('PdfBatchOrchestratorService.processItem', () => {
     });
     // No lease was ever acquired -- nothing to release.
     expect(mockReleaseLease).not.toHaveBeenCalled();
+    // The Job row was created 'QUEUED' and never reached 'PROCESSING' (the
+    // lease wait failed first) -- without finalizeDanglingQueuedJob, it
+    // would sit QUEUED forever, invisible to cleanupStalePdfJobs's watchdog.
+    expect(mockJobUpdateMany).toHaveBeenCalledWith({
+      where: { id: 'job-1', status: 'QUEUED' },
+      data: expect.objectContaining({ status: 'FAILED', error: expect.stringContaining('exceeds the tenant') }),
+    });
+  });
+
+  it('cancels (not fails) the dangling QUEUED job when the batch is cancelled while still waiting for the concurrency lease', async () => {
+    // Calls to pdfBatch.findUnique: (1) processItem's initial batch fetch,
+    // (2) isCancelled before runAuditPhase -- both still PROCESSING, so the
+    // audit phase proceeds and the job is created; (3) isCancelled inside
+    // processItem's catch block, after the lease wait itself aborts --
+    // CANCELLED, same call-counting technique as the "cancelled between
+    // phases" test above.
+    let call = 0;
+    mockPdfBatchFindUnique.mockImplementation(() => {
+      call += 1;
+      return Promise.resolve(call >= 3 ? { ...batch, status: 'CANCELLED' } : batch);
+    });
+    mockWaitForLease.mockRejectedValue(new Error('aborted'));
+
+    await pdfBatchOrchestratorService.processItem('batch-1', 'item-1');
+
+    expect(mockPdfBatchItemUpdate).toHaveBeenCalledWith({
+      where: { id: 'item-1' },
+      data: { status: 'SKIPPED', activeLeaseId: null },
+    });
+    expect(mockJobUpdateMany).toHaveBeenCalledWith({
+      where: { id: 'job-1', status: 'QUEUED' },
+      data: expect.objectContaining({ status: 'CANCELLED' }),
+    });
+  });
+
+  it('still releases the lease if flipping the item/job to AUDITING/PROCESSING fails right after acquiring it (CodeRabbit finding, PR #701)', async () => {
+    mockPdfBatchItemUpdate.mockImplementation((args: { data?: { status?: string } }) => {
+      if (args.data?.status === 'AUDITING') return Promise.reject(new Error('transient DB error'));
+      return Promise.resolve(draftItem);
+    });
+
+    await pdfBatchOrchestratorService.processItem('batch-1', 'item-1');
+
+    // The lease WAS acquired (waitForLease resolved) before this failure --
+    // without moving the AUDITING/PROCESSING flips inside the try whose
+    // finally releases it, this would leak forever.
+    expect(mockReleaseLease).toHaveBeenCalledWith('lease-1');
+    expect(mockPdfBatchItemUpdate).toHaveBeenCalledWith({
+      where: { id: 'item-1' },
+      data: expect.objectContaining({ status: 'FAILED', error: 'transient DB error' }),
+    });
+  });
+
+  it('finalizes the orphaned job directly via its own job.id when linking it to the item fails (CodeRabbit finding, PR #701)', async () => {
+    // The very first pdfBatchItem.update call is the QUEUED_FOR_BUDGET link
+    // write (auditJobId: job.id) -- fail only that one.
+    let linkAttempted = false;
+    mockPdfBatchItemUpdate.mockImplementation((args: { data?: { status?: string } }) => {
+      if (args.data?.status === 'QUEUED_FOR_BUDGET' && !linkAttempted) {
+        linkAttempted = true;
+        return Promise.reject(new Error('connection pool exhausted'));
+      }
+      return Promise.resolve(draftItem);
+    });
+
+    await pdfBatchOrchestratorService.processItem('batch-1', 'item-1');
+
+    // Never reached the lease wait at all -- the link failure throws first.
+    expect(mockWaitForLease).not.toHaveBeenCalled();
+    // finalizeDanglingQueuedJob (processItem's catch block) can't find this
+    // job via the item -- the link write that would have set auditJobId is
+    // exactly what failed. The inline fallback inside runAuditPhase itself
+    // (using the locally-known job.id, not an item lookup) is what actually
+    // finalizes it here.
+    expect(mockJobUpdateMany).toHaveBeenCalledWith({
+      where: { id: 'job-1', status: 'QUEUED' },
+      data: expect.objectContaining({ status: 'FAILED', error: 'connection pool exhausted' }),
+    });
   });
 
   it('marks the item FAILED when the audit itself throws, after releasing the held lease', async () => {
