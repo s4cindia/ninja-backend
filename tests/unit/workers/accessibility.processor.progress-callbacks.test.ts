@@ -97,6 +97,7 @@ async function captureCallbacks() {
     onProgress: call[5] as (currentPage: number, totalPages: number) => Promise<void>,
     onValidatorComplete: call[6] as (label: string, issuesFound: number, completed: number, total: number, startedAt: Date) => Promise<void>,
     onAltTextImageProgress: call[7] as (completed: number, total: number) => Promise<void>,
+    onContrastPageProgress: call[8] as (completed: number, total: number) => Promise<void>,
   };
 }
 
@@ -228,6 +229,45 @@ describe('accessibility.processor progress callbacks — crash-safety', () => {
     const { onAltTextImageProgress } = await captureCallbacks();
 
     await onAltTextImageProgress(1200, 3843);
+
+    expect(logger.warn).not.toHaveBeenCalledWith(expect.stringContaining('callback failed'));
+    expect(queueService.updateJobProgress).toHaveBeenCalledWith('job-1', expect.any(Number));
+  });
+
+  // Real incident (2026-10-19): PdfContrastValidator's internal per-page
+  // render+sample loop (2040 pages on FMHE_PDF.pdf) reported zero progress
+  // to the caller for 17+ minutes -- only onValidatorComplete above fires,
+  // and only once, after every page is done. pdf-audit.service.ts's own
+  // audit-wide staleness timeout then killed the still-working job as a
+  // suspected hang. onContrastPageProgress exists to reset that timeout
+  // periodically during the loop, and needs the same crash-safety guarantee
+  // as onAltTextImageProgress above.
+  it('onContrastPageProgress resolves (never rejects) when queueService.updateJobProgress fails', async () => {
+    const { onContrastPageProgress } = await captureCallbacks();
+
+    vi.mocked(queueService.updateJobProgress).mockRejectedValueOnce(new Error('redis connection reset'));
+
+    await expect(onContrastPageProgress(600, 2040)).resolves.toBeUndefined();
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.stringContaining('onContrastPageProgress callback failed for job job-1')
+    );
+  });
+
+  it('onContrastPageProgress resolves (never rejects) when prisma.job.update fails', async () => {
+    const { onContrastPageProgress } = await captureCallbacks();
+
+    vi.mocked(prisma.job.update).mockRejectedValueOnce(new Error('connection pool exhausted'));
+
+    await expect(onContrastPageProgress(600, 2040)).resolves.toBeUndefined();
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.stringContaining('onContrastPageProgress callback failed for job job-1')
+    );
+  });
+
+  it('onContrastPageProgress records progress normally when nothing fails', async () => {
+    const { onContrastPageProgress } = await captureCallbacks();
+
+    await onContrastPageProgress(600, 2040);
 
     expect(logger.warn).not.toHaveBeenCalledWith(expect.stringContaining('callback failed'));
     expect(queueService.updateJobProgress).toHaveBeenCalledWith('job-1', expect.any(Number));

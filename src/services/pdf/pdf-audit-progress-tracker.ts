@@ -1,10 +1,11 @@
 /**
  * PDF Audit Progress Tracker
  *
- * Builds the onProgress/onValidatorComplete/onAltTextImageProgress callbacks
- * pdfAuditService.runAuditFromBuffer accepts, persisting page/validator
- * progress into Job.input and Job.progress so GET /jobs/:id (and the
- * PdfJobProgressPanel UI that polls it) can show live step-by-step progress.
+ * Builds the onProgress/onValidatorComplete/onAltTextImageProgress/
+ * onContrastPageProgress callbacks pdfAuditService.runAuditFromBuffer
+ * accepts, persisting page/validator progress into Job.input and
+ * Job.progress so GET /jobs/:id (and the PdfJobProgressPanel UI that polls
+ * it) can show live step-by-step progress.
  *
  * Extracted from accessibility.processor.ts (2026-10-18) so
  * pdf-batch-orchestrator.service.ts can share the exact same, already
@@ -38,6 +39,7 @@ export interface AuditProgressCallbacks {
   onProgress: (currentPage: number, totalPages: number) => Promise<void>;
   onValidatorComplete: (label: string, issuesFound: number, completed: number, total: number, startedAt: Date) => Promise<void>;
   onAltTextImageProgress: (completed: number, total: number) => Promise<void>;
+  onContrastPageProgress: (completed: number, total: number) => Promise<void>;
   /** The most recent percentage this tracker computed -- for a caller that
    *  needs to re-report it independently (e.g. a stale-job heartbeat
    *  re-writing Job.updatedAt during a long validator phase with no new
@@ -162,5 +164,33 @@ export function createAuditProgressCallbacks(options: AuditProgressTrackerOption
     }
   };
 
-  return { onProgress, onValidatorComplete, onAltTextImageProgress, getLastKnownPercent: () => lastKnownPct };
+  // Contrast sub-progress: touches Job.updatedAt every ~30s while
+  // PdfContrastValidator renders+samples a large page set, independent of
+  // onValidatorComplete above (which only fires once, after ALL pages are
+  // done). Real incident (2026-10-19): FMHE_PDF.pdf's 2040-page Color
+  // Contrast pass ran for 17+ minutes with no intervening update, which the
+  // audit-wide staleness timeout (pdf-audit.service.ts's withAuditTimeout)
+  // then correctly-but-unhelpfully killed as a suspected hang -- it was
+  // still genuinely working, just not reporting in (same class of problem
+  // onAltTextImageProgress above was built to fix for Alt Text). Mirrors
+  // that callback's own reasoning exactly, including re-writing
+  // lastKnownPct rather than computing a new value.
+  const onContrastPageProgress = async (completed: number, total: number) => {
+    try {
+      logger.info(`[AuditProgressTracker] Contrast progress for job ${jobId}: ${completed}/${total} pages`);
+      await onPercent?.(lastKnownPct);
+      await queueService.updateJobProgress(jobId, lastKnownPct);
+      const ej = await prisma.job.findUnique({ where: { id: jobId }, select: { input: true } });
+      const ei = ej?.input && typeof ej.input === 'object' && !Array.isArray(ej.input)
+        ? ej.input as Record<string, unknown> : {};
+      await prisma.job.update({
+        where: { id: jobId },
+        data: { input: { ...ei, contrastPageProgress: { completed, total } } as Prisma.InputJsonObject },
+      });
+    } catch (err) {
+      logger.warn(`[AuditProgressTracker] onContrastPageProgress callback failed for job ${jobId} (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
+    }
+  };
+
+  return { onProgress, onValidatorComplete, onAltTextImageProgress, onContrastPageProgress, getLastKnownPercent: () => lastKnownPct };
 }

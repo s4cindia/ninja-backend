@@ -279,7 +279,10 @@ export class PdfContrastValidator {
   // validatePageContrast, after that page's items are fully processed.
   private backgroundSignatureCounts = new Map<string, number>();
 
-  async validate(parsed: PdfParseResult): Promise<AuditIssue[]> {
+  async validate(
+    parsed: PdfParseResult,
+    onProgress?: (completed: number, total: number) => void | Promise<void>
+  ): Promise<AuditIssue[]> {
     if (!parsed.parsedPdf) {
       logger.info('[PdfContrastValidator] No parsedPdf — skipping contrast check');
       return [];
@@ -297,8 +300,40 @@ export class PdfContrastValidator {
       logger.warn(`[PdfContrastValidator] MAX_CONTRAST_PAGES=${cap} — checking first ${cap} of ${parsed.pages.length} pages`);
     }
 
+    // Real incident (2026-10-19): this loop used to report progress nowhere
+    // at all -- on a 2040-page document (FMHE_PDF.pdf) it legitimately took
+    // 17+ minutes (page rendering + pixel sampling per page), which looked
+    // identical to a hang to pdf-audit.service.ts's own audit-wide staleness
+    // timeout (the same class of problem PdfAltTextValidator's own 2026-10-17
+    // fix addressed for image-heavy documents -- see that validator's own
+    // header comment). Time-based throttle, same reasoning as Alt Text's:
+    // per-page latency varies with page complexity, so a fixed page-count
+    // throttle could still leave a multi-minute silent gap.
+    const PROGRESS_THROTTLE_MS = 30_000;
+    let lastProgressAt = Date.now();
+    let completed = 0;
+    const total = pages.length;
+    const maybeReportProgress = async (): Promise<void> => {
+      if (!onProgress) return;
+      const isLast = completed === total;
+      if (isLast || Date.now() - lastProgressAt >= PROGRESS_THROTTLE_MS) {
+        lastProgressAt = Date.now();
+        await onProgress(completed, total);
+      }
+    };
+
     for (const page of pages) {
-      if (page.content.length === 0) continue;
+      if (page.content.length === 0) {
+        // CodeRabbit finding on this PR, confirmed real: without this call,
+        // a document whose pages are ALL empty-content would never call
+        // onProgress at all -- not even the guaranteed final call -- since
+        // this branch used to skip straight past maybeReportProgress(),
+        // reintroducing the exact hang-detection false positive this fix
+        // exists to close.
+        completed++;
+        await maybeReportProgress();
+        continue;
+      }
       try {
         const pageIssues = await this.validatePageContrast(parsed.parsedPdf.pdfjsDoc, page);
         issues.push(...pageIssues);
@@ -307,6 +342,9 @@ export class PdfContrastValidator {
           `[PdfContrastValidator] Page ${page.pageNumber} failed (non-fatal): ` +
           (err instanceof Error ? err.message : String(err))
         );
+      } finally {
+        completed++;
+        await maybeReportProgress();
       }
     }
 

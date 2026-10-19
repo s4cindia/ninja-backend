@@ -196,7 +196,7 @@ describe('PdfBatchOrchestratorService.processItem', () => {
     // downloaded buffer.
     expect(mockRunAuditFromBuffer).toHaveBeenCalledWith(
       Buffer.from('pdf-bytes'), 'job-1', 'book.pdf', 'comprehensive',
-      undefined, expect.any(Function), expect.any(Function), expect.any(Function)
+      undefined, expect.any(Function), expect.any(Function), expect.any(Function), expect.any(Function)
     );
 
     // AUDITED update carries the real audit results through.
@@ -268,7 +268,7 @@ describe('PdfBatchOrchestratorService.processItem', () => {
 
     expect(mockRunAuditFromBuffer).toHaveBeenCalledWith(
       taggedBuffer, 'job-1', 'book.pdf', 'comprehensive',
-      undefined, expect.any(Function), expect.any(Function), expect.any(Function)
+      undefined, expect.any(Function), expect.any(Function), expect.any(Function), expect.any(Function)
     );
     expect(mockJobUpdate).toHaveBeenCalledWith({
       where: { id: 'job-1' },

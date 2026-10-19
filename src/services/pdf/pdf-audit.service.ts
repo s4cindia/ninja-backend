@@ -290,7 +290,8 @@ class PdfAuditService extends BaseAuditService<PdfParseResult, PdfValidationResu
     scanLevel: ScanLevel = 'comprehensive',
     customValidators?: ValidatorType[],
     onValidatorComplete?: (label: string, issuesFound: number, completed: number, total: number, startedAt: Date) => void,
-    onAltTextImageProgress?: (completed: number, total: number) => void
+    onAltTextImageProgress?: (completed: number, total: number) => void,
+    onContrastPageProgress?: (completed: number, total: number) => void
   ): Promise<PdfValidationResult> {
     logger.info(`[PdfAudit] Running validators...`);
 
@@ -482,7 +483,7 @@ class PdfAuditService extends BaseAuditService<PdfParseResult, PdfValidationResu
         try {
           logger.info(`[PdfAudit] Running PdfContrastValidator...`);
           const contrastValidator = new PdfContrastValidator();
-          const contrastIssues = await contrastValidator.validate(parsed);
+          const contrastIssues = await contrastValidator.validate(parsed, onContrastPageProgress);
           const reconciledContrastIssues = this.reconcileContrastFalsePositives(
             contrastIssues,
             parsed.parsedPdf?.pdfLibDoc
@@ -1357,7 +1358,8 @@ class PdfAuditService extends BaseAuditService<PdfParseResult, PdfValidationResu
     customValidators?: ValidatorType[],
     onProgress?: (currentPage: number, totalPages: number) => void,
     onValidatorComplete?: (label: string, issuesFound: number, completed: number, total: number, startedAt: Date) => void,
-    onAltTextImageProgress?: (completed: number, total: number) => void
+    onAltTextImageProgress?: (completed: number, total: number) => void,
+    onContrastPageProgress?: (completed: number, total: number) => void
   ): Promise<AuditReport> {
     let parsed: PdfParseResult | null = null;
     let externalValidatorTempDir: string | null = null;
@@ -1393,6 +1395,9 @@ class PdfAuditService extends BaseAuditService<PdfParseResult, PdfValidationResu
         const wrappedOnAltTextImageProgress = onAltTextImageProgress
           ? (completed: number, total: number) => { resetTimeout(); return onAltTextImageProgress(completed, total); }
           : undefined;
+        const wrappedOnContrastPageProgress = onContrastPageProgress
+          ? (completed: number, total: number) => { resetTimeout(); return onContrastPageProgress(completed, total); }
+          : undefined;
 
         // Parse the buffer
         logger.info(`[PdfAudit] Parsing buffer...`);
@@ -1412,7 +1417,7 @@ class PdfAuditService extends BaseAuditService<PdfParseResult, PdfValidationResu
 
         // Validate
         logger.info(`[PdfAudit] Validating with ${scanLevel} scan level...`);
-        const validation = await this.validate(parseResult, scanLevel, customValidators, wrappedOnValidatorComplete, wrappedOnAltTextImageProgress);
+        const validation = await this.validate(parseResult, scanLevel, customValidators, wrappedOnValidatorComplete, wrappedOnAltTextImageProgress, wrappedOnContrastPageProgress);
         logger.info(`[PdfAudit] Validation complete`);
 
         // Generate report
