@@ -22,6 +22,7 @@ import { nanoid } from 'nanoid';
 import { Prisma, PdfBatch, PdfBatchItem } from '@prisma/client';
 import prisma from '../../lib/prisma';
 import { logger } from '../../lib/logger';
+import { stripPgUnsafeChars, stripPgUnsafeCharsDeep } from '../../utils/pg-text';
 import { fileStorageService } from '../storage/file-storage.service';
 import { pdfAuditService } from '../pdf/pdf-audit.service';
 import { autoTagIfNeeded } from '../pdf/pdf-auto-tag-orchestrator.service';
@@ -110,7 +111,11 @@ class PdfBatchOrchestratorService {
       if (await this.isCancelled(batchId).catch(() => false)) {
         await this.markSkipped(itemId);
       } else {
-        const message = err instanceof Error ? err.message : String(err);
+        // Same NUL-byte risk as runAuditPhase's output write (see that call
+        // site's own comment) -- an error thrown mid-audit can echo raw
+        // extracted PDF text in its own message (e.g. a validator's own
+        // "Text: ..." context), which would otherwise abort this write too.
+        const message = stripPgUnsafeChars(err instanceof Error ? err.message : String(err)) ?? 'Unknown error';
         logger.error(`[PdfBatchOrchestrator] Item ${itemId} failed: ${message}`);
         await prisma.pdfBatchItem.update({
           where: { id: itemId },
@@ -252,7 +257,7 @@ class PdfBatchOrchestratorService {
         data: {
           status: 'FAILED',
           completedAt: new Date(),
-          error: linkErr instanceof Error ? linkErr.message : String(linkErr),
+          error: stripPgUnsafeChars(linkErr instanceof Error ? linkErr.message : String(linkErr)) ?? 'Unknown error',
         },
       }).catch((err) => {
         logger.error(`[PdfBatchOrchestrator] Failed to finalize orphaned job ${job.id} after link failure: ${err instanceof Error ? err.message : String(err)}`);
@@ -328,19 +333,31 @@ class PdfBatchOrchestratorService {
         onContrastPageProgress
       );
 
+      // Real incident (2026-10-19): FMHE_PDF.pdf's audit report embedded a
+      // raw NUL byte (pdfjs emits U+0000 for an unmapped glyph, common on
+      // STEM/CID-font PDFs -- this exact document had 2560 of 3457 fonts
+      // missing /ToUnicode) somewhere inside report.issues' message/context
+      // strings, aborting this entire write with Postgres error 22P05
+      // ("unsupported Unicode escape sequence... \u0000 cannot be converted
+      // to text") and failing the whole item. The single-file worker's
+      // equivalent write (queueService.updateJobStatus, used via
+      // base.worker.ts) already guards against this -- this orchestrator
+      // calls prisma.job.update directly instead, so it never got the same
+      // protection. See utils/pg-text.ts's own doc comment for the full
+      // story.
       await prisma.job.update({
         where: { id: job.id },
         data: {
           status: 'COMPLETED',
           completedAt: new Date(),
-          output: {
+          output: stripPgUnsafeCharsDeep({
             fileName: item.originalName,
             auditReport: report as unknown as Record<string, unknown>,
             scanLevel: 'comprehensive',
             type: 'PDF_ACCESSIBILITY',
             dbJobId: job.id,
             ...autoTagMeta,
-          } as unknown as Prisma.InputJsonObject,
+          }) as unknown as Prisma.InputJsonObject,
         },
       });
 
