@@ -247,7 +247,7 @@ class PdfBatchOrchestratorService {
       // which is what that UI component's page-number math is hard-coded
       // to -- using the same defaults here means it works against a batch
       // item's job with zero frontend changes.
-      const { onProgress, onValidatorComplete, onAltTextImageProgress } = createAuditProgressCallbacks({ jobId: job.id });
+      const { onProgress, onValidatorComplete, onAltTextImageProgress, onContrastPageProgress } = createAuditProgressCallbacks({ jobId: job.id });
 
       const report = await pdfAuditService.runAuditFromBuffer(
         auditBuffer,
@@ -257,7 +257,8 @@ class PdfBatchOrchestratorService {
         undefined,
         onProgress,
         onValidatorComplete,
-        onAltTextImageProgress
+        onAltTextImageProgress,
+        onContrastPageProgress
       );
 
       await prisma.job.update({

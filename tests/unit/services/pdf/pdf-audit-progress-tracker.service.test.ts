@@ -69,8 +69,8 @@ describe('createAuditProgressCallbacks', () => {
     await expect(onProgress(5, 10)).resolves.toBeUndefined();
   });
 
-  it('getLastKnownPercent reflects the most recent percentage across all three callbacks', async () => {
-    const { onProgress, onValidatorComplete, onAltTextImageProgress, getLastKnownPercent } =
+  it('getLastKnownPercent reflects the most recent percentage across all callbacks', async () => {
+    const { onProgress, onValidatorComplete, onAltTextImageProgress, onContrastPageProgress, getLastKnownPercent } =
       createAuditProgressCallbacks({ jobId: 'job-1' });
 
     expect(getLastKnownPercent()).toBe(20); // extractionStartPct default, before any call
@@ -87,5 +87,29 @@ describe('createAuditProgressCallbacks', () => {
     await onAltTextImageProgress(100, 200);
     expect(getLastKnownPercent()).toBe(92);
     expect(queueService.updateJobProgress).toHaveBeenLastCalledWith('job-1', 92);
+
+    // onContrastPageProgress mirrors onAltTextImageProgress's own reasoning
+    // exactly -- same re-report-don't-recompute behavior.
+    await onContrastPageProgress(600, 2040);
+    expect(getLastKnownPercent()).toBe(92);
+    expect(queueService.updateJobProgress).toHaveBeenLastCalledWith('job-1', 92);
+  });
+
+  it('onContrastPageProgress persists contrastPageProgress into Job.input', async () => {
+    const { onContrastPageProgress } = createAuditProgressCallbacks({ jobId: 'job-1' });
+
+    await onContrastPageProgress(600, 2040);
+
+    expect(prisma.job.update).toHaveBeenCalledWith({
+      where: { id: 'job-1' },
+      data: { input: expect.objectContaining({ contrastPageProgress: { completed: 600, total: 2040 } }) },
+    });
+  });
+
+  it('does not throw when onContrastPageProgress hits a transient Prisma failure', async () => {
+    const { onContrastPageProgress } = createAuditProgressCallbacks({ jobId: 'job-1' });
+    vi.mocked(prisma.job.update).mockRejectedValueOnce(new Error('connection pool exhausted'));
+
+    await expect(onContrastPageProgress(600, 2040)).resolves.toBeUndefined();
   });
 });

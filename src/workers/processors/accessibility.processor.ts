@@ -237,7 +237,7 @@ async function processPdfAccessibility(
   // (a 377-page document, an unhandled rejection with no global handler,
   // a full container restart mid-audit) that makes every callback here
   // swallow its own errors instead of ever rejecting.
-  const { onProgress, onValidatorComplete, onAltTextImageProgress, getLastKnownPercent } = createAuditProgressCallbacks({
+  const { onProgress, onValidatorComplete, onAltTextImageProgress, onContrastPageProgress, getLastKnownPercent } = createAuditProgressCallbacks({
     jobId: dbJobId,
     extractionStartPct: auditStartPct,
     extractionPctRange: auditPctRange,
@@ -305,6 +305,7 @@ async function processPdfAccessibility(
       onProgress,
       onValidatorComplete,
       onAltTextImageProgress,
+      onContrastPageProgress,
     );
   } finally {
     clearInterval(heartbeatInterval);
