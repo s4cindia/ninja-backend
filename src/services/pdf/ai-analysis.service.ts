@@ -2870,13 +2870,15 @@ class AiAnalysisService {
     scale = 2.0
   ): Promise<string | null> {
     try {
-      return await this.withRenderTimeout(pageNumber, async () => {
+      return await this.withRenderTimeout(pageNumber, async (registerCancel) => {
         const page = await parsedPdf.pdfjsDoc.getPage(pageNumber);
         const viewport = page.getViewport({ scale });
         const full = createCanvas(Math.round(viewport.width), Math.round(viewport.height));
         const fctx = full.getContext('2d');
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        await page.render({ canvas: full as any, canvasContext: fctx as any, viewport }).promise;
+        const renderTask = page.render({ canvas: full as any, canvasContext: fctx as any, viewport });
+        registerCancel(() => renderTask.cancel());
+        await renderTask.promise;
 
         const pad = 4 * scale;
         const sx = Math.max(0, Math.round(region.x * scale - pad));
@@ -2915,16 +2917,33 @@ class AiAnalysisService {
   // staleness timeout) has already been bounded.
   private static readonly PAGE_RENDER_TIMEOUT_MS = 30_000;
 
-  private async withRenderTimeout<T>(pageNumber: number, work: () => Promise<T>): Promise<T> {
+  // CodeRabbit finding on this PR, confirmed real against pdfjs-dist's own
+  // type definitions: Promise.race alone only stops WAITING on a timed-out
+  // render, it doesn't stop the render itself -- the underlying pdfjs
+  // RenderTask keeps running in the background indefinitely, still
+  // consuming CPU/memory, for every page that times out. RenderTask.cancel()
+  // is pdfjs-dist's own documented API for this exact purpose. `work`
+  // receives a `registerCancel` callback so it can hand back whatever
+  // needs cancelling once it actually has a RenderTask in hand -- getPage()
+  // itself has no equivalent cancellation hook, so a hang there (rather
+  // than in render()) has nothing to register and simply times out as before.
+  private async withRenderTimeout<T>(
+    pageNumber: number,
+    work: (registerCancel: (cancel: () => void) => void) => Promise<T>
+  ): Promise<T> {
     let timer: ReturnType<typeof setTimeout>;
+    let cancelFn: (() => void) | null = null;
+    const registerCancel = (cancel: () => void): void => {
+      cancelFn = cancel;
+    };
     const timeout = new Promise<never>((_, reject) => {
-      timer = setTimeout(
-        () => reject(new Error(`Page ${pageNumber} render timed out after ${AiAnalysisService.PAGE_RENDER_TIMEOUT_MS}ms`)),
-        AiAnalysisService.PAGE_RENDER_TIMEOUT_MS
-      );
+      timer = setTimeout(() => {
+        cancelFn?.();
+        reject(new Error(`Page ${pageNumber} render timed out after ${AiAnalysisService.PAGE_RENDER_TIMEOUT_MS}ms`));
+      }, AiAnalysisService.PAGE_RENDER_TIMEOUT_MS);
     });
     try {
-      return await Promise.race([work(), timeout]);
+      return await Promise.race([work(registerCancel), timeout]);
     } finally {
       clearTimeout(timer!);
     }
@@ -2932,14 +2951,16 @@ class AiAnalysisService {
 
   private async renderPageToBase64(parsedPdf: ParsedPDF, pageNumber: number): Promise<string | null> {
     try {
-      return await this.withRenderTimeout(pageNumber, async () => {
+      return await this.withRenderTimeout(pageNumber, async (registerCancel) => {
         const page = await parsedPdf.pdfjsDoc.getPage(pageNumber);
         const viewport = page.getViewport({ scale: 1.0 });
         const canvas = createCanvas(Math.round(viewport.width), Math.round(viewport.height));
         const context = canvas.getContext('2d');
 
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        await page.render({ canvas: canvas as any, canvasContext: context as any, viewport }).promise;
+        const renderTask = page.render({ canvas: canvas as any, canvasContext: context as any, viewport });
+        registerCancel(() => renderTask.cancel());
+        await renderTask.promise;
 
         return canvas.toBuffer('image/png').toString('base64');
       });

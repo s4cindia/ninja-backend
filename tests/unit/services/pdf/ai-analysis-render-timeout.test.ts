@@ -54,11 +54,12 @@ describe('AiAnalysisService render timeout', () => {
     await expect(resultPromise).resolves.toBeNull();
   });
 
-  it('renderPageToBase64 resolves to null within its own timeout when page.render() itself hangs forever', async () => {
+  it('renderPageToBase64 resolves to null AND cancels the underlying pdfjs RenderTask when page.render() itself hangs forever (CodeRabbit finding, PR #705: Promise.race alone stops waiting but leaves the render running)', async () => {
+    const cancel = vi.fn();
     const parsedPdf = buildFakeParsedPdf({
       getPage: async () => ({
         getViewport: () => ({ width: 100, height: 100 }),
-        render: () => ({ promise: new Promise(() => {}) }),
+        render: () => ({ promise: new Promise(() => {}), cancel }),
       }),
     });
 
@@ -66,13 +67,15 @@ describe('AiAnalysisService render timeout', () => {
     await vi.advanceTimersByTimeAsync(30_000);
 
     await expect(resultPromise).resolves.toBeNull();
+    expect(cancel).toHaveBeenCalledTimes(1);
   });
 
-  it('renderRegionToBase64 resolves to null within its own timeout when page.render() hangs forever (the formula-rendering path, not cached via pageRenderCache)', async () => {
+  it('renderRegionToBase64 resolves to null AND cancels the underlying pdfjs RenderTask when page.render() hangs forever (the formula-rendering path, not cached via pageRenderCache)', async () => {
+    const cancel = vi.fn();
     const parsedPdf = buildFakeParsedPdf({
       getPage: async () => ({
         getViewport: () => ({ width: 100, height: 100 }),
-        render: () => ({ promise: new Promise(() => {}) }),
+        render: () => ({ promise: new Promise(() => {}), cancel }),
       }),
     });
 
@@ -80,6 +83,7 @@ describe('AiAnalysisService render timeout', () => {
     await vi.advanceTimersByTimeAsync(30_000);
 
     await expect(resultPromise).resolves.toBeNull();
+    expect(cancel).toHaveBeenCalledTimes(1);
   });
 
   it('renderPageToBase64 resolves normally (well before the timeout) when rendering succeeds quickly', async () => {
