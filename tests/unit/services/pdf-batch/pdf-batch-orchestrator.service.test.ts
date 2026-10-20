@@ -122,7 +122,10 @@ describe('PdfBatchOrchestratorService.processItem', () => {
     // later findUnique (e.g. finalizeDanglingQueuedJob's own lookup) sees
     // the same id runAuditPhase's QUEUED_FOR_BUDGET update actually persisted.
     mockPdfBatchItemFindUnique.mockResolvedValue({ ...draftItem, auditJobId: 'job-1' });
-    mockPdfBatchItemFindUniqueOrThrow.mockResolvedValue({ ...draftItem, effectiveWeightUnits: 2 });
+    // issuesFound: 6 matches the default mockListForJob below (resolvedCount
+    // 5 + remainingCount 1) -- issuesAutoFixed is now derived as
+    // issuesFound - remainingCount, not read directly off the reaudit event.
+    mockPdfBatchItemFindUniqueOrThrow.mockResolvedValue({ ...draftItem, effectiveWeightUnits: 2, issuesFound: 6 });
     mockPdfBatchItemUpdate.mockResolvedValue(draftItem);
     mockPdfBatchUpdateMany.mockResolvedValue({ count: 1 });
     mockJobCreate.mockResolvedValue({ id: 'job-1' });
@@ -245,6 +248,47 @@ describe('PdfBatchOrchestratorService.processItem', () => {
     // Both phases' leases released, none left dangling.
     expect(mockReleaseLease).toHaveBeenCalledWith('lease-1');
     expect(mockReleaseLease).toHaveBeenCalledTimes(2);
+  });
+
+  it('reports issuesAutoFixed as the cumulative total resolved across all rounds, not just the last round\'s own resolvedCount (real incident, 2026-10-20: Math_Olszewski_PDF.pdf)', async () => {
+    // Real production history: round 1 resolved 344 (1291 -> 947, 1
+    // regression -> 948 going into round 2), rounds 2 and 3 then resolved 0
+    // more each (plateaued at 948 remaining) before stopping on
+    // budget_limit. The old code took only the LAST completed reaudit's
+    // resolvedCount (0), discarding round 1's real progress and reporting
+    // issuesAutoFixed: 0 despite 343 issues genuinely having been fixed.
+    mockPdfBatchItemFindUniqueOrThrow.mockResolvedValue({ ...draftItem, effectiveWeightUnits: 2, issuesFound: 1291 });
+    mockListForJob.mockResolvedValue([
+      { action: 'reaudit', status: 'completed', resolvedCount: 344, remainingCount: 947, regressionCount: 1 },
+      { action: 'reaudit', status: 'completed', resolvedCount: 0, remainingCount: 948, regressionCount: 0 },
+      { action: 'reaudit', status: 'completed', resolvedCount: 0, remainingCount: 948, regressionCount: 0 },
+    ]);
+
+    await pdfBatchOrchestratorService.processItem('batch-1', 'item-1');
+
+    expect(mockPdfBatchItemUpdate).toHaveBeenCalledWith({
+      where: { id: 'item-1' },
+      data: expect.objectContaining({
+        status: 'REMEDIATED',
+        issuesAutoFixed: 343, // 1291 - 948, not the last round's resolvedCount of 0
+        issuesGuidanceOnly: 948,
+      }),
+    });
+  });
+
+  it('reports issuesAutoFixed as 0 when no reaudit ever completed (e.g. the loop stopped before finishing a single round)', async () => {
+    mockListForJob.mockResolvedValue([]);
+
+    await pdfBatchOrchestratorService.processItem('batch-1', 'item-1');
+
+    expect(mockPdfBatchItemUpdate).toHaveBeenCalledWith({
+      where: { id: 'item-1' },
+      data: expect.objectContaining({
+        status: 'REMEDIATED',
+        issuesAutoFixed: 0,
+        issuesGuidanceOnly: 0,
+      }),
+    });
   });
 
   it('carries the batch\'s own Auto Mode overrides onto this item\'s PdfAutoRemediationRun -- each item still gets its own independent budget/round count, not a shared pool', async () => {
