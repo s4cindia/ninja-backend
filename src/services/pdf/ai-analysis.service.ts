@@ -2870,25 +2870,27 @@ class AiAnalysisService {
     scale = 2.0
   ): Promise<string | null> {
     try {
-      const page = await parsedPdf.pdfjsDoc.getPage(pageNumber);
-      const viewport = page.getViewport({ scale });
-      const full = createCanvas(Math.round(viewport.width), Math.round(viewport.height));
-      const fctx = full.getContext('2d');
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      await page.render({ canvas: full as any, canvasContext: fctx as any, viewport }).promise;
+      return await this.withRenderTimeout(pageNumber, async () => {
+        const page = await parsedPdf.pdfjsDoc.getPage(pageNumber);
+        const viewport = page.getViewport({ scale });
+        const full = createCanvas(Math.round(viewport.width), Math.round(viewport.height));
+        const fctx = full.getContext('2d');
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        await page.render({ canvas: full as any, canvasContext: fctx as any, viewport }).promise;
 
-      const pad = 4 * scale;
-      const sx = Math.max(0, Math.round(region.x * scale - pad));
-      const sy = Math.max(0, Math.round(region.y * scale - pad));
-      const sw = Math.min(full.width - sx, Math.round(region.width * scale + pad * 2));
-      const sh = Math.min(full.height - sy, Math.round(region.height * scale + pad * 2));
-      if (sw <= 0 || sh <= 0) return full.toBuffer('image/png').toString('base64');
+        const pad = 4 * scale;
+        const sx = Math.max(0, Math.round(region.x * scale - pad));
+        const sy = Math.max(0, Math.round(region.y * scale - pad));
+        const sw = Math.min(full.width - sx, Math.round(region.width * scale + pad * 2));
+        const sh = Math.min(full.height - sy, Math.round(region.height * scale + pad * 2));
+        if (sw <= 0 || sh <= 0) return full.toBuffer('image/png').toString('base64');
 
-      const crop = createCanvas(sw, sh);
-      const cctx = crop.getContext('2d');
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      cctx.drawImage(full as any, sx, sy, sw, sh, 0, 0, sw, sh);
-      return crop.toBuffer('image/png').toString('base64');
+        const crop = createCanvas(sw, sh);
+        const cctx = crop.getContext('2d');
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        cctx.drawImage(full as any, sx, sy, sw, sh, 0, 0, sw, sh);
+        return crop.toBuffer('image/png').toString('base64');
+      });
     } catch (err) {
       logger.warn(
         `[AiAnalysis] Failed to render region on page ${pageNumber}: ${err instanceof Error ? err.message : String(err)}`
@@ -2897,17 +2899,50 @@ class AiAnalysisService {
     }
   }
 
+  // Real incident (2026-10-19): FMHE_PDF.pdf's AI analysis pass (11991
+  // issues) stalled completely for 3+ hours with zero progress, zero
+  // errors, and zero log output -- the remediation-cycle lock's own
+  // heartbeat stayed alive (so the periodic orphan-reconciliation sweep
+  // never caught it), but the actual Promise.all over pLimit(10) never
+  // advanced. pdfjs-dist's page.render() has no built-in timeout, and
+  // pageRenderCache (below) caches the PROMISE itself, not just its
+  // resolved value -- so every issue on the same page awaits the IDENTICAL
+  // hung promise. On a document where many issues cluster per page, a
+  // single unresolvable render can occupy the entire pLimit(10)
+  // concurrency budget forever, with nothing anywhere in the chain to ever
+  // time it out. Bounding it here, the same way every other PDF-rendering
+  // hang risk this session (Color Contrast's per-page loop, the audit-wide
+  // staleness timeout) has already been bounded.
+  private static readonly PAGE_RENDER_TIMEOUT_MS = 30_000;
+
+  private async withRenderTimeout<T>(pageNumber: number, work: () => Promise<T>): Promise<T> {
+    let timer: ReturnType<typeof setTimeout>;
+    const timeout = new Promise<never>((_, reject) => {
+      timer = setTimeout(
+        () => reject(new Error(`Page ${pageNumber} render timed out after ${AiAnalysisService.PAGE_RENDER_TIMEOUT_MS}ms`)),
+        AiAnalysisService.PAGE_RENDER_TIMEOUT_MS
+      );
+    });
+    try {
+      return await Promise.race([work(), timeout]);
+    } finally {
+      clearTimeout(timer!);
+    }
+  }
+
   private async renderPageToBase64(parsedPdf: ParsedPDF, pageNumber: number): Promise<string | null> {
     try {
-      const page = await parsedPdf.pdfjsDoc.getPage(pageNumber);
-      const viewport = page.getViewport({ scale: 1.0 });
-      const canvas = createCanvas(Math.round(viewport.width), Math.round(viewport.height));
-      const context = canvas.getContext('2d');
+      return await this.withRenderTimeout(pageNumber, async () => {
+        const page = await parsedPdf.pdfjsDoc.getPage(pageNumber);
+        const viewport = page.getViewport({ scale: 1.0 });
+        const canvas = createCanvas(Math.round(viewport.width), Math.round(viewport.height));
+        const context = canvas.getContext('2d');
 
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      await page.render({ canvas: canvas as any, canvasContext: context as any, viewport }).promise;
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        await page.render({ canvas: canvas as any, canvasContext: context as any, viewport }).promise;
 
-      return canvas.toBuffer('image/png').toString('base64');
+        return canvas.toBuffer('image/png').toString('base64');
+      });
     } catch (err) {
       logger.warn(`[AiAnalysis] Failed to render page ${pageNumber}: ${err instanceof Error ? err.message : String(err)}`);
       return null;
