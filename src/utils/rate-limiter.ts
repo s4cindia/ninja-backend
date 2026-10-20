@@ -367,6 +367,11 @@ export class RateLimitError extends Error {
  * where each container needs to share rate limit state.
  */
 export class RedisRateLimiter {
+  // Bounds only the Redis round-trip below (the multi()/exec() pipeline),
+  // never the legitimate post-check wait -- see acquire()'s own comment for
+  // why conflating the two neutered this limiter's own enforcement.
+  private static readonly REDIS_CALL_TIMEOUT_MS = 5_000;
+
   private redis: Redis | null = null;
   private config: Required<RateLimiterConfig>;
   private keyPrefix: string;
@@ -428,12 +433,35 @@ export class RedisRateLimiter {
     const now = Date.now();
     const windowKey = `${this.keyPrefix}:${Math.floor(now / this.config.windowMs)}`;
 
+    let currentCount: number;
     try {
-      // Atomic increment with expiry
-      const multi = redis.multi();
-      multi.incr(windowKey);
-      multi.pexpire(windowKey, this.config.windowMs * 2); // 2x window for safety
-      const results = await multi.exec();
+      // Real incident (2026-10-17, gemini.service.ts): ioredis's multi()
+      // returns a Pipeline whose own sendCommand() bypasses the client's
+      // commandTimeout wiring entirely, and a sub-command timeout inside a
+      // MULTI/EXEC batch surfaces as an error ENTRY in the results array
+      // rather than a rejection -- a shape this method's own result parsing
+      // doesn't account for. Bounded here, at the actual network round-trip,
+      // so a hung Redis connection still fails open quickly regardless of
+      // that ioredis-internals question -- this used to be the caller's own
+      // job (gemini.service.ts raced its entire acquire() call against the
+      // same timeout), which was the actual bug: it also cut short the
+      // legitimate wait below, see that branch's own comment.
+      let timer: ReturnType<typeof setTimeout>;
+      const timeout = new Promise<never>((_, reject) => {
+        timer = setTimeout(
+          () => reject(new Error(`${this.config.name} rate limiter Redis call timed out`)),
+          RedisRateLimiter.REDIS_CALL_TIMEOUT_MS
+        );
+      });
+      let results: Array<[Error | null, unknown]> | null;
+      try {
+        const multi = redis.multi();
+        multi.incr(windowKey);
+        multi.pexpire(windowKey, this.config.windowMs * 2); // 2x window for safety
+        results = await Promise.race([multi.exec(), timeout]);
+      } finally {
+        clearTimeout(timer!);
+      }
 
       if (!results || results.length === 0) {
         logger.warn(`[${this.config.name}] Redis multi exec returned empty results`);
@@ -441,27 +469,36 @@ export class RedisRateLimiter {
       }
 
       const [incrResult] = results;
-      const currentCount = incrResult && incrResult[1] ? Number(incrResult[1]) : 0;
-
-      if (currentCount > this.config.maxRequests) {
-        const waitTime = this.config.windowMs - (now % this.config.windowMs);
-
-        if (this.config.throwOnLimit) {
-          throw new RateLimitError(
-            `${this.config.name} rate limit exceeded (${currentCount}/${this.config.maxRequests}). Try again in ${waitTime}ms.`,
-            waitTime
-          );
-        }
-
-        logger.warn(`[${this.config.name}] Rate limit reached (${currentCount}/${this.config.maxRequests}), waiting ${waitTime}ms...`);
-        await this.delay(waitTime);
-      }
+      currentCount = incrResult && incrResult[1] ? Number(incrResult[1]) : 0;
     } catch (error) {
-      if (error instanceof RateLimitError) {
-        throw error;
-      }
-      // Redis error - fail open (allow request)
+      // Redis error (or the timeout above) - fail open (allow request)
       logger.error(`[${this.config.name}] Redis rate limit check failed:`, error);
+      return;
+    }
+
+    if (currentCount > this.config.maxRequests) {
+      const waitTime = this.config.windowMs - (now % this.config.windowMs);
+
+      if (this.config.throwOnLimit) {
+        throw new RateLimitError(
+          `${this.config.name} rate limit exceeded (${currentCount}/${this.config.maxRequests}). Try again in ${waitTime}ms.`,
+          waitTime
+        );
+      }
+
+      // Deliberately NOT raced against any timeout -- this is a plain local
+      // setTimeout (via delay()), not a network call, so it cannot hang the
+      // way the Redis round-trip above can. Real incident (2026-10-19):
+      // this used to be raced against the caller's own 5s safety timeout
+      // (meant only to catch a hung Redis connection, see the try block
+      // above), which cut short a legitimate wait of up to a full window
+      // (60s) the moment the per-window count exceeded the limit -- every
+      // subsequent caller that same window "timed out" after 5s and
+      // proceeded anyway, letting FMHE_PDF.pdf's 11991-issue AI analysis
+      // pass blow past the configured 60/min Gemini limit by nearly 2x
+      // while repeatedly logging "rate limit check timed out."
+      logger.warn(`[${this.config.name}] Rate limit reached (${currentCount}/${this.config.maxRequests}), waiting ${waitTime}ms...`);
+      await this.delay(waitTime);
     }
   }
 

@@ -81,6 +81,10 @@ class ClaudeService {
   /**
    * Check rate limit using Redis-based distributed limiter
    * Falls back gracefully when Redis is unavailable
+   *
+   * acquire() itself now bounds its own Redis round-trip against a hang
+   * (see RedisRateLimiter.acquire()'s own comment) -- this call needs no
+   * timeout of its own the way gemini.service.ts's equivalent once did.
    */
   private async checkRateLimit(): Promise<void> {
     try {
