@@ -219,97 +219,162 @@ export class JobController {
         throw AppError.unauthorized('Not authenticated');
       }
 
-      const { 
-        page = '1', 
-        limit = '20', 
-        status, 
-        type 
-      } = req.query;
+      await this.respondWithJobList(req, res, { tenantId: req.user.tenantId });
+    } catch (error) {
+      next(error);
+    }
+  }
 
-      let pageNum = parseInt(page as string, 10);
-      let limitNum = parseInt(limit as string, 10);
-      
-      if (isNaN(pageNum) || pageNum < 1) pageNum = 1;
-      if (isNaN(limitNum) || limitNum < 1) limitNum = 20;
-      if (limitNum > 100) limitNum = 100;
-      
-      const skip = (pageNum - 1) * limitNum;
-
-      const where: Record<string, unknown> = {
-        tenantId: req.user.tenantId,
-      };
-
-      if (status) {
-        where.status = status;
+  /**
+   * Lists jobs owned by any member (any TeamRole, including EXECUTIVE) of a
+   * team the caller leads or views (TeamMembership.teamRole TEAM_LEADER or
+   * VIEWER) -- RBAC Phase 3's discovery endpoint. Phase 2's
+   * authorizeJobForReview only grants read access to a teammate's job once
+   * the caller already knows its jobId; this is what lets a Team
+   * Leader/Viewer actually browse their team's jobs in the first place.
+   *
+   * Deliberately separate from, and does not alter, GET /jobs (list()
+   * above), which remains tenant-wide for every caller regardless of team
+   * membership -- narrowing that is a distinct, bigger decision the team
+   * explicitly deferred.
+   */
+  async listTeamJobs(req: Request, res: Response, next: NextFunction) {
+    try {
+      if (!isAuthenticated(req)) {
+        throw AppError.unauthorized('Not authenticated');
       }
 
-      if (type) {
-        where.type = type;
-      }
-
-      const [jobs, total] = await Promise.all([
-        prisma.job.findMany({
-          where,
-          skip,
-          take: limitNum,
-          orderBy: { createdAt: 'desc' },
-          select: {
-            id: true,
-            type: true,
-            status: true,
-            progress: true,
-            priority: true,
-            input: true,
-            output: true,
-            error: true,
-            createdAt: true,
-            startedAt: true,
-            completedAt: true,
-            productId: true,
-            userId: true,
-            product: {
-              select: {
-                id: true,
-                title: true,
-              },
-            },
-            editorialDocument: {
-              select: { id: true, originalName: true },
-            },
-          },
-        }),
-        prisma.job.count({ where }),
-      ]);
-
-      const normalizedJobs = jobs.map(({ editorialDocument, ...rest }) => {
-        const output = normalizeJobOutput(rest.output);
-        // Include document filename in output so frontend can display it
-        if (editorialDocument?.originalName && !output.fileName) {
-          output.fileName = editorialDocument.originalName;
-        }
-        return {
-          ...rest,
-          output,
-          // Include documentId so frontend can navigate to the correct editor
-          ...(editorialDocument?.id && { documentId: editorialDocument.id }),
-        };
+      const callerTeams = await prisma.teamMembership.findMany({
+        where: {
+          userId: req.user.id,
+          teamRole: { in: ['TEAM_LEADER', 'VIEWER'] },
+        },
+        select: { teamId: true },
       });
 
-      res.json({
-        success: true,
-        data: {
-          jobs: normalizedJobs,
-          pagination: {
-            page: pageNum,
-            limit: limitNum,
-            total,
-            pages: Math.ceil(total / limitNum),
-          },
-        },
+      if (callerTeams.length === 0) {
+        throw AppError.forbidden(
+          'You must be a Team Leader or Viewer on at least one team to view team jobs',
+          'NOT_TEAM_LEADER_OR_VIEWER'
+        );
+      }
+
+      const teamIds = callerTeams.map((m) => m.teamId);
+      const teammates = await prisma.teamMembership.findMany({
+        where: { teamId: { in: teamIds } },
+        select: { userId: true },
+        distinct: ['userId'],
+      });
+      const memberUserIds = [...new Set(teammates.map((m) => m.userId))];
+
+      await this.respondWithJobList(req, res, {
+        tenantId: req.user.tenantId,
+        userId: { in: memberUserIds },
       });
     } catch (error) {
       next(error);
     }
+  }
+
+  /**
+   * Shared pagination/filtering/response logic for list() and
+   * listTeamJobs(). `baseWhere` always carries tenantId (and, for the
+   * team-scoped caller, a userId-in filter), ANDed with the optional
+   * status/type query filters below -- kept explicit at each call site
+   * rather than folded into this helper, so tenant isolation stays
+   * auditable by inspection at the call site.
+   */
+  private async respondWithJobList(
+    req: Request,
+    res: Response,
+    baseWhere: Record<string, unknown>
+  ): Promise<void> {
+    const {
+      page = '1',
+      limit = '20',
+      status,
+      type
+    } = req.query;
+
+    let pageNum = parseInt(page as string, 10);
+    let limitNum = parseInt(limit as string, 10);
+
+    if (isNaN(pageNum) || pageNum < 1) pageNum = 1;
+    if (isNaN(limitNum) || limitNum < 1) limitNum = 20;
+    if (limitNum > 100) limitNum = 100;
+
+    const skip = (pageNum - 1) * limitNum;
+
+    const where: Record<string, unknown> = { ...baseWhere };
+
+    if (status) {
+      where.status = status;
+    }
+
+    if (type) {
+      where.type = type;
+    }
+
+    const [jobs, total] = await Promise.all([
+      prisma.job.findMany({
+        where,
+        skip,
+        take: limitNum,
+        orderBy: { createdAt: 'desc' },
+        select: {
+          id: true,
+          type: true,
+          status: true,
+          progress: true,
+          priority: true,
+          input: true,
+          output: true,
+          error: true,
+          createdAt: true,
+          startedAt: true,
+          completedAt: true,
+          productId: true,
+          userId: true,
+          product: {
+            select: {
+              id: true,
+              title: true,
+            },
+          },
+          editorialDocument: {
+            select: { id: true, originalName: true },
+          },
+        },
+      }),
+      prisma.job.count({ where }),
+    ]);
+
+    const normalizedJobs = jobs.map(({ editorialDocument, ...rest }) => {
+      const output = normalizeJobOutput(rest.output);
+      // Include document filename in output so frontend can display it
+      if (editorialDocument?.originalName && !output.fileName) {
+        output.fileName = editorialDocument.originalName;
+      }
+      return {
+        ...rest,
+        output,
+        // Include documentId so frontend can navigate to the correct editor
+        ...(editorialDocument?.id && { documentId: editorialDocument.id }),
+      };
+    });
+
+    res.json({
+      success: true,
+      data: {
+        jobs: normalizedJobs,
+        pagination: {
+          page: pageNum,
+          limit: limitNum,
+          total,
+          pages: Math.ceil(total / limitNum),
+        },
+      },
+    });
   }
 
   /**
