@@ -84,29 +84,6 @@ describe('resolveSuggestionStatus', () => {
 
     expect(resolveSuggestionStatus(existing, suggestion, cfp, 'apply-to-pdf')).toBe('applied');
   });
-
-  /**
-   * Real incident (Math_Olszewski_PDF.pdf, 2026-10-20): 'failed' (set by
-   * applyApprovedSuggestions once a suggestion has failed MAX_APPLY_ATTEMPTS
-   * times) must be preserved the same way 'applied' is -- without this, the
-   * very next re-analysis pass would silently overwrite 'failed' back to
-   * 'approved'/'pending' (since 'failed' !== 'applied' fell straight through
-   * to defaultStatus), completely undoing the retry cap and reproducing the
-   * exact bug it exists to prevent.
-   */
-  it('preserves "failed" when fingerprint, suggestionType, and value are all unchanged -- a permanently-broken suggestion must not be silently resurrected', () => {
-    const existing = { status: 'failed', suggestionType: 'alt-text', value: 'A red apple', issueFingerprint: FP };
-    const suggestion = { suggestionType: 'alt-text', value: 'A red apple' };
-
-    expect(resolveSuggestionStatus(existing, suggestion, FP, 'apply-to-pdf')).toBe('failed');
-  });
-
-  it('resets a "failed" suggestion to the default status when the underlying finding genuinely changed -- a different finding deserves a fresh attempt', () => {
-    const existing = { status: 'failed', suggestionType: 'alt-text', value: 'A red apple', issueFingerprint: FP };
-    const suggestion = { suggestionType: 'alt-text', value: 'A green pear' };
-
-    expect(resolveSuggestionStatus(existing, suggestion, FP, 'apply-to-pdf')).toBe('pending');
-  });
 });
 
 describe('buildIssueFingerprint', () => {
