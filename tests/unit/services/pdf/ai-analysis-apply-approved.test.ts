@@ -680,4 +680,76 @@ describe('aiAnalysisService.applyApprovedSuggestions', () => {
     await expect(aiAnalysisService.applyApprovedSuggestions('missing-job', 1, 'user-1', 'apply_all'))
       .rejects.toThrow('Job not found');
   });
+
+  /**
+   * Real incident (Math_Olszewski_PDF.pdf, 2026-10-20): a suggestion whose
+   * apply handler fails for a structural reason that never changes (e.g. the
+   * PDF genuinely has no Figure element for this image) stayed 'approved'
+   * forever -- nothing ever updated its status on failure -- and was
+   * silently re-approved and re-attempted every single auto-mode round, the
+   * same ~190 suggestion IDs failing with the identical error message in all
+   * 3 rounds, burning that round's AI analysis cost on guaranteed repeats.
+   * failedAttempts caps this: below MAX_APPLY_ATTEMPTS (2) a failure just
+   * increments the counter (one more real try next round); at the cap, the
+   * row is marked 'failed' (terminal) so actionableFound's pending/approved
+   * query stops picking it up.
+   */
+  describe('retry cap for permanently-failing suggestions (failedAttempts)', () => {
+    it('increments failedAttempts but leaves status untouched (still approved) below MAX_APPLY_ATTEMPTS', async () => {
+      vi.mocked(prisma.aiAnalysis.findMany).mockResolvedValue([
+        { issueId: 'issue-1', suggestionType: 'alt-text', value: 'A red apple', failedAttempts: 0 },
+      ] as any);
+      vi.mocked(fileStorageService.getRemediatedFile).mockResolvedValue(Buffer.from('pdf'));
+      vi.mocked(pdfModifierService.loadPDF).mockResolvedValue({} as any);
+      vi.mocked(pdfModifierService.resolveFigureForImage).mockReturnValue({} as any);
+      vi.mocked(pdfModifierService.setAltText).mockResolvedValue({
+        success: false,
+        error: 'The PDF structure tree has no Figure elements',
+      } as any);
+
+      await aiAnalysisService.applyApprovedSuggestions('job-1', 1, 'user-1', 'apply_all');
+
+      expect(prisma.aiAnalysis.update).toHaveBeenCalledWith({
+        where: { jobId_issueId: { jobId: 'job-1', issueId: 'issue-1' } },
+        data: { failedAttempts: 1, updatedAt: expect.any(Date) },
+      });
+    });
+
+    it('marks the suggestion "failed" (terminal) once it reaches MAX_APPLY_ATTEMPTS, instead of leaving it approved to be retried forever', async () => {
+      vi.mocked(prisma.aiAnalysis.findMany).mockResolvedValue([
+        { issueId: 'issue-1', suggestionType: 'alt-text', value: 'A red apple', failedAttempts: 1 },
+      ] as any);
+      vi.mocked(fileStorageService.getRemediatedFile).mockResolvedValue(Buffer.from('pdf'));
+      vi.mocked(pdfModifierService.loadPDF).mockResolvedValue({} as any);
+      vi.mocked(pdfModifierService.resolveFigureForImage).mockReturnValue({} as any);
+      vi.mocked(pdfModifierService.setAltText).mockResolvedValue({
+        success: false,
+        error: 'The PDF structure tree has no Figure elements',
+      } as any);
+
+      await aiAnalysisService.applyApprovedSuggestions('job-1', 1, 'user-1', 'apply_all');
+
+      expect(prisma.aiAnalysis.update).toHaveBeenCalledWith({
+        where: { jobId_issueId: { jobId: 'job-1', issueId: 'issue-1' } },
+        data: { failedAttempts: 2, status: 'failed', updatedAt: expect.any(Date) },
+      });
+    });
+
+    it('counts a thrown error toward the same retry cap as a modification.success:false result', async () => {
+      vi.mocked(prisma.aiAnalysis.findMany).mockResolvedValue([
+        { issueId: 'issue-1', suggestionType: 'alt-text', value: 'A red apple', failedAttempts: 1 },
+      ] as any);
+      vi.mocked(fileStorageService.getRemediatedFile).mockResolvedValue(Buffer.from('pdf'));
+      vi.mocked(pdfModifierService.loadPDF).mockResolvedValue({} as any);
+      vi.mocked(pdfModifierService.resolveFigureForImage).mockReturnValue({} as any);
+      vi.mocked(pdfModifierService.setAltText).mockRejectedValue(new Error('unexpected crash'));
+
+      await aiAnalysisService.applyApprovedSuggestions('job-1', 1, 'user-1', 'apply_all');
+
+      expect(prisma.aiAnalysis.update).toHaveBeenCalledWith({
+        where: { jobId_issueId: { jobId: 'job-1', issueId: 'issue-1' } },
+        data: { failedAttempts: 2, status: 'failed', updatedAt: expect.any(Date) },
+      });
+    });
+  });
 });

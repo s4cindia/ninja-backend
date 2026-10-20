@@ -555,6 +555,53 @@ describe('autoRemediationLoopService.startAutoLoop', () => {
     });
   });
 
+  /**
+   * Real incident (Math_Olszewski_PDF.pdf, 2026-10-20): round 1 resolved 344
+   * issues; rounds 2 and 3 then each applied a small, non-zero number (2) of
+   * genuinely new, unrelated suggestions while the re-audit showed ZERO net
+   * progress both times (resolvedCount: 0, remainingCount: 948 unchanged) --
+   * the same ~190 permanently-failing suggestions were re-approved and
+   * re-attempted every round, net-cancelling against that trickle. The old
+   * `applied === 0` stall check never fired (applied was 2, not 0), so the
+   * loop ran a 3rd full paid round for zero benefit before exhausting the
+   * cost ceiling instead of stopping distinctly as 'stalled'.
+   */
+  it('stops with reason "stalled" when rounds apply a non-zero trickle of suggestions but the re-audit confirms zero net resolved progress', async () => {
+    vi.mocked(prisma.comparisonTrial.findUnique).mockResolvedValue(makeTrial({ autoMaxRounds: 10 }) as any);
+    mockLockAcquired();
+    vi.mocked(aiAnalysisService.analyzeJob).mockResolvedValue({ analyzed: 1, skipped: 0 } as any);
+    vi.mocked(prisma.aiAnalysis.count).mockResolvedValue(948);
+    vi.mocked(prisma.aiAnalysis.updateMany).mockResolvedValue({ count: 948 } as any);
+    vi.mocked(aiAnalysisService.applyApprovedSuggestions).mockResolvedValue({
+      applied: 2,
+      failed: 190,
+      errors: [],
+      modifiedBuffer: Buffer.from('pdf'),
+      fileName: 'doc.pdf',
+    });
+    vi.mocked(pdfReauditService.reauditAndCompare).mockResolvedValue({
+      success: true,
+      jobId: 'job-1',
+      originalAuditId: 'job-1',
+      reauditId: 'job-1-reaudit',
+      fileName: 'doc.pdf',
+      comparison: { resolved: [], remaining: [], regressions: [] },
+      metrics: { totalOriginal: 948, totalNew: 948, resolvedCount: 0, remainingCount: 948, regressionCount: 0, resolutionRate: 0 },
+      reauditReport: { issues: [] } as any,
+    } as any);
+    vi.mocked(prisma.job.findUnique).mockResolvedValue({ id: 'job-1', tenantId: 'tenant-1', output: {} } as any);
+
+    await autoRemediationLoopService.startAutoLoop(new ComparisonTrialAutoRemediationDriver('trial-1'));
+
+    // Stops after STALL_ROUND_LIMIT (2) rounds, not the round ceiling (10) --
+    // confirms resolvedCount, not the non-zero `applied` count, drives this.
+    expect(aiAnalysisService.analyzeJob).toHaveBeenCalledTimes(2);
+    expect(prisma.comparisonTrial.update).toHaveBeenCalledWith({
+      where: { id: 'trial-1' },
+      data: { autoStatus: 'stopped', autoStopReason: 'stalled', autoStopRequested: false, autoStoppedAt: expect.any(Date) },
+    });
+  });
+
   it('resets the stall counter once a round makes progress again', async () => {
     vi.mocked(prisma.comparisonTrial.findUnique).mockResolvedValue(makeTrial() as any);
     mockLockAcquired();
