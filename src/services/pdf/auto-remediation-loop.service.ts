@@ -540,7 +540,7 @@ class AutoRemediationLoopService {
           break;
         }
 
-        const { actionableFound, applied } = await this.runRound(
+        const { actionableFound, resolvedCount } = await this.runRound(
           jobId,
           cycleNumber,
           tenantId,
@@ -575,12 +575,20 @@ class AutoRemediationLoopService {
 
         await driver.recordRoundProgress(roundsCompleted, costSpentUsd);
 
-        // A round that found actionable work but applied none of it still
-        // consumed a round and Gemini tokens without making progress (e.g.
-        // every candidate hit an unhandled suggestionType or missing value)
-        // -- stop distinctly rather than let the round/cost ceiling silently
-        // absorb the real cause (see STALL_ROUND_LIMIT's doc comment above).
-        if (applied === 0) {
+        // Keyed on resolvedCount (re-audit-confirmed net progress), not the
+        // raw applied count -- a round can apply a handful of genuinely new,
+        // unrelated suggestions (keeping `applied` non-zero) while the
+        // re-audit still shows zero real progress, e.g. because most of what
+        // got "applied" was actually re-approved, permanently-failing
+        // suggestions from an earlier round net cancelling out against a
+        // small amount of real work. Real incident (Math_Olszewski_PDF.pdf,
+        // 2026-10-20): rounds 2 and 3 each applied 2 (non-zero), so this
+        // check never fired under the old `applied === 0` condition, even
+        // though the re-audit showed resolvedCount: 0, remainingCount: 948
+        // unchanged both times -- stop distinctly rather than let the
+        // round/cost ceiling silently absorb the real cause (see
+        // STALL_ROUND_LIMIT's doc comment above).
+        if (resolvedCount <= 0) {
           consecutiveStalls++;
           if (consecutiveStalls >= STALL_ROUND_LIMIT) {
             stopReason = 'stalled';
@@ -656,7 +664,7 @@ class AutoRemediationLoopService {
     cycleNumber: number,
     tenantId: string,
     colorContrastModeOverride: ColorContrastMode | undefined,
-  ): Promise<{ actionableFound: number; applied: number }> {
+  ): Promise<{ actionableFound: number; applied: number; resolvedCount: number }> {
     const roundStartedAt = new Date();
     const analysis = await aiAnalysisService.analyzeJob(
       jobId,
@@ -733,7 +741,7 @@ class AutoRemediationLoopService {
       },
     });
     if (actionableFound === 0) {
-      return { actionableFound: 0, applied: 0 };
+      return { actionableFound: 0, applied: 0, resolvedCount: 0 };
     }
 
     // Only flips 'pending' -> 'approved'; any leftover 'approved' row from a
@@ -751,7 +759,7 @@ class AutoRemediationLoopService {
 
     const result = await aiAnalysisService.applyApprovedSuggestions(jobId, cycleNumber, AUTO_MODE_ACTOR, 'auto_loop');
     if (result.applied === 0 || !result.modifiedBuffer || !result.fileName) {
-      return { actionableFound, applied: result.applied };
+      return { actionableFound, applied: result.applied, resolvedCount: 0 };
     }
 
     const reauditStartedAt = new Date();
@@ -797,7 +805,7 @@ class AutoRemediationLoopService {
       throw new Error(comparison.error ?? 'Re-audit failed during auto-remediation round');
     }
 
-    return { actionableFound, applied: result.applied };
+    return { actionableFound, applied: result.applied, resolvedCount };
   }
 }
 

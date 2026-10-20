@@ -340,6 +340,15 @@ export function buildIssueFingerprint(
  * color, summary) makes a same-type collision far less likely, and a null
  * existing.issueFingerprint (a pre-migration row) never matches a freshly
  * computed one, so old rows safely fall through once before self-healing.
+ *
+ * 'failed' (set by applyApprovedSuggestions after MAX_APPLY_ATTEMPTS
+ * failures, see its own doc comment) is preserved by the exact same
+ * unchanged-finding check as 'applied' -- without this, a permanently-broken
+ * suggestion's 'failed' status would be silently overwritten back to
+ * 'approved'/'pending' on the very next re-analysis pass (since 'failed' !==
+ * 'applied' would otherwise fall straight through to defaultStatus below),
+ * completely undoing the retry cap and reproducing the exact bug it exists
+ * to prevent.
  */
 export function resolveSuggestionStatus(
   existing: { status: string; suggestionType: string; value: string | null; issueFingerprint: string | null } | null,
@@ -348,7 +357,7 @@ export function resolveSuggestionStatus(
   effectiveApplyMode: AiSuggestionResult['applyMode']
 ): string {
   const defaultStatus = effectiveApplyMode === 'auto-resolve' ? 'approved' : 'pending';
-  if (!existing || existing.status !== 'applied') return defaultStatus;
+  if (!existing || (existing.status !== 'applied' && existing.status !== 'failed')) return defaultStatus;
 
   const unchanged =
     existing.issueFingerprint === issueFingerprint &&
@@ -356,7 +365,7 @@ export function resolveSuggestionStatus(
     existing.value != null &&
     existing.value === suggestion.value;
 
-  return unchanged ? 'applied' : defaultStatus;
+  return unchanged ? existing.status : defaultStatus;
 }
 // TABLE_LIKELY_FORMULA_CODE is a heuristic redirect (see its own doc comment
 // in pdf-table.validator.ts) — routed through the same AI-drafting path as
@@ -983,7 +992,7 @@ class AiAnalysisService {
           const issueFingerprint = buildIssueFingerprint(issue);
           let existing = await prisma.aiAnalysis.findUnique({
             where: { jobId_issueId: { jobId, issueId: issue.id } },
-            select: { status: true, suggestionType: true, value: true, issueFingerprint: true },
+            select: { status: true, suggestionType: true, value: true, issueFingerprint: true, failedAttempts: true },
           });
           // Fallback: issue.id can be stale even for THIS issue. An intervening
           // re-audit (e.g. applyAll's internal reauditAndCompare) regenerates every
@@ -998,7 +1007,7 @@ class AiAnalysisService {
           if (!existing || existing.issueFingerprint !== issueFingerprint) {
             const byFingerprint = await prisma.aiAnalysis.findFirst({
               where: { jobId, issueFingerprint },
-              select: { status: true, suggestionType: true, value: true, issueFingerprint: true },
+              select: { status: true, suggestionType: true, value: true, issueFingerprint: true, failedAttempts: true },
               // Stale rows can accumulate under successive old ids sharing this
               // fingerprint across repeated re-audits — take the most recently
               // written one, not an arbitrary one.
@@ -1007,6 +1016,11 @@ class AiAnalysisService {
             if (byFingerprint) existing = byFingerprint;
           }
           const status = resolveSuggestionStatus(existing, suggestion, issueFingerprint, effectiveApplyMode);
+          // The finding genuinely changed out from under a previously 'failed'
+          // row (resolveSuggestionStatus returned something other than
+          // 'failed') -- give it a clean slate of attempts rather than
+          // carrying over a count earned against a now-stale finding.
+          const resetFailedAttempts = existing?.status === 'failed' && status !== 'failed';
 
           await prisma.aiAnalysis.upsert({
             where: { jobId_issueId: { jobId, issueId: issue.id } },
@@ -1036,6 +1050,7 @@ class AiAnalysisService {
               status,
               requiresManualReview: suggestion.requiresManualReview ?? false,
               issueFingerprint,
+              ...(resetFailedAttempts && { failedAttempts: 0 }),
               updatedAt: new Date(),
             },
           });
@@ -3049,6 +3064,16 @@ class AiAnalysisService {
   }
 
   /**
+   * A row that fails to apply this many times gets marked 'failed' (terminal
+   * -- see the schema's own doc comment) instead of staying 'approved'
+   * forever. Matches STALL_ROUND_LIMIT's threshold in
+   * auto-remediation-loop.service.ts -- not load-bearing that they're equal,
+   * just a consistent "give it two real tries" convention across both
+   * safety nets.
+   */
+  private static readonly MAX_APPLY_ATTEMPTS = 2;
+
+  /**
    * Applies every eligible `applyMode: 'apply-to-pdf'` suggestion to the
    * job's PDF and saves the result. Extracted from
    * pdf-ai-analysis.controller.ts's applyAll so the auto-remediation loop can
@@ -3466,12 +3491,14 @@ class AiAnalysisService {
           const reason = modification.error ?? 'Unknown error';
           errors.push({ issueId, suggestionType, reason });
           logger.warn(`[AiAnalysis] applyApprovedSuggestions: failed to apply ${suggestionType} for ${issueId}: ${reason}`);
+          await this.recordApplyFailure(jobId, issueId, analysis.failedAttempts);
         }
       } catch (err) {
         failed++;
         const reason = err instanceof Error ? err.message : String(err);
         errors.push({ issueId: analysis.issueId, suggestionType, reason });
         logger.warn(`[AiAnalysis] applyApprovedSuggestions: error for ${analysis.issueId}: ${reason}`);
+        await this.recordApplyFailure(jobId, analysis.issueId, analysis.failedAttempts);
       }
 
       broadcastApplyProgress();
@@ -3522,6 +3549,28 @@ class AiAnalysisService {
     });
 
     return { applied, failed, errors, modifiedBuffer, fileName };
+  }
+
+  /**
+   * Increments a suggestion's failedAttempts and, once it reaches
+   * MAX_APPLY_ATTEMPTS, marks it 'failed' -- terminal, so it stops being
+   * picked up by actionableFound's pending/approved query and the loop can
+   * actually converge instead of re-approving the same guaranteed failure
+   * every round (real incident, Math_Olszewski_PDF.pdf, 2026-10-20: the same
+   * ~190 suggestion IDs failed with the identical error message in all 3
+   * rounds). Below the cap, status is left untouched (still 'approved'), so
+   * it gets one more real attempt next round.
+   */
+  private async recordApplyFailure(jobId: string, issueId: string, currentFailedAttempts: number): Promise<void> {
+    const failedAttempts = currentFailedAttempts + 1;
+    await prisma.aiAnalysis.update({
+      where: { jobId_issueId: { jobId, issueId } },
+      data: {
+        failedAttempts,
+        ...(failedAttempts >= AiAnalysisService.MAX_APPLY_ATTEMPTS && { status: 'failed' }),
+        updatedAt: new Date(),
+      },
+    });
   }
 }
 

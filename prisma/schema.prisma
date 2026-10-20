@@ -2255,8 +2255,22 @@ model AiAnalysis {
   model                String
   /// 'apply-to-pdf' | 'guidance-only' | 'auto-resolve'
   applyMode            String
-  /// 'pending' | 'approved' | 'rejected' | 'applied'
+  /// 'pending' | 'approved' | 'rejected' | 'applied' | 'failed' -- 'failed' is
+  /// terminal, set once applyApprovedSuggestions has failed to apply this
+  /// suggestion MAX_APPLY_ATTEMPTS times (see ai-analysis.service.ts). Without
+  /// this, a suggestion whose fix handler fails for a structural reason that
+  /// never changes (e.g. the PDF genuinely has no Figure element for this
+  /// image) stayed 'approved' forever and got silently re-approved and
+  /// re-attempted every single auto-mode round, burning that round's AI
+  /// analysis cost on a guaranteed repeat failure -- confirmed live on
+  /// Math_Olszewski_PDF.pdf (2026-10-20): the same ~190 suggestion IDs failed
+  /// with the identical error message in all 3 rounds.
   status               String   @default("pending")
+  /// Incremented each time applyApprovedSuggestions fails to apply this row;
+  /// reset to 0 whenever resolveSuggestionStatus detects the underlying
+  /// finding actually changed (new issueFingerprint/suggestionType/value),
+  /// since that's a genuinely different attempt at a different thing.
+  failedAttempts       Int      @default(0)
   requiresManualReview Boolean  @default(false)
   /// 'operator' | 'auto-mode' -- who/what set status to 'approved'. Null for
   /// rows never approved (still pending/rejected) or predating this column.
