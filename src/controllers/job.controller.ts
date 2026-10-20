@@ -35,6 +35,73 @@ interface JobOutput {
 }
 
 /**
+ * Flattens a PDF accessibility audit's nested `auditReport` (written by
+ * accessibility.processor.ts's single-file path and
+ * pdf-batch-orchestrator.service.ts's batch path -- both persist
+ * `output: { auditReport: AuditReport, ... }`, never flat top-level
+ * score/summary/combinedIssues) onto the output's own top level.
+ *
+ * Real incident (2026-10-20): the generic Jobs > :jobId detail page
+ * (JobDetails.tsx, via parseJobOutput) only ever reads flat top-level
+ * fields -- a shape contract that matches EPUB's own audit output
+ * (epub-audit.service.ts spreads its EpubAuditResult, which already has
+ * score/summary/combinedIssues at the top level) but has never matched a
+ * PDF audit job's output. Every PDF_ACCESSIBILITY job (batch-sourced or
+ * single-file upload, confirmed by reading both writers) rendered
+ * "Score 0 / No detailed issues available" on that page despite the real
+ * audit data sitting one level down, under `auditReport`.
+ *
+ * Only triggers when the top-level score/combinedIssues are absent, so an
+ * already-flat shape (or a future writer that flattens at write-time) is
+ * left untouched, and other PDF-specific consumers that read
+ * `output.auditReport` directly (PdfAuditResultsPage.tsx, re-audit, PAC
+ * report, ACR analysis) are unaffected since auditReport itself is never
+ * removed.
+ */
+function flattenPdfAuditReport(rawOutput: JobOutput): JobOutput {
+  if (typeof rawOutput.score === 'number' || Array.isArray(rawOutput.combinedIssues)) {
+    return rawOutput;
+  }
+
+  const auditReport = rawOutput.auditReport;
+  if (!auditReport || typeof auditReport !== 'object' || Array.isArray(auditReport)) {
+    return rawOutput;
+  }
+
+  const report = auditReport as Record<string, unknown>;
+  if (typeof report.score !== 'number' || !Array.isArray(report.issues)) {
+    return rawOutput;
+  }
+
+  const summary = report.summary && typeof report.summary === 'object'
+    ? report.summary as Record<string, unknown>
+    : {};
+  const critical = typeof summary.critical === 'number' ? summary.critical : 0;
+
+  return {
+    ...rawOutput,
+    score: report.score,
+    // No PDF-report equivalent of EPUB's own "isValid" concept -- a
+    // successfully generated AuditReport means parsing/validation ran to
+    // completion, so treat that as valid rather than defaulting to the
+    // misleading "false" a job that never set this field would otherwise get.
+    isValid: true,
+    // Same accessibility threshold EPUB audits already use
+    // (epub-audit.service.ts), reused here for a consistent definition
+    // across audit types rather than inventing a second one.
+    isAccessible: report.score >= 70 && critical === 0,
+    summary: {
+      total: typeof summary.total === 'number' ? summary.total : 0,
+      critical,
+      serious: typeof summary.serious === 'number' ? summary.serious : 0,
+      moderate: typeof summary.moderate === 'number' ? summary.moderate : 0,
+      minor: typeof summary.minor === 'number' ? summary.minor : 0,
+    },
+    combinedIssues: report.issues,
+  };
+}
+
+/**
  * Normalizes job output to ensure consistent structure with default values.
  * Prevents null/undefined errors when accessing output properties.
  * Spreads raw output first, then overrides with normalized values to ensure
@@ -43,10 +110,12 @@ interface JobOutput {
  * @returns Normalized output with all required fields populated
  */
 function normalizeJobOutput(output: unknown): JobOutput {
-  const rawOutput = (output && typeof output === 'object' && !Array.isArray(output))
-    ? (output as JobOutput)
-    : {};
-  
+  const rawOutput = flattenPdfAuditReport(
+    (output && typeof output === 'object' && !Array.isArray(output))
+      ? (output as JobOutput)
+      : {}
+  );
+
   const rawSummary = rawOutput.summary && typeof rawOutput.summary === 'object'
     ? rawOutput.summary
     : {};
@@ -258,7 +327,16 @@ export class JobController {
 
       res.json({
         success: true,
-        data: job,
+        data: {
+          ...job,
+          // Unlike list()/getResults(), this endpoint previously returned
+          // job.output completely raw with no normalization at all -- the
+          // generic Jobs > :jobId detail page (JobDetails.tsx) is the one
+          // that actually hits this endpoint, so it got neither this
+          // function's PDF auditReport flattening nor its missing-field
+          // defaults.
+          output: normalizeJobOutput(job.output),
+        },
       });
     } catch (error) {
       next(error);
