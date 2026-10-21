@@ -358,6 +358,34 @@ describe('PdfBatchController', () => {
       expect(payload.data.items[0].issuesGuidanceOnly).toBeNull();
     });
 
+    /**
+     * CodeRabbit finding on this PR, confirmed real: Promise.all over every
+     * item's live lookup would otherwise reject the WHOLE batch-detail
+     * request if even one item's computeRemediationCounts call throws
+     * (e.g. a transient DB error) -- a live enhancement over an
+     * already-correct stored snapshot should never be able to take down
+     * the entire response.
+     */
+    it('falls back to the stored values (and still returns the rest of the batch) when a live lookup throws', async () => {
+      mockPdfBatchFindFirst.mockResolvedValue({
+        id: 'batch-1', name: 'B', status: 'PROCESSING', totalFiles: 1, createdAt: new Date(), startedAt: new Date(), completedAt: null,
+        items: [
+          { id: 'item-1', fileName: 'a.pdf', originalName: 'a.pdf', fileSize: BigInt(10), status: 'REMEDIATED', auditScore: 49, issuesFound: 1812, pageCount: 414, issuesAutoFixed: 1323, issuesGuidanceOnly: 489, remediatedFilePath: null, error: null, uploadedAt: new Date(), auditJobId: 'job-1', auditStartedAt: new Date(), auditCompletedAt: new Date(), remediationStartedAt: new Date(), remediationCompletedAt: new Date() },
+        ],
+      });
+      mockPdfBatchItemGroupBy.mockResolvedValue([{ status: 'REMEDIATED', _count: { status: 1 } }]);
+      mockComputeRemediationCounts.mockRejectedValue(new Error('transient DB error'));
+      const res = makeRes();
+
+      await pdfBatchController.getBatch(makeReq({ params: { batchId: 'batch-1' } }), res);
+
+      expect(res.status).not.toHaveBeenCalledWith(500);
+      const payload = (res.json as any).mock.calls[0][0];
+      expect(payload.success).toBe(true);
+      expect(payload.data.items[0].issuesAutoFixed).toBe(1323);
+      expect(payload.data.items[0].issuesGuidanceOnly).toBe(489);
+    });
+
     it('falls back to the stored values when the live computation returns null (remediation started but no reaudit completed yet)', async () => {
       mockPdfBatchFindFirst.mockResolvedValue({
         id: 'batch-1', name: 'B', status: 'PROCESSING', totalFiles: 1, createdAt: new Date(), startedAt: new Date(), completedAt: null,

@@ -301,8 +301,21 @@ class PdfBatchController {
         batch.items
           .filter((i) => i.remediationStartedAt && i.auditJobId)
           .map(async (i) => {
-            const counts = await computeRemediationCounts(i.auditJobId!, i.issuesFound);
-            if (counts) liveCountsByItemId.set(i.id, counts);
+            try {
+              const counts = await computeRemediationCounts(i.auditJobId!, i.issuesFound);
+              if (counts) liveCountsByItemId.set(i.id, counts);
+            } catch (err) {
+              // Non-fatal by design -- this is a live enhancement over an
+              // already-correct stored snapshot (CodeRabbit finding,
+              // confirmed real: Promise.all would otherwise fail the WHOLE
+              // batch-detail request over one item's transient lookup
+              // failure). Falls through to the stored i.issuesAutoFixed/
+              // issuesGuidanceOnly below, same as when there's simply
+              // nothing live to report yet.
+              logger.warn(
+                `[PdfBatchController] Live remediation-count lookup failed for item ${i.id} (job ${i.auditJobId}), falling back to stored snapshot: ${err instanceof Error ? err.message : String(err)}`
+              );
+            }
           })
       );
 
