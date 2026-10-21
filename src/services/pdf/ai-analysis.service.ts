@@ -3049,6 +3049,25 @@ class AiAnalysisService {
         })
         .filter((i): i is { imageId: string; pageNumber: number; position: ImageInfo['position'] } => !!i);
 
+      // Diagnostic (2026-10-21, Math_Olszewski_PDF.pdf investigation): a real
+      // run showed ~500 alt-text suggestions failing with "no Figure elements
+      // in structure tree" and buildFigureFromImage's own failure warning
+      // (below) never appearing at all -- meaning these imageIds never made
+      // it into `images` in the first place, silently dropped right here with
+      // nothing logged. This single line is the missing evidence: it shows
+      // exactly which ids `missing` expected vs what imageInfoById actually
+      // has on hand, so the next real run tells us definitively whether this
+      // is an id-format mismatch, a stale/cached extraction, or something
+      // else -- rather than guessing further from static code reading alone.
+      if (images.length < missing.length) {
+        const unmatched = missing.filter(id => !imageInfoById.has(id));
+        logger.warn(
+          `[AiAnalysis] ensureFigureForImages: ${unmatched.length}/${missing.length} imageId(s) not found in this round's re-extraction -- ` +
+          `sample unmatched: ${JSON.stringify(unmatched.slice(0, 10))}, ` +
+          `sample extracted keys: ${JSON.stringify([...imageInfoById.keys()].slice(0, 10))}`
+        );
+      }
+
       if (images.length > 0) {
         const results = await pdfStructureWriterService.buildFigureFromImage(doc, parsedForImages, images);
         const failed = results.filter(r => !r.success).length;
