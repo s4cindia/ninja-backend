@@ -64,6 +64,11 @@ vi.mock('../../../src/services/pdf-batch/concurrency-budget.service', () => ({
   computeSizeWeight: vi.fn(() => 1),
 }));
 
+const mockComputeRemediationCounts = vi.fn();
+vi.mock('../../../src/services/pdf/remediation-cycle-history.service', () => ({
+  computeRemediationCounts: (...args: unknown[]) => mockComputeRemediationCounts(...args),
+}));
+
 import { pdfBatchController } from '../../../src/controllers/pdf-batch.controller';
 
 function makeRes(): Response {
@@ -288,6 +293,116 @@ describe('PdfBatchController', () => {
       await pdfBatchController.getBatch(makeReq({ params: { batchId: 'batch-1' } }), res);
 
       expect(res.status).toHaveBeenCalledWith(404);
+    });
+
+    /**
+     * Real gap (2026-10-21): pdf-batch-orchestrator.service.ts writes
+     * issuesAutoFixed/issuesGuidanceOnly onto PdfBatchItem exactly once,
+     * when its own runRemediationPhase call returns -- including on a
+     * budget_limit stop. A job can keep genuinely improving afterward via
+     * POST /pdf/:jobId/auto-mode/start (confirmed live on
+     * Math_Olszewski_PDF.pdf), but nothing re-invokes runRemediationPhase,
+     * so the stored snapshot goes stale while the job keeps moving. This
+     * endpoint now recomputes live from the same source of truth instead.
+     */
+    it('overrides issuesAutoFixed/issuesGuidanceOnly with live counts when remediation was started -- the job-level-resume regression', async () => {
+      mockPdfBatchFindFirst.mockResolvedValue({
+        id: 'batch-1', name: 'B', status: 'PROCESSING', totalFiles: 1, createdAt: new Date(), startedAt: new Date(), completedAt: null,
+        items: [
+          {
+            id: 'item-1', fileName: 'a.pdf', originalName: 'a.pdf', fileSize: BigInt(10), status: 'REMEDIATED',
+            auditScore: 49, issuesFound: 1812, pageCount: 414,
+            // Stale snapshot from the FIRST stop (budget_limit) -- lower
+            // than what the job-level resume has since achieved.
+            issuesAutoFixed: 1323, issuesGuidanceOnly: 489,
+            remediatedFilePath: 's3://remediated/a.pdf', error: null, uploadedAt: new Date(),
+            auditJobId: 'job-1', auditStartedAt: new Date(), auditCompletedAt: new Date(),
+            remediationStartedAt: new Date(), remediationCompletedAt: new Date(),
+          },
+        ],
+      });
+      mockPdfBatchItemGroupBy.mockResolvedValue([{ status: 'REMEDIATED', _count: { status: 1 } }]);
+      // The live computation (round 2+, after a job-level resume) reflects
+      // more real progress than the stale stored snapshot above.
+      mockComputeRemediationCounts.mockResolvedValue({ issuesAutoFixed: 1600, issuesGuidanceOnly: 212 });
+      const res = makeRes();
+
+      await pdfBatchController.getBatch(makeReq({ params: { batchId: 'batch-1' } }), res);
+
+      expect(mockComputeRemediationCounts).toHaveBeenCalledWith('job-1', 1812);
+      const payload = (res.json as any).mock.calls[0][0];
+      expect(payload.data.items[0].issuesAutoFixed).toBe(1600);
+      expect(payload.data.items[0].issuesGuidanceOnly).toBe(212);
+      // status and remediatedFilePath are NOT live-recomputed -- deliberately
+      // out of scope (status is the batch pipeline's own state machine;
+      // remediatedFilePath is a deterministic storage key, still correct).
+      expect(payload.data.items[0].status).toBe('REMEDIATED');
+      expect(payload.data.items[0].remediatedFilePath).toBe('s3://remediated/a.pdf');
+    });
+
+    it('does not call computeRemediationCounts for an item that never reached remediation -- no added cost for the common case', async () => {
+      mockPdfBatchFindFirst.mockResolvedValue({
+        id: 'batch-1', name: 'B', status: 'PROCESSING', totalFiles: 1, createdAt: new Date(), startedAt: new Date(), completedAt: null,
+        items: [
+          { id: 'item-1', fileName: 'a.pdf', originalName: 'a.pdf', fileSize: BigInt(10), status: 'AUDITED', auditScore: 90, issuesFound: 3, pageCount: 5, issuesAutoFixed: null, issuesGuidanceOnly: null, remediatedFilePath: null, error: null, uploadedAt: new Date(), auditJobId: 'job-1', auditStartedAt: new Date(), auditCompletedAt: new Date(), remediationStartedAt: null, remediationCompletedAt: null },
+        ],
+      });
+      mockPdfBatchItemGroupBy.mockResolvedValue([{ status: 'AUDITED', _count: { status: 1 } }]);
+      const res = makeRes();
+
+      await pdfBatchController.getBatch(makeReq({ params: { batchId: 'batch-1' } }), res);
+
+      expect(mockComputeRemediationCounts).not.toHaveBeenCalled();
+      const payload = (res.json as any).mock.calls[0][0];
+      expect(payload.data.items[0].issuesAutoFixed).toBeNull();
+      expect(payload.data.items[0].issuesGuidanceOnly).toBeNull();
+    });
+
+    /**
+     * CodeRabbit finding on this PR, confirmed real: Promise.all over every
+     * item's live lookup would otherwise reject the WHOLE batch-detail
+     * request if even one item's computeRemediationCounts call throws
+     * (e.g. a transient DB error) -- a live enhancement over an
+     * already-correct stored snapshot should never be able to take down
+     * the entire response.
+     */
+    it('falls back to the stored values (and still returns the rest of the batch) when a live lookup throws', async () => {
+      mockPdfBatchFindFirst.mockResolvedValue({
+        id: 'batch-1', name: 'B', status: 'PROCESSING', totalFiles: 1, createdAt: new Date(), startedAt: new Date(), completedAt: null,
+        items: [
+          { id: 'item-1', fileName: 'a.pdf', originalName: 'a.pdf', fileSize: BigInt(10), status: 'REMEDIATED', auditScore: 49, issuesFound: 1812, pageCount: 414, issuesAutoFixed: 1323, issuesGuidanceOnly: 489, remediatedFilePath: null, error: null, uploadedAt: new Date(), auditJobId: 'job-1', auditStartedAt: new Date(), auditCompletedAt: new Date(), remediationStartedAt: new Date(), remediationCompletedAt: new Date() },
+        ],
+      });
+      mockPdfBatchItemGroupBy.mockResolvedValue([{ status: 'REMEDIATED', _count: { status: 1 } }]);
+      mockComputeRemediationCounts.mockRejectedValue(new Error('transient DB error'));
+      const res = makeRes();
+
+      await pdfBatchController.getBatch(makeReq({ params: { batchId: 'batch-1' } }), res);
+
+      expect(res.status).not.toHaveBeenCalledWith(500);
+      const payload = (res.json as any).mock.calls[0][0];
+      expect(payload.success).toBe(true);
+      expect(payload.data.items[0].issuesAutoFixed).toBe(1323);
+      expect(payload.data.items[0].issuesGuidanceOnly).toBe(489);
+    });
+
+    it('falls back to the stored values when the live computation returns null (remediation started but no reaudit completed yet)', async () => {
+      mockPdfBatchFindFirst.mockResolvedValue({
+        id: 'batch-1', name: 'B', status: 'PROCESSING', totalFiles: 1, createdAt: new Date(), startedAt: new Date(), completedAt: null,
+        items: [
+          { id: 'item-1', fileName: 'a.pdf', originalName: 'a.pdf', fileSize: BigInt(10), status: 'REMEDIATING', auditScore: 49, issuesFound: 1812, pageCount: 414, issuesAutoFixed: null, issuesGuidanceOnly: null, remediatedFilePath: null, error: null, uploadedAt: new Date(), auditJobId: 'job-1', auditStartedAt: new Date(), auditCompletedAt: new Date(), remediationStartedAt: new Date(), remediationCompletedAt: null },
+        ],
+      });
+      mockPdfBatchItemGroupBy.mockResolvedValue([{ status: 'REMEDIATING', _count: { status: 1 } }]);
+      mockComputeRemediationCounts.mockResolvedValue(null);
+      const res = makeRes();
+
+      await pdfBatchController.getBatch(makeReq({ params: { batchId: 'batch-1' } }), res);
+
+      expect(mockComputeRemediationCounts).toHaveBeenCalledWith('job-1', 1812);
+      const payload = (res.json as any).mock.calls[0][0];
+      expect(payload.data.items[0].issuesAutoFixed).toBeNull();
+      expect(payload.data.items[0].issuesGuidanceOnly).toBeNull();
     });
   });
 });

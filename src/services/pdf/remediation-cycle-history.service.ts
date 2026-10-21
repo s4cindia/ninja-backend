@@ -52,3 +52,37 @@ class RemediationCycleHistoryService {
 }
 
 export const remediationCycleHistoryService = new RemediationCycleHistoryService();
+
+/**
+ * Derives a job's real cumulative auto-fix counts from its remediation
+ * history -- the single source of truth both pdf-batch-orchestrator.service
+ * .ts's one-time PdfBatchItem write and pdf-batch.controller.ts's live
+ * GET /pdf-batches/:batchId read now share, so they can never drift apart
+ * the way the original issuesAutoFixed bug (PR #708) did.
+ *
+ * resolvedCount is inherently per-round (how many issues THAT round's
+ * reaudit resolved), never cumulative, so only the gap between the
+ * original audit's issue count and the LATEST reaudit's own remainingCount
+ * is actually cumulative by construction -- see PR #708's own doc comment
+ * for the incident this fixed. Safe to call at any point mid-round: the
+ * latest *completed* reaudit is always a consistent, final snapshot of
+ * where things stood as of that reaudit, never a partial/torn read.
+ *
+ * Returns null when no reaudit has ever completed for this job -- nothing
+ * to report yet, caller decides the fallback (e.g. keep showing whatever
+ * it already has).
+ */
+export async function computeRemediationCounts(
+  jobId: string,
+  issuesFound: number | null
+): Promise<{ issuesAutoFixed: number; issuesGuidanceOnly: number } | null> {
+  const events = await remediationCycleHistoryService.listForJob(jobId);
+  const lastReaudit = [...events].reverse().find(
+    (e) => e.action === 'reaudit' && e.status === 'completed' && e.resolvedCount != null
+  );
+  if (!lastReaudit) return null;
+
+  const issuesGuidanceOnly = lastReaudit.remainingCount ?? 0;
+  const issuesAutoFixed = Math.max(0, (issuesFound ?? 0) - issuesGuidanceOnly);
+  return { issuesAutoFixed, issuesGuidanceOnly };
+}

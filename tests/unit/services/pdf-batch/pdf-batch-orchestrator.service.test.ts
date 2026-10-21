@@ -90,6 +90,22 @@ vi.mock('../../../../src/services/pdf/auto-remediation-loop.service', () => {
 const mockListForJob = vi.fn();
 vi.mock('../../../../src/services/pdf/remediation-cycle-history.service', () => ({
   remediationCycleHistoryService: { listForJob: (...args: unknown[]) => mockListForJob(...args) },
+  // Real implementation, routed through the same mocked listForJob --
+  // every existing mockListForJob.mockResolvedValue(...) setup below still
+  // drives this unchanged, since the orchestrator now calls this shared
+  // function instead of listForJob directly (see remediation-cycle-history
+  // .service.ts's own real implementation, which this mirrors exactly).
+  computeRemediationCounts: async (jobId: string, issuesFound: number | null) => {
+    const events = await mockListForJob(jobId);
+    const lastReaudit = [...events].reverse().find(
+      (e: { action: string; status: string; resolvedCount: number | null }) =>
+        e.action === 'reaudit' && e.status === 'completed' && e.resolvedCount != null
+    );
+    if (!lastReaudit) return null;
+    const issuesGuidanceOnly = lastReaudit.remainingCount ?? 0;
+    const issuesAutoFixed = Math.max(0, (issuesFound ?? 0) - issuesGuidanceOnly);
+    return { issuesAutoFixed, issuesGuidanceOnly };
+  },
 }));
 
 const mockWaitForLease = vi.fn();

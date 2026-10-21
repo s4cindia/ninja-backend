@@ -28,7 +28,7 @@ import { pdfAuditService } from '../pdf/pdf-audit.service';
 import { autoTagIfNeeded } from '../pdf/pdf-auto-tag-orchestrator.service';
 import { createAuditProgressCallbacks } from '../pdf/pdf-audit-progress-tracker';
 import { autoRemediationLoopService, JobAutoRemediationDriver } from '../pdf/auto-remediation-loop.service';
-import { remediationCycleHistoryService } from '../pdf/remediation-cycle-history.service';
+import { computeRemediationCounts } from '../pdf/remediation-cycle-history.service';
 import {
   concurrencyBudgetService,
   computePageWeight,
@@ -457,27 +457,21 @@ class PdfBatchOrchestratorService {
       const output = (finalJob?.output ?? {}) as Record<string, unknown>;
       const remediatedFilePath = (output.remediatedFileUrl as string | undefined) ?? null;
 
-      // The loop's own per-round reaudit already logs resolved/remaining
-      // counts to the same append-only history GET .../remediation/history
-      // reads -- take the latest completed one for the CURRENT remaining
-      // count (it's a snapshot of where things stand now, so the latest is
-      // correct), but NOT for issuesAutoFixed: resolvedCount is per-round
-      // (how many issues THAT round's reaudit resolved), not cumulative.
-      // Real incident (2026-10-20): a run that resolved 344 issues in round
-      // 1 but then plateaued (0 resolved in rounds 2-3, remaining
-      // unchanged) reported issuesAutoFixed: 0, because the last reaudit's
-      // own resolvedCount was 0 -- discarding round 1's real progress
-      // entirely. The only value that's actually cumulative-by-construction
-      // is the gap between the original audit's issue count and however
-      // many remain now.
-      const events = await remediationCycleHistoryService.listForJob(jobId);
-      const lastReaudit = [...events].reverse().find(
-        (e) => e.action === 'reaudit' && e.status === 'completed' && e.resolvedCount != null
-      );
-      const issuesGuidanceOnly = lastReaudit?.remainingCount ?? 0;
-      const issuesAutoFixed = lastReaudit
-        ? Math.max(0, (item.issuesFound ?? 0) - issuesGuidanceOnly)
-        : 0;
+      // Real incident (2026-10-20): resolvedCount is per-round (how many
+      // issues THAT round's reaudit resolved), not cumulative -- a run that
+      // resolved 344 issues in round 1 but then plateaued (0 resolved in
+      // rounds 2-3) used to report issuesAutoFixed: 0, discarding round 1's
+      // real progress entirely. computeRemediationCounts derives the only
+      // value that's actually cumulative by construction: the gap between
+      // the original audit's issue count and the latest reaudit's own
+      // remainingCount. Shared with pdf-batch.controller.ts's getBatch,
+      // which calls it again live at read time -- this write here is a
+      // one-time snapshot (see that controller's own doc comment for why a
+      // job-level Auto Mode resume after this item's own terminal write
+      // needs a live read, not just this snapshot, to stay accurate).
+      const counts = await computeRemediationCounts(jobId, item.issuesFound);
+      const issuesAutoFixed = counts?.issuesAutoFixed ?? 0;
+      const issuesGuidanceOnly = counts?.issuesGuidanceOnly ?? 0;
 
       await prisma.pdfBatchItem.update({
         where: { id: itemId },
