@@ -4,9 +4,13 @@
  * Covers processPdfAccessibility's tagging control flow, focused on the
  * strip-and-retag path (structure-tree-completeness.ts +
  * strip-marked-content.ts wired together): when an existing structure tree
- * is a semantically empty shell and forceAutoTag is set, the worker should
- * strip old marked content and retry tagging — falling back safely to the
- * existing structure/buffer whenever any step of that isn't possible.
+ * is a semantically empty shell or carries zero heading tags, the worker
+ * should strip old marked content and retry tagging — falling back safely
+ * to the existing structure/buffer whenever any step of that isn't
+ * possible. Reachable on every job now (2026-10-21 fix), not just
+ * forceAutoTag (Comparison Study trials) -- forceAutoTag's own remaining
+ * role is forcing a retag even over genuinely good structure, exercised
+ * separately below.
  */
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
@@ -178,8 +182,36 @@ describe('processPdfAccessibility — auto-tag / strip-and-retag wiring', () => 
     expect(result.data?.retagOutcome).toBeUndefined();
   });
 
-  it('skips tagging entirely when already tagged and forceAutoTag is not set', async () => {
+  /**
+   * Real incident (Math_Olszewski_PDF.pdf, 2026-10-21): the strip-and-retag
+   * trigger for isEmptyShell/isHeadingShell used to require forceAutoTag,
+   * which is only ever true for Comparison Study trials -- a regular
+   * production job like this one (no forceAutoTag) never got a real retag
+   * attempt no matter how incomplete its claimed structure was. Now that
+   * gate is gone for both shell types: a retag is attempted here too, even
+   * without forceAutoTag. This fixture has no real page content to strip,
+   * so the attempt bails the same way "falls back to the existing structure
+   * when there is nothing to strip" does (below) -- the point is that a
+   * retag is attempted at all now, not that it succeeds.
+   */
+  it('attempts a strip-and-retag even without forceAutoTag now that isHeadingShell is no longer gated behind it', async () => {
     const originalBuffer = await buildGenuinelyTaggedDoc();
+    vi.mocked(fileStorageService.getFile).mockResolvedValue(originalBuffer);
+    vi.mocked(pdfParserService.parseBuffer).mockResolvedValue({ structure: { metadata: { isTagged: true } } } as any);
+    vi.mocked(seamCTagService.tagPdf).mockRejectedValue(new Error('SEAM_C_ALREADY_TAGGED: document already has a /StructTreeRoot'));
+
+    const result = await processAccessibilityJob(makeJob());
+
+    expect(seamCTagService.tagPdf).toHaveBeenCalledTimes(1); // attempted once, bailed on strip (nothing to strip)
+    expect(result.data?.autoTagStatus).toBe('skipped');
+    expect(result.data?.autoTagSkipReason).toBe('already-tagged');
+    expect(result.data?.retagOutcome).toBe('failed-strip-bailed');
+    expect((result.data?.structureTreeCompleteness as any)?.isEmptyShell).toBe(false);
+    expect((result.data?.structureTreeCompleteness as any)?.isHeadingShell).toBe(true);
+  });
+
+  it('does NOT attempt tagging at all for a genuinely well-tagged document without forceAutoTag -- no regression', async () => {
+    const originalBuffer = await buildFullyTaggedDoc();
     vi.mocked(fileStorageService.getFile).mockResolvedValue(originalBuffer);
     vi.mocked(pdfParserService.parseBuffer).mockResolvedValue({ structure: { metadata: { isTagged: true } } } as any);
 
