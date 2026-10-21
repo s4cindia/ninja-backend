@@ -75,12 +75,12 @@ async function logStructureCompleteness(buffer: Buffer, dbJobId: string): Promis
  * @param fileBuffer - Original PDF bytes, as downloaded/read from storage
  * @param dbJobId - The Job row this tagging pass is recorded against (progress bookkeeping lives in job.input)
  * @param fileName - Original file name, used for the remediated/report/docx storage keys
- * @param forceAutoTag - Bypasses the isTagged check. Scoped to Comparison Study trials
- *   in the single-file flow: the /MarkInfo /Marked flag isTagged relies on only means a
- *   PDF *claims* structure -- plenty of real documents set it while having minimal/poor
- *   tagging. Skipping re-tagging on that basis is a reasonable default for regular
- *   uploads (avoids clobbering genuinely good existing structure), but it silently
- *   defeats a trial's whole purpose: measuring what Ninja's pipeline actually produces.
+ * @param forceAutoTag - Forces a re-tag even when the existing structure is genuinely
+ *   good (not just empty/heading-shell -- see below). Scoped to Comparison Study trials:
+ *   the /MarkInfo /Marked flag isTagged relies on only means a PDF *claims* structure,
+ *   and a real document can have perfectly good tagging already -- forcing a re-tag over
+ *   that on a regular upload would clobber genuinely good structure for no reason, but a
+ *   trial's whole purpose is measuring what Ninja's own pipeline produces regardless.
  */
 export async function autoTagIfNeeded(
   fileBuffer: Buffer,
@@ -100,14 +100,39 @@ export async function autoTagIfNeeded(
 
   logger.info(`[PdfAutoTagOrchestrator] PDF isTagged=${isTagged} for job ${dbJobId}`);
 
+  // Real incident (Math_Olszewski_PDF.pdf, 2026-10-21): isTagged above is a
+  // pure /MarkInfo /Marked presence check -- a document can set that flag
+  // while its structure tree is a complete empty shell (415 elements, 0
+  // semantically typed) or has real content tags but zero headings. Before
+  // this, that was only ever detected AFTER deciding to skip tagging (purely
+  // for logging), and the actual strip-and-retag fix for it only ran for
+  // forceAutoTag (Comparison Study trials) -- a regular upload or PDF Batch
+  // item with a claimed-but-useless structure tree never got real tagging on
+  // any production path, no matter how badly it needed it. Checking upfront
+  // (when claimed-tagged) lets an empty/heading-shell document get the same
+  // real tagging pass forceAutoTag already proved safe for trials.
+  let upfrontCompleteness: ReturnType<typeof checkStructureTreeCompleteness> = null;
+  if (isTagged) {
+    try {
+      const doc = await PDFDocument.load(fileBuffer);
+      upfrontCompleteness = checkStructureTreeCompleteness(doc);
+    } catch (completenessErr) {
+      logger.warn(`[PdfAutoTagOrchestrator] Upfront completeness check failed for job ${dbJobId} (treating existing structure as trustworthy): ${completenessErr instanceof Error ? completenessErr.message : String(completenessErr)}`);
+    }
+  }
+  const needsRetagUpfront = upfrontCompleteness?.isEmptyShell || upfrontCompleteness?.isHeadingShell || false;
+
   let auditBuffer = fileBuffer;
   let autoTagMeta: Record<string, unknown> = {};
-  // Seam C is the DEFAULT tagger; Adobe is the fallback. Tag any untagged PDF when
-  // at least one tagger is available.
-  const shouldAutoTag = (forceAutoTag || !isTagged) && (aiConfig.seamC.enabled || aiConfig.adobe.enabled);
+  // Seam C is the DEFAULT tagger; Adobe is the fallback. Tag any untagged
+  // (or claimed-tagged-but-shell) PDF when at least one tagger is available.
+  const shouldAutoTag = (forceAutoTag || !isTagged || needsRetagUpfront) && (aiConfig.seamC.enabled || aiConfig.adobe.enabled);
 
   if (shouldAutoTag) {
-    if (isTagged && forceAutoTag) {
+    if (isTagged && needsRetagUpfront) {
+      const reason = upfrontCompleteness?.isEmptyShell ? 'an empty shell' : 'missing heading tags';
+      logger.info(`[PdfAutoTagOrchestrator] PDF claims to be tagged but its structure tree is ${reason} — tagging anyway (${aiConfig.seamC.enabled ? 'Seam C' : 'Adobe'}) for job ${dbJobId}`);
+    } else if (isTagged && forceAutoTag) {
       logger.info(`[PdfAutoTagOrchestrator] PDF is already tagged, but forceAutoTag is set — tagging anyway (${aiConfig.seamC.enabled ? 'Seam C' : 'Adobe'}) for job ${dbJobId}`);
     } else {
       logger.info(`[PdfAutoTagOrchestrator] PDF is untagged — tagging (${aiConfig.seamC.enabled ? 'Seam C' : 'Adobe'}) for job ${dbJobId}`);
@@ -209,16 +234,25 @@ export async function autoTagIfNeeded(
       let retagSucceeded = false;
 
       if (alreadyTagged) {
-        completenessMeta = await logStructureCompleteness(fileBuffer, dbJobId);
+        // Reuse the upfront check (ran when isTagged was true) when we have
+        // it -- avoids a redundant pdf-lib parse. Only recompute when this
+        // path was reached some other way (shouldn't normally happen given
+        // shouldAutoTag's own logic above, but kept as a safe fallback).
+        completenessMeta = upfrontCompleteness
+          ? { structureTreeCompleteness: upfrontCompleteness }
+          : await logStructureCompleteness(fileBuffer, dbJobId);
         const completeness = completenessMeta.structureTreeCompleteness as
           { isEmptyShell: boolean; isHeadingShell: boolean } | undefined;
 
-        // Bundled with forceAutoTag rather than a separate flag: forceAutoTag
-        // is already scoped to Comparison Study trials only (the safety
-        // boundary), and prepareDocumentForRetag's own all-or-nothing bail
-        // plus this try/catch's fallback mean a failed attempt here can
-        // never leave the document worse off than just using the existing
-        // (empty-shell/heading-shell) structure — only better or unchanged.
+        // Real incident (Math_Olszewski_PDF.pdf, 2026-10-21): no longer
+        // gated behind forceAutoTag -- reachable on every upload now, not
+        // just Comparison Study trials. Safe unconditionally because
+        // prepareDocumentForRetag's own all-or-nothing bail plus this
+        // try/catch's fallback mean a failed attempt here can never leave
+        // the document worse off than just using the existing (empty-shell/
+        // heading-shell) structure -- only better or unchanged. forceAutoTag
+        // keeps its own separate, narrower role above (force a retag even
+        // over GENUINELY good structure, for trials only).
         //
         // isHeadingShell alongside isEmptyShell: a tree can clear the
         // isEmptyShell bar on a couple of Figure/P tags while carrying zero
@@ -226,9 +260,9 @@ export async function autoTagIfNeeded(
         // together, so it doesn't see that gap on its own. Without this,
         // fixHeadingHierarchy silently has nothing to rename on a document
         // whose heading-skip issues detection still reports every round.
-        if ((completeness?.isEmptyShell || completeness?.isHeadingShell) && forceAutoTag) {
+        if (completeness?.isEmptyShell || completeness?.isHeadingShell) {
           const reason = completeness?.isEmptyShell ? 'an empty shell' : 'missing heading tags';
-          logger.info(`[PdfAutoTagOrchestrator] Existing structure is ${reason} and forceAutoTag is set — attempting strip-and-retag for job ${dbJobId}`);
+          logger.info(`[PdfAutoTagOrchestrator] Existing structure is ${reason} — attempting strip-and-retag for job ${dbJobId}`);
           try {
             const doc = await PDFDocument.load(fileBuffer);
             const prepResult = prepareDocumentForRetag(doc);
