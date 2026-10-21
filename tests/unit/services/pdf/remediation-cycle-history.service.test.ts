@@ -19,7 +19,7 @@ vi.mock('../../../../src/lib/prisma', () => ({
 }));
 
 import prisma from '../../../../src/lib/prisma';
-import { remediationCycleHistoryService } from '../../../../src/services/pdf/remediation-cycle-history.service';
+import { remediationCycleHistoryService, computeRemediationCounts } from '../../../../src/services/pdf/remediation-cycle-history.service';
 
 const mockPrisma = prisma as unknown as {
   remediationCycleEvent: {
@@ -87,6 +87,53 @@ describe('remediation-cycle-history.service', () => {
         orderBy: { startedAt: 'asc' },
       });
       expect(result).toBe(events);
+    });
+  });
+
+  /**
+   * Shared by pdf-batch-orchestrator.service.ts's one-time PdfBatchItem
+   * write and pdf-batch.controller.ts's live GET /pdf-batches/:batchId
+   * read -- a single source of truth so the two can never drift apart the
+   * way the original issuesAutoFixed bug (PR #708) did.
+   */
+  describe('computeRemediationCounts', () => {
+    it('derives the cumulative total from the gap between the original issue count and the LATEST reaudit, not the last round\'s own resolvedCount (PR #708 regression: Math_Olszewski_PDF.pdf, 344/0/0 resolved across 3 rounds)', async () => {
+      mockPrisma.remediationCycleEvent.findMany.mockResolvedValue([
+        { action: 'reaudit', status: 'completed', resolvedCount: 344, remainingCount: 947, regressionCount: 1 },
+        { action: 'reaudit', status: 'completed', resolvedCount: 0, remainingCount: 948, regressionCount: 0 },
+        { action: 'reaudit', status: 'completed', resolvedCount: 0, remainingCount: 948, regressionCount: 0 },
+      ]);
+
+      const result = await computeRemediationCounts('job-1', 1291);
+
+      expect(result).toEqual({ issuesAutoFixed: 343, issuesGuidanceOnly: 948 });
+    });
+
+    it('returns null when no reaudit has ever completed for this job', async () => {
+      mockPrisma.remediationCycleEvent.findMany.mockResolvedValue([
+        { action: 'ai_analysis', status: 'completed', resolvedCount: null, remainingCount: null },
+      ]);
+
+      const result = await computeRemediationCounts('job-1', 1291);
+
+      expect(result).toBeNull();
+    });
+
+    it('reflects a LATER reaudit appended after an earlier terminal snapshot -- the job-level-resume scenario', async () => {
+      // Simulates: the batch orchestrator's one-time write happened after
+      // the first 3 events (budget_limit stop), then POST
+      // /pdf/:jobId/auto-mode/start resumed the loop and a 4th round's
+      // reaudit was appended later, real further progress accrued.
+      mockPrisma.remediationCycleEvent.findMany.mockResolvedValue([
+        { action: 'reaudit', status: 'completed', resolvedCount: 344, remainingCount: 947, regressionCount: 1 },
+        { action: 'reaudit', status: 'completed', resolvedCount: 0, remainingCount: 948, regressionCount: 0 },
+        { action: 'reaudit', status: 'completed', resolvedCount: 0, remainingCount: 948, regressionCount: 0 },
+        { action: 'reaudit', status: 'completed', resolvedCount: 212, remainingCount: 212, regressionCount: 0 },
+      ]);
+
+      const result = await computeRemediationCounts('job-1', 1291);
+
+      expect(result).toEqual({ issuesAutoFixed: 1079, issuesGuidanceOnly: 212 });
     });
   });
 });

@@ -14,6 +14,7 @@ import { AuthenticatedRequest } from '../types/authenticated-request';
 import { areQueuesAvailable, getPdfBatchItemQueue } from '../queues';
 import { pdfBatchOrchestratorService } from '../services/pdf-batch/pdf-batch-orchestrator.service';
 import { computeSizeWeight } from '../services/pdf-batch/concurrency-budget.service';
+import { computeRemediationCounts } from '../services/pdf/remediation-cycle-history.service';
 import type { PdfBatchStartBody } from '../schemas/pdf-batch.schemas';
 import prisma from '../lib/prisma';
 import { logger } from '../lib/logger';
@@ -280,6 +281,31 @@ class PdfBatchController {
 
       const statusCounts = await this.computeStatusCounts(batchId);
 
+      // Real gap (2026-10-21): pdf-batch-orchestrator.service.ts writes
+      // issuesAutoFixed/issuesGuidanceOnly onto PdfBatchItem exactly ONCE,
+      // right when its own runRemediationPhase call returns -- for ANY stop
+      // reason, including budget_limit. That function's involvement with
+      // the item is over at that point; there is no "paused, resumable"
+      // state in the batch pipeline. A job can still genuinely keep
+      // improving afterward via POST /pdf/:jobId/auto-mode/start (confirmed
+      // live on Math_Olszewski_PDF.pdf: real further progress accrued past
+      // a budget_limit stop), but nothing ever re-invokes
+      // runRemediationPhase, so the stored snapshot here goes stale forever
+      // while the underlying job keeps moving. Recomputing live from the
+      // same source of truth (computeRemediationCounts, shared with that
+      // orchestrator's own one-time write) keeps this endpoint honest --
+      // same "derive at read time, don't trust a stored counter" pattern
+      // computeStatusCounts above already uses deliberately.
+      const liveCountsByItemId = new Map<string, { issuesAutoFixed: number; issuesGuidanceOnly: number }>();
+      await Promise.all(
+        batch.items
+          .filter((i) => i.remediationStartedAt && i.auditJobId)
+          .map(async (i) => {
+            const counts = await computeRemediationCounts(i.auditJobId!, i.issuesFound);
+            if (counts) liveCountsByItemId.set(i.id, counts);
+          })
+      );
+
       return res.json({
         success: true,
         data: {
@@ -291,34 +317,37 @@ class PdfBatchController {
           createdAt: batch.createdAt,
           startedAt: batch.startedAt,
           completedAt: batch.completedAt,
-          items: batch.items.map((i) => ({
-            itemId: i.id,
-            fileName: i.fileName,
-            originalName: i.originalName,
-            fileSize: i.fileSize.toString(),
-            status: i.status,
-            auditScore: i.auditScore,
-            issuesFound: i.issuesFound,
-            pageCount: i.pageCount,
-            issuesAutoFixed: i.issuesAutoFixed,
-            issuesGuidanceOnly: i.issuesGuidanceOnly,
-            remediatedFilePath: i.remediatedFilePath,
-            error: i.error,
-            uploadedAt: i.uploadedAt,
-            // Real bug (2026-10-18): PR #678 added these three fields to the
-            // schema and had the orchestrator write them, but never actually
-            // included them here -- so every consumer on the frontend has
-            // been receiving undefined for all three: PdfBatchItemElapsed's
-            // elapsed-time ticker has never rendered anything (its anchor
-            // timestamps were always missing), and PdfBatchResultsList's
-            // download button has never worked for a remediated item (it
-            // needs auditJobId to build the download URL).
-            auditJobId: i.auditJobId,
-            auditStartedAt: i.auditStartedAt,
-            auditCompletedAt: i.auditCompletedAt,
-            remediationStartedAt: i.remediationStartedAt,
-            remediationCompletedAt: i.remediationCompletedAt,
-          })),
+          items: batch.items.map((i) => {
+            const live = liveCountsByItemId.get(i.id);
+            return {
+              itemId: i.id,
+              fileName: i.fileName,
+              originalName: i.originalName,
+              fileSize: i.fileSize.toString(),
+              status: i.status,
+              auditScore: i.auditScore,
+              issuesFound: i.issuesFound,
+              pageCount: i.pageCount,
+              issuesAutoFixed: live?.issuesAutoFixed ?? i.issuesAutoFixed,
+              issuesGuidanceOnly: live?.issuesGuidanceOnly ?? i.issuesGuidanceOnly,
+              remediatedFilePath: i.remediatedFilePath,
+              error: i.error,
+              uploadedAt: i.uploadedAt,
+              // Real bug (2026-10-18): PR #678 added these three fields to the
+              // schema and had the orchestrator write them, but never actually
+              // included them here -- so every consumer on the frontend has
+              // been receiving undefined for all three: PdfBatchItemElapsed's
+              // elapsed-time ticker has never rendered anything (its anchor
+              // timestamps were always missing), and PdfBatchResultsList's
+              // download button has never worked for a remediated item (it
+              // needs auditJobId to build the download URL).
+              auditJobId: i.auditJobId,
+              auditStartedAt: i.auditStartedAt,
+              auditCompletedAt: i.auditCompletedAt,
+              remediationStartedAt: i.remediationStartedAt,
+              remediationCompletedAt: i.remediationCompletedAt,
+            };
+          }),
         },
       });
     } catch (error) {
