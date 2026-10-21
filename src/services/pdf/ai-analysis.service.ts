@@ -3070,9 +3070,18 @@ class AiAnalysisService {
 
       if (images.length > 0) {
         const results = await pdfStructureWriterService.buildFigureFromImage(doc, parsedForImages, images);
-        const failed = results.filter(r => !r.success).length;
-        if (failed > 0) {
-          logger.warn(`[AiAnalysis] buildFigureFromImage: ${failed}/${results.length} image(s) could not get a Figure built -- setAltText will fail honestly for these`);
+        const failures = results.filter(r => !r.success);
+        if (failures.length > 0) {
+          logger.warn(`[AiAnalysis] buildFigureFromImage: ${failures.length}/${results.length} image(s) could not get a Figure built -- setAltText will fail honestly for these`);
+          // Diagnostic (2026-10-21, Math_Olszewski_PDF.pdf investigation):
+          // the count alone doesn't say WHICH of buildFigureFromImage's own
+          // failure branches is firing (no struct tree root, no readable
+          // content stream, no unambiguous Do invocation, no nearby tagged
+          // content to anchor near, anchor has no /P, ...) -- a sample of the
+          // actual per-image error strings does.
+          logger.warn(
+            `[AiAnalysis] buildFigureFromImage failure reasons (sample): ${JSON.stringify(failures.slice(0, 10).map(r => r.error))}`
+          );
         }
       }
     } finally {
