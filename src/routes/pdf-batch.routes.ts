@@ -61,6 +61,12 @@ router.get(
 );
 
 router.get(
+  '/:batchId/budget-estimate',
+  authenticate,
+  pdfBatchController.getBudgetEstimate.bind(pdfBatchController)
+);
+
+router.get(
   '/',
   authenticate,
   validate({ query: pdfBatchListSchema }),

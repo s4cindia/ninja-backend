@@ -69,6 +69,11 @@ vi.mock('../../../src/services/pdf/remediation-cycle-history.service', () => ({
   computeRemediationCounts: (...args: unknown[]) => mockComputeRemediationCounts(...args),
 }));
 
+const mockEstimateBudgetForTenant = vi.fn();
+vi.mock('../../../src/services/pdf/auto-mode-budget-estimate.service', () => ({
+  estimateBudgetForTenant: (...args: unknown[]) => mockEstimateBudgetForTenant(...args),
+}));
+
 import { pdfBatchController } from '../../../src/controllers/pdf-batch.controller';
 
 function makeRes(): Response {
@@ -403,6 +408,40 @@ describe('PdfBatchController', () => {
       const payload = (res.json as any).mock.calls[0][0];
       expect(payload.data.items[0].issuesAutoFixed).toBeNull();
       expect(payload.data.items[0].issuesGuidanceOnly).toBeNull();
+    });
+  });
+
+  describe('getBudgetEstimate', () => {
+    it('404s when the batch does not exist (or belongs to a different tenant)', async () => {
+      mockPdfBatchFindFirst.mockResolvedValue(null);
+      const res = makeRes();
+
+      await pdfBatchController.getBudgetEstimate(makeReq({ params: { batchId: 'missing' } }), res);
+
+      expect(res.status).toHaveBeenCalledWith(404);
+      expect(mockEstimateBudgetForTenant).not.toHaveBeenCalled();
+    });
+
+    it('returns a tenant-wide estimate (not personalized to any item -- none has been audited yet)', async () => {
+      mockPdfBatchFindFirst.mockResolvedValue({ id: 'batch-1' });
+      const estimate = { estimatedCostUsd: 3.0, confidence: 'medium' as const, sampleSize: 8, basedOnIssueCount: null };
+      mockEstimateBudgetForTenant.mockResolvedValue(estimate);
+      const res = makeRes();
+
+      await pdfBatchController.getBudgetEstimate(makeReq({ params: { batchId: 'batch-1' } }), res);
+
+      expect(mockEstimateBudgetForTenant).toHaveBeenCalledWith('tenant-1');
+      expect(res.json).toHaveBeenCalledWith({ success: true, data: estimate });
+    });
+
+    it('returns 500 when the estimate lookup throws, rather than letting the request hang', async () => {
+      mockPdfBatchFindFirst.mockResolvedValue({ id: 'batch-1' });
+      mockEstimateBudgetForTenant.mockRejectedValue(new Error('db down'));
+      const res = makeRes();
+
+      await pdfBatchController.getBudgetEstimate(makeReq({ params: { batchId: 'batch-1' } }), res);
+
+      expect(res.status).toHaveBeenCalledWith(500);
     });
   });
 });

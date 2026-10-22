@@ -37,6 +37,7 @@ import {
 } from '../services/pdf/auto-remediation-loop.service';
 import type { AutoRemediationDriver } from '../services/pdf/auto-remediation-loop.service';
 import { areQueuesAvailable, getAutoRemediationQueue } from '../queues';
+import { estimateBudgetForJob } from '../services/pdf/auto-mode-budget-estimate.service';
 import type { StartAutoModeBody } from '../schemas/pdf-auto-mode.schemas';
 
 /**
@@ -304,6 +305,26 @@ export class PdfAutoModeController {
       });
 
       res.json({ success: true, data: { message: 'Stop requested. The loop will stop after its current round finishes.' } });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
+   * GET /pdf/:jobId/auto-mode/budget-estimate
+   * Suggested autoCostLimitUsd for this job, derived from real historical
+   * spend on similarly-sized documents instead of the flat $2.00 default --
+   * see auto-mode-budget-estimate.service.ts. Requires this job's own audit
+   * to already be complete; returns the flat default (confidence: 'low')
+   * rather than an error when it isn't.
+   */
+  async getBudgetEstimate(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      if (!req.user) throw AppError.unauthorized('Not authenticated');
+      const jobId = req.job!.id;
+
+      const estimate = await estimateBudgetForJob(jobId);
+      res.json({ success: true, data: estimate });
     } catch (error) {
       next(error);
     }

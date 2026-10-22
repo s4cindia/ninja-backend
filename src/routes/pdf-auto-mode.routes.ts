@@ -54,4 +54,14 @@ router.post(
   pdfAutoModeController.stop.bind(pdfAutoModeController)
 );
 
+/**
+ * GET /pdf/:jobId/auto-mode/budget-estimate
+ */
+router.get(
+  '/:jobId/auto-mode/budget-estimate',
+  authenticate,
+  authorizeJobForReview,
+  pdfAutoModeController.getBudgetEstimate.bind(pdfAutoModeController)
+);
+
 export default router;

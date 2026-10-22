@@ -15,6 +15,7 @@ import { areQueuesAvailable, getPdfBatchItemQueue } from '../queues';
 import { pdfBatchOrchestratorService } from '../services/pdf-batch/pdf-batch-orchestrator.service';
 import { computeSizeWeight } from '../services/pdf-batch/concurrency-budget.service';
 import { computeRemediationCounts } from '../services/pdf/remediation-cycle-history.service';
+import { estimateBudgetForTenant } from '../services/pdf/auto-mode-budget-estimate.service';
 import type { PdfBatchStartBody } from '../schemas/pdf-batch.schemas';
 import prisma from '../lib/prisma';
 import { logger } from '../lib/logger';
@@ -368,6 +369,34 @@ class PdfBatchController {
       return res.status(500).json({
         success: false,
         error: { message: error instanceof Error ? error.message : 'Failed to get batch', code: 'PDF_BATCH_GET_FAILED' },
+      });
+    }
+  }
+
+  /**
+   * GET /pdf-batches/:batchId/budget-estimate
+   * Suggested autoCostLimitUsd shown in the Start Processing config popover.
+   * No item in a DRAFT batch has been audited yet, so this is necessarily a
+   * tenant-wide estimate (see auto-mode-budget-estimate.service.ts's
+   * estimateBudgetForTenant), not personalized to any specific item.
+   */
+  async getBudgetEstimate(req: AuthenticatedRequest, res: Response) {
+    try {
+      const { batchId } = req.params;
+      const tenantId = req.user!.tenantId;
+
+      const batch = await prisma.pdfBatch.findFirst({ where: { id: batchId, tenantId }, select: { id: true } });
+      if (!batch) {
+        return res.status(404).json({ success: false, error: { message: 'Batch not found', code: 'PDF_BATCH_NOT_FOUND' } });
+      }
+
+      const estimate = await estimateBudgetForTenant(tenantId);
+      return res.json({ success: true, data: estimate });
+    } catch (error) {
+      logger.error('Get PDF batch budget estimate failed', error);
+      return res.status(500).json({
+        success: false,
+        error: { message: error instanceof Error ? error.message : 'Failed to get budget estimate', code: 'PDF_BATCH_BUDGET_ESTIMATE_FAILED' },
       });
     }
   }
