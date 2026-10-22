@@ -161,6 +161,17 @@ describe('auto-mode-budget-estimate.service', () => {
 
       expect(result.sampleSize).toBe(5);
     });
+
+    it('caps the historical query to a bounded number of the MOST RECENT runs, not every terminal run ever recorded', async () => {
+      mockPrisma.job.findUnique.mockResolvedValue({ tenantId: 'tenant-1', output: { auditReport: { issues: new Array(100).fill({}) } } });
+      mockPrisma.pdfAutoRemediationRun.findMany.mockResolvedValueOnce([run(1, 100), run(1, 100), run(1, 100), run(1, 100), run(1, 100)]);
+
+      await estimateBudgetForJob('job-1');
+
+      expect(mockPrisma.pdfAutoRemediationRun.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({ orderBy: { autoStartedAt: 'desc' }, take: 200 })
+      );
+    });
   });
 
   describe('estimateBudgetForTenant', () => {

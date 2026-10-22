@@ -34,6 +34,15 @@ const LOW_CONFIDENCE_SAMPLE_SIZE = 5;
 /** At or above this many samples, call the estimate 'high' confidence. */
 const HIGH_CONFIDENCE_SAMPLE_SIZE = 20;
 
+/**
+ * Caps the historical query so it stays bounded as the dataset grows
+ * forever, instead of fetching every terminal run ever recorded (CodeRabbit
+ * finding on this PR). Ordered by most-recent-first, so capping also means
+ * the estimate reflects recent typical cost rather than drifting on very
+ * old runs (e.g. from before a pricing or fix-accuracy change).
+ */
+const MAX_HISTORICAL_SAMPLES = 200;
+
 export interface BudgetEstimate {
   estimatedCostUsd: number;
   confidence: 'low' | 'medium' | 'high';
@@ -82,6 +91,8 @@ async function getHistoricalSamples(tenantId?: string): Promise<HistoricalSample
       autoCostSpentUsd: true,
       job: { select: { output: true } },
     },
+    orderBy: { autoStartedAt: 'desc' },
+    take: MAX_HISTORICAL_SAMPLES,
   });
 
   const samples: HistoricalSample[] = [];

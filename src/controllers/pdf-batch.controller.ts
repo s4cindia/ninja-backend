@@ -395,8 +395,11 @@ class PdfBatchController {
     } catch (error) {
       logger.error('Get PDF batch budget estimate failed', error);
       return res.status(500).json({
+        // Fixed user-safe message -- error.message could be a raw Prisma/DB
+        // error, which shouldn't reach the client. The real error is already
+        // logged server-side above.
         success: false,
-        error: { message: error instanceof Error ? error.message : 'Failed to get budget estimate', code: 'PDF_BATCH_BUDGET_ESTIMATE_FAILED' },
+        error: { message: 'Failed to get budget estimate', code: 'PDF_BATCH_BUDGET_ESTIMATE_FAILED' },
       });
     }
   }
