@@ -57,15 +57,17 @@
  * writes structure-tree tags or metadata), so this stays conservative.
  */
 
-import { PDFDocument, PDFName, PDFDict, PDFArray, PDFRawStream, PDFNumber } from 'pdf-lib';
+import { PDFDocument, PDFName, PDFDict, PDFArray, PDFRawStream, PDFNumber, PDFString, PDFHexString } from 'pdf-lib';
 import { AuditIssue } from '../audit/base-audit.service';
 import { logger } from '../../lib/logger';
 import { decodePageContent, writePageContent } from './pdf-content-stream-io';
-import { locateTextRun, locateTextRunsForPage, locateEnclosingTextObject, findPrecedingColor, findSiblingRuns, type TextRunMatch, type PageContrastTarget, type DeviceColorKind } from './contrast-content-stream';
+import { locateTextRun, locateTextRunsForPage, locateEnclosingTextObject, findPrecedingColor, findSiblingRuns, deviceComponentsToRgb, type TextRunMatch, type PageContrastTarget, type DeviceColorKind } from './contrast-content-stream';
 import { computeCompliantColor } from './color-contrast-correction';
 import { verifyContrastInRegion, verifyBackplateContrast } from './color-contrast-verification';
 import { computeBackplateRect, spliceBackplate } from './pdf-contrast-backplate';
 import { BUSY_VARIANCE_THRESHOLD } from './validators/pdf-contrast.validator';
+import { decodeStreamBytes } from './image-extractor.service';
+import { evaluatePostScriptFunction } from './postscript-function-evaluator';
 import type { FixResult } from './pdf-structure-writer.service';
 
 // Independent safety gate — enforced here regardless of what a caller (the
@@ -345,6 +347,182 @@ export function resolveColorSpaceKind(doc: PDFDocument, pageNumber: number, csNa
   }
 }
 
+function componentCountForKind(kind: DeviceColorKind): number {
+  return kind === 'gray' ? 1 : kind === 'rgb' ? 3 : 4;
+}
+
+/**
+ * Resolves an INLINE colorspace value -- a bare /Name or a [/Family ...]
+ * array embedded directly in a PDF object (not referenced by a Resources
+ * key) -- to a device kind. Used for Indexed's own /Base entry and
+ * Separation/DeviceN's own alternate-space entry, both of which the spec
+ * embeds this way rather than as a Resources lookup, unlike the `cs`-set
+ * active colorspace resolveColorSpaceKind itself resolves. Shares
+ * DEVICE_COLORSPACE_KIND/ICCBased-N-lookup logic with resolveColorSpaceKind,
+ * just without the Resources-dictionary indirection step.
+ */
+function resolveInlineColorSpaceKind(raw: unknown): DeviceColorKind | null {
+  try {
+    if (raw instanceof PDFName) {
+      return DEVICE_COLORSPACE_KIND[raw.decodeText()] ?? null;
+    }
+    if (!(raw instanceof PDFArray) || raw.size() === 0) return null;
+    const family = raw.lookup(0, PDFName).decodeText();
+    if (family === 'ICCBased') {
+      const stream = raw.lookup(1, PDFRawStream);
+      const n = stream.dict.lookup(PDFName.of('N'), PDFNumber).asNumber();
+      if (n === 1) return 'gray';
+      if (n === 3) return 'rgb';
+      if (n === 4) return 'cmyk';
+      return null;
+    }
+    return DEVICE_COLORSPACE_KIND[family] ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/** A PDF /Lookup entry for Indexed is a stream OR a (hex) string -- both legal per spec. */
+function decodeLookupBytes(obj: unknown): Uint8Array | null {
+  try {
+    if (obj instanceof PDFString || obj instanceof PDFHexString) {
+      return Uint8Array.from(obj.asBytes());
+    }
+    if (obj instanceof PDFRawStream) {
+      return decodeStreamBytes(obj);
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * `nums` is a single lookup index (an Indexed colorspace's sc/scn always
+ * takes exactly one operand, PDF32000-1:2008 §8.6.6.3). Reads the base
+ * colorspace's own component count worth of bytes out of /Lookup at
+ * `index * componentCount`, converts them from 0-255 to unit range, and
+ * resolves through deviceComponentsToRgb the same way a device-direct scn
+ * would. Declines on an out-of-range index, an unresolvable /Base, or a
+ * /Lookup shorter than the index requires -- same bail-rather-than-guess
+ * discipline as everything else here.
+ */
+function resolveIndexedColor(entry: PDFArray, nums: number[]): [number, number, number] | null {
+  if (nums.length !== 1) return null;
+  const index = Math.round(nums[0]);
+  if (index < 0) return null;
+  try {
+    const baseKind = resolveInlineColorSpaceKind(entry.lookup(1));
+    if (!baseKind) return null;
+    const hival = entry.lookup(2, PDFNumber).asNumber();
+    if (index > hival) return null;
+    const bytes = decodeLookupBytes(entry.lookup(3));
+    if (!bytes) return null;
+    const componentCount = componentCountForKind(baseKind);
+    const offset = index * componentCount;
+    if (offset + componentCount > bytes.length) return null;
+    const components = Array.from(bytes.slice(offset, offset + componentCount)).map(b => b / 255);
+    return deviceComponentsToRgb(baseKind, components);
+  } catch {
+    return null;
+  }
+}
+
+function pdfNumberArray(dict: PDFDict, key: string): number[] | null {
+  try {
+    const arr = dict.lookup(PDFName.of(key), PDFArray);
+    return Array.from({ length: arr.size() }, (_, i) => arr.lookup(i, PDFNumber).asNumber());
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * `nums` is the Separation (always 1) or DeviceN (1+) tint value(s) from
+ * the content stream's own scn operands. Resolves the tint-transform
+ * function's /FunctionType: Type 2 (exponential interpolation) is
+ * evaluated directly per PDF32000-1:2008 §7.10.3's own formula -- no
+ * interpreter needed. Type 4 (PostScript calculator) delegates to
+ * postscript-function-evaluator.ts, confirmed via live incident tracing to
+ * be the dominant real-world case (Math_Olszewski_PDF.pdf: 377 DeviceN
+ * colorspaces, every one of them Type 4). Type 0 (sampled) and Type 3
+ * (stitching) are declined -- not observed in any real document yet,
+ * explicitly deferred rather than guessed at.
+ */
+function resolveSeparationOrDeviceNColor(entry: PDFArray, nums: number[]): [number, number, number] | null {
+  try {
+    const altKind = resolveInlineColorSpaceKind(entry.lookup(2));
+    if (!altKind) return null;
+
+    const fnObj = entry.lookup(3);
+    const fnDict = fnObj instanceof PDFRawStream ? fnObj.dict : (fnObj as PDFDict);
+    const fnType = fnDict.lookup(PDFName.of('FunctionType'), PDFNumber).asNumber();
+    const domain = pdfNumberArray(fnDict, 'Domain');
+    if (!domain || domain.length !== nums.length * 2) return null;
+
+    let outputs: number[] | null;
+    if (fnType === 2) {
+      if (nums.length !== 1) return null; // Type 2 is defined as single-input only.
+      const exponent = fnDict.lookup(PDFName.of('N'), PDFNumber).asNumber();
+      const c0 = pdfNumberArray(fnDict, 'C0') ?? [0];
+      const c1 = pdfNumberArray(fnDict, 'C1') ?? [1];
+      const x = Math.pow(nums[0], exponent);
+      outputs = c0.map((c0v, i) => c0v + x * ((c1[i] ?? 1) - c0v));
+    } else if (fnType === 4) {
+      if (!(fnObj instanceof PDFRawStream)) return null;
+      const bytes = decodeStreamBytes(fnObj);
+      if (!bytes) return null;
+      const range = pdfNumberArray(fnDict, 'Range');
+      if (!range) return null;
+      outputs = evaluatePostScriptFunction(Buffer.from(bytes).toString('latin1'), nums, domain, range);
+    } else {
+      return null;
+    }
+
+    if (!outputs || outputs.length !== componentCountForKind(altKind)) return null;
+    return deviceComponentsToRgb(altKind, outputs);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The full source-color resolver: device-direct/ICCBased colorspaces
+ * resolve via resolveColorSpaceKind exactly as before (fast path, most
+ * common case); Indexed/Separation/DeviceN -- previously an unconditional
+ * decline -- now resolve through the real colorspace math above. This is
+ * what findPrecedingColor's own injected resolver callback should be
+ * everywhere in this file (and pdf-structure-writer.service.ts, which reads
+ * ambient color the same way) -- resolveColorSpaceKind alone is kept too,
+ * unmodified, since it's independently useful (and tested) as a pure
+ * "classify this colorspace" step that doesn't need the operand values.
+ */
+export function resolveSourceColor(
+  doc: PDFDocument,
+  pageNumber: number,
+  csName: string,
+  nums: number[]
+): [number, number, number] | null {
+  const kind = resolveColorSpaceKind(doc, pageNumber, csName);
+  if (kind) return deviceComponentsToRgb(kind, nums);
+
+  try {
+    const page = doc.getPage(pageNumber - 1);
+    const resources = page.node.Resources();
+    if (!resources) return null;
+    const colorSpaces = resources.lookup(PDFName.of('ColorSpace'), PDFDict);
+    const entry = colorSpaces.lookup(PDFName.of(csName));
+    if (!(entry instanceof PDFArray) || entry.size() === 0) return null;
+    const family = entry.lookup(0, PDFName).decodeText();
+
+    if (family === 'Indexed') return resolveIndexedColor(entry, nums);
+    if (family === 'Separation' || family === 'DeviceN') return resolveSeparationOrDeviceNColor(entry, nums);
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 export class PdfContrastWriterService {
   /**
    * Rewrites the flagged text's fill color in the PDF content stream so it
@@ -581,7 +759,7 @@ export class PdfContrastWriterService {
     const originalRgb = findPrecedingColor(
       content,
       fixInsertionPoint,
-      (csName) => resolveColorSpaceKind(doc, pageNumber, csName)
+      (csName, nums) => resolveSourceColor(doc, pageNumber, csName, nums)
     );
     if (!originalRgb) {
       return {
@@ -695,7 +873,7 @@ export class PdfContrastWriterService {
       const trueTextRgb =
         match.restoreColorOverride ??
         (match.internalFillColorOp
-          ? findPrecedingColor(content, match.internalFillColorOp.end, (csName) => resolveColorSpaceKind(doc, pageNumber, csName))
+          ? findPrecedingColor(content, match.internalFillColorOp.end, (csName, nums) => resolveSourceColor(doc, pageNumber, csName, nums))
           : originalRgb);
       if (!trueTextRgb) {
         return { issueId, success: false, before, after: 'unknown', error: 'Could not determine the text run\'s true color for backplate contrast' };
@@ -703,7 +881,7 @@ export class PdfContrastWriterService {
       const backplateColorHex = computeCompliantColor(cd.background, unitRgbToHex(trueTextRgb), EXTREME_TARGET_RATIO).color;
       const rect = computeBackplateRect(boundingBox);
       const spliced = enclosing
-        ? spliceBackplate(content, enclosing, rect, hexToUnitRgb(backplateColorHex), (csName) => resolveColorSpaceKind(doc, pageNumber, csName))
+        ? spliceBackplate(content, enclosing, rect, hexToUnitRgb(backplateColorHex), (csName, nums) => resolveSourceColor(doc, pageNumber, csName, nums))
         : null;
 
       if (spliced) {

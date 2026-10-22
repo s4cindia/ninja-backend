@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { locateTextRun, locateTextRunsForPage, locateEnclosingTextObject, findPrecedingColor, findSiblingRuns } from '../../../../src/services/pdf/contrast-content-stream';
+import { locateTextRun, locateTextRunsForPage, locateEnclosingTextObject, findPrecedingColor, findSiblingRuns, deviceComponentsToRgb } from '../../../../src/services/pdf/contrast-content-stream';
 
 // Same shape as content-stream.test.ts's twoLineStream (verified pdf-lib output
 // shape: q BT … Tm … Tj … ET Q). Line 1 anchor (50,150), line 2 anchor (50,120).
@@ -933,10 +933,16 @@ EMC
   // Williams_PDF.pdf sets its text color via `cs`+`scn` against a named
   // ICCBased colorspace rather than bare rg/g/k. findPrecedingColor can now
   // resolve this when the caller supplies a resolver (pdf-contrast-writer.
-  // service.ts's resolveColorSpaceKind, which reads the actual /ColorSpace
-  // resource -- these tests only exercise the token-walk/dispatch side,
-  // using a fake resolver, since this module stays pdf-lib-free).
+  // service.ts's resolveSourceColor, which reads the actual /ColorSpace
+  // resource and -- as of the Math_Olszewski_PDF.pdf fix -- also resolves
+  // Indexed/Separation/DeviceN via the operand numbers, not just a kind
+  // classification -- these tests only exercise the token-walk/dispatch
+  // side, using a fake resolver, since this module stays pdf-lib-free).
   describe('findPrecedingColor -- resolved sc/scn via an injected colorspace resolver', () => {
+    // Fake resolvers below mirror resolveSourceColor's own real shape: given
+    // the colorspace name AND the raw operand numbers, return a final RGB
+    // triple directly (device-direct colorspaces just delegate to the same
+    // deviceComponentsToRgb the real implementation uses).
     it('resolves scn operands as RGB when the resolver identifies the active colorspace as rgb', () => {
       const stream = `/CS0 cs
 0.3 0.4 0.5 scn
@@ -945,7 +951,7 @@ BT
 ET
 `;
       const pos = stream.indexOf('ET');
-      const resolve = (name: string) => (name === 'CS0' ? 'rgb' as const : null);
+      const resolve = (name: string, nums: number[]) => (name === 'CS0' ? deviceComponentsToRgb('rgb', nums) : null);
       expect(findPrecedingColor(stream, pos, resolve)).toEqual([0.3, 0.4, 0.5]);
     });
 
@@ -956,7 +962,7 @@ BT
 <41> Tj
 ET
 `;
-      const resolveGray = (name: string) => (name === 'CS0' ? 'gray' as const : null);
+      const resolveGray = (name: string, nums: number[]) => (name === 'CS0' ? deviceComponentsToRgb('gray', nums) : null);
       expect(findPrecedingColor(grayStream, grayStream.indexOf('ET'), resolveGray)).toEqual([0.75, 0.75, 0.75]);
 
       const cmykStream = `/CS0 cs
@@ -965,14 +971,14 @@ BT
 <41> Tj
 ET
 `;
-      const resolveCmyk = (name: string) => (name === 'CS0' ? 'cmyk' as const : null);
+      const resolveCmyk = (name: string, nums: number[]) => (name === 'CS0' ? deviceComponentsToRgb('cmyk', nums) : null);
       const result = findPrecedingColor(cmykStream, cmykStream.indexOf('ET'), resolveCmyk)!;
       expect(result[0]).toBeCloseTo(0.8);
       expect(result[1]).toBeCloseTo(0.8);
       expect(result[2]).toBeCloseTo(0.8);
     });
 
-    it('still declines when the resolver cannot resolve the active colorspace (e.g. Separation/Indexed/Pattern)', () => {
+    it('still declines when the resolver cannot resolve the active colorspace (e.g. Pattern -- has no single restorable color at all)', () => {
       const stream = `/CS0 cs
 1 scn
 BT
@@ -999,7 +1005,7 @@ ET
 <41> Tj
 ET
 `;
-      const resolve = () => 'rgb' as const;
+      const resolve = (name: string, nums: number[]) => deviceComponentsToRgb('rgb', nums);
       expect(findPrecedingColor(stream, stream.indexOf('ET'), resolve)).toBeNull();
     });
 
@@ -1017,9 +1023,9 @@ ET
       // CS1 is scoped to the q...Q that already closed -- the position
       // queried below must see CS0's color (via the RESTORED cs name, CS0),
       // not CS1's, mirroring the existing closed-q/Q color test above.
-      const resolve = (name: string) => {
-        if (name === 'CS0') return 'rgb' as const;
-        if (name === 'CS1') return 'gray' as const;
+      const resolve = (name: string, nums: number[]) => {
+        if (name === 'CS0') return deviceComponentsToRgb('rgb', nums);
+        if (name === 'CS1') return deviceComponentsToRgb('gray', nums);
         return null;
       };
       expect(findPrecedingColor(stream, stream.indexOf('ET'), resolve)).toEqual([0.3, 0.4, 0.5]);
@@ -1032,7 +1038,7 @@ BT
 <41> Tj
 ET
 `;
-      const resolve = (name: string) => (name === 'DeviceRGB' ? 'rgb' as const : null);
+      const resolve = (name: string, nums: number[]) => (name === 'DeviceRGB' ? deviceComponentsToRgb('rgb', nums) : null);
       expect(findPrecedingColor(stream, stream.indexOf('ET'), resolve)).toEqual([0.6, 0.6, 0.6]);
     });
   });
