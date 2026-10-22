@@ -39,11 +39,15 @@ vi.mock('../../../src/queues', () => ({
   areQueuesAvailable: vi.fn(),
   getAutoRemediationQueue: vi.fn(),
 }));
+vi.mock('../../../src/services/pdf/auto-mode-budget-estimate.service', () => ({
+  estimateBudgetForJob: vi.fn(),
+}));
 
 import prisma from '../../../src/lib/prisma';
 import { pdfAutoModeController } from '../../../src/controllers/pdf-auto-mode.controller';
 import { autoRemediationLoopService, ComparisonTrialAutoRemediationDriver } from '../../../src/services/pdf/auto-remediation-loop.service';
 import { areQueuesAvailable, getAutoRemediationQueue } from '../../../src/queues';
+import { estimateBudgetForJob } from '../../../src/services/pdf/auto-mode-budget-estimate.service';
 
 const mockQueueAdd = vi.fn();
 
@@ -439,6 +443,29 @@ describe('PdfAutoModeController', () => {
         data: { autoStopRequested: true },
       });
       expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ success: true }));
+    });
+  });
+
+  describe('getBudgetEstimate', () => {
+    it('returns the estimate from the service as-is', async () => {
+      const estimate = { estimatedCostUsd: 3.5, confidence: 'medium' as const, sampleSize: 8, basedOnIssueCount: 350 };
+      vi.mocked(estimateBudgetForJob).mockResolvedValue(estimate);
+      const res = makeRes();
+
+      await pdfAutoModeController.getBudgetEstimate(makeReq(), res, next);
+
+      expect(estimateBudgetForJob).toHaveBeenCalledWith('job-1');
+      expect(res.json).toHaveBeenCalledWith({ success: true, data: estimate });
+    });
+
+    it('forwards a service error to next() rather than throwing', async () => {
+      const error = new Error('db down');
+      vi.mocked(estimateBudgetForJob).mockRejectedValue(error);
+      const res = makeRes();
+
+      await pdfAutoModeController.getBudgetEstimate(makeReq(), res, next);
+
+      expect(next).toHaveBeenCalledWith(error);
     });
   });
 });
