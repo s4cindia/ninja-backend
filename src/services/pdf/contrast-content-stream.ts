@@ -757,7 +757,15 @@ export function findSiblingRuns(
  */
 export type DeviceColorKind = 'gray' | 'rgb' | 'cmyk';
 
-function numsToDeviceRgb(kind: DeviceColorKind, nums: number[]): [number, number, number] | null {
+/**
+ * Exported for reuse by pdf-contrast-writer.service.ts's resolveSourceColor
+ * -- the final "device-kind components -> RGB" step is identical whether
+ * those components came straight from a device-direct scn (the case this
+ * module always handled) or from resolving an Indexed/Separation/DeviceN
+ * colorspace down to its own device-equivalent alternate (resolveSourceColor's
+ * own job, which this module has no Resources-dictionary access to do itself).
+ */
+export function deviceComponentsToRgb(kind: DeviceColorKind, nums: number[]): [number, number, number] | null {
   switch (kind) {
     case 'gray': return nums.length === 1 ? [nums[0], nums[0], nums[0]] : null;
     case 'rgb': return nums.length === 3 ? [nums[0], nums[1], nums[2]] : null;
@@ -785,9 +793,9 @@ function parseFillColorOpToRgb(content: string, op: { start: number; end: number
   const nums = parts.slice(0, -1).map(Number);
   if (nums.some(n => Number.isNaN(n))) return null;
   switch (opName) {
-    case 'g': return numsToDeviceRgb('gray', nums);
-    case 'rg': return numsToDeviceRgb('rgb', nums);
-    case 'k': return numsToDeviceRgb('cmyk', nums);
+    case 'g': return deviceComponentsToRgb('gray', nums);
+    case 'rg': return deviceComponentsToRgb('rgb', nums);
+    case 'k': return deviceComponentsToRgb('cmyk', nums);
     default: return null;
   }
 }
@@ -846,18 +854,25 @@ function parseFillColorOpToRgb(content: string, op: { start: number; end: number
  * color op ever ran).
  *
  * @param resolveColorSpace Resolves a /ColorSpace resource name (as set by a
- * `cs` operator) to the device-color family an sc/scn operand list under it
- * should be interpreted as. Optional and injected rather than looked up
+ * `cs` operator) PLUS the sc/scn operation's own raw operand numbers
+ * directly to a final RGB triple -- not just a device-color-family
+ * classification, since that alone isn't enough: Indexed's operand is a
+ * lookup index, and Separation/DeviceN's operands are tint values that must
+ * run through a tint-transform function first, neither of which the
+ * operand's raw numbers can be treated as directly the way a device-direct
+ * colorspace's numbers can. Optional and injected rather than looked up
  * directly here -- this module stays a pure content-stream-string parser
- * with no pdf-lib/Resources-dictionary dependency; the caller (which already
- * has the PDFDocument/page) supplies the actual resolution logic. Omitting
- * it keeps the exact pre-existing behavior (sc/scn always declined), which
- * every existing caller/test still gets unchanged.
+ * with no pdf-lib/Resources-dictionary dependency, zero colorspace-math
+ * knowledge of its own; the caller (which already has the
+ * PDFDocument/page) supplies the actual resolution logic
+ * (pdf-contrast-writer.service.ts's resolveSourceColor). Omitting it keeps
+ * the exact pre-existing behavior (sc/scn always declined), which every
+ * existing caller/test still gets unchanged.
  */
 export function findPrecedingColor(
   content: string,
   beforePos: number,
-  resolveColorSpace?: (csName: string) => DeviceColorKind | null
+  resolveColorSpace?: (csName: string, nums: number[]) => [number, number, number] | null
 ): [number, number, number] | null {
   const tokens = tokenize(content);
 
@@ -899,10 +914,9 @@ export function findPrecedingColor(
     } else if (FILL_COLOR_OPS.has(tk.v)) {
       const opSpan = { start: pendingStart ?? tk.start, end: tk.end };
       if ((tk.v === 'sc' || tk.v === 'scn') && currentCsName && resolveColorSpace) {
-        const kind = resolveColorSpace(currentCsName);
         const parts = content.slice(opSpan.start, opSpan.end).trim().split(/\s+/);
         const nums = parts.slice(0, -1).map(Number);
-        const rgb = kind && !nums.some(n => Number.isNaN(n)) ? numsToDeviceRgb(kind, nums) : null;
+        const rgb = !nums.some(n => Number.isNaN(n)) ? resolveColorSpace(currentCsName, nums) : null;
         current = rgb ? { kind: 'rgb', rgb } : { kind: 'unknown' };
       } else {
         const rgb = parseFillColorOpToRgb(content, opSpan);

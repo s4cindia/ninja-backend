@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { PDFDocument, PDFName, PDFDict, StandardFonts, degrees, rgb } from 'pdf-lib';
-import { spliceColorFix, pdfContrastWriterService, resolveColorContrastTargets, resolveColorSpaceKind } from '../../../../src/services/pdf/pdf-contrast-writer.service';
-import { locateTextRun, findPrecedingColor } from '../../../../src/services/pdf/contrast-content-stream';
+import { spliceColorFix, pdfContrastWriterService, resolveColorContrastTargets, resolveColorSpaceKind, resolveSourceColor } from '../../../../src/services/pdf/pdf-contrast-writer.service';
+import { locateTextRun, findPrecedingColor, deviceComponentsToRgb } from '../../../../src/services/pdf/contrast-content-stream';
 import { decodePageContent, writePageContent } from '../../../../src/services/pdf/pdf-content-stream-io';
 import { pdfAuditService } from '../../../../src/services/pdf/pdf-audit.service';
 import { verifyContrastInRegion, verifyBackplateContrast } from '../../../../src/services/pdf/color-contrast-verification';
@@ -251,6 +251,110 @@ describe('resolveColorSpaceKind', () => {
     const doc = await PDFDocument.create();
     doc.addPage([100, 100]);
     expect(resolveColorSpaceKind(doc, 1, 'CS0')).toBeNull();
+  });
+});
+
+// Real incident: 70 of Math_Olszewski_PDF.pdf's color-contrast suggestions
+// were stuck "failed" on every Auto Mode round, all hitting
+// resolveColorSpaceKind's intentional decline for Indexed/Separation/
+// DeviceN. Confirmed directly against the real document: its /ColorSpace
+// resources are 100% Indexed(base=DeviceCMYK)/Separation(alt=DeviceCMYK)/
+// DeviceN(alt=DeviceCMYK, Type 4 tint-transform), zero plain device/ICCBased.
+// resolveSourceColor is the broader resolver that actually interprets these
+// families (resolveColorSpaceKind itself stays unchanged -- see its own
+// tests above -- since it structurally can't resolve them without the
+// operand numbers these families need).
+describe('resolveSourceColor', () => {
+  it('resolves device-direct/ICCBased colorspaces exactly like resolveColorSpaceKind (fast path)', async () => {
+    const doc = await PDFDocument.create();
+    doc.addPage([100, 100]);
+    expect(resolveSourceColor(doc, 1, 'DeviceRGB', [0.2, 0.4, 0.6])).toEqual([0.2, 0.4, 0.6]);
+    expect(resolveSourceColor(doc, 1, 'DeviceCMYK', [0, 0, 0, 1])).toEqual([0, 0, 0]);
+  });
+
+  it('resolves an Indexed colorspace by reading its /Lookup stream at index * componentCount', async () => {
+    const doc = await PDFDocument.create();
+    doc.addPage([100, 100]);
+    // hival=1 -> 2 entries, 3 bytes (DeviceRGB) each: index 0 = black, index 1 = red.
+    const lookupBytes = Uint8Array.from([0, 0, 0, 255, 0, 0]);
+    const lookupRef = doc.context.register(doc.context.stream(lookupBytes, {}));
+    addColorSpaceResource(doc, 0, 'CS0', ['Indexed', 'DeviceRGB', 1, lookupRef]);
+
+    expect(resolveSourceColor(doc, 1, 'CS0', [0])).toEqual([0, 0, 0]);
+    expect(resolveSourceColor(doc, 1, 'CS0', [1])).toEqual([1, 0, 0]);
+  });
+
+  it('declines (returns null) when the Indexed index exceeds hival, rather than reading past the table', async () => {
+    const doc = await PDFDocument.create();
+    doc.addPage([100, 100]);
+    const lookupBytes = Uint8Array.from([0, 0, 0, 255, 0, 0]);
+    const lookupRef = doc.context.register(doc.context.stream(lookupBytes, {}));
+    addColorSpaceResource(doc, 0, 'CS0', ['Indexed', 'DeviceRGB', 1, lookupRef]);
+
+    expect(resolveSourceColor(doc, 1, 'CS0', [5])).toBeNull();
+  });
+
+  it('resolves a Separation colorspace via its Type 2 (exponential interpolation) tint-transform function', async () => {
+    const doc = await PDFDocument.create();
+    doc.addPage([100, 100]);
+    // Matches the real document's own Separation shape (alt=DeviceCMYK).
+    // N=1 (linear): tint 0.5 halfway between C0=[0,0,0,0] and C1=[0,0,0,1].
+    addColorSpaceResource(doc, 0, 'CS0', [
+      'Separation',
+      'Spot1',
+      'DeviceCMYK',
+      { FunctionType: 2, Domain: [0, 1], C0: [0, 0, 0, 0], C1: [0, 0, 0, 1], N: 1 },
+    ]);
+
+    const result = resolveSourceColor(doc, 1, 'CS0', [0.5]);
+    expect(result).not.toBeNull();
+    const [r, g, b] = result!;
+    expect(r).toBeCloseTo(0.5);
+    expect(g).toBeCloseTo(0.5);
+    expect(b).toBeCloseTo(0.5);
+  });
+
+  it('resolves a DeviceN colorspace via its Type 4 (PostScript calculator) tint-transform function, delegating to the evaluator', async () => {
+    const doc = await PDFDocument.create();
+    doc.addPage([100, 100]);
+    // Matches the real document's own dominant shape: 2 tint inputs (Cyan,
+    // Magenta) -> DeviceCMYK, Domain/Range per spec. Program is a small
+    // synthetic passthrough ({ 0 0 }, pushing Y=0 K=0 on top of the two
+    // tint inputs already on the stack) -- not the real extracted program,
+    // but exercises the same Type 4 delegation path end to end.
+    const program = '{ 0 0 }';
+    const fnRef = doc.context.register(
+      doc.context.stream(Buffer.from(program, 'latin1'), {
+        FunctionType: 4,
+        Domain: [0, 1, 0, 1],
+        Range: [0, 1, 0, 1, 0, 1, 0, 1],
+      })
+    );
+    addColorSpaceResource(doc, 0, 'CS0', ['DeviceN', ['Cyan', 'Magenta'], 'DeviceCMYK', fnRef]);
+
+    const result = resolveSourceColor(doc, 1, 'CS0', [0.3, 0.5]);
+    expect(result).toEqual(deviceComponentsToRgb('cmyk', [0.3, 0.5, 0, 0]));
+  });
+
+  it('declines (returns null) on an unsupported tint-transform function type (e.g. Type 0 sampled)', async () => {
+    const doc = await PDFDocument.create();
+    doc.addPage([100, 100]);
+    addColorSpaceResource(doc, 0, 'CS0', [
+      'Separation',
+      'Spot1',
+      'DeviceCMYK',
+      { FunctionType: 0, Domain: [0, 1], Range: [0, 1, 0, 1, 0, 1, 0, 1] },
+    ]);
+
+    expect(resolveSourceColor(doc, 1, 'CS0', [0.5])).toBeNull();
+  });
+
+  it('still declines for colorspace families with no single restorable color at all (Pattern)', async () => {
+    const doc = await PDFDocument.create();
+    doc.addPage([100, 100]);
+    addColorSpaceResource(doc, 0, 'CS0', 'Pattern');
+
+    expect(resolveSourceColor(doc, 1, 'CS0', [0])).toBeNull();
   });
 });
 
