@@ -78,5 +78,19 @@ export const pdfConfig = {
   // only, so the real ceiling is Gemini's API, which retryWithBackoff
   // already handles via 429 backoff).
   altTextConcurrency: parseInt(process.env.PDF_ALT_TEXT_CONCURRENCY || '8', 10),
+  // Same worker-pool pattern as altTextConcurrency above, applied to
+  // PdfContrastValidator's per-page canvas rendering (Stage A of its
+  // render/score split -- see that validator's own header comment) rather
+  // than its per-item scoring, which stays sequential because it reads and
+  // writes a genuinely cross-page, order-dependent accumulator
+  // (backgroundSignatureCounts). Defaults far lower than altTextConcurrency:
+  // contrast pages are full-resolution live canvas rasters held in memory
+  // simultaneously by this many workers, not alt-text's pre-extracted,
+  // size-capped (1024px) image buffers -- the same per-page render loop
+  // this concurrency now parallelizes already OOM-killed a 4GB ECS task on
+  // a 377-page document at concurrency 1 (see maxContrastPages' doc comment
+  // above), so raise this only after load-testing at the real task memory
+  // limit against that document and the 2040-page FMHE_PDF.pdf case.
+  contrastRenderConcurrency: parseInt(process.env.PDF_CONTRAST_RENDER_CONCURRENCY || '2', 10),
   chunkSize: 10,
 };

@@ -25,6 +25,25 @@ export interface RgbColor {
   b: number;
 }
 
+/**
+ * Render + text-extraction output for one page, produced by the parallel
+ * Stage A render pool (renderPageForContrast) and consumed by the
+ * sequential Stage B scoring pass (scorePageContrast). Deliberately
+ * contains no cross-page state -- safe to produce out of page order and in
+ * parallel with any other page's render result.
+ */
+interface ContrastPageRenderResult {
+  page: PdfParseResult['pages'][0];
+  data: Uint8ClampedArray;
+  cw: number;
+  ch: number;
+  textItems: Awaited<ReturnType<pdfjsLib.PDFPageProxy['getTextContent']>>['items'];
+  styles: Record<string, { fontFamily?: string }> | undefined;
+  artifactTextItemIndices: Set<number>;
+  allItemBoxes: Array<{ x: number; y: number; w: number; h: number } | null>;
+  viewportTransform: number[];
+}
+
 
 // Render scale — 1.5x gives good resolution without excessive memory
 const RENDER_SCALE = 1.5;
@@ -276,7 +295,11 @@ export class PdfContrastValidator {
   // Cross-page recurrence tracking (see buildSignature/SUSPECT_PAGE_THRESHOLD
   // above) -- signature -> number of DISTINCT prior pages it's been seen on.
   // Reset per validate() call; incremented once per page (not per item) in
-  // validatePageContrast, after that page's items are fully processed.
+  // scorePageContrast, after that page's items are fully processed. Read and
+  // written ONLY by scorePageContrast (Stage B, below), which runs
+  // sequentially in page order for exactly this reason -- see validate()'s
+  // own Stage A/B comment for why this field can't be touched by the
+  // parallel render pool (Stage A).
   private backgroundSignatureCounts = new Map<string, number>();
 
   async validate(
@@ -287,6 +310,7 @@ export class PdfContrastValidator {
       logger.info('[PdfContrastValidator] No parsedPdf — skipping contrast check');
       return [];
     }
+    const parsedPdf = parsed.parsedPdf;
 
     logger.info('[PdfContrastValidator] Starting contrast validation...');
     this.issueCounter = 0;
@@ -313,38 +337,85 @@ export class PdfContrastValidator {
     let lastProgressAt = Date.now();
     let completed = 0;
     const total = pages.length;
-    const maybeReportProgress = async (): Promise<void> => {
+    // Serializes onProgress calls across concurrent Stage A render workers
+    // below -- the caller's callback does a read-modify-write of Job.input
+    // (same hazard PdfAltTextValidator's own progressChain documents), so
+    // two workers finishing close together must never await it at the same
+    // time, only ever one after another.
+    let progressChain: Promise<void> = Promise.resolve();
+    const maybeReportProgress = (): void => {
       if (!onProgress) return;
       const isLast = completed === total;
       if (isLast || Date.now() - lastProgressAt >= PROGRESS_THROTTLE_MS) {
         lastProgressAt = Date.now();
-        await onProgress(completed, total);
+        const completedSnapshot = completed;
+        progressChain = progressChain.then(() => onProgress(completedSnapshot, total));
       }
     };
 
-    for (const page of pages) {
-      if (page.content.length === 0) {
-        // CodeRabbit finding on this PR, confirmed real: without this call,
-        // a document whose pages are ALL empty-content would never call
-        // onProgress at all -- not even the guaranteed final call -- since
-        // this branch used to skip straight past maybeReportProgress(),
-        // reintroducing the exact hang-detection false positive this fix
-        // exists to close.
-        completed++;
-        await maybeReportProgress();
-        continue;
+    // Stage A: render each page to canvas + extract its text content, in
+    // parallel across a small worker pool pulling from a shared cursor --
+    // same pattern as PdfAltTextValidator's own image worker pool. This is
+    // the slow part (canvas rasterization via @napi-rs/canvas), responsible
+    // for the 17-minute incident above.
+    //
+    // Stage B below (scorePageContrast) stays sequential, strictly in page
+    // order, because it reads and writes this.backgroundSignatureCounts --
+    // a genuinely cross-page, order-dependent accumulator (see that field's
+    // own doc comment) that an unordered worker pool would corrupt: it
+    // decides whether a repeated background color is excluded as a
+    // page-template element based on how many DISTINCT EARLIER pages
+    // already carried it, which only means something if pages are folded in
+    // in their real document order.
+    const renderResults: Array<ContrastPageRenderResult | null> = new Array(pages.length).fill(null);
+    let nextIndex = 0;
+    const renderWorker = async (): Promise<void> => {
+      while (true) {
+        const i = nextIndex++;
+        if (i >= pages.length) return;
+        const page = pages[i];
+        if (page.content.length === 0) {
+          // CodeRabbit finding on an earlier version of this loop, confirmed
+          // real: without this call, a document whose pages are ALL
+          // empty-content would never call onProgress at all -- not even
+          // the guaranteed final call -- reintroducing the exact
+          // hang-detection false positive this fix exists to close.
+          completed++;
+          maybeReportProgress();
+          continue;
+        }
+        try {
+          renderResults[i] = await this.renderPageForContrast(parsedPdf.pdfjsDoc, page);
+        } catch (err) {
+          logger.warn(
+            `[PdfContrastValidator] Page ${page.pageNumber} failed to render (non-fatal): ` +
+            (err instanceof Error ? err.message : String(err))
+          );
+        } finally {
+          completed++;
+          maybeReportProgress();
+        }
       }
+    };
+    const workerCount = Math.max(1, Math.min(pdfConfig.contrastRenderConcurrency, pages.length));
+    await Promise.all(Array.from({ length: workerCount }, () => renderWorker()));
+    // Make sure every queued progress write has actually landed before
+    // Stage B starts -- pdf-audit.service.ts's own onValidatorComplete does
+    // its own read-modify-write of Job.input right after this method
+    // returns, and it must never race a still-in-flight progress write above.
+    await progressChain;
+
+    // Stage B: per-item scoring, strictly in page order (see the comment
+    // above renderResults for why).
+    for (const rendered of renderResults) {
+      if (!rendered) continue; // empty-content page or Stage A failure, already logged/counted above
       try {
-        const pageIssues = await this.validatePageContrast(parsed.parsedPdf.pdfjsDoc, page);
-        issues.push(...pageIssues);
+        issues.push(...this.scorePageContrast(rendered));
       } catch (err) {
         logger.warn(
-          `[PdfContrastValidator] Page ${page.pageNumber} failed (non-fatal): ` +
+          `[PdfContrastValidator] Page ${rendered.page.pageNumber} failed to score (non-fatal): ` +
           (err instanceof Error ? err.message : String(err))
         );
-      } finally {
-        completed++;
-        await maybeReportProgress();
       }
     }
 
@@ -352,22 +423,95 @@ export class PdfContrastValidator {
     return issues;
   }
 
-  private async validatePageContrast(
+  /**
+   * Stage A: render one page to canvas and extract its text content. Safe
+   * to run in parallel across pages -- touches no cross-page state (see
+   * backgroundSignatureCounts' own doc comment for the one piece of state
+   * that DOES require page-ordered, sequential handling, done separately in
+   * scorePageContrast below).
+   */
+  private async renderPageForContrast(
     pdfjsDoc: pdfjsLib.PDFDocumentProxy,
     page: PdfParseResult['pages'][0]
-  ): Promise<AuditIssue[]> {
+  ): Promise<ContrastPageRenderResult> {
     const pdfjsPage = await pdfjsDoc.getPage(page.pageNumber);
     try {
-      return await this.samplePageContrast(pdfjsPage, page);
+      const viewport = pdfjsPage.getViewport({ scale: RENDER_SCALE });
+
+      // Render page to an @napi-rs/canvas
+      const canvas = createCanvas(Math.ceil(viewport.width), Math.ceil(viewport.height));
+      const ctx = canvas.getContext('2d');
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      await pdfjsPage.render({ canvas: canvas as any, canvasContext: ctx as any, viewport }).promise;
+
+      const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+      const { data } = imgData;
+      const cw = canvas.width;
+      const ch = canvas.height;
+
+      // Get text items (position + dimensions in PDF space). includeMarkedContent
+      // interleaves TextMarkedContent begin/end markers (each carrying the REAL
+      // tag name, e.g. "Artifact" or "Figure" -- confirmed live, not a synthetic
+      // MCID-only hint) among the TextItem entries, letting artifactTextItemIndices
+      // below exclude any text a fix has already marked /Artifact -- otherwise a
+      // pdf-structure-writer.service.ts fixInvisibleTextArtifact fix (or any
+      // other Artifact-tagging fix) would be invisible to THIS validator's own
+      // plain-geometry text scan, and Auto Mode's own re-audit would show zero
+      // progress for a fix that actually succeeded (CodeRabbit finding on
+      // PR #585, confirmed real).
+      const textContent = await pdfjsPage.getTextContent({ includeMarkedContent: true });
+      const styles = textContent.styles as Record<string, { fontFamily?: string }> | undefined;
+      const artifactTextItemIndices = this.findArtifactTextItemIndices(textContent.items);
+
+      // Every text item's own canvas-space box, computed once up front so
+      // sampleBackgroundRobust can exclude a candidate strip that lands on a
+      // *different* line's own glyphs instead of true background (see that
+      // method's otherTextBoxes doc comment). Includes short/skipped items
+      // too -- a 1-2 character word still physically occupies space that can
+      // contaminate a neighboring line's background candidate.
+      // A `null` slot (rather than omitting the entry) keeps this array
+      // index-aligned with textItemIndex below -- CodeRabbit finding on
+      // PR #585, confirmed real: omitting artifact slots entirely shifted
+      // every LATER item's own box left by one per preceding artifact,
+      // so otherTextBoxes' "exclude my own index" filter removed some
+      // unrelated later item's box instead of this one's, leaving this
+      // item's own real box in the neighbor-avoidance set to wrongly
+      // self-disqualify a correctly-positioned background candidate.
+      const allItemBoxes: Array<{ x: number; y: number; w: number; h: number } | null> = [];
+      {
+        let boxItemIndex = -1;
+        for (const rawItem of textContent.items) {
+          if (!('str' in rawItem)) continue;
+          boxItemIndex++;
+          if (artifactTextItemIndices.has(boxItemIndex)) { allItemBoxes.push(null); continue; } // already-excluded content shouldn't shape neighbor-avoidance either
+          const it = rawItem as { transform: number[]; width?: number };
+          const itFontSize = this.textItemFontSize(it.transform);
+          allItemBoxes.push(this.computeItemCanvasBox(it.transform, it.width ?? 40, itFontSize, viewport.transform));
+        }
+      }
+
+      return {
+        page,
+        data,
+        cw,
+        ch,
+        textItems: textContent.items,
+        styles,
+        artifactTextItemIndices,
+        allItemBoxes,
+        viewportTransform: viewport.transform,
+      };
     } finally {
       // Releases pdfjs-dist's own internal per-page caches (rendered
-      // operator list, etc.) immediately after this page is done, rather
-      // than leaving that to GC timing. Confirmed live: a 377-page document
+      // operator list, etc.) immediately once this page's render/extraction
+      // is done, rather than leaving that to GC timing or deferring it until
+      // Stage B's scoring pass (which can run well after this, once every
+      // page's Stage A work is queued). Confirmed live: a 377-page document
       // OOM-killed the ECS task (exit 137) during this exact per-page render
       // loop -- see maxContrastPages' doc comment in pdf.config.ts for the
       // full incident. Best-effort: a cleanup failure must never mask a real
-      // error from samplePageContrast above, or throw and break the
-      // per-page try/catch in validate()'s own loop.
+      // error from above, or throw and break the per-page try/catch in
+      // validate()'s own render worker.
       try {
         await pdfjsPage.cleanup();
       } catch (cleanupErr) {
@@ -379,36 +523,16 @@ export class PdfContrastValidator {
     }
   }
 
-  private async samplePageContrast(
-    pdfjsPage: pdfjsLib.PDFPageProxy,
-    page: PdfParseResult['pages'][0]
-  ): Promise<AuditIssue[]> {
-    const viewport = pdfjsPage.getViewport({ scale: RENDER_SCALE });
-
-    // Render page to an @napi-rs/canvas
-    const canvas = createCanvas(Math.ceil(viewport.width), Math.ceil(viewport.height));
-    const ctx = canvas.getContext('2d');
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    await pdfjsPage.render({ canvas: canvas as any, canvasContext: ctx as any, viewport }).promise;
-
-    const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-    const { data } = imgData;
-    const cw = canvas.width;
-    const ch = canvas.height;
-
-    // Get text items (position + dimensions in PDF space). includeMarkedContent
-    // interleaves TextMarkedContent begin/end markers (each carrying the REAL
-    // tag name, e.g. "Artifact" or "Figure" -- confirmed live, not a synthetic
-    // MCID-only hint) among the TextItem entries, letting artifactTextItemIndices
-    // below exclude any text a fix has already marked /Artifact -- otherwise a
-    // pdf-structure-writer.service.ts fixInvisibleTextArtifact fix (or any
-    // other Artifact-tagging fix) would be invisible to THIS validator's own
-    // plain-geometry text scan, and Auto Mode's own re-audit would show zero
-    // progress for a fix that actually succeeded (CodeRabbit finding on
-    // PR #585, confirmed real).
-    const textContent = await pdfjsPage.getTextContent({ includeMarkedContent: true });
-    const styles = textContent.styles as Record<string, { fontFamily?: string }> | undefined;
-    const artifactTextItemIndices = this.findArtifactTextItemIndices(textContent.items);
+  /**
+   * Stage B: per-item contrast scoring for one page's already-rendered
+   * data. Called strictly in page order from validate() -- see
+   * backgroundSignatureCounts' own doc comment for why this is the one
+   * piece of state in this validator that's genuinely cross-page and
+   * order-dependent, so it can't be folded into Stage A's parallel render
+   * pool above.
+   */
+  private scorePageContrast(rendered: ContrastPageRenderResult): AuditIssue[] {
+    const { page, data, cw, ch, textItems, styles, artifactTextItemIndices, allItemBoxes, viewportTransform } = rendered;
 
     const issues: AuditIssue[] = [];
     const usedBoxes: Array<{ x: number; y: number; w: number; h: number }> = [];
@@ -418,35 +542,8 @@ export class PdfContrastValidator {
     // SAME page counts as one page-occurrence, not several.
     const signaturesSeenThisPage = new Set<string>();
 
-    // Every text item's own canvas-space box, computed once up front so
-    // sampleBackgroundRobust can exclude a candidate strip that lands on a
-    // *different* line's own glyphs instead of true background (see that
-    // method's otherTextBoxes doc comment). Includes short/skipped items
-    // too -- a 1-2 character word still physically occupies space that can
-    // contaminate a neighboring line's background candidate.
-    // A `null` slot (rather than omitting the entry) keeps this array
-    // index-aligned with textItemIndex below -- CodeRabbit finding on
-    // PR #585, confirmed real: omitting artifact slots entirely shifted
-    // every LATER item's own box left by one per preceding artifact,
-    // so otherTextBoxes' "exclude my own index" filter removed some
-    // unrelated later item's box instead of this one's, leaving this
-    // item's own real box in the neighbor-avoidance set to wrongly
-    // self-disqualify a correctly-positioned background candidate.
-    const allItemBoxes: Array<{ x: number; y: number; w: number; h: number } | null> = [];
-    {
-      let boxItemIndex = -1;
-      for (const rawItem of textContent.items) {
-        if (!('str' in rawItem)) continue;
-        boxItemIndex++;
-        if (artifactTextItemIndices.has(boxItemIndex)) { allItemBoxes.push(null); continue; } // already-excluded content shouldn't shape neighbor-avoidance either
-        const it = rawItem as { transform: number[]; width?: number };
-        const itFontSize = this.textItemFontSize(it.transform);
-        allItemBoxes.push(this.computeItemCanvasBox(it.transform, it.width ?? 40, itFontSize, viewport.transform));
-      }
-    }
-
     let textItemIndex = -1;
-    for (const rawItem of textContent.items) {
+    for (const rawItem of textItems) {
       if (issues.length >= MAX_ISSUES_PER_PAGE) break;
 
       // TextItem (not TextMarkedContent which has no str field)
@@ -470,7 +567,7 @@ export class PdfContrastValidator {
       // any rotation (see computeItemCanvasBox's doc comment) -- NOT simply
       // itemWidth-along-canvasX by fontSize-along-canvasY, which only holds
       // for unrotated text.
-      const itemBox = this.computeItemCanvasBox(item.transform, item.width ?? 40, fontSize, viewport.transform);
+      const itemBox = this.computeItemCanvasBox(item.transform, item.width ?? 40, fontSize, viewportTransform);
       const canvasX = itemBox.x;
       const itemW = itemBox.w;
       const itemH = itemBox.h;
