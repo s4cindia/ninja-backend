@@ -85,6 +85,23 @@ export function createAuditProgressCallbacks(options: AuditProgressTrackerOption
   // Tracked so onAltTextImageProgress can re-write the same value (see its
   // own doc comment below for why it never computes a new one).
   let lastKnownPct = extractionStartPct;
+  // Serializes onValidatorComplete/onAltTextImageProgress/
+  // onContrastPageProgress against EACH OTHER -- all three do their own
+  // read-modify-write of the SAME Job.input JSON blob (findUnique -> merge
+  // -> update), and pdf-audit.service.ts's Phase-1b parallelization of
+  // independent validator lanes means a validator's own completion and a
+  // DIFFERENT, still-running validator's sub-progress tick can now
+  // genuinely land close together, instead of being naturally spaced out
+  // by strictly sequential validator execution. Without this, whichever
+  // call's `ei` snapshot (read before the other's write committed) is
+  // stale ends up overwriting the other's already-persisted field when it
+  // finally writes back -- a classic lost update. Fixing it here protects
+  // every caller of this shared tracker (the single-file worker AND
+  // pdf-batch-orchestrator.service.ts), not just one. onProgress (the
+  // page-extraction phase, which always finishes before any validator
+  // runs) doesn't need to join this chain -- it never overlaps with the
+  // other three in time.
+  let progressChain: Promise<void> = Promise.resolve();
 
   const onProgress = async (currentPage: number, totalPages: number) => {
     try {
@@ -117,23 +134,26 @@ export function createAuditProgressCallbacks(options: AuditProgressTrackerOption
 
   const validatorProgress: Array<{ label: string; issuesFound: number; startedAt: string; completedAt: string }> = [];
   const onValidatorComplete = async (label: string, issuesFound: number, completed: number, total: number, startedAt: Date) => {
-    try {
-      validatorProgress.push({ label, issuesFound, startedAt: startedAt.toISOString(), completedAt: new Date().toISOString() });
-      logger.info(`[AuditProgressTracker] Validator "${label}" done for job ${jobId}: ${issuesFound} issues (${completed}/${total})`);
-      const pct = validatorStartPct + Math.round((completed / total) * validatorPctRange);
-      lastKnownPct = pct;
-      await onPercent?.(pct);
-      await queueService.updateJobProgress(jobId, pct);
-      const ej = await prisma.job.findUnique({ where: { id: jobId }, select: { input: true } });
-      const ei = ej?.input && typeof ej.input === 'object' && !Array.isArray(ej.input)
-        ? ej.input as Record<string, unknown> : {};
-      await prisma.job.update({
-        where: { id: jobId },
-        data: { input: { ...ei, validatorProgress: [...validatorProgress] } as Prisma.InputJsonObject },
-      });
-    } catch (err) {
-      logger.warn(`[AuditProgressTracker] onValidatorComplete callback failed for job ${jobId}, validator "${label}" (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
-    }
+    progressChain = progressChain.then(async () => {
+      try {
+        validatorProgress.push({ label, issuesFound, startedAt: startedAt.toISOString(), completedAt: new Date().toISOString() });
+        logger.info(`[AuditProgressTracker] Validator "${label}" done for job ${jobId}: ${issuesFound} issues (${completed}/${total})`);
+        const pct = validatorStartPct + Math.round((completed / total) * validatorPctRange);
+        lastKnownPct = pct;
+        await onPercent?.(pct);
+        await queueService.updateJobProgress(jobId, pct);
+        const ej = await prisma.job.findUnique({ where: { id: jobId }, select: { input: true } });
+        const ei = ej?.input && typeof ej.input === 'object' && !Array.isArray(ej.input)
+          ? ej.input as Record<string, unknown> : {};
+        await prisma.job.update({
+          where: { id: jobId },
+          data: { input: { ...ei, validatorProgress: [...validatorProgress] } as Prisma.InputJsonObject },
+        });
+      } catch (err) {
+        logger.warn(`[AuditProgressTracker] onValidatorComplete callback failed for job ${jobId}, validator "${label}" (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
+      }
+    });
+    await progressChain;
   };
 
   // Alt Text sub-progress: touches Job.updatedAt every ~30s while
@@ -148,20 +168,23 @@ export function createAuditProgressCallbacks(options: AuditProgressTrackerOption
   // visibly jumping backward relative to what onValidatorComplete will
   // report once this validator actually finishes.
   const onAltTextImageProgress = async (completed: number, total: number) => {
-    try {
-      logger.info(`[AuditProgressTracker] Alt Text progress for job ${jobId}: ${completed}/${total} images`);
-      await onPercent?.(lastKnownPct);
-      await queueService.updateJobProgress(jobId, lastKnownPct);
-      const ej = await prisma.job.findUnique({ where: { id: jobId }, select: { input: true } });
-      const ei = ej?.input && typeof ej.input === 'object' && !Array.isArray(ej.input)
-        ? ej.input as Record<string, unknown> : {};
-      await prisma.job.update({
-        where: { id: jobId },
-        data: { input: { ...ei, altTextImageProgress: { completed, total } } as Prisma.InputJsonObject },
-      });
-    } catch (err) {
-      logger.warn(`[AuditProgressTracker] onAltTextImageProgress callback failed for job ${jobId} (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
-    }
+    progressChain = progressChain.then(async () => {
+      try {
+        logger.info(`[AuditProgressTracker] Alt Text progress for job ${jobId}: ${completed}/${total} images`);
+        await onPercent?.(lastKnownPct);
+        await queueService.updateJobProgress(jobId, lastKnownPct);
+        const ej = await prisma.job.findUnique({ where: { id: jobId }, select: { input: true } });
+        const ei = ej?.input && typeof ej.input === 'object' && !Array.isArray(ej.input)
+          ? ej.input as Record<string, unknown> : {};
+        await prisma.job.update({
+          where: { id: jobId },
+          data: { input: { ...ei, altTextImageProgress: { completed, total } } as Prisma.InputJsonObject },
+        });
+      } catch (err) {
+        logger.warn(`[AuditProgressTracker] onAltTextImageProgress callback failed for job ${jobId} (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
+      }
+    });
+    await progressChain;
   };
 
   // Contrast sub-progress: touches Job.updatedAt every ~30s while
@@ -176,20 +199,23 @@ export function createAuditProgressCallbacks(options: AuditProgressTrackerOption
   // that callback's own reasoning exactly, including re-writing
   // lastKnownPct rather than computing a new value.
   const onContrastPageProgress = async (completed: number, total: number) => {
-    try {
-      logger.info(`[AuditProgressTracker] Contrast progress for job ${jobId}: ${completed}/${total} pages`);
-      await onPercent?.(lastKnownPct);
-      await queueService.updateJobProgress(jobId, lastKnownPct);
-      const ej = await prisma.job.findUnique({ where: { id: jobId }, select: { input: true } });
-      const ei = ej?.input && typeof ej.input === 'object' && !Array.isArray(ej.input)
-        ? ej.input as Record<string, unknown> : {};
-      await prisma.job.update({
-        where: { id: jobId },
-        data: { input: { ...ei, contrastPageProgress: { completed, total } } as Prisma.InputJsonObject },
-      });
-    } catch (err) {
-      logger.warn(`[AuditProgressTracker] onContrastPageProgress callback failed for job ${jobId} (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
-    }
+    progressChain = progressChain.then(async () => {
+      try {
+        logger.info(`[AuditProgressTracker] Contrast progress for job ${jobId}: ${completed}/${total} pages`);
+        await onPercent?.(lastKnownPct);
+        await queueService.updateJobProgress(jobId, lastKnownPct);
+        const ej = await prisma.job.findUnique({ where: { id: jobId }, select: { input: true } });
+        const ei = ej?.input && typeof ej.input === 'object' && !Array.isArray(ej.input)
+          ? ej.input as Record<string, unknown> : {};
+        await prisma.job.update({
+          where: { id: jobId },
+          data: { input: { ...ei, contrastPageProgress: { completed, total } } as Prisma.InputJsonObject },
+        });
+      } catch (err) {
+        logger.warn(`[AuditProgressTracker] onContrastPageProgress callback failed for job ${jobId} (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
+      }
+    });
+    await progressChain;
   };
 
   return { onProgress, onValidatorComplete, onAltTextImageProgress, onContrastPageProgress, getLastKnownPercent: () => lastKnownPct };
