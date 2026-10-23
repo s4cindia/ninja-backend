@@ -8,17 +8,19 @@
  * page to release pdfjs-dist's own internal per-page render caches instead
  * of leaving that entirely to GC timing.
  *
- * These tests exercise validatePageContrast directly against a minimal fake
- * pdfjsDoc/pdfjsPage (no real rendering) to prove the cleanup contract:
- * cleanup() fires after every page regardless of success or failure, and a
- * cleanup() failure itself is swallowed (best-effort) rather than masking a
- * real result or crashing the per-page loop in validate().
+ * These tests exercise renderPageForContrast (Stage A of validate()'s
+ * render/score split -- see that method's own header comment) directly
+ * against a minimal fake pdfjsDoc/pdfjsPage (no real rendering) to prove the
+ * cleanup contract: cleanup() fires after every page regardless of success
+ * or failure, and a cleanup() failure itself is swallowed (best-effort)
+ * rather than masking a real result or crashing the render worker in
+ * validate().
  */
 import { describe, it, expect, vi } from 'vitest';
 import { pdfContrastValidator } from '../../../../src/services/pdf/validators/pdf-contrast.validator';
 import type { PdfParseResult } from '../../../../src/services/pdf/pdf-comprehensive-parser.service';
 
-// validatePageContrast is private; exercise via cast, same pattern used
+// renderPageForContrast is private; exercise via cast, same pattern used
 // throughout this test suite for private helpers (see
 // pdf-contrast-rotated-text.test.ts).
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -41,9 +43,11 @@ describe('PdfContrastValidator -- per-page pdfjs cleanup', () => {
     const fakePage = buildFakePage();
     const fakeDoc = { getPage: vi.fn().mockResolvedValue(fakePage) };
 
-    const issues = await validator.validatePageContrast(fakeDoc, FAKE_PAGE_INFO);
+    const rendered = await validator.renderPageForContrast(fakeDoc, FAKE_PAGE_INFO);
 
-    expect(issues).toEqual([]);
+    // No text items on this fake page, so nothing for Stage B to score --
+    // the real assertion here is the cleanup contract below.
+    expect(rendered.textItems).toEqual([]);
     expect(fakePage.cleanup).toHaveBeenCalledTimes(1);
   });
 
@@ -55,7 +59,7 @@ describe('PdfContrastValidator -- per-page pdfjs cleanup', () => {
     });
     const fakeDoc = { getPage: vi.fn().mockResolvedValue(fakePage) };
 
-    await expect(validator.validatePageContrast(fakeDoc, FAKE_PAGE_INFO)).rejects.toThrow(
+    await expect(validator.renderPageForContrast(fakeDoc, FAKE_PAGE_INFO)).rejects.toThrow(
       'pdfjs internal render failure'
     );
     expect(fakePage.cleanup).toHaveBeenCalledTimes(1);
@@ -67,9 +71,11 @@ describe('PdfContrastValidator -- per-page pdfjs cleanup', () => {
     });
     const fakeDoc = { getPage: vi.fn().mockResolvedValue(fakePage) };
 
-    // Resolves normally (empty issues, since textContent.items is empty) --
-    // the cleanup failure must not propagate or replace this result.
-    await expect(validator.validatePageContrast(fakeDoc, FAKE_PAGE_INFO)).resolves.toEqual([]);
+    // Resolves normally (empty text items) -- the cleanup failure must not
+    // propagate or replace this result.
+    await expect(validator.renderPageForContrast(fakeDoc, FAKE_PAGE_INFO)).resolves.toMatchObject({
+      textItems: [],
+    });
   });
 
   it('does not let a cleanup() failure mask a real error from page processing either', async () => {
@@ -82,7 +88,7 @@ describe('PdfContrastValidator -- per-page pdfjs cleanup', () => {
     const fakeDoc = { getPage: vi.fn().mockResolvedValue(fakePage) };
 
     // The ORIGINAL error must win -- not the cleanup failure.
-    await expect(validator.validatePageContrast(fakeDoc, FAKE_PAGE_INFO)).rejects.toThrow(
+    await expect(validator.renderPageForContrast(fakeDoc, FAKE_PAGE_INFO)).rejects.toThrow(
       'pdfjs internal render failure'
     );
   });

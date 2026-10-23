@@ -3,7 +3,7 @@ import { PDFDocument, StandardFonts, rgb } from 'pdf-lib';
 import { pdfAuditService } from '../../../../src/services/pdf/pdf-audit.service';
 
 /**
- * Detection's own background sampling (PdfContrastValidator.validatePageContrast)
+ * Detection's own background sampling (PdfContrastValidator.scorePageContrast)
  * used a single fixed 5px strip directly above the text (sampleAverage) until
  * this fix, wiring in the same tiered/flat-variance search
  * (sampleBackgroundRobust) already proven for fix-time verification

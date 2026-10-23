@@ -10,12 +10,18 @@
  * callback" suite for the sibling coverage this mirrors).
  *
  * Exercises the PUBLIC validate() method (not the private
- * validatePageContrast -- see pdf-contrast-page-cleanup.test.ts for that)
+ * renderPageForContrast -- see pdf-contrast-page-cleanup.test.ts for that)
  * against a fake pdfjsDoc whose getPage() always rejects. That's enough to
- * drive every page through validate()'s own per-page try/catch/finally
- * without needing to mock canvas rendering at all -- the progress-reporting
- * logic under test lives entirely in that finally block, before any real
- * rendering would happen.
+ * drive every page through validate()'s own Stage A render worker's
+ * try/catch/finally without needing to mock canvas rendering at all -- the
+ * progress-reporting logic under test lives entirely in that finally block,
+ * before any real rendering would happen.
+ *
+ * validate()'s Stage A render pool (see its own header comment) processes
+ * pages through a small worker pool, not strictly one at a time, so these
+ * tests assert on AGGREGATE call counts/final values reachable regardless
+ * of exact completion order, rather than the precise per-page sequencing a
+ * single-page-at-a-time loop would allow.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { pdfContrastValidator } from '../../../../src/services/pdf/validators/pdf-contrast.validator';
@@ -74,24 +80,29 @@ describe('PdfContrastValidator -- onProgress callback', () => {
 
   it('calls onProgress once the 30s throttle window elapses mid-run, independent of the final-page flush', async () => {
     const { parsed, getPage } = buildFakeParsed(3);
-    // Simulate real wall-clock time passing while page 2 was being
-    // processed, as a side effect of its own (rejected) getPage call.
-    getPage
-      .mockRejectedValueOnce(new Error('page 1'))
-      .mockImplementationOnce(async () => {
+    // Simulate real wall-clock time passing partway through the run, as a
+    // side effect of a (rejected) getPage call -- gated to fire only once
+    // so the result doesn't depend on which page's render happens to
+    // observe it first under Stage A's worker pool (unlike the old
+    // single-page-at-a-time loop, call order across pages is no longer
+    // guaranteed here).
+    let advanced = false;
+    getPage.mockImplementation(async () => {
+      if (!advanced) {
+        advanced = true;
         vi.advanceTimersByTime(31_000);
-        throw new Error('page 2');
-      })
-      .mockRejectedValueOnce(new Error('page 3'));
+      }
+      throw new Error('render failed');
+    });
     const onProgress = vi.fn();
 
     await pdfContrastValidator.validate(parsed, onProgress);
 
-    // One call once the throttle window elapses after page 2, plus the
-    // guaranteed final-page call after page 3.
+    // Exactly one throttled mid-run call once the window elapses, plus the
+    // guaranteed final-page call -- true regardless of which page's
+    // completion observes the advanced clock first.
     expect(onProgress).toHaveBeenCalledTimes(2);
-    expect(onProgress).toHaveBeenNthCalledWith(1, 2, 3);
-    expect(onProgress).toHaveBeenNthCalledWith(2, 3, 3);
+    expect(onProgress).toHaveBeenLastCalledWith(3, 3);
   });
 
   it('counts a page skipped for empty content toward completed, subject to the same throttle as any other page', async () => {
