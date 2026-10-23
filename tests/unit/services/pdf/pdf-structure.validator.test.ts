@@ -424,6 +424,76 @@ describe('PDFStructureValidator', () => {
     });
   });
 
+  describe('content-stream well-formedness (CONTENT-STREAM-MALFORMED-OPERATOR)', () => {
+    // Real incident this check closes a blind spot for: Math_Olszewski_PDF.pdf
+    // had a malformed /rg operator (wrong operand count) left behind by an
+    // old, failed color-contrast fix -- nothing in this pipeline could see it,
+    // it took PAC 2026's own strict parser to catch it.
+    async function docWithPageContent(content: string, isTagged: boolean): Promise<{ doc: ParsedPDF['pdfLibDoc']; mockParsedPdf: ParsedPDF }> {
+      const doc = await PDFDocument.create();
+      doc.addPage([612, 792]);
+      writePageContent(doc, 1, content);
+      const mockParsedPdf = { ...createMockParsedPdf({ isTagged, hasLanguage: true, hasTitle: true }), pdfLibDoc: doc };
+      return { doc, mockParsedPdf };
+    }
+
+    function mockStructureFor(isTaggedPDF: boolean) {
+      return createMockStructure({
+        isTaggedPDF, hasProperHeadingHierarchy: true, hasDocumentLanguage: true, hasLogicalReadingOrder: true,
+      });
+    }
+
+    it('reports no findings for well-formed color/matrix operators', async () => {
+      const { mockParsedPdf } = await docWithPageContent('0 0 0 rg\n1 0 0 1 0 0 cm\n0.5 g\n0 0 0 1 k\n0 0 10 10 re\n', true);
+      vi.mocked(pdfParserService.parse).mockResolvedValue(mockParsedPdf);
+      vi.mocked(pdfParserService.close).mockResolvedValue(undefined);
+      vi.mocked(structureAnalyzerService.analyzeStructure).mockResolvedValue(mockStructureFor(true));
+
+      const result = await pdfStructureValidator.validateFromFile('/path/to/test.pdf');
+
+      expect(result.issues.filter(i => i.code === 'CONTENT-STREAM-MALFORMED-OPERATOR')).toHaveLength(0);
+    });
+
+    it('flags an rg operator with too few operands', async () => {
+      const { mockParsedPdf } = await docWithPageContent('BT\n0.5 0.5 rg\n(x) Tj\nET\n', true);
+      vi.mocked(pdfParserService.parse).mockResolvedValue(mockParsedPdf);
+      vi.mocked(pdfParserService.close).mockResolvedValue(undefined);
+      vi.mocked(structureAnalyzerService.analyzeStructure).mockResolvedValue(mockStructureFor(true));
+
+      const result = await pdfStructureValidator.validateFromFile('/path/to/test.pdf');
+
+      const issue = result.issues.find(i => i.code === 'CONTENT-STREAM-MALFORMED-OPERATOR');
+      expect(issue).toBeDefined();
+      expect(issue?.severity).toBe('critical');
+      expect(issue?.message).toContain("'rg' operator has 2 preceding numeric operand(s), expected 3");
+      expect(issue?.pageNumber).toBe(1);
+    });
+
+    it('flags a cm operator with too few operands', async () => {
+      const { mockParsedPdf } = await docWithPageContent('1 0 0 1 cm\n', true);
+      vi.mocked(pdfParserService.parse).mockResolvedValue(mockParsedPdf);
+      vi.mocked(pdfParserService.close).mockResolvedValue(undefined);
+      vi.mocked(structureAnalyzerService.analyzeStructure).mockResolvedValue(mockStructureFor(true));
+
+      const result = await pdfStructureValidator.validateFromFile('/path/to/test.pdf');
+
+      const issue = result.issues.find(i => i.code === 'CONTENT-STREAM-MALFORMED-OPERATOR');
+      expect(issue).toBeDefined();
+      expect(issue?.message).toContain("'cm' operator has 4 preceding numeric operand(s), expected 6");
+    });
+
+    it('runs on an UNTAGGED document too, unlike the structure-tree check', async () => {
+      const { mockParsedPdf } = await docWithPageContent('0.5 0.5 rg\n', false);
+      vi.mocked(pdfParserService.parse).mockResolvedValue(mockParsedPdf);
+      vi.mocked(pdfParserService.close).mockResolvedValue(undefined);
+      vi.mocked(structureAnalyzerService.analyzeStructure).mockResolvedValue(mockStructureFor(false));
+
+      const result = await pdfStructureValidator.validateFromFile('/path/to/test.pdf');
+
+      expect(result.issues.find(i => i.code === 'CONTENT-STREAM-MALFORMED-OPERATOR')).toBeDefined();
+    });
+  });
+
   describe('heading validation', () => {
     it('should identify missing H1 heading', async () => {
       const mockParsedPdf = createMockParsedPdf({
