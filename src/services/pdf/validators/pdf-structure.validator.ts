@@ -30,6 +30,18 @@ import { logger } from '../../../lib/logger';
 // files solve unrelated problems).
 const RECURRING_SIGNATURE_THRESHOLD = 3;
 
+// validateContentStreamWellFormedness's own operand-count table -- only the
+// operators this codebase's own remediation code writes (see that method's
+// doc comment for why this is deliberately narrow, not a general PDF
+// content-stream grammar). Per PDF32000-1:2008 Table 51/58/59.
+const CONTENT_STREAM_OPERATOR_OPERAND_COUNTS: Record<string, number> = {
+  rg: 3, // set RGB fill color
+  g: 1,  // set gray fill color
+  k: 4,  // set CMYK fill color
+  re: 4, // append rectangle to path
+  cm: 6, // modify current transformation matrix
+};
+
 /**
  * Matterhorn Protocol checkpoint mapping
  */
@@ -131,6 +143,10 @@ class PDFStructureValidator {
     if (structure.isTaggedPDF) {
       issues.push(...this.validateStructTreeReferenceIntegrity(parsedPdf));
     }
+
+    // Content-stream operator well-formedness -- runs regardless of tagging
+    // state (malformed operator syntax can occur on any page).
+    issues.push(...this.validateContentStreamWellFormedness(parsedPdf));
 
     // Calculate summary
     const summary = this.calculateSummary(issues);
@@ -795,6 +811,82 @@ class PDFStructureValidator {
       }
     } catch (err) {
       logger.warn(`[PDFStructureValidator] /ParentTree walk failed during reference-integrity check: ${err instanceof Error ? err.message : String(err)}`);
+    }
+
+    return issues;
+  }
+
+  /**
+   * Content-stream operator well-formedness -- added after a real live
+   * incident: Math_Olszewski_PDF.pdf had a malformed `rg` operator (wrong
+   * operand count) on one page, left behind by an old, failed color-
+   * contrast fix whose revert never completed. Nothing in this pipeline
+   * could see it -- only PAC 2026's own strict content-stream parser
+   * caught it ("'rg' operator must have 3 operand(s)"). This closes that
+   * same class of blind spot.
+   *
+   * Deliberately narrow: not a general content-stream grammar validator
+   * (that needs real string/array/dict lexing to be correct against
+   * arbitrary third-party-authored operators) -- scoped instead to the
+   * small, fixed set of operators THIS codebase's own remediation code
+   * actually writes (pdf-contrast-writer.service.ts's spliceColorFix,
+   * pdf-contrast-backplate.ts's spliceBackplate, pdf-structure-writer.
+   * service.ts's element-creation helpers), since that's the real risk
+   * surface the incident came from. Checks operand COUNT only, not operand
+   * values -- exactly the defect shape PAC flagged and this incident
+   * produced. Same tokenization approach hand-verified against the real
+   * incident this session (a scratchpad investigation script), promoted
+   * here into the real validator.
+   */
+  private validateContentStreamWellFormedness(parsedPdf: ParsedPDF): AuditIssue[] {
+    const issues: AuditIssue[] = [];
+    const doc = parsedPdf.pdfLibDoc;
+    let pageCount: number;
+    try {
+      pageCount = doc.getPageCount();
+    } catch (err) {
+      logger.debug(`[PDFStructureValidator] Could not read page count for content-stream well-formedness check: ${err instanceof Error ? err.message : String(err)}`);
+      return issues;
+    }
+
+    const numberPattern = /^[-+]?\d*\.?\d+([eE][-+]?\d+)?$/;
+
+    for (let pageNumber = 1; pageNumber <= pageCount; pageNumber++) {
+      let content: string | null;
+      try {
+        content = decodePageContent(doc, pageNumber);
+      } catch (err) {
+        logger.debug(`[PDFStructureValidator] Could not decode page ${pageNumber} for content-stream well-formedness check: ${err instanceof Error ? err.message : String(err)}`);
+        continue;
+      }
+      if (!content) continue;
+
+      const tokens = content.split(/\s+/);
+      for (let i = 0; i < tokens.length; i++) {
+        const expected = CONTENT_STREAM_OPERATOR_OPERAND_COUNTS[tokens[i]];
+        if (expected === undefined) continue;
+
+        let j = i - 1;
+        let actual = 0;
+        while (j >= 0 && numberPattern.test(tokens[j])) {
+          actual++;
+          j--;
+        }
+        if (actual === expected) continue;
+
+        const snippet = tokens.slice(Math.max(0, i - 6), i + 2).join(' ');
+        issues.push(this.createIssue({
+          source: 'pdf-structure',
+          severity: 'critical',
+          code: 'CONTENT-STREAM-MALFORMED-OPERATOR',
+          message: `Page ${pageNumber}: '${tokens[i]}' operator has ${actual} preceding numeric operand(s), expected ${expected} -- near "...${snippet}..."`,
+          wcagCriteria: ['1.3.1'],
+          location: `Page ${pageNumber}`,
+          suggestion: 'This content stream has a malformed operator invocation. External conformance tools (e.g. PAC) can refuse to open a document with this defect. Needs manual review and a targeted repair -- no safe automated fix exists for arbitrary malformed syntax.',
+          category: 'structure',
+          pageNumber,
+        }));
+      }
     }
 
     return issues;
