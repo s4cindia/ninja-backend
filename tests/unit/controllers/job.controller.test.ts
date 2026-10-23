@@ -18,6 +18,7 @@ import { Request, Response } from 'express';
 vi.mock('../../../src/lib/prisma', () => ({
   default: {
     job: { findMany: vi.fn(), count: vi.fn() },
+    teamMembership: { findMany: vi.fn() },
   },
 }));
 vi.mock('../../../src/services/queue.service', () => ({
@@ -169,6 +170,105 @@ describe('JobController', () => {
       const job = (res.json as any).mock.calls[0][0].data.jobs[0];
       expect(job.output.score).toBe(37);
       expect(job.output.combinedIssues).toHaveLength(2);
+    });
+  });
+
+  describe('listTeamJobs() -- GET /jobs/team (RBAC Phase 3 discovery)', () => {
+    beforeEach(() => {
+      (prisma.job.findMany as any).mockResolvedValue([]);
+      (prisma.job.count as any).mockResolvedValue(0);
+    });
+
+    it('TEAM_LEADER sees jobs from every member of their team, not just their own', async () => {
+      (prisma.teamMembership.findMany as any)
+        .mockResolvedValueOnce([{ teamId: 'team-1' }]) // caller's qualifying membership
+        .mockResolvedValueOnce([{ userId: 'leader-1' }, { userId: 'member-2' }]); // team roster
+
+      const res = makeRes();
+      await jobController.listTeamJobs(makeReq({ user: { id: 'leader-1', tenantId: 'tenant-1' } } as any), res, next);
+
+      expect(next).not.toHaveBeenCalled();
+      expect(prisma.job.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { tenantId: 'tenant-1', userId: { in: ['leader-1', 'member-2'] } },
+        })
+      );
+      expect(prisma.job.count).toHaveBeenCalledWith({
+        where: { tenantId: 'tenant-1', userId: { in: ['leader-1', 'member-2'] } },
+      });
+    });
+
+    it('VIEWER gets the same read access as TEAM_LEADER', async () => {
+      (prisma.teamMembership.findMany as any)
+        .mockResolvedValueOnce([{ teamId: 'team-1' }])
+        .mockResolvedValueOnce([{ userId: 'leader-1' }, { userId: 'viewer-1' }]);
+
+      const res = makeRes();
+      await jobController.listTeamJobs(makeReq({ user: { id: 'viewer-1', tenantId: 'tenant-1' } } as any), res, next);
+
+      expect(next).not.toHaveBeenCalled();
+      expect(prisma.job.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { tenantId: 'tenant-1', userId: { in: ['leader-1', 'viewer-1'] } },
+        })
+      );
+    });
+
+    it('rejects a caller with no qualifying team membership (plain EXECUTIVE or no team at all)', async () => {
+      (prisma.teamMembership.findMany as any).mockResolvedValueOnce([]);
+
+      const res = makeRes();
+      await jobController.listTeamJobs(makeReq({ user: { id: 'exec-1', tenantId: 'tenant-1' } } as any), res, next);
+
+      expect(next).toHaveBeenCalledTimes(1);
+      const error = (next as any).mock.calls[0][0];
+      expect(error.statusCode).toBe(403);
+      expect(error.code).toBe('NOT_TEAM_LEADER_OR_VIEWER');
+      expect(prisma.job.findMany).not.toHaveBeenCalled();
+      // Short-circuits before resolving the team roster at all.
+      expect(prisma.teamMembership.findMany).toHaveBeenCalledTimes(1);
+    });
+
+    it('still applies pagination/status/type filters on top of the team scope', async () => {
+      (prisma.teamMembership.findMany as any)
+        .mockResolvedValueOnce([{ teamId: 'team-1' }])
+        .mockResolvedValueOnce([{ userId: 'leader-1' }]);
+
+      const res = makeRes();
+      await jobController.listTeamJobs(
+        makeReq({
+          user: { id: 'leader-1', tenantId: 'tenant-1' },
+          query: { page: '2', limit: '5', status: 'COMPLETED', type: 'PDF_ACCESSIBILITY' },
+        } as any),
+        res,
+        next
+      );
+
+      expect(prisma.job.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: {
+            tenantId: 'tenant-1',
+            userId: { in: ['leader-1'] },
+            status: 'COMPLETED',
+            type: 'PDF_ACCESSIBILITY',
+          },
+          skip: 5,
+          take: 5,
+        })
+      );
+    });
+
+    it('always ANDs tenantId with the team-member userId filter -- a same-userId job in another tenant can never leak', async () => {
+      (prisma.teamMembership.findMany as any)
+        .mockResolvedValueOnce([{ teamId: 'team-1' }])
+        .mockResolvedValueOnce([{ userId: 'leader-1' }]);
+
+      const res = makeRes();
+      await jobController.listTeamJobs(makeReq({ user: { id: 'leader-1', tenantId: 'tenant-1' } } as any), res, next);
+
+      const where = (prisma.job.findMany as any).mock.calls[0][0].where;
+      expect(where.tenantId).toBe('tenant-1');
+      expect(where.userId).toEqual({ in: ['leader-1'] });
     });
   });
 });

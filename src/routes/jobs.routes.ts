@@ -14,8 +14,12 @@ router.get('/', validate(listJobsSchema), (req, res, next) =>
   jobController.list(req, res, next)
 );
 
-router.get('/stats', (req, res, next) => 
+router.get('/stats', (req, res, next) =>
   jobController.getStats(req, res, next)
+);
+
+router.get('/team', validate(listJobsSchema), (req, res, next) =>
+  jobController.listTeamJobs(req, res, next)
 );
 
 router.post('/', validate(createJobSchema), (req, res, next) => 
