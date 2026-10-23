@@ -915,8 +915,10 @@ class AiAnalysisService {
       const statsAcc = { geminiPrompt: 0, geminiCompletion: 0, claudePrompt: 0, claudeCompletion: 0 };
       const countedCacheKeys = new Set<string>();
 
-      // Process up to 10 issues concurrently
-      const limit = pLimit(10);
+      // Process up to aiConfig.suggestionConcurrency issues concurrently
+      // (AI_SUGGESTION_CONCURRENCY, default 10 -- see that config field's
+      // own doc comment for why raising it is low-risk).
+      const limit = pLimit(aiConfig.suggestionConcurrency);
 
       await Promise.all(issues.map(issue => limit(async () => {
         try {
