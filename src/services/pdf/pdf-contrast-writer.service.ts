@@ -734,6 +734,55 @@ export class PdfContrastWriterService {
    * run findSiblingRuns finds (see fixColorContrast's own doc comment for
    * why that's sometimes the REAL fix target instead).
    */
+  /**
+   * Serializes ONLY page `pageNumber` of `doc` (via pdf-lib's own
+   * copyPages, into a fresh throwaway single-page PDFDocument) instead of
+   * the whole document, for verify()/the backplate verification below to
+   * render and sample.
+   *
+   * Why this exists: `doc.save()` on the real, shared, whole document was
+   * the original implementation here -- but pdf-lib's save() always
+   * `flush()`es first (awaiting embedAll() for fonts/images/embedded
+   * pages/files/javaScripts) and then walks the FULL `doc.context` via a
+   * chunked, `objectsPerTick`-yielding writer (useObjectStreams defaults
+   * to true). Both have genuine internal await points, so two concurrent
+   * contrast fixes on DIFFERENT pages -- safe on their own terms, since
+   * applyColor()/writePageContent() only ever touch their own page's
+   * `/Contents` -- could have their own doc.save() calls genuinely
+   * interleave mid-serialization of the SAME shared `doc.context`. That is
+   * the same general fragility class as the real ObjStm-corruption
+   * incident this codebase already root-caused once (a pdf-lib save/load
+   * round-trip silently dropping objects on a parse failure) -- a
+   * different trigger, but not a risk worth taking on reasoning alone
+   * against a library with that history. A fresh single-page copy has no
+   * state shared with `doc` or with any other page's own concurrent
+   * verification call, so this is unconditionally safe under concurrency,
+   * and (as a secondary benefit) far cheaper to serialize than the whole
+   * document on every escalation attempt. `useObjectStreams: false` here
+   * too -- this buffer is immediately re-parsed by pdfjs and then
+   * discarded, never persisted or reloaded by pdf-lib itself, so there's
+   * no reason to pay for object-stream compression on a one-page throwaway.
+   *
+   * Returns null (never throws) on any copy/save failure, matching this
+   * file's own "every failure mode bails to success: false" governing
+   * principle (see this file's header comment) -- the caller already
+   * treats a null verification result as "could not verify."
+   */
+  private async extractSinglePageBuffer(doc: PDFDocument, pageNumber: number): Promise<Buffer | null> {
+    try {
+      const singlePageDoc = await PDFDocument.create();
+      const [copiedPage] = await singlePageDoc.copyPages(doc, [pageNumber - 1]);
+      singlePageDoc.addPage(copiedPage);
+      return Buffer.from(await singlePageDoc.save({ useObjectStreams: false }));
+    } catch (err) {
+      logger.warn(
+        `[ContrastWriter] Failed to extract single-page buffer for page ${pageNumber} (non-fatal, treated as unverifiable): ` +
+        (err instanceof Error ? err.message : String(err))
+      );
+      return null;
+    }
+  }
+
   private async fixOneRun(
     issueId: string,
     doc: PDFDocument,
@@ -776,8 +825,12 @@ export class PdfContrastWriterService {
       writePageContent(doc, pageNumber, rewritten);
     };
     const verify = async (): Promise<{ ratio: number; passes: boolean; uncertain: boolean; variance: number } | null> => {
-      const buffer = Buffer.from(await doc.save());
-      return verifyContrastInRegion(buffer, pageNumber, boundingBox, cd.requiredRatio, cd.background);
+      // Page-scoped, not doc.save() on the whole shared document -- see
+      // extractSinglePageBuffer's own doc comment for why (Phase 2:
+      // concurrent contrast fixes on different pages).
+      const buffer = await this.extractSinglePageBuffer(doc, pageNumber);
+      if (!buffer) return null;
+      return verifyContrastInRegion(buffer, 1, boundingBox, cd.requiredRatio, cd.background);
     };
 
     let appliedColor = computeCompliantColor(cd.foreground, cd.background, cd.requiredRatio).color;
@@ -892,8 +945,12 @@ export class PdfContrastWriterService {
         // uses the backplate's own known color directly instead of
         // re-searching for a background that isn't there anymore. See its
         // own doc comment for the real, live-reproduced failure this fixes.
-        const backplateBuffer = Buffer.from(await doc.save());
-        const backplateVerification = await verifyBackplateContrast(backplateBuffer, pageNumber, boundingBox, cd.requiredRatio, backplateColorHex);
+        // Page-scoped, not doc.save() on the whole shared document -- same
+        // reasoning as verify() above.
+        const backplateBuffer = await this.extractSinglePageBuffer(doc, pageNumber);
+        const backplateVerification = backplateBuffer
+          ? await verifyBackplateContrast(backplateBuffer, 1, boundingBox, cd.requiredRatio, backplateColorHex)
+          : null;
         if (backplateVerification && backplateVerification.passes && !backplateVerification.uncertain) {
           logger.info(
             `[ContrastWriter] Backplate ${backplateColorHex} behind original text verified ` +
