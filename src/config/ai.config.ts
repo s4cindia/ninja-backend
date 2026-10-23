@@ -30,4 +30,16 @@ export const aiConfig = {
     topK: 40,
     maxOutputTokens: 8192,
   },
+  // How many AI-analysis issues ai-analysis.service.ts's analyzeJob() fans
+  // out to Gemini/Claude at once (via p-limit). The real throughput ceiling
+  // is the distributed rate limiters in rate-limiter.ts (Gemini 60/min,
+  // Claude 50/min), not this number, so raising it is low-risk -- doubly so
+  // since the 2026-10-19 incident that could let one stuck pdfjs render
+  // consume the entire concurrency budget forever (see
+  // AiAnalysisService.PAGE_RENDER_TIMEOUT_MS's own doc comment) is now
+  // bounded by a 30s render timeout. Default (10) is the untouched original
+  // value; raise incrementally against a large real corpus (the documented
+  // ~12k-issue FMHE_PDF.pdf case) and watch 429/retry rates and memory
+  // before promoting a higher default.
+  suggestionConcurrency: parseInt(process.env.AI_SUGGESTION_CONCURRENCY || '10', 10),
 };
