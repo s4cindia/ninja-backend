@@ -338,310 +338,390 @@ class PdfAuditService extends BaseAuditService<PdfParseResult, PdfValidationResu
     // Use real validators if parsedPdf is available, otherwise use stubs
     if (parsed.parsedPdf) {
       logger.info('[PdfAudit] Using real validators with ParsedPDF');
+      const parsedPdf = parsed.parsedPdf;
 
-      // 1. Structure Validator (includes headings, reading-order, lists, language, metadata)
-      if (willRunStructure) {
-        const structureStart = new Date();
-        try {
-          logger.info(`[PdfAudit] Running PdfStructureValidator...`);
-          const structureResult = await pdfStructureValidator.validate(parsed.parsedPdf);
-          result.structureIssues.push(...structureResult.issues);
-          result.issues.push(...structureResult.issues);
-          logger.info(`[PdfAudit] PdfStructureValidator found ${structureResult.issues.length} issues`);
-          onValidatorComplete?.('Structure & Tags', structureResult.issues.length, ++completedValidators, totalValidators, structureStart);
-        } catch (error) {
-          const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-          logger.error(`[PdfAudit] PdfStructureValidator failed:`, error);
-          result.validatorErrors.push({ validator: 'PdfStructureValidator', error: errorMessage });
-          onValidatorComplete?.('Structure & Tags', 0, ++completedValidators, totalValidators, structureStart);
-        }
-      }
+      // Phase 1b: independent validator categories below run concurrently
+      // as separate "lanes", dispatched together via Promise.allSettled.
+      // Each lane keeps its existing try/catch/onValidatorComplete logic
+      // unchanged -- only the DISPATCH is now concurrent instead of one
+      // full category finishing before the next starts. Two real
+      // dependencies are preserved, not casually parallelized away:
+      //
+      // 1. Tables needs Formula's OWN result to build confirmedFormulaPages
+      //    -- confirmed by reading reconcileFormulaTableOverlap, which only
+      //    ever reads source==='pdf-formula' entries regardless of what's
+      //    passed in, so this never needed the FULL shared result.issues
+      //    array, just Formula's own output. Combined into one lane
+      //    (runFormulaAndTablesLane) so this data dependency is satisfied
+      //    from a local variable instead of a shared array other lanes are
+      //    concurrently writing to. Formula and Tables keep their
+      //    ORIGINAL, independent gates (willRunStructure / willRunTables)
+      //    inside that one lane -- Formula still runs whenever
+      //    willRunStructure is true even if willRunTables is false, exactly
+      //    as before.
+      // 2. veraPDF/pdfa11y (Stage 2/3, below this block, unchanged) still
+      //    run strictly AFTER every lane here fully settles -- both dedupe
+      //    against the complete Ninja-sourced result.issues set.
+      //
+      // completedValidators' `++` is a plain synchronous increment, safe
+      // under concurrency as-is (JS never interleaves two such statements
+      // against each other). The one real race this introduces --
+      // onValidatorComplete/onAltTextImageProgress/onContrastPageProgress
+      // now able to fire close together instead of being naturally spaced
+      // out by strictly sequential validators, all three racing to
+      // read-modify-write the SAME Job.input JSON blob -- is fixed at the
+      // source in pdf-audit-progress-tracker.ts (a shared progressChain
+      // across all three), so every caller of that shared tracker benefits,
+      // not just this one.
 
-      // 1b. Figure-Caption Tree-Reachability Validator (structure-tree
-      // walk for /fc caption elements that exist and are correctly
-      // ParentTree-cross-referenced but never linked into any parent's /K
-      // array -- see that validator's own header comment for the real,
-      // 88%-of-captions defect this catches on Math_Weir_PDF.pdf that no
-      // other structural check in this codebase can see. Gated on
-      // willRunStructure, same as PdfStructureValidator above -- this is a
-      // structure/tagging concern, not an alt-text one, even though its
-      // subject is a Figure's own caption.
-      if (willRunStructure) {
-        try {
-          logger.info(`[PdfAudit] Running PdfFigureCaptionTreeValidator...`);
-          const captionTreeResult = await pdfFigureCaptionTreeValidator.validate(parsed.parsedPdf);
-          result.structureIssues.push(...captionTreeResult.issues);
-          result.issues.push(...captionTreeResult.issues);
-          logger.info(`[PdfAudit] PdfFigureCaptionTreeValidator found ${captionTreeResult.issues.length} issues`);
-        } catch (error) {
-          const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-          logger.error(`[PdfAudit] PdfFigureCaptionTreeValidator failed:`, error);
-          result.validatorErrors.push({ validator: 'PdfFigureCaptionTreeValidator', error: errorMessage });
-        }
-      }
-
-      // 1c. Inline-Figure Tree-Reachability Validator (same disconnection
-      // shape as PdfFigureCaptionTreeValidator above, but for small inline
-      // /Figure elements -- e.g. an inline math/symbol glyph embedded
-      // mid-caption -- rather than a whole /fc caption's own /Story
-      // wrapper. See that validator's own header comment for the real
-      // 8-figure defect this catches on Math_Weir_PDF.pdf (round 7 PAC
-      // report, pages 73/136/137) that no other structural check in this
-      // codebase can see.
-      if (willRunStructure) {
-        try {
-          logger.info(`[PdfAudit] Running PdfInlineFigureTreeValidator...`);
-          const inlineFigureTreeResult = await pdfInlineFigureTreeValidator.validate(parsed.parsedPdf);
-          result.structureIssues.push(...inlineFigureTreeResult.issues);
-          result.issues.push(...inlineFigureTreeResult.issues);
-          logger.info(`[PdfAudit] PdfInlineFigureTreeValidator found ${inlineFigureTreeResult.issues.length} issues`);
-        } catch (error) {
-          const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-          logger.error(`[PdfAudit] PdfInlineFigureTreeValidator failed:`, error);
-          result.validatorErrors.push({ validator: 'PdfInlineFigureTreeValidator', error: errorMessage });
-        }
-      }
-
-      // 1d. Font ToUnicode Coverage Validator (Matterhorn CP10-001) -- see
-      // that validator's own header comment for the real, confirmed
-      // 705-of-1080-font defect this catches on Math_Weir_PDF.pdf (round 7
-      // PAC report, 858 "cannot be mapped to Unicode" findings) that this
-      // codebase's own font-tounicode.service.ts already has a proven fix
-      // for, just never dispatched for an already-tagged document.
-      if (willRunStructure) {
-        try {
-          logger.info(`[PdfAudit] Running PdfFontToUnicodeValidator...`);
-          const fontToUnicodeResult = await pdfFontToUnicodeValidator.validate(parsed.parsedPdf);
-          result.structureIssues.push(...fontToUnicodeResult.issues);
-          result.issues.push(...fontToUnicodeResult.issues);
-          logger.info(`[PdfAudit] PdfFontToUnicodeValidator found ${fontToUnicodeResult.issues.length} issue(s)`);
-        } catch (error) {
-          const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-          logger.error(`[PdfAudit] PdfFontToUnicodeValidator failed:`, error);
-          result.validatorErrors.push({ validator: 'PdfFontToUnicodeValidator', error: errorMessage });
-        }
-      }
-
-      // 2. Alt Text Validator
-      if (willRunAltText) {
-        const altTextStart = new Date();
-        try {
-          logger.info(`[PdfAudit] Running PdfAltTextValidator...`);
-          const altTextResult = await pdfAltTextValidator.validate(parsed.parsedPdf, true, onAltTextImageProgress);
-          result.altTextIssues.push(...altTextResult.issues);
-          result.issues.push(...altTextResult.issues);
-          logger.info(`[PdfAudit] PdfAltTextValidator found ${altTextResult.issues.length} issues`);
-          onValidatorComplete?.('Alt Text', altTextResult.issues.length, ++completedValidators, totalValidators, altTextStart);
-        } catch (error) {
-          const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-          logger.error(`[PdfAudit] PdfAltTextValidator failed:`, error);
-          result.validatorErrors.push({ validator: 'PdfAltTextValidator', error: errorMessage });
-          onValidatorComplete?.('Alt Text', 0, ++completedValidators, totalValidators, altTextStart);
-        }
-      }
-
-      // 2b. Formula Validator (struct-tree walk for /Formula without /ActualText).
-      // Runs alongside structure; a bonus sub-check, so it stays out of the
-      // progress total and reports through result.issues only.
-      if (willRunStructure) {
-        try {
-          logger.info(`[PdfAudit] Running PdfFormulaValidator...`);
-          const formulaResult = await pdfFormulaValidator.validate(parsed.parsedPdf);
-          result.issues.push(...formulaResult.issues);
-          logger.info(`[PdfAudit] PdfFormulaValidator found ${formulaResult.issues.length} issues`);
-        } catch (error) {
-          const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-          logger.error(`[PdfAudit] PdfFormulaValidator failed:`, error);
-          result.validatorErrors.push({ validator: 'PdfFormulaValidator', error: errorMessage });
-        }
-      }
-
-      // 2c. Figure Struct-Tree Validator (struct-tree walk for /Figure
-      // without /Alt or /ActualText, catching what pdf-alttext.validator.ts's
-      // image-XObject-based enumeration structurally cannot see -- see that
-      // validator's own header comment for the real ~24x undercount this
-      // fixes, confirmed via the real PAC/axesPAC desktop tool). Gated on
-      // willRunAltText (its own concern is alt text, not structure), same
-      // "bonus sub-check" pattern as Formula above.
-      if (willRunAltText) {
-        try {
-          logger.info(`[PdfAudit] Running PdfFigureStructTreeValidator...`);
-          const figureResult = await pdfFigureStructTreeValidator.validate(parsed.parsedPdf);
-          result.altTextIssues.push(...figureResult.issues);
-          result.issues.push(...figureResult.issues);
-          logger.info(`[PdfAudit] PdfFigureStructTreeValidator found ${figureResult.issues.length} issues`);
-        } catch (error) {
-          const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-          logger.error(`[PdfAudit] PdfFigureStructTreeValidator failed:`, error);
-          result.validatorErrors.push({ validator: 'PdfFigureStructTreeValidator', error: errorMessage });
-        }
-      }
-
-      // 3. Contrast Validator
-      if (willRunContrast) {
-        const contrastStart = new Date();
-        try {
-          logger.info(`[PdfAudit] Running PdfContrastValidator...`);
-          const contrastValidator = new PdfContrastValidator();
-          const contrastIssues = await contrastValidator.validate(parsed, onContrastPageProgress);
-          const reconciledContrastIssues = this.reconcileContrastFalsePositives(
-            contrastIssues,
-            parsed.parsedPdf?.pdfLibDoc
-          );
-          result.contrastIssues.push(...reconciledContrastIssues);
-          result.issues.push(...reconciledContrastIssues);
-          logger.info(`[PdfAudit] PdfContrastValidator found ${contrastIssues.length} issues (${reconciledContrastIssues.length} after content-stream cross-check)`);
-          onValidatorComplete?.('Color Contrast', contrastIssues.length, ++completedValidators, totalValidators, contrastStart);
-        } catch (error) {
-          const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-          logger.error(`[PdfAudit] PdfContrastValidator failed:`, error);
-          result.validatorErrors.push({ validator: 'PdfContrastValidator', error: errorMessage });
-          onValidatorComplete?.('Color Contrast', 0, ++completedValidators, totalValidators, contrastStart);
-        }
-      }
-
-      // 4. Table Validator
-      if (willRunTables) {
-        const tablesStart = new Date();
-        try {
-          logger.info(`[PdfAudit] Running PdfTableValidator...`);
-          // Confirmed formula pages corroborate the table validator's
-          // misclassified-table-region heuristic — relies on the Formula
-          // validator (step 2b, above) having already run and populated
-          // result.issues before this step.
-          const confirmedFormulaPages = new Set<number>(
-            result.issues
-              .filter(i => i.source === 'pdf-formula' && typeof i.pageNumber === 'number')
-              .map(i => i.pageNumber as number)
-          );
-          const tableResult = await pdfTableValidator.validate(parsed.parsedPdf, confirmedFormulaPages);
-          // A table-as-formula redirect and a genuine Formula finding can
-          // describe the same visual content when a PDF's structure tree
-          // double-tags one region — reconcile before merging so the user
-          // doesn't see two suggestions for one piece of content.
-          const reconciledTableIssues = this.reconcileFormulaTableOverlap(tableResult.issues, result.issues);
-          result.tableIssues.push(...reconciledTableIssues);
-          result.issues.push(...reconciledTableIssues);
-          logger.info(`[PdfAudit] PdfTableValidator found ${reconciledTableIssues.length} issues`);
-          onValidatorComplete?.('Tables', reconciledTableIssues.length, ++completedValidators, totalValidators, tablesStart);
-        } catch (error) {
-          const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-          logger.error(`[PdfAudit] PdfTableValidator failed:`, error);
-          result.validatorErrors.push({ validator: 'PdfTableValidator', error: errorMessage });
-          onValidatorComplete?.('Tables', 0, ++completedValidators, totalValidators, tablesStart);
-        }
-      }
-
-      // 4b. Table Header Scope Validator (struct-tree walk for an EXISTING
-      // /TH with no /Scope attribute — a genuinely different gap from
-      // PdfTableValidator's "not tagged as TH at all" check above; see that
-      // validator's own header comment for the real ~708-cell undercount
-      // this fixes, confirmed via the real PAC/axesPAC desktop tool). A
-      // bonus sub-check alongside Tables, so it stays out of the progress
-      // total and reports through result.issues only.
-      if (willRunTables) {
-        try {
-          logger.info(`[PdfAudit] Running PdfTableHeaderScopeValidator...`);
-          const scopeResult = await pdfTableHeaderScopeValidator.validate(parsed.parsedPdf);
-          result.tableIssues.push(...scopeResult.issues);
-          result.issues.push(...scopeResult.issues);
-          logger.info(`[PdfAudit] PdfTableHeaderScopeValidator found ${scopeResult.issues.length} issues`);
-        } catch (error) {
-          const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-          logger.error(`[PdfAudit] PdfTableHeaderScopeValidator failed:`, error);
-          result.validatorErrors.push({ validator: 'PdfTableHeaderScopeValidator', error: errorMessage });
-        }
-      }
-
-      // 5. Link Text Validator
-      if (willRunLinks) {
-        const linksStart = new Date();
-        try {
-          logger.info(`[PdfAudit] Running PdfLinkValidator...`);
-          const linkIssues = await pdfLinkValidator.validate(parsed);
-          result.linkIssues.push(...linkIssues);
-          result.issues.push(...linkIssues);
-          logger.info(`[PdfAudit] PdfLinkValidator found ${linkIssues.length} issues`);
-          onValidatorComplete?.('Link Text', linkIssues.length, ++completedValidators, totalValidators, linksStart);
-        } catch (error) {
-          const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-          logger.error(`[PdfAudit] PdfLinkValidator failed:`, error);
-          result.validatorErrors.push({ validator: 'PdfLinkValidator', error: errorMessage });
-          onValidatorComplete?.('Link Text', 0, ++completedValidators, totalValidators, linksStart);
+      // Lane A: Structure & Tags cluster (1, 1b, 1c, 1d)
+      const runStructureLane = async (): Promise<void> => {
+        // 1. Structure Validator (includes headings, reading-order, lists, language, metadata)
+        if (willRunStructure) {
+          const structureStart = new Date();
+          try {
+            logger.info(`[PdfAudit] Running PdfStructureValidator...`);
+            const structureResult = await pdfStructureValidator.validate(parsedPdf);
+            result.structureIssues.push(...structureResult.issues);
+            result.issues.push(...structureResult.issues);
+            logger.info(`[PdfAudit] PdfStructureValidator found ${structureResult.issues.length} issues`);
+            onValidatorComplete?.('Structure & Tags', structureResult.issues.length, ++completedValidators, totalValidators, structureStart);
+          } catch (error) {
+            const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+            logger.error(`[PdfAudit] PdfStructureValidator failed:`, error);
+            result.validatorErrors.push({ validator: 'PdfStructureValidator', error: errorMessage });
+            onValidatorComplete?.('Structure & Tags', 0, ++completedValidators, totalValidators, structureStart);
+          }
         }
 
-        // 5b. Link Completeness Validator -- URL-shaped plain text with no
-        // real Link annotation at all (distinct from PdfLinkValidator above,
-        // which only judges the text quality of links that already exist).
-        // No onValidatorComplete call, same convention as the other
-        // sub-validators sharing an existing category slot (e.g. 1b/1c
-        // above) -- totalValidators counts one unit per category, not per
-        // validator within it.
-        try {
-          logger.info(`[PdfAudit] Running PdfLinkCompletenessValidator...`);
-          const linkCompletenessIssues = await pdfLinkCompletenessValidator.validate(parsed);
-          result.linkIssues.push(...linkCompletenessIssues);
-          result.issues.push(...linkCompletenessIssues);
-          logger.info(`[PdfAudit] PdfLinkCompletenessValidator found ${linkCompletenessIssues.length} issues`);
-        } catch (error) {
-          const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-          logger.error(`[PdfAudit] PdfLinkCompletenessValidator failed:`, error);
-          result.validatorErrors.push({ validator: 'PdfLinkCompletenessValidator', error: errorMessage });
+        // 1b. Figure-Caption Tree-Reachability Validator (structure-tree
+        // walk for /fc caption elements that exist and are correctly
+        // ParentTree-cross-referenced but never linked into any parent's /K
+        // array -- see that validator's own header comment for the real,
+        // 88%-of-captions defect this catches on Math_Weir_PDF.pdf that no
+        // other structural check in this codebase can see. Gated on
+        // willRunStructure, same as PdfStructureValidator above -- this is a
+        // structure/tagging concern, not an alt-text one, even though its
+        // subject is a Figure's own caption.
+        if (willRunStructure) {
+          try {
+            logger.info(`[PdfAudit] Running PdfFigureCaptionTreeValidator...`);
+            const captionTreeResult = await pdfFigureCaptionTreeValidator.validate(parsedPdf);
+            result.structureIssues.push(...captionTreeResult.issues);
+            result.issues.push(...captionTreeResult.issues);
+            logger.info(`[PdfAudit] PdfFigureCaptionTreeValidator found ${captionTreeResult.issues.length} issues`);
+          } catch (error) {
+            const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+            logger.error(`[PdfAudit] PdfFigureCaptionTreeValidator failed:`, error);
+            result.validatorErrors.push({ validator: 'PdfFigureCaptionTreeValidator', error: errorMessage });
+          }
         }
-      }
 
-      // 6. Form Field Validator
-      if (willRunForms) {
-        const formsStart = new Date();
-        try {
-          logger.info(`[PdfAudit] Running PdfFormValidator...`);
-          const formIssues = await pdfFormValidator.validate(parsed);
-          result.formIssues.push(...formIssues);
-          result.issues.push(...formIssues);
-          logger.info(`[PdfAudit] PdfFormValidator found ${formIssues.length} issues`);
-          onValidatorComplete?.('Form Fields', formIssues.length, ++completedValidators, totalValidators, formsStart);
-        } catch (error) {
-          const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-          logger.error(`[PdfAudit] PdfFormValidator failed:`, error);
-          result.validatorErrors.push({ validator: 'PdfFormValidator', error: errorMessage });
-          onValidatorComplete?.('Form Fields', 0, ++completedValidators, totalValidators, formsStart);
+        // 1c. Inline-Figure Tree-Reachability Validator (same disconnection
+        // shape as PdfFigureCaptionTreeValidator above, but for small inline
+        // /Figure elements -- e.g. an inline math/symbol glyph embedded
+        // mid-caption -- rather than a whole /fc caption's own /Story
+        // wrapper. See that validator's own header comment for the real
+        // 8-figure defect this catches on Math_Weir_PDF.pdf (round 7 PAC
+        // report, pages 73/136/137) that no other structural check in this
+        // codebase can see.
+        if (willRunStructure) {
+          try {
+            logger.info(`[PdfAudit] Running PdfInlineFigureTreeValidator...`);
+            const inlineFigureTreeResult = await pdfInlineFigureTreeValidator.validate(parsedPdf);
+            result.structureIssues.push(...inlineFigureTreeResult.issues);
+            result.issues.push(...inlineFigureTreeResult.issues);
+            logger.info(`[PdfAudit] PdfInlineFigureTreeValidator found ${inlineFigureTreeResult.issues.length} issues`);
+          } catch (error) {
+            const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+            logger.error(`[PdfAudit] PdfInlineFigureTreeValidator failed:`, error);
+            result.validatorErrors.push({ validator: 'PdfInlineFigureTreeValidator', error: errorMessage });
+          }
         }
-      }
 
-      // 7. Bookmark Validator
-      if (willRunBookmarks) {
-        const bookmarksStart = new Date();
-        try {
-          logger.info(`[PdfAudit] Running PdfBookmarkValidator...`);
-          const bookmarkIssues = await pdfBookmarkValidator.validate(parsed);
-          result.bookmarkIssues.push(...bookmarkIssues);
-          result.issues.push(...bookmarkIssues);
-          logger.info(`[PdfAudit] PdfBookmarkValidator found ${bookmarkIssues.length} issues`);
-          onValidatorComplete?.('Bookmarks', bookmarkIssues.length, ++completedValidators, totalValidators, bookmarksStart);
-        } catch (error) {
-          const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-          logger.error(`[PdfAudit] PdfBookmarkValidator failed:`, error);
-          result.validatorErrors.push({ validator: 'PdfBookmarkValidator', error: errorMessage });
-          onValidatorComplete?.('Bookmarks', 0, ++completedValidators, totalValidators, bookmarksStart);
+        // 1d. Font ToUnicode Coverage Validator (Matterhorn CP10-001) -- see
+        // that validator's own header comment for the real, confirmed
+        // 705-of-1080-font defect this catches on Math_Weir_PDF.pdf (round 7
+        // PAC report, 858 "cannot be mapped to Unicode" findings) that this
+        // codebase's own font-tounicode.service.ts already has a proven fix
+        // for, just never dispatched for an already-tagged document.
+        if (willRunStructure) {
+          try {
+            logger.info(`[PdfAudit] Running PdfFontToUnicodeValidator...`);
+            const fontToUnicodeResult = await pdfFontToUnicodeValidator.validate(parsedPdf);
+            result.structureIssues.push(...fontToUnicodeResult.issues);
+            result.issues.push(...fontToUnicodeResult.issues);
+            logger.info(`[PdfAudit] PdfFontToUnicodeValidator found ${fontToUnicodeResult.issues.length} issue(s)`);
+          } catch (error) {
+            const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+            logger.error(`[PdfAudit] PdfFontToUnicodeValidator failed:`, error);
+            result.validatorErrors.push({ validator: 'PdfFontToUnicodeValidator', error: errorMessage });
+          }
         }
-      }
+      };
 
-      // 8. Supplemental Validator (CP10/20/21/25/30 — Matterhorn Step 3)
-      if (willRunSupplemental) {
-        const supplementalStart = new Date();
-        try {
-          logger.info(`[PdfAudit] Running PdfSupplementalValidator...`);
-          const supplementalIssues = await pdfSupplementalValidator.validate(parsed);
-          result.issues.push(...supplementalIssues);
-          logger.info(`[PdfAudit] PdfSupplementalValidator found ${supplementalIssues.length} issues`);
-          onValidatorComplete?.('Supplemental (CP10/20/21/25/30)', supplementalIssues.length, ++completedValidators, totalValidators, supplementalStart);
-        } catch (error) {
-          const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-          logger.error(`[PdfAudit] PdfSupplementalValidator failed:`, error);
-          result.validatorErrors.push({ validator: 'PdfSupplementalValidator', error: errorMessage });
-          onValidatorComplete?.('Supplemental (CP10/20/21/25/30)', 0, ++completedValidators, totalValidators, supplementalStart);
+      // Lane B: Alt Text cluster (2, 2c)
+      const runAltTextLane = async (): Promise<void> => {
+        // 2. Alt Text Validator
+        if (willRunAltText) {
+          const altTextStart = new Date();
+          try {
+            logger.info(`[PdfAudit] Running PdfAltTextValidator...`);
+            const altTextResult = await pdfAltTextValidator.validate(parsedPdf, true, onAltTextImageProgress);
+            result.altTextIssues.push(...altTextResult.issues);
+            result.issues.push(...altTextResult.issues);
+            logger.info(`[PdfAudit] PdfAltTextValidator found ${altTextResult.issues.length} issues`);
+            onValidatorComplete?.('Alt Text', altTextResult.issues.length, ++completedValidators, totalValidators, altTextStart);
+          } catch (error) {
+            const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+            logger.error(`[PdfAudit] PdfAltTextValidator failed:`, error);
+            result.validatorErrors.push({ validator: 'PdfAltTextValidator', error: errorMessage });
+            onValidatorComplete?.('Alt Text', 0, ++completedValidators, totalValidators, altTextStart);
+          }
         }
-      }
+
+        // 2c. Figure Struct-Tree Validator (struct-tree walk for /Figure
+        // without /Alt or /ActualText, catching what pdf-alttext.validator.ts's
+        // image-XObject-based enumeration structurally cannot see -- see that
+        // validator's own header comment for the real ~24x undercount this
+        // fixes, confirmed via the real PAC/axesPAC desktop tool). Gated on
+        // willRunAltText (its own concern is alt text, not structure), same
+        // "bonus sub-check" pattern as Formula below.
+        if (willRunAltText) {
+          try {
+            logger.info(`[PdfAudit] Running PdfFigureStructTreeValidator...`);
+            const figureResult = await pdfFigureStructTreeValidator.validate(parsedPdf);
+            result.altTextIssues.push(...figureResult.issues);
+            result.issues.push(...figureResult.issues);
+            logger.info(`[PdfAudit] PdfFigureStructTreeValidator found ${figureResult.issues.length} issues`);
+          } catch (error) {
+            const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+            logger.error(`[PdfAudit] PdfFigureStructTreeValidator failed:`, error);
+            result.validatorErrors.push({ validator: 'PdfFigureStructTreeValidator', error: errorMessage });
+          }
+        }
+      };
+
+      // Lane C: Formula + Tables (2b, 4, 4b) -- see this block's own header
+      // comment above for why these share a lane despite keeping separate
+      // gates.
+      const runFormulaAndTablesLane = async (): Promise<void> => {
+        // 2b. Formula Validator (struct-tree walk for /Formula without /ActualText).
+        // A bonus sub-check, so it stays out of the progress total and
+        // reports through result.issues only.
+        let formulaIssues: AuditIssue[] = [];
+        if (willRunStructure) {
+          try {
+            logger.info(`[PdfAudit] Running PdfFormulaValidator...`);
+            const formulaResult = await pdfFormulaValidator.validate(parsedPdf);
+            formulaIssues = formulaResult.issues;
+            result.issues.push(...formulaResult.issues);
+            logger.info(`[PdfAudit] PdfFormulaValidator found ${formulaResult.issues.length} issues`);
+          } catch (error) {
+            const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+            logger.error(`[PdfAudit] PdfFormulaValidator failed:`, error);
+            result.validatorErrors.push({ validator: 'PdfFormulaValidator', error: errorMessage });
+          }
+        }
+
+        // 4. Table Validator
+        if (willRunTables) {
+          const tablesStart = new Date();
+          try {
+            logger.info(`[PdfAudit] Running PdfTableValidator...`);
+            // Confirmed formula pages corroborate the table validator's
+            // misclassified-table-region heuristic — from THIS lane's own
+            // local formulaIssues (captured above), not the shared
+            // result.issues array: reconcileFormulaTableOverlap below only
+            // ever reads source==='pdf-formula' entries regardless of what
+            // it's handed, so this is equivalent to the original
+            // result.issues-filtering approach without depending on a
+            // shared array another concurrent lane could still be writing
+            // to.
+            const confirmedFormulaPages = new Set<number>(
+              formulaIssues
+                .filter(i => i.source === 'pdf-formula' && typeof i.pageNumber === 'number')
+                .map(i => i.pageNumber as number)
+            );
+            const tableResult = await pdfTableValidator.validate(parsedPdf, confirmedFormulaPages);
+            // A table-as-formula redirect and a genuine Formula finding can
+            // describe the same visual content when a PDF's structure tree
+            // double-tags one region — reconcile before merging so the user
+            // doesn't see two suggestions for one piece of content.
+            const reconciledTableIssues = this.reconcileFormulaTableOverlap(tableResult.issues, formulaIssues);
+            result.tableIssues.push(...reconciledTableIssues);
+            result.issues.push(...reconciledTableIssues);
+            logger.info(`[PdfAudit] PdfTableValidator found ${reconciledTableIssues.length} issues`);
+            onValidatorComplete?.('Tables', reconciledTableIssues.length, ++completedValidators, totalValidators, tablesStart);
+          } catch (error) {
+            const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+            logger.error(`[PdfAudit] PdfTableValidator failed:`, error);
+            result.validatorErrors.push({ validator: 'PdfTableValidator', error: errorMessage });
+            onValidatorComplete?.('Tables', 0, ++completedValidators, totalValidators, tablesStart);
+          }
+        }
+
+        // 4b. Table Header Scope Validator (struct-tree walk for an EXISTING
+        // /TH with no /Scope attribute — a genuinely different gap from
+        // PdfTableValidator's "not tagged as TH at all" check above; see that
+        // validator's own header comment for the real ~708-cell undercount
+        // this fixes, confirmed via the real PAC/axesPAC desktop tool). A
+        // bonus sub-check alongside Tables, so it stays out of the progress
+        // total and reports through result.issues only.
+        if (willRunTables) {
+          try {
+            logger.info(`[PdfAudit] Running PdfTableHeaderScopeValidator...`);
+            const scopeResult = await pdfTableHeaderScopeValidator.validate(parsedPdf);
+            result.tableIssues.push(...scopeResult.issues);
+            result.issues.push(...scopeResult.issues);
+            logger.info(`[PdfAudit] PdfTableHeaderScopeValidator found ${scopeResult.issues.length} issues`);
+          } catch (error) {
+            const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+            logger.error(`[PdfAudit] PdfTableHeaderScopeValidator failed:`, error);
+            result.validatorErrors.push({ validator: 'PdfTableHeaderScopeValidator', error: errorMessage });
+          }
+        }
+      };
+
+      // Lane D: Color Contrast (3)
+      const runContrastLane = async (): Promise<void> => {
+        if (willRunContrast) {
+          const contrastStart = new Date();
+          try {
+            logger.info(`[PdfAudit] Running PdfContrastValidator...`);
+            const contrastValidator = new PdfContrastValidator();
+            const contrastIssues = await contrastValidator.validate(parsed, onContrastPageProgress);
+            const reconciledContrastIssues = this.reconcileContrastFalsePositives(
+              contrastIssues,
+              parsedPdf.pdfLibDoc
+            );
+            result.contrastIssues.push(...reconciledContrastIssues);
+            result.issues.push(...reconciledContrastIssues);
+            logger.info(`[PdfAudit] PdfContrastValidator found ${contrastIssues.length} issues (${reconciledContrastIssues.length} after content-stream cross-check)`);
+            onValidatorComplete?.('Color Contrast', contrastIssues.length, ++completedValidators, totalValidators, contrastStart);
+          } catch (error) {
+            const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+            logger.error(`[PdfAudit] PdfContrastValidator failed:`, error);
+            result.validatorErrors.push({ validator: 'PdfContrastValidator', error: errorMessage });
+            onValidatorComplete?.('Color Contrast', 0, ++completedValidators, totalValidators, contrastStart);
+          }
+        }
+      };
+
+      // Lane E: Link Text cluster (5, 5b)
+      const runLinksLane = async (): Promise<void> => {
+        if (willRunLinks) {
+          const linksStart = new Date();
+          try {
+            logger.info(`[PdfAudit] Running PdfLinkValidator...`);
+            const linkIssues = await pdfLinkValidator.validate(parsed);
+            result.linkIssues.push(...linkIssues);
+            result.issues.push(...linkIssues);
+            logger.info(`[PdfAudit] PdfLinkValidator found ${linkIssues.length} issues`);
+            onValidatorComplete?.('Link Text', linkIssues.length, ++completedValidators, totalValidators, linksStart);
+          } catch (error) {
+            const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+            logger.error(`[PdfAudit] PdfLinkValidator failed:`, error);
+            result.validatorErrors.push({ validator: 'PdfLinkValidator', error: errorMessage });
+            onValidatorComplete?.('Link Text', 0, ++completedValidators, totalValidators, linksStart);
+          }
+
+          // 5b. Link Completeness Validator -- URL-shaped plain text with no
+          // real Link annotation at all (distinct from PdfLinkValidator above,
+          // which only judges the text quality of links that already exist).
+          // No onValidatorComplete call, same convention as the other
+          // sub-validators sharing an existing category slot (e.g. 1b/1c
+          // above) -- totalValidators counts one unit per category, not per
+          // validator within it.
+          try {
+            logger.info(`[PdfAudit] Running PdfLinkCompletenessValidator...`);
+            const linkCompletenessIssues = await pdfLinkCompletenessValidator.validate(parsed);
+            result.linkIssues.push(...linkCompletenessIssues);
+            result.issues.push(...linkCompletenessIssues);
+            logger.info(`[PdfAudit] PdfLinkCompletenessValidator found ${linkCompletenessIssues.length} issues`);
+          } catch (error) {
+            const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+            logger.error(`[PdfAudit] PdfLinkCompletenessValidator failed:`, error);
+            result.validatorErrors.push({ validator: 'PdfLinkCompletenessValidator', error: errorMessage });
+          }
+        }
+      };
+
+      // Lane F: Form Fields (6)
+      const runFormsLane = async (): Promise<void> => {
+        if (willRunForms) {
+          const formsStart = new Date();
+          try {
+            logger.info(`[PdfAudit] Running PdfFormValidator...`);
+            const formIssues = await pdfFormValidator.validate(parsed);
+            result.formIssues.push(...formIssues);
+            result.issues.push(...formIssues);
+            logger.info(`[PdfAudit] PdfFormValidator found ${formIssues.length} issues`);
+            onValidatorComplete?.('Form Fields', formIssues.length, ++completedValidators, totalValidators, formsStart);
+          } catch (error) {
+            const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+            logger.error(`[PdfAudit] PdfFormValidator failed:`, error);
+            result.validatorErrors.push({ validator: 'PdfFormValidator', error: errorMessage });
+            onValidatorComplete?.('Form Fields', 0, ++completedValidators, totalValidators, formsStart);
+          }
+        }
+      };
+
+      // Lane G: Bookmarks (7)
+      const runBookmarksLane = async (): Promise<void> => {
+        if (willRunBookmarks) {
+          const bookmarksStart = new Date();
+          try {
+            logger.info(`[PdfAudit] Running PdfBookmarkValidator...`);
+            const bookmarkIssues = await pdfBookmarkValidator.validate(parsed);
+            result.bookmarkIssues.push(...bookmarkIssues);
+            result.issues.push(...bookmarkIssues);
+            logger.info(`[PdfAudit] PdfBookmarkValidator found ${bookmarkIssues.length} issues`);
+            onValidatorComplete?.('Bookmarks', bookmarkIssues.length, ++completedValidators, totalValidators, bookmarksStart);
+          } catch (error) {
+            const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+            logger.error(`[PdfAudit] PdfBookmarkValidator failed:`, error);
+            result.validatorErrors.push({ validator: 'PdfBookmarkValidator', error: errorMessage });
+            onValidatorComplete?.('Bookmarks', 0, ++completedValidators, totalValidators, bookmarksStart);
+          }
+        }
+      };
+
+      // Lane H: Supplemental (8)
+      const runSupplementalLane = async (): Promise<void> => {
+        if (willRunSupplemental) {
+          const supplementalStart = new Date();
+          try {
+            logger.info(`[PdfAudit] Running PdfSupplementalValidator...`);
+            const supplementalIssues = await pdfSupplementalValidator.validate(parsed);
+            result.issues.push(...supplementalIssues);
+            logger.info(`[PdfAudit] PdfSupplementalValidator found ${supplementalIssues.length} issues`);
+            onValidatorComplete?.('Supplemental (CP10/20/21/25/30)', supplementalIssues.length, ++completedValidators, totalValidators, supplementalStart);
+          } catch (error) {
+            const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+            logger.error(`[PdfAudit] PdfSupplementalValidator failed:`, error);
+            result.validatorErrors.push({ validator: 'PdfSupplementalValidator', error: errorMessage });
+            onValidatorComplete?.('Supplemental (CP10/20/21/25/30)', 0, ++completedValidators, totalValidators, supplementalStart);
+          }
+        }
+      };
+
+      // Dispatch every lane concurrently. allSettled (not all) so one
+      // lane's own unexpected synchronous throw -- outside any of its
+      // internal try/catch blocks above -- can't preempt siblings; every
+      // lane already catches its own real validator errors internally, so
+      // in practice none of these should ever reject, but this is the same
+      // defensive choice the approved design called for.
+      await Promise.allSettled([
+        runStructureLane(),
+        runAltTextLane(),
+        runFormulaAndTablesLane(),
+        runContrastLane(),
+        runLinksLane(),
+        runFormsLane(),
+        runBookmarksLane(),
+        runSupplementalLane(),
+      ]);
     } else {
       // Fallback to stub validators
       logger.info('[PdfAudit] Using stub validators with PdfParseResult');
