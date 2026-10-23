@@ -19,6 +19,7 @@ import { geminiService } from '../ai/gemini.service';
 import { GeminiBlockedResponseError } from '../ai/gemini-errors';
 import { getModelPricing } from '../../config/pricing.config';
 import { aiConfig } from '../../config/ai.config';
+import { pdfConfig } from '../../config/pdf.config';
 import { fileStorageService } from '../storage/file-storage.service';
 import type { PDFDocument } from 'pdf-lib';
 import { pdfModifierService } from './pdf-modifier.service';
@@ -3356,13 +3357,17 @@ class AiAnalysisService {
       }, job.tenantId ?? undefined);
     };
 
-    for (const analysis of approved) {
+    // Extracted from the former single sequential loop so the same
+    // per-suggestion dispatch body can be reused for both the sequential
+    // document-global pass and the page-grouped concurrent color-contrast
+    // pass below, unchanged either way.
+    const applyOneSuggestion = async (analysis: (typeof approved)[number]): Promise<void> => {
       const { suggestionType, value, issueId } = analysis;
 
       if (!value && !STRUCTURE_WRITER_TYPES.has(suggestionType)) {
         failed++;
         errors.push({ issueId, suggestionType, reason: 'No value and not a structure-writer type' });
-        continue;
+        return;
       }
 
       try {
@@ -3507,7 +3512,7 @@ class AiAnalysisService {
         } else {
           failed++;
           errors.push({ issueId, suggestionType, reason: `Unhandled suggestion type: ${suggestionType}` });
-          continue;
+          return;
         }
 
         if (modification.success) {
@@ -3532,7 +3537,69 @@ class AiAnalysisService {
       }
 
       broadcastApplyProgress();
+    };
+
+    // Phase 2 (apply-loop parallelism): color-contrast-fix is the one
+    // suggestion type here that's genuinely page-local-safe to apply
+    // concurrently with ITSELF across DIFFERENT pages -- see
+    // pdf-contrast-writer.service.ts's extractSinglePageBuffer for why its
+    // own verification step no longer needs the whole shared document.
+    // Every OTHER suggestion type stays in this first, sequential pass, run
+    // in the suggestions' original createdAt order exactly as before --
+    // several of them (untagged-content-fix, invisible-text-artifact-fix,
+    // plus the table-artifact-fix/table-from-layout-fix pre-batches above)
+    // mutate struct-tree/content-stream state color-contrast-fix's own
+    // byte-offset resolution depends on, with no existing mechanism for
+    // their splices to signal an in-flight concurrent page-local fix --
+    // running them to completion first, unchanged, avoids inventing one.
+    const colorContrastSuggestions: (typeof approved)[number][] = [];
+    for (const analysis of approved) {
+      if (analysis.suggestionType === 'color-contrast-fix') {
+        colorContrastSuggestions.push(analysis);
+        continue;
+      }
+      await applyOneSuggestion(analysis);
     }
+
+    if (colorContrastSuggestions.length > 0) {
+      // No explicit re-resolve needed here, even though the document-global
+      // pass above may have shifted byte offsets on some pages -- every one
+      // of those fixes (untagged-content-fix, invisible-text-artifact-fix)
+      // already calls pagesRewrittenSincePreResolve.add(pageNumber) on
+      // success, unchanged, inside applyOneSuggestion itself. The FIRST
+      // color-contrast-fix for each page below hits that same per-page
+      // check (also unchanged) and re-resolves on its own, lazily, exactly
+      // like a same-page REPEAT contrast fix already does today -- adding
+      // an unconditional recompute here would just be a redundant, wasted
+      // extra call on top of that existing, already-correct mechanism.
+      const byPage = new Map<number, (typeof approved)[number][]>();
+      for (const analysis of colorContrastSuggestions) {
+        const pageNumber = issueById.get(analysis.issueId)?.pageNumber ?? -1;
+        const pageGroup = byPage.get(pageNumber);
+        if (pageGroup) {
+          pageGroup.push(analysis);
+        } else {
+          byPage.set(pageNumber, [analysis]);
+        }
+      }
+
+      // Disjoint /Contents streams across pages make cross-page concurrency
+      // safe; a page's own suggestions still run sequentially, in their
+      // original order, within that page's own closure -- preserving
+      // today's same-page repeat-fix handling (pagesRewrittenSincePreResolve,
+      // inside applyOneSuggestion's own color-contrast-fix branch) exactly.
+      const limit = pLimit(pdfConfig.applyPageConcurrency);
+      await Promise.all(
+        Array.from(byPage.values()).map(pageSuggestions =>
+          limit(async () => {
+            for (const analysis of pageSuggestions) {
+              await applyOneSuggestion(analysis);
+            }
+          })
+        )
+      );
+    }
+
     broadcastApplyProgress(true);
 
     if (applied === 0) {

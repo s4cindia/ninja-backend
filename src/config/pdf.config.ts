@@ -92,5 +92,17 @@ export const pdfConfig = {
   // above), so raise this only after load-testing at the real task memory
   // limit against that document and the 2040-page FMHE_PDF.pdf case.
   contrastRenderConcurrency: parseInt(process.env.PDF_CONTRAST_RENDER_CONCURRENCY || '2', 10),
+  // AiAnalysisService.applyApprovedSuggestions' page-grouped concurrency
+  // for color-contrast-fix application (Phase 2 of the apply-loop
+  // parallelism work) -- the one suggestion type there that's genuinely
+  // page-local-safe, now that pdf-contrast-writer.service.ts's own
+  // verification step serializes just the target page instead of the
+  // whole document (extractSinglePageBuffer) rather than doc.save()-ing
+  // the whole shared document per fix attempt. A page's own suggestions
+  // still run sequentially within its own closure; only DIFFERENT pages'
+  // closures run concurrently with each other. 4 is a moderate starting
+  // point, not yet load-tested against a large real document -- raise
+  // only after measuring wall-clock and memory on one.
+  applyPageConcurrency: parseInt(process.env.PDF_APPLY_PAGE_CONCURRENCY || '4', 10),
   chunkSize: 10,
 };
