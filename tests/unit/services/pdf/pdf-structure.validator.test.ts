@@ -5,7 +5,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { PDFDocument } from 'pdf-lib';
+import { PDFDocument, PDFName, PDFRef, PDFNumber } from 'pdf-lib';
 import { pdfStructureValidator } from '../../../../src/services/pdf/validators/pdf-structure.validator';
 import { structureAnalyzerService, DocumentStructure, TableCell } from '../../../../src/services/pdf/structure-analyzer.service';
 import { pdfParserService, ParsedPDF } from '../../../../src/services/pdf/pdf-parser.service';
@@ -306,6 +306,121 @@ describe('PDFStructureValidator', () => {
         expect(complexIssues).toHaveLength(1);
         expect(complexIssues[0].pageNumber).toBe(4);
       });
+    });
+  });
+
+  describe('structure-tree reference integrity (STRUCTURE-DANGLING-REFERENCE)', () => {
+    // Real incident this check closes a blind spot for: Math_Olszewski_PDF.pdf's
+    // remediated output had 3 struct elements silently dropped by pdf-lib's own
+    // loader, with the parent's /K array, /ParentTree's Nums entries, and a
+    // surviving child's /P all left pointing at objects that no longer existed.
+    // Nothing in this file could see it -- an external tool (PAC 2026) had to
+    // hard-crash on it first. These fixtures reproduce each of those three
+    // reference shapes directly via pdf-lib's low-level object APIs (mirrors
+    // this session's own colorspace-test fixture pattern).
+    function registerStructElem(doc: PDFDocument, fields: Record<string, unknown>): PDFRef {
+      return doc.context.register(doc.context.obj(fields));
+    }
+
+    function mockSetup(pdfLibDoc: ParsedPDF['pdfLibDoc']) {
+      const mockParsedPdf = { ...createMockParsedPdf({ isTagged: true, hasLanguage: true, hasTitle: true }), pdfLibDoc };
+      const mockStructure = createMockStructure({
+        isTaggedPDF: true, hasProperHeadingHierarchy: true, hasDocumentLanguage: true, hasLogicalReadingOrder: true,
+      });
+      vi.mocked(pdfParserService.parse).mockResolvedValue(mockParsedPdf);
+      vi.mocked(pdfParserService.close).mockResolvedValue(undefined);
+      vi.mocked(structureAnalyzerService.analyzeStructure).mockResolvedValue(mockStructure);
+    }
+
+    it('reports no findings for a structure tree with no dangling references', async () => {
+      const doc = await PDFDocument.create();
+      doc.addPage([612, 792]);
+      const childRef = registerStructElem(doc, { Type: 'StructElem', S: 'P' });
+      const structTreeRootRef = doc.context.register(
+        doc.context.obj({ Type: 'StructTreeRoot', K: [childRef] })
+      );
+      doc.catalog.set(PDFName.of('StructTreeRoot'), structTreeRootRef);
+      mockSetup(doc);
+
+      const result = await pdfStructureValidator.validateFromFile('/path/to/test.pdf');
+
+      expect(result.issues.filter(i => i.code === 'STRUCTURE-DANGLING-REFERENCE')).toHaveLength(0);
+    });
+
+    it('flags a dangling /K (Kids) entry that references a nonexistent object', async () => {
+      const doc = await PDFDocument.create();
+      doc.addPage([612, 792]);
+      const validChildRef = registerStructElem(doc, { Type: 'StructElem', S: 'P' });
+      const danglingRef = PDFRef.of(99999, 0); // never registered
+      const structTreeRootRef = doc.context.register(
+        doc.context.obj({ Type: 'StructTreeRoot', K: [validChildRef, danglingRef] })
+      );
+      doc.catalog.set(PDFName.of('StructTreeRoot'), structTreeRootRef);
+      mockSetup(doc);
+
+      const result = await pdfStructureValidator.validateFromFile('/path/to/test.pdf');
+
+      const issue = result.issues.find(i => i.code === 'STRUCTURE-DANGLING-REFERENCE' && i.message.includes('Kids array'));
+      expect(issue).toBeDefined();
+      expect(issue?.severity).toBe('critical');
+      expect(issue?.message).toContain(danglingRef.toString());
+    });
+
+    it('flags a dangling /P (parent) pointer on a surviving child', async () => {
+      const doc = await PDFDocument.create();
+      doc.addPage([612, 792]);
+      const danglingParentRef = PDFRef.of(77777, 0); // never registered
+      const orphanRef = registerStructElem(doc, { Type: 'StructElem', S: 'LI', P: danglingParentRef });
+      const structTreeRootRef = doc.context.register(
+        doc.context.obj({ Type: 'StructTreeRoot', K: [orphanRef] })
+      );
+      doc.catalog.set(PDFName.of('StructTreeRoot'), structTreeRootRef);
+      mockSetup(doc);
+
+      const result = await pdfStructureValidator.validateFromFile('/path/to/test.pdf');
+
+      const issue = result.issues.find(i => i.code === 'STRUCTURE-DANGLING-REFERENCE' && i.message.includes('/P (parent)'));
+      expect(issue).toBeDefined();
+      expect(issue?.message).toContain(danglingParentRef.toString());
+    });
+
+    it('flags a dangling /ParentTree Nums entry, attributing it to the real page via /StructParents', async () => {
+      const doc = await PDFDocument.create();
+      const page = doc.addPage([612, 792]);
+      page.node.set(PDFName.of('StructParents'), PDFNumber.of(0));
+      const danglingMcidTarget = PDFRef.of(88888, 0); // never registered
+      const parentTreeRef = doc.context.register(
+        doc.context.obj({ Nums: [0, [danglingMcidTarget]] })
+      );
+      const structTreeRootRef = doc.context.register(
+        doc.context.obj({ Type: 'StructTreeRoot', K: [], ParentTree: parentTreeRef })
+      );
+      doc.catalog.set(PDFName.of('StructTreeRoot'), structTreeRootRef);
+      mockSetup(doc);
+
+      const result = await pdfStructureValidator.validateFromFile('/path/to/test.pdf');
+
+      const issue = result.issues.find(i => i.code === 'STRUCTURE-DANGLING-REFERENCE' && i.message.includes('/ParentTree'));
+      expect(issue).toBeDefined();
+      expect(issue?.pageNumber).toBe(1);
+      expect(issue?.location).toBe('Page 1');
+    });
+
+    it('does not run this check on an untagged PDF (no /StructTreeRoot to speak of)', async () => {
+      const doc = await PDFDocument.create();
+      doc.addPage([612, 792]);
+      // No /StructTreeRoot set at all.
+      const mockParsedPdf = { ...createMockParsedPdf({ isTagged: false, hasLanguage: true, hasTitle: true }), pdfLibDoc: doc };
+      const mockStructure = createMockStructure({
+        isTaggedPDF: false, hasProperHeadingHierarchy: true, hasDocumentLanguage: true, hasLogicalReadingOrder: true,
+      });
+      vi.mocked(pdfParserService.parse).mockResolvedValue(mockParsedPdf);
+      vi.mocked(pdfParserService.close).mockResolvedValue(undefined);
+      vi.mocked(structureAnalyzerService.analyzeStructure).mockResolvedValue(mockStructure);
+
+      const result = await pdfStructureValidator.validateFromFile('/path/to/test.pdf');
+
+      expect(result.issues.filter(i => i.code === 'STRUCTURE-DANGLING-REFERENCE')).toHaveLength(0);
     });
   });
 
