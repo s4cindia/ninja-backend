@@ -27,6 +27,27 @@ const MINIMAL_XMP_TEMPLATE = `<?xpacket begin="\uFEFF" id="W5M0MpCehiHzreSzNTczk
 <?xpacket end="w"?>`;
 
 /**
+ * Escapes a literal PDF string's special characters per PDF32000-1:2008
+ * SS7.3.4.2. pdf-lib's own PDFString.of(...)/copyBytesInto does NOT do this
+ * -- confirmed by reading its source, which says plainly "for simplicity, we
+ * will not bother escaping [parens]" and writes the JS string's bytes
+ * verbatim between the `(`/`)` delimiters. That is only safe when the value
+ * has no unescaped, unbalanced parens of its own. AI-generated free text
+ * (alt text, ActualText, table summaries) routinely does -- confirmed as the
+ * real root cause of a live incident: Math_Olszewski_PDF.pdf's remediated
+ * output had a Figure's /Alt text containing a literal, unescaped "(" with
+ * no matching close, producing a genuinely invalid PDF string. pdf-lib's own
+ * loader choked on it on a LATER round's reload and silently dropped the
+ * entire 50-object compressed object stream it lived in -- including three
+ * unrelated structure elements, which is what made PAC 2026 refuse to even
+ * open the file ("Invalid kid in structure element"). Any free text written
+ * via PDFString.of(...) anywhere in this file must go through this first.
+ */
+function escapePdfString(text: string): string {
+  return text.replace(/\\/g, '\\\\').replace(/\(/g, '\\(').replace(/\)/g, '\\)');
+}
+
+/**
  * Returns true if the string looks like a filename, UUID, or other non-meaningful title.
  * Used to decide whether to replace the existing title with a derived one.
  */
@@ -224,21 +245,70 @@ export class PdfModifierService {
   }
 
   /**
-   * Save a PDF document to buffer
+   * Save a PDF document to buffer.
+   *
+   * Includes a post-save round-trip integrity check. Real, confirmed
+   * incident: pdf-lib's own loader can silently drop every object packed
+   * into one of its compressed /ObjStm containers on a LATER load, with
+   * only a console warning -- no thrown error -- if it judges any one
+   * object inside that container unparseable (seen live: a single genuinely
+   * invalid PDFString -- see escapePdfString's own doc comment -- took 50
+   * unrelated objects down with it, 3 of them structure elements, which is
+   * what made Math_Olszewski_PDF.pdf's remediated output fail PAC 2026
+   * outright: "Invalid kid in structure element"). Since every save here
+   * uses useObjectStreams, and every later round reloads whatever this
+   * method just wrote, that loss would otherwise propagate silently and
+   * permanently through every subsequent round. Reload what we just wrote
+   * and compare object counts -- a generic, cheap check that needs no
+   * structure-tree-specific knowledge, since any silent object loss on
+   * save necessarily shows up as a smaller reloaded count. Falls back to
+   * useObjectStreams: false (larger output, not known to exhibit this
+   * defect) on mismatch; throws rather than returning a buffer that's
+   * already been shown to lose objects.
    */
   async savePDF(doc: PDFDocument): Promise<Buffer> {
-    try {
+    const expectedObjectCount = doc.context.enumerateIndirectObjects().length;
+
+    const saveAndVerify = async (useObjectStreams: boolean): Promise<Buffer | null> => {
       const pdfBytes = await doc.save({
-        useObjectStreams: true, // Enable compression
+        useObjectStreams,
         addDefaultPage: false,  // Don't add extra pages
         updateFieldAppearances: true, // Update form fields if present
       });
 
-      logger.info('PDF document saved successfully', {
-        size: pdfBytes.length,
+      const reloaded = await PDFDocument.load(pdfBytes, {
+        updateMetadata: false,
+        ignoreEncryption: true,
+        throwOnInvalidObject: false,
       });
+      const actualObjectCount = reloaded.context.enumerateIndirectObjects().length;
 
+      if (actualObjectCount < expectedObjectCount) {
+        logger.warn('PDF save round-trip lost objects', {
+          useObjectStreams, expectedObjectCount, actualObjectCount,
+        });
+        return null;
+      }
       return Buffer.from(pdfBytes);
+    };
+
+    try {
+      const withStreams = await saveAndVerify(true);
+      if (withStreams) {
+        logger.info('PDF document saved successfully', { size: withStreams.length });
+        return withStreams;
+      }
+
+      logger.warn('Retrying PDF save with useObjectStreams: false after a round-trip object-count mismatch');
+      const withoutStreams = await saveAndVerify(false);
+      if (withoutStreams) {
+        logger.info('PDF document saved successfully on retry (useObjectStreams: false)', { size: withoutStreams.length });
+        return withoutStreams;
+      }
+
+      throw new Error(
+        `Save round-trip lost objects even without useObjectStreams (expected ${expectedObjectCount} objects) -- refusing to return a corrupted buffer`
+      );
     } catch (error) {
       logger.error('Failed to save PDF document', { error });
       throw new Error(`Failed to save PDF: ${error instanceof Error ? error.message : 'Unknown error'}`);
@@ -301,7 +371,7 @@ export class PdfModifierService {
 
       // Set language in catalog using public API
       const langName = PDFName.of('Lang');
-      const langValue = PDFString.of(lang);
+      const langValue = PDFString.of(escapePdfString(lang));
 
       catalog.set(langName, langValue);
 
@@ -883,7 +953,7 @@ export class PdfModifierService {
         }
         const altEntry = target.get(PDFName.of('Alt'));
         const before = altEntry instanceof PDFString ? altEntry.decodeText() : (altEntry instanceof PDFHexString ? altEntry.decodeText() : 'None');
-        target.set(PDFName.of('Alt'), PDFString.of(altText));
+        target.set(PDFName.of('Alt'), PDFString.of(escapePdfString(altText)));
         logger.info(`[PdfModifier] Set alt text on Figure (${imageId})`);
         return {
           success: true,
@@ -954,7 +1024,7 @@ export class PdfModifierService {
 
       const altEntry = target.get(PDFName.of('Alt'));
       const before = altEntry instanceof PDFString ? altEntry.decodeText() : 'None';
-      target.set(PDFName.of('Alt'), PDFString.of(altText));
+      target.set(PDFName.of('Alt'), PDFString.of(escapePdfString(altText)));
 
       logger.info(`[PdfModifier] Set alt text on Figure (page ${targetPage}, index ${targetIndex})`);
 
@@ -1155,7 +1225,7 @@ export class PdfModifierService {
       }
       const prev = target.get(PDFName.of('ActualText'));
       const before = prev instanceof PDFString ? prev.decodeText() : 'None';
-      target.set(PDFName.of('ActualText'), PDFString.of(actualText));
+      target.set(PDFName.of('ActualText'), PDFString.of(escapePdfString(actualText)));
       logger.info(`[PdfModifier] Set ActualText (${elementId})`);
       return { success: true, description: `Set ActualText on element (${elementId})`, pageNumber: targetPage, before, after: actualText };
     } catch (error) {
@@ -1238,7 +1308,7 @@ export class PdfModifierService {
 
       const summaryEntry = target.get(PDFName.of('Summary'));
       const before = summaryEntry instanceof PDFString ? summaryEntry.decodeText() : 'None';
-      target.set(PDFName.of('Summary'), PDFString.of(summary));
+      target.set(PDFName.of('Summary'), PDFString.of(escapePdfString(summary)));
 
       logger.info(`[PdfModifier] Set summary on Table (page ${targetPage}, index ${targetIndex})`);
 

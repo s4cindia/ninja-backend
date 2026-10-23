@@ -547,6 +547,36 @@ export class PdfStructureWriterService {
     elem.delete(PDFName.of('P'));
   }
 
+  /**
+   * Clears each DIRECT child's own /P before a caller drops its /K array
+   * (e.g. retagging a decorative Table to /Artifact, where any former
+   * TR/TD children no longer make sense under the new role). Without this,
+   * a child's /P keeps pointing at an object that still exists but is no
+   * longer a structure element at all -- not a dangling reference in the
+   * sense STRUCTURE-DANGLING-REFERENCE checks for (the ref still resolves),
+   * but the same orphaning shape identified during this incident's own
+   * broader code survey, and a real inconsistency a careful conformance
+   * checker could reasonably still flag. Only goes one level deep -- a
+   * grandchild (e.g. a TD under a TR) is left alone, since its own /P
+   * still correctly points at the still-existing TR, which is now simply
+   * unreachable from the root rather than invalid (the same accepted
+   * "orphaned, not dangling" semantics deleteElement's own doc comment
+   * already documents).
+   */
+  private detachDirectChildrenParentPointers(doc: PDFDocument, kRaw: PDFObject | undefined): void {
+    if (kRaw === undefined) return;
+    const context = doc.context;
+    const resolved = kRaw instanceof PDFRef ? context.lookup(kRaw) : kRaw;
+    const entries = resolved instanceof PDFArray
+      ? Array.from({ length: resolved.size() }, (_, i) => resolved.get(i))
+      : [kRaw];
+    for (const entry of entries) {
+      if (!(entry instanceof PDFRef)) continue; // bare MCID integers have no /P to clear
+      const child = context.lookup(entry);
+      if (child instanceof PDFDict) child.delete(PDFName.of('P'));
+    }
+  }
+
   // ══════════════════════════════════════════════════════════════════════════
   // SECTION 4 — Scope Attribute (Required for TH elements)
   // ══════════════════════════════════════════════════════════════════════════
@@ -2916,6 +2946,7 @@ export class PdfStructureWriterService {
           if (targetDict instanceof PDFDict) {
             this.renameElement(doc, targetRef, 'Artifact');
             targetDict.set(PDFName.of('NS'), nsRef);
+            this.detachDirectChildrenParentPointers(doc, targetDict.get(PDFName.of('K')));
             targetDict.delete(PDFName.of('K'));
           }
 
@@ -3018,7 +3049,10 @@ export class PdfStructureWriterService {
               // removed from the file" semantics deleteElement already
               // documents -- the TR/TH/TD/Span children below still exist
               // as registered objects but are no longer reachable from a
-              // struct element real readers will walk.
+              // struct element real readers will walk. Their own /P is
+              // cleared first so it doesn't keep pointing at an object that
+              // still exists but is no longer a structure element at all.
+              this.detachDirectChildrenParentPointers(doc, tableDict.get(PDFName.of('K')));
               tableDict.delete(PDFName.of('K'));
             }
           });
@@ -3188,6 +3222,7 @@ export class PdfStructureWriterService {
 
         this.renameElement(doc, target.ref, 'Artifact');
         target.dict.set(PDFName.of('NS'), nsRef!);
+        this.detachDirectChildrenParentPointers(doc, target.dict.get(PDFName.of('K')));
         target.dict.delete(PDFName.of('K')); // TR/TD children no longer make sense under Artifact
 
         results.push({

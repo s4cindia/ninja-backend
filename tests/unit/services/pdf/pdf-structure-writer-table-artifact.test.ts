@@ -271,4 +271,42 @@ describe('PdfStructureWriterService.markTableAsArtifact', () => {
     expect(results[0].success).toBe(false);
     expect(results[0].error).toMatch(/structure tree/i);
   });
+
+  // Real incident this guards against: Math_Olszewski_PDF.pdf's remediated
+  // output had a surviving struct element's /P pointing at an object that
+  // had been dropped from the file entirely -- a genuine dangling reference.
+  // This retag path doesn't drop the parent (it stays registered, just
+  // renamed to /Artifact), so a child's /P here still *resolves* rather than
+  // dangling outright -- but it would keep pointing at an object that's no
+  // longer a structure element at all, the same orphaning shape flagged
+  // during that incident's own broader code survey. Confirm it's cleaned up.
+  it('clears the TR child\'s own /P when the table it pointed to is retagged to Artifact', async () => {
+    const doc = await PDFDocument.create();
+    doc.addPage([400, 600]);
+    const [pageRef] = doc.getPages().map(p => p.ref);
+
+    const tableRef = doc.context.register(doc.context.obj({ S: PDFName.of('Table') }));
+    const trRef = doc.context.register(doc.context.obj({ S: PDFName.of('TR'), P: tableRef }));
+    const tdRef = doc.context.register(doc.context.obj({ S: PDFName.of('TD'), P: trRef, Pg: pageRef }));
+    (doc.context.lookup(trRef) as PDFDict).set(PDFName.of('K'), doc.context.obj([tdRef]));
+    (doc.context.lookup(tableRef) as PDFDict).set(PDFName.of('K'), doc.context.obj([trRef]));
+
+    const documentRef = doc.context.register(doc.context.obj({ S: PDFName.of('Document'), K: [tableRef] }));
+    const structTreeRootRef = doc.context.register(
+      doc.context.obj({ Type: PDFName.of('StructTreeRoot'), K: [documentRef] })
+    );
+    doc.catalog.set(PDFName.of('StructTreeRoot'), structTreeRootRef);
+
+    const results = pdfStructureWriterService.markTableAsArtifact(doc, [issueFor('table_p1_0')]);
+    expect(results[0].success).toBe(true);
+    expect(tagOf(doc, tableRef)).toBe('/Artifact');
+
+    const trDict = doc.context.lookup(trRef) as PDFDict;
+    expect(trDict.get(PDFName.of('P'))).toBeUndefined();
+    // Only the direct child's /P is touched -- the TD grandchild's own /P
+    // still correctly points at the still-existing (merely unreachable) TR,
+    // since TR itself was never deleted, only unlinked from the table.
+    const tdDict = doc.context.lookup(tdRef) as PDFDict;
+    expect(tdDict.get(PDFName.of('P'))).toEqual(trRef);
+  });
 });

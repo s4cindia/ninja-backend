@@ -49,6 +49,10 @@ describe('PdfModifierService', () => {
         // If it's a string, return PDFName
         return PDFName.of(nameOrObj);
       }),
+      // savePDF's own post-save round-trip check reads this length -- see
+      // the matching PDFDocument.load spy below, which returns the same
+      // length so the "happy path" tests see no object-count mismatch.
+      enumerateIndirectObjects: vi.fn().mockReturnValue([1, 2, 3]),
     };
 
     // Create mock catalog with proper pdf-lib structure
@@ -83,6 +87,19 @@ describe('PdfModifierService', () => {
       getVersion: vi.fn().mockReturnValue({ major: 1, minor: 7 }),
       save: vi.fn().mockResolvedValue(Buffer.from('modified-pdf')),
     } as unknown as PDFDocument;
+
+    // savePDF reloads its own output to verify no objects were silently
+    // lost (see that method's own doc comment). PDFDocument.load isn't
+    // otherwise mocked in this file (several tests, e.g. validatePDF's
+    // header check, rely on its REAL lenient-parsing behavior), so this
+    // fake stand-in mirrors everything loadPDF's own success path touches
+    // (getPageCount) plus the object count savePDF's round-trip check
+    // reads, matching mockContext's own count above (no mismatch -> no
+    // fallback-retry path taken in the default/happy-path case).
+    vi.spyOn(PDFDocument, 'load').mockResolvedValue({
+      getPageCount: vi.fn().mockReturnValue(1),
+      context: { enumerateIndirectObjects: vi.fn().mockReturnValue([1, 2, 3]) },
+    } as unknown as PDFDocument);
   });
 
   afterEach(() => {
@@ -309,6 +326,36 @@ describe('PdfModifierService', () => {
       vi.mocked(mockPdfDoc.save).mockRejectedValue(new Error('Save error'));
 
       await expect(pdfModifierService.savePDF(mockPdfDoc)).rejects.toThrow('Save error');
+    });
+
+    it('retries with useObjectStreams: false when the round-trip reload reports fewer objects than expected, and uses that result', async () => {
+      // mockContext.enumerateIndirectObjects() (the pre-save count) returns
+      // a 3-length array. Simulate the real incident this guards against:
+      // the first reload (whatever useObjectStreams the first save call
+      // used) comes back short; the retry reload reports the full count.
+      vi.mocked(mockPdfDoc.save)
+        .mockResolvedValueOnce(Buffer.from('lossy-save'))
+        .mockResolvedValueOnce(Buffer.from('clean-retry-save'));
+      vi.mocked(PDFDocument.load)
+        .mockResolvedValueOnce({ context: { enumerateIndirectObjects: vi.fn().mockReturnValue([1]) } } as unknown as PDFDocument)
+        .mockResolvedValueOnce({ context: { enumerateIndirectObjects: vi.fn().mockReturnValue([1, 2, 3]) } } as unknown as PDFDocument);
+
+      const result = await pdfModifierService.savePDF(mockPdfDoc);
+
+      expect(result).toEqual(Buffer.from('clean-retry-save'));
+      expect(mockPdfDoc.save).toHaveBeenCalledTimes(2);
+      expect(mockPdfDoc.save).toHaveBeenNthCalledWith(1, expect.objectContaining({ useObjectStreams: true }));
+      expect(mockPdfDoc.save).toHaveBeenNthCalledWith(2, expect.objectContaining({ useObjectStreams: false }));
+    });
+
+    it('throws rather than returning a buffer when even the useObjectStreams: false retry still loses objects', async () => {
+      vi.mocked(mockPdfDoc.save).mockResolvedValue(Buffer.from('always-lossy'));
+      vi.mocked(PDFDocument.load).mockResolvedValue({
+        context: { enumerateIndirectObjects: vi.fn().mockReturnValue([1]) },
+      } as unknown as PDFDocument);
+
+      await expect(pdfModifierService.savePDF(mockPdfDoc)).rejects.toThrow(/lost objects/);
+      expect(mockPdfDoc.save).toHaveBeenCalledTimes(2);
     });
   });
 

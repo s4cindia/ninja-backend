@@ -9,7 +9,7 @@
  */
 
 import { v4 as uuidv4 } from 'uuid';
-import { PDFName } from 'pdf-lib';
+import { PDFName, PDFDict, PDFArray, PDFRef, PDFNumber, type PDFDocument } from 'pdf-lib';
 import { AuditIssue, IssueSeverity } from '../../audit/base-audit.service';
 import { structureAnalyzerService, DocumentStructure } from '../structure-analyzer.service';
 import { pdfParserService, ParsedPDF } from '../pdf-parser.service';
@@ -124,6 +124,12 @@ class PDFStructureValidator {
     // already (partially) tagged by its own original producer.
     if (structure.isTaggedPDF) {
       issues.push(...this.validateUntaggedContent(parsedPdf));
+    }
+
+    // Structure-tree reference integrity -- tagged PDFs only (an untagged
+    // document has no /StructTreeRoot to walk at all).
+    if (structure.isTaggedPDF) {
+      issues.push(...this.validateStructTreeReferenceIntegrity(parsedPdf));
     }
 
     // Calculate summary
@@ -647,6 +653,178 @@ class PDFStructureValidator {
    * @param data - Issue data without ID
    * @returns Complete audit issue
    */
+  /**
+   * Structure-tree reference integrity (new, added after a real live
+   * incident -- Math_Olszewski_PDF.pdf's remediated output had 3 struct
+   * elements silently dropped by pdf-lib's own loader, with the parent's
+   * own /K array, /ParentTree's Nums entries, and a surviving child's /P
+   * all left pointing at objects that no longer existed. No check anywhere
+   * in this file (or anywhere else in the audit pipeline) could see that --
+   * it was only caught because an external tool, PAC 2026, hard-crashed on
+   * it ("Invalid kid in structure element"). This closes that blind spot.
+   *
+   * Deliberately scoped to the common case: /ParentTree with a direct
+   * top-level /Nums array (confirmed the real shape on the actual incident
+   * document). A number tree using intermediate /Kids nodes instead of a
+   * flat /Nums is rare in practice for a single-document /ParentTree and is
+   * skipped rather than guessed at -- same "bail rather than guess"
+   * discipline as the rest of this codebase's structure-tree code.
+   */
+  private validateStructTreeReferenceIntegrity(parsedPdf: ParsedPDF): AuditIssue[] {
+    const issues: AuditIssue[] = [];
+    const doc: PDFDocument = parsedPdf.pdfLibDoc;
+    const context = doc.context;
+
+    let structTreeRoot: PDFDict | undefined;
+    try {
+      const catalog = doc.catalog;
+      const raw = context.lookup(catalog.get(PDFName.of('StructTreeRoot')));
+      if (raw instanceof PDFDict) structTreeRoot = raw;
+    } catch (err) {
+      logger.debug(`[PDFStructureValidator] Could not resolve /StructTreeRoot for reference-integrity check: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    if (!structTreeRoot) return issues;
+
+    const seen = new Set<string>();
+
+    const describeElement = (dict: PDFDict, fallback: string): string => {
+      const s = dict.get(PDFName.of('S'));
+      const role = s instanceof PDFName ? s.asString().replace(/^\//, '') : 'element';
+      return `${role} structure element (${fallback})`;
+    };
+
+    const walkKids = (kRaw: unknown, parentDesc: string, parentPageNumber: number | undefined): void => {
+      const resolved = kRaw instanceof PDFRef ? context.lookup(kRaw) : kRaw;
+      const entries = resolved instanceof PDFArray
+        ? Array.from({ length: resolved.size() }, (_, i) => resolved.get(i))
+        : [kRaw];
+
+      for (let idx = 0; idx < entries.length; idx++) {
+        const entry = entries[idx];
+        if (!(entry instanceof PDFRef)) continue; // bare MCID integers are always leaves, nothing to resolve
+        const child = context.lookup(entry);
+        if (child === undefined) {
+          issues.push(this.createIssue({
+            source: 'pdf-structure',
+            severity: 'critical',
+            code: 'STRUCTURE-DANGLING-REFERENCE',
+            message: `${parentDesc}'s Kids array references object ${entry.toString()} at index ${idx}, which does not exist`,
+            wcagCriteria: ['1.3.1'],
+            location: parentDesc,
+            suggestion: 'Remove this dangling reference from the structure element\'s /K array, or restore the missing object. External conformance tools (e.g. PAC) can refuse to open a document with this defect.',
+            category: 'structure',
+            pageNumber: parentPageNumber ?? 1,
+          }));
+          continue;
+        }
+        if (!(child instanceof PDFDict)) continue; // MCR/OBJR leaf dicts -- not walked further
+
+        const childTag = entry.toString();
+        if (seen.has(childTag)) continue; // cycle guard
+        seen.add(childTag);
+
+        const pgRaw = child.get(PDFName.of('Pg'));
+        const pg = pgRaw instanceof PDFRef ? context.lookup(pgRaw) : undefined;
+        const pageNumber = pg instanceof PDFDict ? this.resolvePageNumber(doc, pgRaw as PDFRef) : parentPageNumber;
+
+        const parentRaw = child.get(PDFName.of('P'));
+        if (parentRaw instanceof PDFRef && context.lookup(parentRaw) === undefined) {
+          issues.push(this.createIssue({
+            source: 'pdf-structure',
+            severity: 'critical',
+            code: 'STRUCTURE-DANGLING-REFERENCE',
+            message: `${describeElement(child, childTag)}'s /P (parent) points at object ${parentRaw.toString()}, which does not exist`,
+            wcagCriteria: ['1.3.1'],
+            location: describeElement(child, childTag),
+            suggestion: 'This element is orphaned from the structure tree. Re-parent it to a valid ancestor or remove it.',
+            category: 'structure',
+            pageNumber: pageNumber ?? 1,
+          }));
+        }
+
+        const childK = child.get(PDFName.of('K'));
+        if (childK !== undefined) walkKids(childK, describeElement(child, childTag), pageNumber);
+      }
+    };
+
+    try {
+      const rootK = structTreeRoot.get(PDFName.of('K'));
+      if (rootK !== undefined) walkKids(rootK, 'StructTreeRoot', undefined);
+    } catch (err) {
+      logger.warn(`[PDFStructureValidator] Structure-tree walk failed during reference-integrity check: ${err instanceof Error ? err.message : String(err)}`);
+    }
+
+    // /ParentTree: only the common flat-/Nums shape (see this method's own
+    // doc comment for why intermediate /Kids nodes are skipped).
+    try {
+      const parentTreeRaw = structTreeRoot.get(PDFName.of('ParentTree'));
+      const parentTree = parentTreeRaw instanceof PDFRef ? context.lookup(parentTreeRaw) : parentTreeRaw;
+      if (parentTree instanceof PDFDict) {
+        const numsRaw = parentTree.get(PDFName.of('Nums'));
+        const nums = numsRaw instanceof PDFRef ? context.lookup(numsRaw) : numsRaw;
+        if (nums instanceof PDFArray) {
+          for (let i = 0; i + 1 < nums.size(); i += 2) {
+            const keyObj = nums.get(i);
+            const valueRaw = nums.get(i + 1);
+            const value = valueRaw instanceof PDFRef ? context.lookup(valueRaw) : valueRaw;
+            const perPageRefs = value instanceof PDFArray
+              ? Array.from({ length: value.size() }, (_, j) => value.get(j))
+              : [value];
+            const structParentsKey = keyObj instanceof PDFNumber ? keyObj.asNumber() : undefined;
+            const pageNumber = structParentsKey !== undefined
+              ? this.resolvePageByStructParents(doc, structParentsKey)
+              : undefined;
+
+            for (const ref of perPageRefs) {
+              if (ref instanceof PDFRef && context.lookup(ref) === undefined) {
+                issues.push(this.createIssue({
+                  source: 'pdf-structure',
+                  severity: 'critical',
+                  code: 'STRUCTURE-DANGLING-REFERENCE',
+                  message: `/ParentTree entry (StructParents ${structParentsKey ?? '?'}) references object ${ref.toString()}, which does not exist`,
+                  wcagCriteria: ['1.3.1'],
+                  location: pageNumber ? `Page ${pageNumber}` : '/ParentTree',
+                  suggestion: 'Content on this page is marked as belonging to a structure element that no longer exists. Remove or re-tag the corresponding marked-content sequence.',
+                  category: 'structure',
+                  pageNumber: pageNumber ?? 1,
+                }));
+              }
+            }
+          }
+        }
+      }
+    } catch (err) {
+      logger.warn(`[PDFStructureValidator] /ParentTree walk failed during reference-integrity check: ${err instanceof Error ? err.message : String(err)}`);
+    }
+
+    return issues;
+  }
+
+  private resolvePageNumber(doc: PDFDocument, pageRef: PDFRef): number | undefined {
+    try {
+      const pages = doc.getPages();
+      for (let i = 0; i < pages.length; i++) {
+        if (pages[i].ref.toString() === pageRef.toString()) return i + 1;
+      }
+    } catch {
+      /* fall through */
+    }
+    return undefined;
+  }
+
+  private resolvePageByStructParents(doc: PDFDocument, structParents: number): number | undefined {
+    try {
+      const pages = doc.getPages();
+      for (let i = 0; i < pages.length; i++) {
+        const sp = pages[i].node.get(PDFName.of('StructParents'));
+        if (sp instanceof PDFNumber && sp.asNumber() === structParents) return i + 1;
+      }
+    } catch {
+      /* fall through */
+    }
+    return undefined;
+  }
+
   private createIssue(data: Omit<AuditIssue, 'id'>): AuditIssue {
     return {
       id: uuidv4(),
