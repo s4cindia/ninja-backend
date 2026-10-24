@@ -21,6 +21,32 @@ import { aiConfig } from '../../config/ai.config';
 import prisma from '../../lib/prisma';
 import { logger } from '../../lib/logger';
 
+// Real incident (2026-10-24, FMHE_PDF.pdf / forceAutoTag): Seam C's own
+// detector call can legitimately take ~20 minutes on a large (2040-page)
+// document, during which nothing touches the Job row at all -- the
+// watchdog's PDF_JOB_STALE_TIMEOUT_MS (20 min default, src/workers/index.ts)
+// has no way to distinguish "the worker died" from "the worker is alive and
+// waiting on a slow-but-working external call," so it killed a job seconds
+// before the tagging call it was waiting on actually succeeded. Any
+// Job.update() bumps updatedAt (Prisma's @updatedAt), so a periodic no-op
+// touch during the tagging call is enough to keep the watchdog's clock from
+// expiring out from under genuinely in-progress (if slow) work. Interval is
+// well under the 20-minute threshold to tolerate a missed tick or two.
+const AUTOTAG_HEARTBEAT_INTERVAL_MS = 3 * 60 * 1000;
+
+async function runWithJobHeartbeat<T>(dbJobId: string, fn: () => Promise<T>): Promise<T> {
+  const interval = setInterval(() => {
+    prisma.job.update({ where: { id: dbJobId }, data: { updatedAt: new Date() } }).catch((err) => {
+      logger.warn(`[PdfAutoTagOrchestrator] Heartbeat update failed for job ${dbJobId} (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
+    });
+  }, AUTOTAG_HEARTBEAT_INTERVAL_MS);
+  try {
+    return await fn();
+  } finally {
+    clearInterval(interval);
+  }
+}
+
 export interface AutoTagOutcome {
   /** Possibly-tagged PDF bytes to audit -- fileBuffer unchanged if tagging was skipped or failed. */
   auditBuffer: Buffer;
@@ -162,18 +188,20 @@ export async function autoTagIfNeeded(
         parsedFlags: unknown;
       };
       let taggerSource: 'seam-c' | 'adobe' = 'adobe';
-      if (aiConfig.seamC.enabled) {
-        try {
-          autoTagResult = await seamCTagService.tagPdf(bufferToTag, dbJobId);
-          taggerSource = 'seam-c';
-        } catch (seamErr) {
-          if (!aiConfig.adobe.enabled) throw seamErr;
-          logger.warn(`[PdfAutoTagOrchestrator] Seam C tagging failed, falling back to Adobe: ${seamErr instanceof Error ? seamErr.message : String(seamErr)}`);
-          autoTagResult = await adobeAutoTagService.tagPdf(bufferToTag, { generateReport: true, exportWord: true });
+      autoTagResult = await runWithJobHeartbeat(dbJobId, async () => {
+        if (aiConfig.seamC.enabled) {
+          try {
+            const result = await seamCTagService.tagPdf(bufferToTag, dbJobId);
+            taggerSource = 'seam-c';
+            return result;
+          } catch (seamErr) {
+            if (!aiConfig.adobe.enabled) throw seamErr;
+            logger.warn(`[PdfAutoTagOrchestrator] Seam C tagging failed, falling back to Adobe: ${seamErr instanceof Error ? seamErr.message : String(seamErr)}`);
+            return adobeAutoTagService.tagPdf(bufferToTag, { generateReport: true, exportWord: true });
+          }
         }
-      } else {
-        autoTagResult = await adobeAutoTagService.tagPdf(bufferToTag, { generateReport: true, exportWord: true });
-      }
+        return adobeAutoTagService.tagPdf(bufferToTag, { generateReport: true, exportWord: true });
+      });
       auditBuffer = autoTagResult.taggedPdfBuffer;
 
       // Save tagged PDF as remediated file + report XML + Word export
