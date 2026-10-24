@@ -52,17 +52,18 @@ describe('failActiveJobsBeforeShutdown', () => {
     vi.clearAllMocks();
   });
 
-  it('fails the DB record for every currently-active accessibility job and cleans BullMQ', async () => {
+  it('fails the DB record for every currently-active accessibility job and removes it from BullMQ', async () => {
     mockAreQueuesAvailable.mockReturnValue(true);
-    const mockClean = vi.fn().mockResolvedValue(['bull-job-1']);
+    const mockRemove = vi.fn().mockResolvedValue(undefined);
     const mockGetActive = vi.fn().mockResolvedValue([
-      { id: 'job-1', data: { options: { dbJobId: 'job-1' } } },
+      { id: 'job-1', data: { options: { dbJobId: 'job-1' } }, remove: mockRemove },
     ]);
-    mockGetAccessibilityQueue.mockReturnValue({ getActive: mockGetActive, clean: mockClean });
+    mockGetAccessibilityQueue.mockReturnValue({ getActive: mockGetActive });
     mockJobUpdateMany.mockResolvedValue({ count: 1 });
 
     await failActiveJobsBeforeShutdown();
 
+    expect(mockRemove).toHaveBeenCalledTimes(1);
     expect(mockJobUpdateMany).toHaveBeenCalledWith({
       where: { id: 'job-1', status: 'PROCESSING' },
       data: expect.objectContaining({
@@ -70,14 +71,14 @@ describe('failActiveJobsBeforeShutdown', () => {
         error: expect.stringContaining('Worker restarted (deploy)'),
       }),
     });
-    expect(mockClean).toHaveBeenCalledWith(0, 11, 'active');
   });
 
   it('falls back to the BullMQ job id when options.dbJobId is absent', async () => {
     mockAreQueuesAvailable.mockReturnValue(true);
-    const mockClean = vi.fn().mockResolvedValue([]);
-    const mockGetActive = vi.fn().mockResolvedValue([{ id: 'fallback-id', data: {} }]);
-    mockGetAccessibilityQueue.mockReturnValue({ getActive: mockGetActive, clean: mockClean });
+    const mockGetActive = vi.fn().mockResolvedValue([
+      { id: 'fallback-id', data: {}, remove: vi.fn().mockResolvedValue(undefined) },
+    ]);
+    mockGetAccessibilityQueue.mockReturnValue({ getActive: mockGetActive });
     mockJobUpdateMany.mockResolvedValue({ count: 1 });
 
     await failActiveJobsBeforeShutdown();
@@ -89,14 +90,32 @@ describe('failActiveJobsBeforeShutdown', () => {
 
   it('does nothing when there are no active jobs', async () => {
     mockAreQueuesAvailable.mockReturnValue(true);
-    const mockClean = vi.fn();
     const mockGetActive = vi.fn().mockResolvedValue([]);
-    mockGetAccessibilityQueue.mockReturnValue({ getActive: mockGetActive, clean: mockClean });
+    mockGetAccessibilityQueue.mockReturnValue({ getActive: mockGetActive });
 
     await failActiveJobsBeforeShutdown();
 
     expect(mockJobUpdateMany).not.toHaveBeenCalled();
-    expect(mockClean).not.toHaveBeenCalled();
+  });
+
+  it('leaves a job untouched when it is still locked by a different, live worker (real incident, 2026-10-24)', async () => {
+    // A brand-new task's startup sweep raced BullMQ's own stalled-job
+    // recovery, which had just handed this job to a DIFFERENT, live worker.
+    // Job.remove() throws in that case -- the DB record must NOT be marked
+    // FAILED out from under the worker actually processing it.
+    mockAreQueuesAvailable.mockReturnValue(true);
+    const mockRemove = vi.fn().mockRejectedValue(
+      new Error('Job job-2 could not be removed because it is locked by another worker')
+    );
+    const mockGetActive = vi.fn().mockResolvedValue([
+      { id: 'job-2', data: { options: { dbJobId: 'job-2' } }, remove: mockRemove },
+    ]);
+    mockGetAccessibilityQueue.mockReturnValue({ getActive: mockGetActive });
+
+    await failActiveJobsBeforeShutdown();
+
+    expect(mockRemove).toHaveBeenCalledTimes(1);
+    expect(mockJobUpdateMany).not.toHaveBeenCalled();
   });
 
   it('is a no-op when queues are unavailable (never throws, never touches Prisma)', async () => {
