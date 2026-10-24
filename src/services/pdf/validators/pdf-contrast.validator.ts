@@ -359,15 +359,55 @@ export class PdfContrastValidator {
     // the slow part (canvas rasterization via @napi-rs/canvas), responsible
     // for the 17-minute incident above.
     //
-    // Stage B below (scorePageContrast) stays sequential, strictly in page
-    // order, because it reads and writes this.backgroundSignatureCounts --
-    // a genuinely cross-page, order-dependent accumulator (see that field's
+    // Stage B (scorePageContrast) stays sequential, strictly in page order,
+    // because it reads and writes this.backgroundSignatureCounts -- a
+    // genuinely cross-page, order-dependent accumulator (see that field's
     // own doc comment) that an unordered worker pool would corrupt: it
     // decides whether a repeated background color is excluded as a
     // page-template element based on how many DISTINCT EARLIER pages
     // already carried it, which only means something if pages are folded in
     // in their real document order.
-    const renderResults: Array<ContrastPageRenderResult | null> = new Array(pages.length).fill(null);
+    //
+    // Real incident (2026-10-24): an earlier version of this method ran
+    // Stage A to full completion (storing every page's raw canvas
+    // Uint8ClampedArray in renderResults) before Stage B ever started, so
+    // ALL pages' pixel buffers were resident at once -- on a 2040-page
+    // document that's gigabytes of raw pixels held simultaneously, which
+    // OOM-killed the ECS task (confirmed via CloudWatch MemoryUtilization
+    // climbing to a ~97% plateau that never dropped, even after rendering
+    // finished). Stage B is now drained incrementally instead: as soon as a
+    // contiguous run of pages starting at nextToScore has been rendered,
+    // score and immediately discard each one (renderResults[i] = undefined)
+    // before moving to the next. This bounds peak memory to roughly
+    // workerCount in-flight pages instead of the whole document, while
+    // still scoring strictly in page order.
+    //
+    // drainReady's loop body is fully synchronous (scorePageContrast has no
+    // await), so calling it from multiple concurrent renderWorker closures
+    // below is race-free -- JS can't preempt a synchronous function body,
+    // so only one invocation can ever be mid-loop at a time; whichever
+    // closure happens to invoke it drains every page that's currently
+    // ready, in order, before any other closure's code can run.
+    const renderResults: Array<ContrastPageRenderResult | null | undefined> = new Array(pages.length).fill(undefined);
+    let nextToScore = 0;
+    const drainReady = (): void => {
+      while (nextToScore < pages.length) {
+        const rendered = renderResults[nextToScore];
+        if (rendered === undefined) break; // not rendered yet -- wait for it
+        if (rendered !== null) {
+          try {
+            issues.push(...this.scorePageContrast(rendered));
+          } catch (err) {
+            logger.warn(
+              `[PdfContrastValidator] Page ${rendered.page.pageNumber} failed to score (non-fatal): ` +
+              (err instanceof Error ? err.message : String(err))
+            );
+          }
+        }
+        renderResults[nextToScore] = undefined; // free this page's buffers now that it's been scored
+        nextToScore++;
+      }
+    };
     let nextIndex = 0;
     const renderWorker = async (): Promise<void> => {
       while (true) {
@@ -380,8 +420,10 @@ export class PdfContrastValidator {
           // empty-content would never call onProgress at all -- not even
           // the guaranteed final call -- reintroducing the exact
           // hang-detection false positive this fix exists to close.
+          renderResults[i] = null;
           completed++;
           maybeReportProgress();
+          drainReady();
           continue;
         }
         try {
@@ -391,33 +433,21 @@ export class PdfContrastValidator {
             `[PdfContrastValidator] Page ${page.pageNumber} failed to render (non-fatal): ` +
             (err instanceof Error ? err.message : String(err))
           );
+          renderResults[i] = null;
         } finally {
           completed++;
           maybeReportProgress();
+          drainReady();
         }
       }
     };
     const workerCount = Math.max(1, Math.min(pdfConfig.contrastRenderConcurrency, pages.length));
     await Promise.all(Array.from({ length: workerCount }, () => renderWorker()));
-    // Make sure every queued progress write has actually landed before
-    // Stage B starts -- pdf-audit.service.ts's own onValidatorComplete does
-    // its own read-modify-write of Job.input right after this method
-    // returns, and it must never race a still-in-flight progress write above.
+    // Make sure every queued progress write has actually landed before this
+    // method returns -- pdf-audit.service.ts's own onValidatorComplete does
+    // its own read-modify-write of Job.input right after, and it must never
+    // race a still-in-flight progress write above.
     await progressChain;
-
-    // Stage B: per-item scoring, strictly in page order (see the comment
-    // above renderResults for why).
-    for (const rendered of renderResults) {
-      if (!rendered) continue; // empty-content page or Stage A failure, already logged/counted above
-      try {
-        issues.push(...this.scorePageContrast(rendered));
-      } catch (err) {
-        logger.warn(
-          `[PdfContrastValidator] Page ${rendered.page.pageNumber} failed to score (non-fatal): ` +
-          (err instanceof Error ? err.message : String(err))
-        );
-      }
-    }
 
     logger.info(`[PdfContrastValidator] Found ${issues.length} contrast issue(s)`);
     return issues;

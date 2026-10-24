@@ -1,4 +1,4 @@
-import { Job, Queue, Worker } from 'bullmq';
+import { Job, Worker } from 'bullmq';
 import { createWorker } from './base.worker';
 import { QUEUE_NAMES, QUEUE_PREFIX, BatchJobData, BatchJobResult, BatchProcessingJobData, BatchProcessingJobResult, AutoRemediationJobData, AutoRemediationJobResult, PdfBatchItemJobData, PdfBatchItemJobResult, JobData, JobResult, getBullMQConnection, getCitationQueue, getAccessibilityQueue, getAutoRemediationQueue, JOB_TYPES, areQueuesAvailable } from '../queues';
 import { autoRemediationLoopService } from '../services/pdf/auto-remediation-loop.service';
@@ -194,17 +194,42 @@ async function recoverStaleJobs(): Promise<void> {
  * remove them from Redis. `logPrefix` only affects log lines.
  */
 async function failAndCleanActiveJobs(
-  queue: Queue<JobData, JobResult>,
   activeJobs: Job<JobData, JobResult>[],
   errorMessage: string,
   logPrefix: string
 ): Promise<void> {
   if (activeJobs.length === 0) return;
 
-  logger.info(`${logPrefix} Found ${activeJobs.length} stale active job(s) — cleaning up`);
+  logger.info(`${logPrefix} Found ${activeJobs.length} active job(s) — checking for orphans`);
 
-  // Update DB records first (before removing from Redis)
+  // Real incident (2026-10-24): this used to mark EVERY "active" job's DB
+  // record FAILED, then blanket-remove all active jobs via queue.clean().
+  // "Active" just means someone currently owns the job -- it does NOT mean
+  // its owner is dead. A brand-new worker task's startup sweep raced
+  // BullMQ's own stalled-job recovery, which had handed a job to a
+  // DIFFERENT, live worker only ~50s earlier: that worker was actively,
+  // legitimately reprocessing it when this code failed it out from under
+  // it. Job.remove() throws "...locked by another worker" when a live
+  // worker still holds the job's lock, which is exactly the signal needed
+  // to tell a genuine orphan (lock expired, no one renewing it -- remove()
+  // succeeds) apart from a job someone else is actively working on
+  // (remove() throws, left untouched). Removing one job at a time, and
+  // only marking a DB record FAILED after its own removal succeeds, means
+  // a legitimately-owned job is never stolen, while true orphans (the
+  // normal case this function exists for -- a crash or SIGKILL that hit
+  // before a graceful shutdown sweep could run) are still cleaned up.
+  let removedCount = 0;
   for (const bullJob of activeJobs) {
+    try {
+      await bullJob.remove();
+    } catch (err) {
+      logger.debug(
+        `${logPrefix} Skipping active job ${bullJob.id} — still locked by a live worker: ` +
+        (err instanceof Error ? err.message : String(err))
+      );
+      continue;
+    }
+    removedCount++;
     const dbJobId = (bullJob.data?.options?.dbJobId as string | undefined) || bullJob.id;
     if (dbJobId) {
       await prisma.job.updateMany({
@@ -218,9 +243,7 @@ async function failAndCleanActiveJobs(
     }
   }
 
-  // Remove stale active jobs from Redis using queue.clean() — no lock token required
-  const removed = await queue.clean(0, activeJobs.length + 10, 'active');
-  logger.info(`${logPrefix} Stale active job cleanup complete — removed ${removed.length} BullMQ job(s)`);
+  logger.info(`${logPrefix} Stale active job cleanup complete — removed ${removedCount} of ${activeJobs.length} BullMQ job(s) (rest still held by a live worker)`);
 }
 
 /**
@@ -254,7 +277,6 @@ async function cleanupStaleActiveJobs(): Promise<void> {
     // Collect active jobs before cleaning so we can update DB records
     const activeJobs = await queue.getActive();
     await failAndCleanActiveJobs(
-      queue,
       activeJobs,
       'Server restarted while job was processing — please re-submit the file',
       '[Startup]'
@@ -289,7 +311,6 @@ export async function failActiveJobsBeforeShutdown(): Promise<void> {
     if (!queue) return;
     const activeJobs = await queue.getActive();
     await failAndCleanActiveJobs(
-      queue,
       activeJobs,
       'Worker restarted (deploy) while this job was processing — please retry',
       '[Shutdown]'
