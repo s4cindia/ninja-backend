@@ -179,6 +179,18 @@ describe('JobController', () => {
       (prisma.job.count as any).mockResolvedValue(0);
     });
 
+    it('includes the owner\'s name/email in the select, not just the raw userId (RBAC frontend PR #360 follow-up)', async () => {
+      (prisma.teamMembership.findMany as any)
+        .mockResolvedValueOnce([{ teamId: 'team-1' }])
+        .mockResolvedValueOnce([{ userId: 'leader-1' }]);
+
+      const res = makeRes();
+      await jobController.listTeamJobs(makeReq({ user: { id: 'leader-1', tenantId: 'tenant-1' } } as any), res, next);
+
+      const selectArg = (prisma.job.findMany as any).mock.calls[0][0].select;
+      expect(selectArg.user).toEqual({ select: { id: true, firstName: true, lastName: true, email: true } });
+    });
+
     it('TEAM_LEADER sees jobs from every member of their team, not just their own', async () => {
       (prisma.teamMembership.findMany as any)
         .mockResolvedValueOnce([{ teamId: 'team-1' }]) // caller's qualifying membership
