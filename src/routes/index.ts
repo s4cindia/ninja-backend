@@ -56,6 +56,7 @@ import adminUsersRoutes from "./admin/users.routes";
 import adminTeamsRoutes from "./admin/teams.routes";
 import adminJobsRoutes from "./admin/jobs.routes";
 import adminComparisonStudyRoutes from "./admin/comparison-study.routes";
+import adminReportsRoutes from "./admin/reports.routes";
 
 const router = Router();
 
@@ -171,5 +172,6 @@ router.use("/admin", adminUsersRoutes);
 router.use("/admin", adminTeamsRoutes);
 router.use("/admin", adminJobsRoutes);
 router.use("/admin", adminComparisonStudyRoutes);
+router.use("/admin", adminReportsRoutes);
 
 export default router;
