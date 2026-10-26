@@ -13,6 +13,9 @@ const mockGetTeamActivityReport = vi.fn();
 const mockGetCostReport = vi.fn();
 const mockGetRoundCostTrend = vi.fn();
 const mockGetReliabilityReport = vi.fn();
+const mockGetQualityReport = vi.fn();
+const mockGetStuckIssues = vi.fn();
+const mockGetScoreTrend = vi.fn();
 const mockJobFindUnique = vi.fn();
 
 vi.mock('../../../../src/services/reports/throughput-report.service', () => ({
@@ -32,6 +35,14 @@ vi.mock('../../../../src/services/reports/cost-report.service', () => ({
 
 vi.mock('../../../../src/services/reports/reliability-report.service', () => ({
   reliabilityReportService: { getReport: (...args: unknown[]) => mockGetReliabilityReport(...args) },
+}));
+
+vi.mock('../../../../src/services/reports/quality-report.service', () => ({
+  qualityReportService: {
+    getReport: (...args: unknown[]) => mockGetQualityReport(...args),
+    getStuckIssues: (...args: unknown[]) => mockGetStuckIssues(...args),
+    getScoreTrend: (...args: unknown[]) => mockGetScoreTrend(...args),
+  },
 }));
 
 vi.mock('../../../../src/lib/prisma', () => ({
@@ -72,6 +83,9 @@ describe('admin/reports.routes', () => {
     mockGetCostReport.mockResolvedValue({ period: {}, totalSpentUsd: 0, runCount: 0, avgCostPerRunUsd: null, avgCostPerPageUsd: null, capHitFrequency: {}, spendByRun: [] });
     mockGetRoundCostTrend.mockResolvedValue([]);
     mockGetReliabilityReport.mockResolvedValue({ period: {}, interruptionCount: 0, interruptionsByAction: {}, failureCount: 0, failuresByCategory: {} });
+    mockGetQualityReport.mockResolvedValue({ period: {}, yieldByType: [] });
+    mockGetStuckIssues.mockResolvedValue([]);
+    mockGetScoreTrend.mockResolvedValue([]);
     mockJobFindUnique.mockResolvedValue({ tenantId: 't-1' });
   });
 
@@ -215,10 +229,71 @@ describe('admin/reports.routes', () => {
       );
     });
 
-    it('rejects a range wider than 90 days', async () => {
+    it('rejects a range wider than 90 days (reliability)', async () => {
       const res = await request(buildApp()).get('/admin/reports/reliability?from=2026-01-01&to=2026-12-31');
       expect(res.status).toBe(422);
       expect(mockGetReliabilityReport).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('GET /admin/reports/quality', () => {
+    it('returns 403 for a non-ADMIN caller', async () => {
+      mockUser = { ...mockUser, role: 'USER' };
+      const res = await request(buildApp()).get('/admin/reports/quality');
+      expect(res.status).toBe(403);
+      expect(mockGetQualityReport).not.toHaveBeenCalled();
+    });
+
+    it('delegates to qualityReportService with the tenant-scoped date range', async () => {
+      const res = await request(buildApp()).get('/admin/reports/quality');
+      expect(res.status).toBe(200);
+      expect(mockGetQualityReport).toHaveBeenCalledWith(
+        expect.objectContaining({ tenantId: 't-1' })
+      );
+    });
+
+    it('rejects a range wider than 90 days (quality)', async () => {
+      const res = await request(buildApp()).get('/admin/reports/quality?from=2026-01-01&to=2026-12-31');
+      expect(res.status).toBe(422);
+      expect(mockGetQualityReport).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('GET /admin/reports/quality/stuck-issues', () => {
+    it('returns 403 for a non-ADMIN caller', async () => {
+      mockUser = { ...mockUser, role: 'USER' };
+      const res = await request(buildApp()).get('/admin/reports/quality/stuck-issues');
+      expect(res.status).toBe(403);
+      expect(mockGetStuckIssues).not.toHaveBeenCalled();
+    });
+
+    it('delegates to getStuckIssues with the caller tenantId, no date range needed', async () => {
+      const res = await request(buildApp()).get('/admin/reports/quality/stuck-issues');
+      expect(res.status).toBe(200);
+      expect(mockGetStuckIssues).toHaveBeenCalledWith('t-1');
+    });
+  });
+
+  describe('GET /admin/reports/quality/:jobId/score-trend', () => {
+    it('returns 403 for a non-ADMIN caller', async () => {
+      mockUser = { ...mockUser, role: 'USER' };
+      const res = await request(buildApp()).get('/admin/reports/quality/job-1/score-trend');
+      expect(res.status).toBe(403);
+      expect(mockGetScoreTrend).not.toHaveBeenCalled();
+    });
+
+    it('returns 404 without calling the service when the job belongs to a different tenant', async () => {
+      mockJobFindUnique.mockResolvedValue({ tenantId: 'some-other-tenant' });
+      const res = await request(buildApp()).get('/admin/reports/quality/job-1/score-trend');
+      expect(res.status).toBe(404);
+      expect(mockGetScoreTrend).not.toHaveBeenCalled();
+    });
+
+    it('delegates to getScoreTrend once tenant ownership is confirmed', async () => {
+      const res = await request(buildApp()).get('/admin/reports/quality/job-1/score-trend');
+      expect(res.status).toBe(200);
+      expect(mockGetScoreTrend).toHaveBeenCalledWith('job-1');
+      expect(res.body.data.jobId).toBe('job-1');
     });
   });
 });
