@@ -27,6 +27,9 @@ export interface LogCycleEventInput {
   errorMessage?: string;
   triggeredBy?: string;
   startedAt: Date;
+  /** This round's AI spend -- see the Prisma field's own doc comment for
+   * why it's only ever populated on the 'ai_analysis' action. */
+  costUsd?: number;
 }
 
 class RemediationCycleHistoryService {

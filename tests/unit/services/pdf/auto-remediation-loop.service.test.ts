@@ -64,6 +64,7 @@ import { autoRemediationLoopService, ComparisonTrialAutoRemediationDriver, JobAu
 import { aiAnalysisService } from '../../../../src/services/pdf/ai-analysis.service';
 import { pdfReauditService } from '../../../../src/services/pdf/pdf-reaudit.service';
 import { remediationCycleLockService } from '../../../../src/services/pdf/remediation-cycle-lock.service';
+import { remediationCycleHistoryService } from '../../../../src/services/pdf/remediation-cycle-history.service';
 
 function makeTrial(overrides: Record<string, unknown> = {}) {
   return {
@@ -257,6 +258,25 @@ describe('autoRemediationLoopService.startAutoLoop', () => {
       where: { id: 'trial-1' },
       data: { autoStatus: 'stopped', autoStopReason: 'converged', autoStopRequested: false, autoStoppedAt: expect.any(Date) },
     });
+  });
+
+  it('logs this round\'s AI cost on the ai_analysis history event (Operational Reports Group 2)', async () => {
+    // Same fixture as the regression test above (234 actionable, $0.10
+    // spent) -- just asserting a different, additive side effect: the
+    // costUsd field on the already-logged ai_analysis event, read fresh off
+    // job.output.aiAnalysisStats the same way the outer loop's own
+    // autoCostSpentUsd accumulation does (duplicated read, not shared, by
+    // design -- see getRoundAiCostUsd's doc comment).
+    vi.mocked(prisma.comparisonTrial.findUnique).mockResolvedValue(makeTrial() as any);
+    mockLockAcquired(7);
+    mockProductiveRound(234, 0.1);
+    mockEmptyRound();
+
+    await autoRemediationLoopService.startAutoLoop(new ComparisonTrialAutoRemediationDriver('trial-1'));
+
+    expect(remediationCycleHistoryService.logEvent).toHaveBeenCalledWith(
+      expect.objectContaining({ action: 'ai_analysis', cycleNumber: 7, costUsd: 0.1 })
+    );
   });
 
   it('regression: does not converge while a leftover approved-but-unapplied row from a partial apply failure remains (CodeRabbit finding)', async () => {
