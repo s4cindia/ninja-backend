@@ -296,10 +296,11 @@ class AutoRemediationLoopService {
   async reconcileIfOrphaned(trialId: string): Promise<void> {
     const trial = await prisma.comparisonTrial.findUnique({
       where: { id: trialId },
-      select: { autoStatus: true, ninjaJobId: true },
+      select: { autoStatus: true, ninjaJobId: true, autoRoundsCompleted: true },
     });
     if (trial?.autoStatus !== 'running' || !trial.ninjaJobId) return;
     const jobId = trial.ninjaJobId;
+    const roundsCompletedBeforeReconcile = trial.autoRoundsCompleted;
 
     // Fast-path: skip the transaction entirely when the loop is obviously
     // still alive, avoiding pointless lock contention on the hot path
@@ -307,14 +308,14 @@ class AutoRemediationLoopService {
     const lockStatus = await remediationCycleLockService.getLockStatus(jobId);
     if (lockStatus.inProgress) return;
 
-    await prisma.$transaction(async (tx) => {
+    const reconciled = await prisma.$transaction(async (tx) => {
       const rows = await tx.$queryRaw<Array<{ remediationCycleLockedAt: Date | null }>>`
         SELECT "remediationCycleLockedAt" FROM "Job" WHERE id = ${jobId} FOR UPDATE
       `;
       const lockedAt = rows[0]?.remediationCycleLockedAt ?? null;
       const staleThreshold = new Date(Date.now() - STALE_LOCK_MS);
       const stillOrphaned = lockedAt === null || lockedAt < staleThreshold;
-      if (!stillOrphaned) return; // a concurrent run acquired it while we were waiting for the row lock
+      if (!stillOrphaned) return false; // a concurrent run acquired it while we were waiting for the row lock
 
       const result = await tx.comparisonTrial.updateMany({
         where: { id: trialId, autoStatus: 'running' },
@@ -325,7 +326,11 @@ class AutoRemediationLoopService {
           `[AutoRemediationLoop] Reconciled orphaned run for trial ${trialId} (job ${jobId}) -- its lock is free/stale, so whatever process was running it must have died without cleaning up (e.g. an ECS deploy mid-round)`
         );
       }
+      return result.count > 0;
     });
+    if (reconciled) {
+      await this.logInterruption(jobId, roundsCompletedBeforeReconcile + 1, 'orphan_reconciled', 'watchdog');
+    }
   }
 
   /**
@@ -339,22 +344,23 @@ class AutoRemediationLoopService {
   async reconcileIfOrphanedJobRun(runId: string): Promise<void> {
     const run = await prisma.pdfAutoRemediationRun.findUnique({
       where: { id: runId },
-      select: { autoStatus: true, jobId: true },
+      select: { autoStatus: true, jobId: true, autoRoundsCompleted: true },
     });
     if (run?.autoStatus !== 'running') return;
     const jobId = run.jobId;
+    const roundsCompletedBeforeReconcile = run.autoRoundsCompleted;
 
     const lockStatus = await remediationCycleLockService.getLockStatus(jobId);
     if (lockStatus.inProgress) return;
 
-    await prisma.$transaction(async (tx) => {
+    const reconciled = await prisma.$transaction(async (tx) => {
       const rows = await tx.$queryRaw<Array<{ remediationCycleLockedAt: Date | null }>>`
         SELECT "remediationCycleLockedAt" FROM "Job" WHERE id = ${jobId} FOR UPDATE
       `;
       const lockedAt = rows[0]?.remediationCycleLockedAt ?? null;
       const staleThreshold = new Date(Date.now() - STALE_LOCK_MS);
       const stillOrphaned = lockedAt === null || lockedAt < staleThreshold;
-      if (!stillOrphaned) return;
+      if (!stillOrphaned) return false;
 
       const result = await tx.pdfAutoRemediationRun.updateMany({
         where: { id: runId, autoStatus: 'running' },
@@ -365,7 +371,11 @@ class AutoRemediationLoopService {
           `[AutoRemediationLoop] Reconciled orphaned run for job-run ${runId} (job ${jobId}) -- its lock is free/stale, so whatever process was running it must have died without cleaning up (e.g. an ECS deploy mid-round)`
         );
       }
+      return result.count > 0;
     });
+    if (reconciled) {
+      await this.logInterruption(jobId, roundsCompletedBeforeReconcile + 1, 'orphan_reconciled', 'watchdog');
+    }
   }
 
   /**
@@ -400,6 +410,13 @@ class AutoRemediationLoopService {
         });
         if (result.count > 0) {
           logger.warn(`[AutoRemediationLoop] Force-stopped trial ${id} for worker shutdown (deploy mid-round)`);
+          const trial = await prisma.comparisonTrial.findUnique({
+            where: { id },
+            select: { ninjaJobId: true, autoRoundsCompleted: true },
+          });
+          if (trial?.ninjaJobId) {
+            await this.logInterruption(trial.ninjaJobId, trial.autoRoundsCompleted + 1, 'force_stopped', 'shutdown');
+          }
         }
       } else {
         const result = await prisma.pdfAutoRemediationRun.updateMany({
@@ -408,6 +425,13 @@ class AutoRemediationLoopService {
         });
         if (result.count > 0) {
           logger.warn(`[AutoRemediationLoop] Force-stopped job-run ${id} for worker shutdown (deploy mid-round)`);
+          const run = await prisma.pdfAutoRemediationRun.findUnique({
+            where: { id },
+            select: { jobId: true, autoRoundsCompleted: true },
+          });
+          if (run) {
+            await this.logInterruption(run.jobId, run.autoRoundsCompleted + 1, 'force_stopped', 'shutdown');
+          }
         }
       }
     } catch (err) {
@@ -415,6 +439,34 @@ class AutoRemediationLoopService {
         `[AutoRemediationLoop] Failed to force-stop ${kind} ${id} during shutdown (non-fatal -- will self-heal via lock staleness + reconcileIfOrphaned): ${err instanceof Error ? err.message : String(err)}`
       );
     }
+  }
+
+  /**
+   * Operational Reports Group 4 (reliability) -- see
+   * OPERATIONAL_REPORTS_DESIGN.md. Records a deploy/crash-caused
+   * interruption into the same append-only RemediationCycleEvent history
+   * everything else in this file already writes to, instead of only
+   * logger.warn() (CloudWatch-only, not queryable) as before. cycleNumber is
+   * a best-effort "the round that was active when this happened" --
+   * autoRoundsCompleted + 1, since the actual in-progress cycle number isn't
+   * persisted anywhere this function can read it from. logEvent itself is
+   * already non-fatal by design (see remediation-cycle-history.service.ts),
+   * so no extra try/catch needed here.
+   */
+  private async logInterruption(
+    jobId: string,
+    cycleNumber: number,
+    action: 'force_stopped' | 'orphan_reconciled',
+    source: 'shutdown' | 'watchdog',
+  ): Promise<void> {
+    await remediationCycleHistoryService.logEvent({
+      jobId,
+      cycleNumber,
+      action,
+      source,
+      status: 'failed',
+      startedAt: new Date(),
+    });
   }
 
   /**
