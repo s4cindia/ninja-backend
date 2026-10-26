@@ -760,6 +760,7 @@ export class PdfController {
   async getAuditResult(req: Request, res: Response) {
     try {
       const job = req.job;
+      const viewerId = req.user?.id;
 
       if (!job) {
         return res.status(404).json({
@@ -824,6 +825,23 @@ export class PdfController {
           }
         }
 
+        // isOwner/teamReviews let the frontend decide whether to show the
+        // Team Review panel (TEAM_LEADER-only write, never the owning
+        // Executive's own job) and its history -- this route is the only
+        // one a teammate's authorizeJobForReview grant actually reaches
+        // with the full audit payload, so this is where that needs to live
+        // rather than on the generic /jobs/:id status endpoint (which
+        // isn't team-scoped at all, see job.controller.ts's listTeamJobs
+        // doc comment).
+        const isOwner = viewerId != null && job.userId === viewerId;
+        const teamReviews = await prisma.teamReview.findMany({
+          where: { jobId: job.id },
+          orderBy: { reviewedAt: 'desc' },
+          include: {
+            reviewer: { select: { id: true, firstName: true, lastName: true, email: true } },
+          },
+        });
+
         return res.json({
           success: true,
           data: {
@@ -847,6 +865,8 @@ export class PdfController {
             retagOutcome: output?.retagOutcome ?? null,
             ...auditReport,
             matterhornSummary,
+            isOwner,
+            teamReviews,
           },
         });
       }

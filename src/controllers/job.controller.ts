@@ -335,6 +335,14 @@ export class JobController {
           completedAt: true,
           productId: true,
           userId: true,
+          // Added for listTeamJobs' "Owner" column -- without this, the
+          // frontend only has the raw userId to show (see RBAC frontend
+          // PR #360's "Known limitation" note). Harmless to also include on
+          // the tenant-wide list() path above; both already return the raw
+          // userId today.
+          user: {
+            select: { id: true, firstName: true, lastName: true, email: true },
+          },
           product: {
             select: {
               id: true,
