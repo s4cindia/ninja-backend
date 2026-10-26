@@ -36,6 +36,19 @@ const ALWAYS_MANUAL_SUGGESTION_TYPE = 'alt-text-decorative';
 
 const AUTO_MODE_ACTOR = 'auto-mode';
 
+/** How many consecutive crash-recoveries (reconcileIfOrphaned/
+ *  reconcileIfOrphanedJobRun finding a genuinely dead run) within
+ *  CRASH_RECOVERY_LOOKBACK_MS get an automatic resume from maybeAutoResume
+ *  below before giving up and leaving the run for manual review -- caps the
+ *  blast radius of a document that dies (OOM or otherwise) on every
+ *  attempt, so it can't be auto-resumed forever. */
+const MAX_AUTO_CRASH_RESUMES = 2;
+/** Rolling window maybeAutoResume counts recent 'orphan_reconciled' history
+ *  events in. Deliberately not tied to the run's own autoStartedAt, which
+ *  resets on every resume (see resetForNewRun) and would otherwise make
+ *  each resume forget the crashes that came before it. */
+const CRASH_RECOVERY_LOOKBACK_MS = 60 * 60 * 1000;
+
 export type ColorContrastMode = 'guidance-only' | 'disabled' | 'apply-to-pdf';
 const VALID_COLOR_CONTRAST_MODES: ReadonlySet<string> = new Set(['guidance-only', 'disabled', 'apply-to-pdf']);
 
@@ -293,12 +306,12 @@ class AutoRemediationLoopService {
    * quick-fix endpoint) blocks any concurrent acquireLock attempt on this
    * job until the transaction commits, so the two can never interleave.
    */
-  async reconcileIfOrphaned(trialId: string): Promise<void> {
+  async reconcileIfOrphaned(trialId: string): Promise<boolean> {
     const trial = await prisma.comparisonTrial.findUnique({
       where: { id: trialId },
       select: { autoStatus: true, ninjaJobId: true, autoRoundsCompleted: true },
     });
-    if (trial?.autoStatus !== 'running' || !trial.ninjaJobId) return;
+    if (trial?.autoStatus !== 'running' || !trial.ninjaJobId) return false;
     const jobId = trial.ninjaJobId;
     const roundsCompletedBeforeReconcile = trial.autoRoundsCompleted;
 
@@ -306,7 +319,7 @@ class AutoRemediationLoopService {
     // still alive, avoiding pointless lock contention on the hot path
     // (frequent status polls while a run is healthy).
     const lockStatus = await remediationCycleLockService.getLockStatus(jobId);
-    if (lockStatus.inProgress) return;
+    if (lockStatus.inProgress) return false;
 
     const reconciled = await prisma.$transaction(async (tx) => {
       const rows = await tx.$queryRaw<Array<{ remediationCycleLockedAt: Date | null }>>`
@@ -331,6 +344,7 @@ class AutoRemediationLoopService {
     if (reconciled) {
       await this.logInterruption(jobId, roundsCompletedBeforeReconcile + 1, 'orphan_reconciled', 'watchdog');
     }
+    return reconciled;
   }
 
   /**
@@ -341,17 +355,17 @@ class AutoRemediationLoopService {
    * transaction, and why this is deliberately scoped to only the free/stale
    * case); this is a direct structural mirror, not a new design.
    */
-  async reconcileIfOrphanedJobRun(runId: string): Promise<void> {
+  async reconcileIfOrphanedJobRun(runId: string): Promise<boolean> {
     const run = await prisma.pdfAutoRemediationRun.findUnique({
       where: { id: runId },
       select: { autoStatus: true, jobId: true, autoRoundsCompleted: true },
     });
-    if (run?.autoStatus !== 'running') return;
+    if (run?.autoStatus !== 'running') return false;
     const jobId = run.jobId;
     const roundsCompletedBeforeReconcile = run.autoRoundsCompleted;
 
     const lockStatus = await remediationCycleLockService.getLockStatus(jobId);
-    if (lockStatus.inProgress) return;
+    if (lockStatus.inProgress) return false;
 
     const reconciled = await prisma.$transaction(async (tx) => {
       const rows = await tx.$queryRaw<Array<{ remediationCycleLockedAt: Date | null }>>`
@@ -376,6 +390,7 @@ class AutoRemediationLoopService {
     if (reconciled) {
       await this.logInterruption(jobId, roundsCompletedBeforeReconcile + 1, 'orphan_reconciled', 'watchdog');
     }
+    return reconciled;
   }
 
   /**
@@ -492,22 +507,128 @@ class AutoRemediationLoopService {
   async reconcileAllOrphanedRuns(): Promise<void> {
     try {
       const [trials, runs] = await Promise.all([
-        prisma.comparisonTrial.findMany({ where: { autoStatus: 'running' }, select: { id: true } }),
-        prisma.pdfAutoRemediationRun.findMany({ where: { autoStatus: 'running' }, select: { id: true } }),
+        prisma.comparisonTrial.findMany({
+          where: { autoStatus: 'running' },
+          select: { id: true, ninjaJobId: true, autoStopRequested: true },
+        }),
+        prisma.pdfAutoRemediationRun.findMany({
+          where: { autoStatus: 'running' },
+          select: { id: true, jobId: true, autoStopRequested: true },
+        }),
       ]);
       for (const trial of trials) {
-        await this.reconcileIfOrphaned(trial.id).catch((err) => {
+        const reconciled = await this.reconcileIfOrphaned(trial.id).catch((err) => {
           logger.warn(`[AutoRemediationLoop] Periodic reconcile failed for trial ${trial.id}: ${err instanceof Error ? err.message : String(err)}`);
+          return false;
         });
+        if (reconciled && trial.ninjaJobId) {
+          await this.maybeAutoResume('trial', trial.id, trial.ninjaJobId, trial.autoStopRequested).catch((err) => {
+            logger.warn(`[AutoRemediationLoop] Auto-resume check failed for trial ${trial.id}: ${err instanceof Error ? err.message : String(err)}`);
+          });
+        }
       }
       for (const run of runs) {
-        await this.reconcileIfOrphanedJobRun(run.id).catch((err) => {
+        const reconciled = await this.reconcileIfOrphanedJobRun(run.id).catch((err) => {
           logger.warn(`[AutoRemediationLoop] Periodic reconcile failed for job-run ${run.id}: ${err instanceof Error ? err.message : String(err)}`);
+          return false;
         });
+        if (reconciled) {
+          await this.maybeAutoResume('jobRun', run.id, run.jobId, run.autoStopRequested).catch((err) => {
+            logger.warn(`[AutoRemediationLoop] Auto-resume check failed for job-run ${run.id}: ${err instanceof Error ? err.message : String(err)}`);
+          });
+        }
       }
     } catch (err) {
       logger.warn(`[AutoRemediationLoop] Periodic orphan-reconcile sweep failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
     }
+  }
+
+  /**
+   * Called from reconcileAllOrphanedRuns, only when reconcileIfOrphaned/
+   * reconcileIfOrphanedJobRun just found and cleared a GENUINE orphan (the
+   * lock-holder died with no signal at all -- OOM, host failure, anything
+   * forceStopForShutdown's graceful-SIGTERM path doesn't catch). Turns that
+   * into an automatic resume within one watchdog tick of the lock going
+   * stale, instead of leaving autoStatus at 'stopped'/'error' until a human
+   * (or a client re-polling /auto-mode/start) happens to notice. Real
+   * incident, 2026-10-26: exactly this happened to a live production round
+   * (worker task died unannounced mid-reaudit) and sat unresumed for 9+
+   * hours with nothing to flag it until someone checked by hand.
+   *
+   * Three guards, all against data that already exists -- no schema change:
+   *  - autoStopRequestedBeforeReconcile: honor an explicit user stop over
+   *    "resume it anyway." Captured by the caller BEFORE reconcile's own
+   *    write unconditionally resets this field to false, so it reflects
+   *    what was true going into this crash, not after.
+   *  - round/cost ceiling already hit -- the same ceiling startAutoLoop
+   *    itself checks every iteration, re-read fresh here since a crashed
+   *    round may leave stale counters.
+   *  - a crash-recovery cap (MAX_AUTO_CRASH_RESUMES within
+   *    CRASH_RECOVERY_LOOKBACK_MS, counted from this job's own
+   *    'orphan_reconciled' RemediationCycleEvent rows) -- stops a
+   *    deterministically-crashing document (e.g. one that OOMs on every
+   *    attempt) from being resumed forever.
+   *
+   * Dispatches via a direct, un-awaited startAutoLoop call rather than the
+   * BullMQ queue enqueueOrRunAutoLoop (pdf-auto-mode.controller.ts) uses for
+   * a fresh /start request: reconcileAllOrphanedRuns already runs on the
+   * worker process (the stale-job watchdog started in workers/index.ts),
+   * which is the exact isolation the queue route exists to provide for a
+   * request arriving on the web process -- there's no web-process hop to
+   * avoid here, so routing through the queue would add nothing.
+   */
+  private async maybeAutoResume(
+    kind: 'trial' | 'jobRun',
+    id: string,
+    jobId: string,
+    autoStopRequestedBeforeReconcile: boolean
+  ): Promise<void> {
+    if (autoStopRequestedBeforeReconcile) {
+      logger.info(`[AutoRemediationLoop] Not auto-resuming ${kind} ${id} (job ${jobId}) after crash-recovery -- a stop was requested`);
+      return;
+    }
+
+    const state = kind === 'trial'
+      ? await prisma.comparisonTrial.findUnique({
+          where: { id },
+          select: { autoMaxRounds: true, autoCostLimitUsd: true, autoRoundsCompleted: true, autoCostSpentUsd: true },
+        })
+      : await prisma.pdfAutoRemediationRun.findUnique({
+          where: { id },
+          select: { autoMaxRounds: true, autoCostLimitUsd: true, autoRoundsCompleted: true, autoCostSpentUsd: true },
+        });
+    if (!state) return; // deleted mid-reconcile -- nothing to resume
+
+    if (state.autoRoundsCompleted >= state.autoMaxRounds) {
+      logger.info(`[AutoRemediationLoop] Not auto-resuming ${kind} ${id} (job ${jobId}) after crash-recovery -- round limit already reached`);
+      return;
+    }
+    if (state.autoCostSpentUsd >= state.autoCostLimitUsd) {
+      logger.info(`[AutoRemediationLoop] Not auto-resuming ${kind} ${id} (job ${jobId}) after crash-recovery -- cost limit already reached`);
+      return;
+    }
+
+    const history = await remediationCycleHistoryService.listForJob(jobId);
+    const cutoff = Date.now() - CRASH_RECOVERY_LOOKBACK_MS;
+    const recentCrashCount = history.filter(
+      (e) => e.action === 'orphan_reconciled' && e.startedAt.getTime() >= cutoff
+    ).length;
+    if (recentCrashCount > MAX_AUTO_CRASH_RESUMES) {
+      logger.warn(
+        `[AutoRemediationLoop] Not auto-resuming ${kind} ${id} (job ${jobId}) -- ${recentCrashCount} crash-recoveries in the last ${CRASH_RECOVERY_LOOKBACK_MS / 60000}min, over the ${MAX_AUTO_CRASH_RESUMES} cap. Leaving for manual review.`
+      );
+      return;
+    }
+
+    logger.info(
+      `[AutoRemediationLoop] Auto-resuming ${kind} ${id} (job ${jobId}) after crash-recovery (${recentCrashCount} of ${MAX_AUTO_CRASH_RESUMES} cap used)`
+    );
+    const driver = kind === 'trial' ? new ComparisonTrialAutoRemediationDriver(id) : new JobAutoRemediationDriver(id);
+    this.startAutoLoop(driver).catch((err) => {
+      logger.error(
+        `[AutoRemediationLoop] Unexpected error auto-resuming ${kind} ${id} (job ${jobId}) after crash-recovery: ${err instanceof Error ? err.message : String(err)}`
+      );
+    });
   }
 
   /**
