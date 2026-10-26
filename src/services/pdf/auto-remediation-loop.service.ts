@@ -960,12 +960,22 @@ class AutoRemediationLoopService {
     });
 
     const result = await aiAnalysisService.applyApprovedSuggestions(jobId, cycleNumber, AUTO_MODE_ACTOR, 'auto_loop');
-    if (result.applied === 0 || !result.modifiedBuffer || !result.fileName) {
-      return { actionableFound, applied: result.applied, resolvedCount: 0 };
+    // Captured now, before the reaudit call below, and used at every return
+    // point in this function from here on -- `result.applied` is the only
+    // field this function still needs after this point, but reading it from
+    // `result` itself (rather than this local) at the final `return` would
+    // keep the whole `result` object, including its potentially
+    // hundreds-of-MB `modifiedBuffer`, referenced for the entire reaudit
+    // call and everything after it. Real finding from the 2026-10-26 FMHE
+    // OOM investigation: that buffer has no reason to outlive this point.
+    const appliedCount = result.applied;
+    if (appliedCount === 0 || !result.modifiedBuffer || !result.fileName) {
+      return { actionableFound, applied: appliedCount, resolvedCount: 0 };
     }
+    const { modifiedBuffer, fileName } = result;
 
     const reauditStartedAt = new Date();
-    const comparison = await pdfReauditService.reauditAndCompare(jobId, result.modifiedBuffer, result.fileName);
+    const comparison = await pdfReauditService.reauditAndCompare(jobId, modifiedBuffer, fileName);
     const latestJob = await prisma.job.findUnique({ where: { id: jobId } });
     const latestOutput = (latestJob?.output ?? {}) as Record<string, unknown>;
     const { resolvedCount, remainingCount, regressionCount, resolutionRate } = comparison.metrics;
@@ -1007,7 +1017,7 @@ class AutoRemediationLoopService {
       throw new Error(comparison.error ?? 'Re-audit failed during auto-remediation round');
     }
 
-    return { actionableFound, applied: result.applied, resolvedCount };
+    return { actionableFound, applied: appliedCount, resolvedCount };
   }
 }
 
