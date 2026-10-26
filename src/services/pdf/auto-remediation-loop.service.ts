@@ -651,6 +651,26 @@ class AutoRemediationLoopService {
   }
 
   /**
+   * This round's AI spend, read off job.output.aiAnalysisStats right after
+   * analyzeJob writes it fresh for the round (overwritten each round, never
+   * accumulated -- see the real Gemini-only-summed cost bug this exact shape
+   * caused elsewhere in this file, line ~570). Non-fatal: a missing/odd
+   * output shouldn't block logging the round's other history fields.
+   */
+  private async getRoundAiCostUsd(jobId: string): Promise<number> {
+    try {
+      const job = await prisma.job.findUnique({ where: { id: jobId }, select: { output: true } });
+      const stats = (job?.output as Record<string, unknown> | undefined)?.aiAnalysisStats as
+        | { gemini?: { estimatedCostUsd?: number }; claude?: { estimatedCostUsd?: number } }
+        | undefined;
+      return (stats?.gemini?.estimatedCostUsd ?? 0) + (stats?.claude?.estimatedCostUsd ?? 0);
+    } catch (err) {
+      logger.warn(`[AutoRemediationLoop] Failed to read round AI cost for job ${jobId} (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
+      return 0;
+    }
+  }
+
+  /**
    * One analyze -> [auto-approve -> apply -> re-audit] pass. The apply/
    * reaudit steps are skipped entirely when the fresh analysis finds
    * nothing actionable -- that's the caller's convergence signal, checked
@@ -671,12 +691,21 @@ class AutoRemediationLoopService {
       tenantId,
       colorContrastModeOverride !== undefined ? { colorContrastMode: colorContrastModeOverride } : undefined,
     );
+    // This round's AI spend (Operational Reports Group 2 -- see
+    // OPERATIONAL_REPORTS_DESIGN.md's costUsd field). analyzeJob just wrote
+    // job.output.aiAnalysisStats fresh for THIS round (overwritten, not
+    // accumulated -- same read pattern the outer loop below already uses to
+    // build its own cumulative costSpentUsd, duplicated here deliberately
+    // rather than threaded through a shared helper, so the outer loop's
+    // existing, already-correct accumulation logic stays untouched).
+    const roundCostUsd = await this.getRoundAiCostUsd(jobId);
     await remediationCycleHistoryService.logEvent({
       jobId,
       cycleNumber,
       action: 'ai_analysis',
       source: 'auto_loop',
       status: 'completed',
+      costUsd: roundCostUsd,
       triggeredBy: AUTO_MODE_ACTOR,
       startedAt: roundStartedAt,
     });

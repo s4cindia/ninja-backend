@@ -11,8 +11,10 @@
 import { Router, Request, Response } from 'express';
 import { authenticate } from '../../middleware/auth.middleware';
 import { logger } from '../../lib/logger';
+import prisma from '../../lib/prisma';
 import { throughputReportService } from '../../services/reports/throughput-report.service';
 import { teamActivityReportService } from '../../services/reports/team-activity-report.service';
+import { costReportService } from '../../services/reports/cost-report.service';
 
 const router = Router();
 
@@ -106,6 +108,52 @@ router.get('/reports/team-activity', authenticate, async (req: Request, res: Res
     return res.json({ success: true, data: report });
   } catch (err) {
     return internalError(res, 'GET /admin/reports/team-activity', err);
+  }
+});
+
+// GET /api/v1/admin/reports/cost
+router.get('/reports/cost', authenticate, async (req: Request, res: Response) => {
+  try {
+    if (!isAdmin(req)) return forbidden(res);
+    const user = getUserFromReq(req);
+    if (!user?.tenantId) return noTenant(res);
+
+    const range = parseDateRange(req);
+    if (!range) {
+      return res.status(422).json({
+        success: false,
+        error: { code: 'VALIDATION_ERROR', message: 'Invalid from/to, or range exceeds 90 days' },
+      });
+    }
+
+    const report = await costReportService.getReport({ tenantId: user.tenantId, ...range });
+    return res.json({ success: true, data: report });
+  } catch (err) {
+    return internalError(res, 'GET /admin/reports/cost', err);
+  }
+});
+
+// GET /api/v1/admin/reports/cost/:jobId/rounds
+router.get('/reports/cost/:jobId/rounds', authenticate, async (req: Request, res: Response) => {
+  try {
+    if (!isAdmin(req)) return forbidden(res);
+    const user = getUserFromReq(req);
+    if (!user?.tenantId) return noTenant(res);
+
+    // Not tenant-filterable at the RemediationCycleEvent query level (it
+    // only carries jobId), so check ownership explicitly first -- an ADMIN
+    // is tenant-scoped everywhere else in this file, and a bare jobId query
+    // param would otherwise let one tenant's ADMIN pull another tenant's
+    // cost trend just by guessing/trying a jobId.
+    const job = await prisma.job.findUnique({ where: { id: req.params.jobId }, select: { tenantId: true } });
+    if (!job || job.tenantId !== user.tenantId) {
+      return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Job not found' } });
+    }
+
+    const trend = await costReportService.getRoundCostTrend(req.params.jobId);
+    return res.json({ success: true, data: { jobId: req.params.jobId, rounds: trend } });
+  } catch (err) {
+    return internalError(res, 'GET /admin/reports/cost/:jobId/rounds', err);
   }
 });
 

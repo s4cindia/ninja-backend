@@ -60,7 +60,7 @@ model User {
   notifications         Notification[]
   emptyPageReviews      EmptyPageReview[]
   teamMemberships       TeamMembership[]
-  teamReviews           TeamReview[]          @relation("TeamReviewer")
+  teamReviews           TeamReview[]         @relation("TeamReviewer")
 
   @@index([tenantId])
   @@index([email])
@@ -858,9 +858,9 @@ model PdfBatch {
   /// PdfAutoRemediationRun today. See pdf-batch-orchestrator.service.ts's
   /// runRemediationPhase for where these actually get read and copied onto
   /// each item's run.
-  autoMaxRounds          Int?
-  autoCostLimitUsd       Float?
-  autoColorContrastMode  String?
+  autoMaxRounds         Int?
+  autoCostLimitUsd      Float?
+  autoColorContrastMode String?
 
   createdAt   DateTime  @default(now())
   startedAt   DateTime?
@@ -882,7 +882,7 @@ model PdfBatchItem {
   /// targets (see upload.controller.ts's confirmUpload). Weight computation
   /// reads this field, so it must not silently wrap.
   fileSize     BigInt
-  mimeType     String  @default("application/pdf")
+  mimeType     String @default("application/pdf")
   storagePath  String
   /// Loose reference to File.id (the row created by POST /uploads/presign +
   /// confirm) -- no formal relation, matching BatchFile.auditJobId's own
@@ -893,15 +893,15 @@ model PdfBatchItem {
 
   /// Weight tier from file size alone, computed at upload time (immediately
   /// available, before any processing).
-  sizeWeightUnits Int
+  sizeWeightUnits      Int
   /// Populated once the audit determines the real page count.
-  pageCount Int?
+  pageCount            Int?
   /// max(sizeWeightUnits, pageWeightUnits) once pageCount is known -- the
   /// value actually used for budget admission from that point on.
   effectiveWeightUnits Int?
   /// Loose reference to the PdfConcurrencyLease currently held for this
   /// item, if any -- null while queued/held, not actively leased.
-  activeLeaseId String?
+  activeLeaseId        String?
 
   /// Loose reference to Job.id -- matches BatchFile.auditJobId's own pattern;
   /// resolved via queueService.getJobStatus rather than a formal relation.
@@ -965,19 +965,19 @@ model PdfAutoRemediationRun {
   /// Loose reference to PdfBatchItem.id, for traceability only.
   batchItemId String?
 
-  autoMaxRounds       Int     @default(10)
-  autoCostLimitUsd    Float   @default(2.0)
-  autoRoundsCompleted Int     @default(0)
-  autoCostSpentUsd    Float   @default(0)
+  autoMaxRounds         Int       @default(10)
+  autoCostLimitUsd      Float     @default(2.0)
+  autoRoundsCompleted   Int       @default(0)
+  autoCostSpentUsd      Float     @default(0)
   /// 'running' | 'stopped'; null if the loop has never been started.
-  autoStatus String?
+  autoStatus            String?
   /// 'converged' | 'round_limit' | 'budget_limit' | 'manual_stop' | 'stalled' | 'error'
-  autoStopReason String?
-  autoStartedAt  DateTime?
-  autoStoppedAt  DateTime?
+  autoStopReason        String?
+  autoStartedAt         DateTime?
+  autoStoppedAt         DateTime?
   /// Cooperative cancellation flag -- checked at the top of each round, same
   /// convention as ComparisonTrial.autoStopRequested above.
-  autoStopRequested Boolean @default(false)
+  autoStopRequested     Boolean   @default(false)
   /// 'guidance-only' | 'disabled' | 'apply-to-pdf', or null to inherit the
   /// tenant's own aiRemediation.colorContrastMode setting -- same semantics
   /// as ComparisonTrial.autoColorContrastMode above.
@@ -1041,10 +1041,10 @@ model PdfConcurrencyLease {
 /// a schema change, once the real subscription arrangement with axes4 is
 /// known (see the axes4 integration plan's own open questions).
 model Axes4PageQuota {
-  scopeKey            String   @id
-  pagesUsedThisPeriod Int      @default(0)
+  scopeKey             String   @id
+  pagesUsedThisPeriod  Int      @default(0)
   pagesLimitThisPeriod Int
-  periodResetAt       DateTime
+  periodResetAt        DateTime
   updatedAt            DateTime @updatedAt
 }
 
@@ -2575,16 +2575,16 @@ model ComparisonTrial {
   contentType    String // 'text-dominant' | 'table-heavy' | 'figure-heavy' | 'mixed'
   operatorId     String
 
-  ninjaJobId      String? @unique
-  job             Job?    @relation(fields: [ninjaJobId], references: [id])
-  ninjaActiveMs   Int?
+  ninjaJobId        String? @unique
+  job               Job?    @relation(fields: [ninjaJobId], references: [id])
+  ninjaActiveMs     Int?
   /// Self-reported time (ms) spent on manual out-of-app remediation (e.g.
   /// Acrobat Pro) for guidance-only items Ninja can't auto-fix -- invisible
   /// to ninjaActiveMs, which only tracks time active on Ninja's own pages.
   /// Accumulated via POST /pdf/:jobId/manual-remediation-time.
   ninjaManualTimeMs Int?    @default(0)
-  ninjaGpuCostUsd Float?
-  ninjaPacResult  Json?
+  ninjaGpuCostUsd   Float?
+  ninjaPacResult    Json?
 
   pdfxtS3Path    String?
   pdfxtTimeMs    Int?
@@ -2597,18 +2597,18 @@ model ComparisonTrial {
   /// limit, default -- registerTrial relies on this default rather than
   /// setting it explicitly, so a new trial starts in auto mode without any
   /// manual Save).
-  mode                String  @default("auto")
-  autoMaxRounds       Int     @default(10)
-  autoCostLimitUsd    Float   @default(2.0)
-  autoRoundsCompleted Int     @default(0)
+  mode                  String    @default("auto")
+  autoMaxRounds         Int       @default(10)
+  autoCostLimitUsd      Float     @default(2.0)
+  autoRoundsCompleted   Int       @default(0)
   /// Cumulative Gemini cost across all rounds of the current/last auto run --
   /// Job.output.aiAnalysisStats is overwritten per analysis round, not
   /// cumulative, so the running total has to live here instead.
-  autoCostSpentUsd    Float   @default(0)
+  autoCostSpentUsd      Float     @default(0)
   /// 'running' | 'stopped'; null if auto mode has never been started.
-  autoStatus          String?
+  autoStatus            String?
   /// 'converged' | 'round_limit' | 'budget_limit' | 'manual_stop' | 'stalled' | 'error'
-  autoStopReason      String?
+  autoStopReason        String?
   /// Wall-clock start/stop of the current/last auto-mode run, for a real
   /// "time to convergence" figure. Both written by startAutoLoop() (start
   /// alongside the existing autoStatus:'running' reset, stop in its
@@ -2616,11 +2616,11 @@ model ComparisonTrial {
   /// autoStoppedAt is also written by reconcileIfOrphaned() -- without
   /// that, a crashed/orphan-reconciled run would have no stop timestamp
   /// at all.
-  autoStartedAt       DateTime?
-  autoStoppedAt       DateTime?
+  autoStartedAt         DateTime?
+  autoStoppedAt         DateTime?
   /// Cooperative cancellation flag -- checked at the top of each round, never
   /// mid-round, so a stop request never leaves a round half-applied.
-  autoStopRequested   Boolean @default(false)
+  autoStopRequested     Boolean   @default(false)
   /// 'guidance-only' | 'disabled' | 'apply-to-pdf', or null to inherit the
   /// tenant's own aiRemediation.colorContrastMode setting (or the backend
   /// default if the tenant hasn't set one either) -- exactly what auto mode
@@ -2731,6 +2731,13 @@ model RemediationCycleEvent {
   triggeredBy     String?
   startedAt       DateTime
   completedAt     DateTime @default(now())
+  /// This round's AI spend (Operational Reports Group 2 -- see
+  /// OPERATIONAL_REPORTS_DESIGN.md). Only ever populated on the 'ai_analysis'
+  /// action -- that's the one action every round logs regardless of whether
+  /// apply/reaudit ran, and the only point in the loop where AI cost is
+  /// actually incurred. Nullable/additive -- old rows simply have no cost
+  /// data, not zero.
+  costUsd         Float?
 
   @@index([jobId, cycleNumber])
 }
