@@ -16,6 +16,7 @@ import { throughputReportService } from '../../services/reports/throughput-repor
 import { teamActivityReportService } from '../../services/reports/team-activity-report.service';
 import { costReportService } from '../../services/reports/cost-report.service';
 import { reliabilityReportService } from '../../services/reports/reliability-report.service';
+import { qualityReportService } from '../../services/reports/quality-report.service';
 
 const router = Router();
 
@@ -177,6 +178,63 @@ router.get('/reports/reliability', authenticate, async (req: Request, res: Respo
     return res.json({ success: true, data: report });
   } catch (err) {
     return internalError(res, 'GET /admin/reports/reliability', err);
+  }
+});
+
+// GET /api/v1/admin/reports/quality
+router.get('/reports/quality', authenticate, async (req: Request, res: Response) => {
+  try {
+    if (!isAdmin(req)) return forbidden(res);
+    const user = getUserFromReq(req);
+    if (!user?.tenantId) return noTenant(res);
+
+    const range = parseDateRange(req);
+    if (!range) {
+      return res.status(422).json({
+        success: false,
+        error: { code: 'VALIDATION_ERROR', message: 'Invalid from/to, or range exceeds 90 days' },
+      });
+    }
+
+    const report = await qualityReportService.getReport({ tenantId: user.tenantId, ...range });
+    return res.json({ success: true, data: report });
+  } catch (err) {
+    return internalError(res, 'GET /admin/reports/quality', err);
+  }
+});
+
+// GET /api/v1/admin/reports/quality/stuck-issues
+router.get('/reports/quality/stuck-issues', authenticate, async (req: Request, res: Response) => {
+  try {
+    if (!isAdmin(req)) return forbidden(res);
+    const user = getUserFromReq(req);
+    if (!user?.tenantId) return noTenant(res);
+
+    const stuckIssues = await qualityReportService.getStuckIssues(user.tenantId);
+    return res.json({ success: true, data: { stuckIssues } });
+  } catch (err) {
+    return internalError(res, 'GET /admin/reports/quality/stuck-issues', err);
+  }
+});
+
+// GET /api/v1/admin/reports/quality/:jobId/score-trend
+router.get('/reports/quality/:jobId/score-trend', authenticate, async (req: Request, res: Response) => {
+  try {
+    if (!isAdmin(req)) return forbidden(res);
+    const user = getUserFromReq(req);
+    if (!user?.tenantId) return noTenant(res);
+
+    // Same ownership check as GET /admin/reports/cost/:jobId/rounds --
+    // RemediationCycleEvent carries no tenantId itself.
+    const job = await prisma.job.findUnique({ where: { id: req.params.jobId }, select: { tenantId: true } });
+    if (!job || job.tenantId !== user.tenantId) {
+      return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Job not found' } });
+    }
+
+    const trend = await qualityReportService.getScoreTrend(req.params.jobId);
+    return res.json({ success: true, data: { jobId: req.params.jobId, rounds: trend } });
+  } catch (err) {
+    return internalError(res, 'GET /admin/reports/quality/:jobId/score-trend', err);
   }
 });
 

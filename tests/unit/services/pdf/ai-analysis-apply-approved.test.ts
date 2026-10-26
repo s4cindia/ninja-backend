@@ -151,6 +151,79 @@ describe('aiAnalysisService.applyApprovedSuggestions', () => {
     );
   });
 
+  describe('suggestionTypeBreakdown / applyErrorsJson (Operational Reports Group 3)', () => {
+    it('reports a per-type failed count and capped error detail even on the applied:0 branch', async () => {
+      vi.mocked(prisma.aiAnalysis.findMany).mockResolvedValue([
+        { issueId: 'issue-1', suggestionType: 'alt-text', value: 'A red apple' },
+      ] as any);
+      vi.mocked(fileStorageService.getRemediatedFile).mockResolvedValue(Buffer.from('pdf'));
+      vi.mocked(pdfModifierService.loadPDF).mockResolvedValue({} as any);
+      vi.mocked(pdfModifierService.resolveFigureForImage).mockReturnValue({} as any);
+      vi.mocked(pdfModifierService.setAltText).mockResolvedValue({ success: false, error: 'element not found' } as any);
+
+      await aiAnalysisService.applyApprovedSuggestions('job-1', 5, 'user-1', 'apply_all');
+
+      expect(remediationCycleHistoryService.logEvent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          suggestionTypeBreakdown: { 'alt-text': { applied: 0, failed: 1 } },
+          applyErrorsJson: {
+            errors: [expect.objectContaining({ issueId: 'issue-1', suggestionType: 'alt-text' })],
+            totalErrors: 1,
+            truncated: false,
+          },
+        })
+      );
+    });
+
+    it('splits applied/failed per suggestionType across a mixed batch of different types', async () => {
+      vi.mocked(prisma.aiAnalysis.findMany).mockResolvedValue([
+        { issueId: 'alt-1', suggestionType: 'alt-text', value: 'A red apple' },
+        { issueId: 'alt-2', suggestionType: 'alt-text', value: 'A blue car' },
+        { issueId: 'link-1', suggestionType: 'link-text', value: 'Download the report' },
+      ] as any);
+      vi.mocked(fileStorageService.getRemediatedFile).mockResolvedValue(Buffer.from('pdf'));
+      vi.mocked(pdfModifierService.loadPDF).mockResolvedValue({} as any);
+      vi.mocked(pdfModifierService.resolveFigureForImage).mockReturnValue({} as any);
+      vi.mocked(pdfModifierService.setAltText)
+        .mockResolvedValueOnce({ success: true, description: 'set' } as any)
+        .mockResolvedValueOnce({ success: false, error: 'element not found' } as any);
+      vi.mocked(pdfModifierService.setLinkAltText).mockResolvedValue({ success: true, description: 'set' } as any);
+      vi.mocked(pdfModifierService.savePDF).mockResolvedValue(Buffer.from('modified-pdf'));
+      vi.mocked(fileStorageService.saveRemediatedFile).mockResolvedValue('s3://remediated/doc.pdf');
+
+      const result = await aiAnalysisService.applyApprovedSuggestions('job-1', 5, 'user-1', 'apply_all');
+
+      expect(result.applied).toBe(2);
+      expect(result.failed).toBe(1);
+      expect(remediationCycleHistoryService.logEvent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          suggestionTypeBreakdown: {
+            'alt-text': { applied: 1, failed: 1 },
+            'link-text': { applied: 1, failed: 0 },
+          },
+        })
+      );
+    });
+
+    it('omits applyErrorsJson (undefined, not an empty array) when nothing failed', async () => {
+      vi.mocked(prisma.aiAnalysis.findMany).mockResolvedValue([
+        { issueId: 'issue-1', suggestionType: 'alt-text', value: 'A red apple' },
+      ] as any);
+      vi.mocked(fileStorageService.getRemediatedFile).mockResolvedValue(Buffer.from('pdf'));
+      vi.mocked(pdfModifierService.loadPDF).mockResolvedValue({} as any);
+      vi.mocked(pdfModifierService.resolveFigureForImage).mockReturnValue({} as any);
+      vi.mocked(pdfModifierService.setAltText).mockResolvedValue({ success: true, description: 'set' } as any);
+      vi.mocked(pdfModifierService.savePDF).mockResolvedValue(Buffer.from('modified-pdf'));
+      vi.mocked(fileStorageService.saveRemediatedFile).mockResolvedValue('s3://remediated/doc.pdf');
+
+      await aiAnalysisService.applyApprovedSuggestions('job-1', 5, 'user-1', 'apply_all');
+
+      expect(remediationCycleHistoryService.logEvent).toHaveBeenCalledWith(
+        expect.objectContaining({ applyErrorsJson: undefined, suggestionTypeBreakdown: { 'alt-text': { applied: 1, failed: 0 } } })
+      );
+    });
+  });
+
   /**
    * Regression for a real bug found live against Math_Kim: markTableAsArtifact
    * renames the /Table struct element itself, which findTargetTable's
