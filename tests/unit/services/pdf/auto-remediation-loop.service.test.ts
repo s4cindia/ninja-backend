@@ -1242,8 +1242,14 @@ describe('autoRemediationLoopService.reconcileAllOrphanedRuns', () => {
 
     await autoRemediationLoopService.reconcileAllOrphanedRuns();
 
-    expect(prisma.comparisonTrial.findMany).toHaveBeenCalledWith({ where: { autoStatus: 'running' }, select: { id: true } });
-    expect(prisma.pdfAutoRemediationRun.findMany).toHaveBeenCalledWith({ where: { autoStatus: 'running' }, select: { id: true } });
+    expect(prisma.comparisonTrial.findMany).toHaveBeenCalledWith({
+      where: { autoStatus: 'running' },
+      select: { id: true, ninjaJobId: true, autoStopRequested: true },
+    });
+    expect(prisma.pdfAutoRemediationRun.findMany).toHaveBeenCalledWith({
+      where: { autoStatus: 'running' },
+      select: { id: true, jobId: true, autoStopRequested: true },
+    });
     expect(reconcileSpy).toHaveBeenCalledWith('trial-1');
     expect(reconcileSpy).toHaveBeenCalledWith('trial-2');
     expect(reconcileRunSpy).toHaveBeenCalledWith('run-1');
@@ -1260,5 +1266,162 @@ describe('autoRemediationLoopService.reconcileAllOrphanedRuns', () => {
     await expect(autoRemediationLoopService.reconcileAllOrphanedRuns()).resolves.toBeUndefined();
 
     reconcileSpy.mockRestore();
+  });
+});
+
+// Auto-resume after a genuinely reconciled crash (Operational Reports-
+// adjacent reliability work, 2026-10-26 FMHE incident: a worker task died
+// mid-reaudit, reconcileIfOrphaned correctly marked the round stopped/error,
+// but nothing ever resumed it -- it sat for 9+ hours until someone noticed
+// by hand). maybeAutoResume is private, so every test here drives it through
+// reconcileAllOrphanedRuns, its only caller, with reconcileIfOrphaned/
+// reconcileIfOrphanedJobRun stubbed to simulate "just found a genuine
+// orphan" (returns true) vs. "nothing to do" (returns false).
+describe('autoRemediationLoopService.maybeAutoResume (via reconcileAllOrphanedRuns)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('auto-resumes a trial after a genuine crash-recovery, under every cap', async () => {
+    vi.mocked(prisma.comparisonTrial.findMany).mockResolvedValue([
+      { id: 'trial-1', ninjaJobId: 'job-1', autoStopRequested: false },
+    ] as any);
+    vi.mocked(prisma.pdfAutoRemediationRun.findMany).mockResolvedValue([] as any);
+    vi.spyOn(autoRemediationLoopService, 'reconcileIfOrphaned').mockResolvedValue(true);
+    vi.mocked(prisma.comparisonTrial.findUnique).mockResolvedValue(
+      makeTrial({ autoRoundsCompleted: 2, autoCostSpentUsd: 0.5 }) as any
+    );
+    vi.mocked(remediationCycleHistoryService.listForJob).mockResolvedValue([] as any);
+    const startSpy = vi.spyOn(autoRemediationLoopService, 'startAutoLoop').mockResolvedValue(undefined);
+
+    await autoRemediationLoopService.reconcileAllOrphanedRuns();
+
+    expect(startSpy).toHaveBeenCalledWith(new ComparisonTrialAutoRemediationDriver('trial-1'));
+  });
+
+  it('auto-resumes a job-run after a genuine crash-recovery, under every cap', async () => {
+    vi.mocked(prisma.comparisonTrial.findMany).mockResolvedValue([] as any);
+    vi.mocked(prisma.pdfAutoRemediationRun.findMany).mockResolvedValue([
+      { id: 'run-1', jobId: 'job-1', autoStopRequested: false },
+    ] as any);
+    vi.spyOn(autoRemediationLoopService, 'reconcileIfOrphanedJobRun').mockResolvedValue(true);
+    vi.mocked(prisma.pdfAutoRemediationRun.findUnique).mockResolvedValue(
+      makeRun({ autoRoundsCompleted: 2, autoCostSpentUsd: 0.5 }) as any
+    );
+    vi.mocked(remediationCycleHistoryService.listForJob).mockResolvedValue([] as any);
+    const startSpy = vi.spyOn(autoRemediationLoopService, 'startAutoLoop').mockResolvedValue(undefined);
+
+    await autoRemediationLoopService.reconcileAllOrphanedRuns();
+
+    expect(startSpy).toHaveBeenCalledWith(new JobAutoRemediationDriver('run-1'));
+  });
+
+  it('does not auto-resume when reconcile found nothing to do (not a genuine orphan)', async () => {
+    vi.mocked(prisma.comparisonTrial.findMany).mockResolvedValue([
+      { id: 'trial-1', ninjaJobId: 'job-1', autoStopRequested: false },
+    ] as any);
+    vi.mocked(prisma.pdfAutoRemediationRun.findMany).mockResolvedValue([] as any);
+    vi.spyOn(autoRemediationLoopService, 'reconcileIfOrphaned').mockResolvedValue(false);
+    const startSpy = vi.spyOn(autoRemediationLoopService, 'startAutoLoop').mockResolvedValue(undefined);
+
+    await autoRemediationLoopService.reconcileAllOrphanedRuns();
+
+    expect(startSpy).not.toHaveBeenCalled();
+    expect(prisma.comparisonTrial.findUnique).not.toHaveBeenCalled();
+  });
+
+  it('does not auto-resume when a stop was requested before the crash was reconciled', async () => {
+    vi.mocked(prisma.comparisonTrial.findMany).mockResolvedValue([
+      { id: 'trial-1', ninjaJobId: 'job-1', autoStopRequested: true },
+    ] as any);
+    vi.mocked(prisma.pdfAutoRemediationRun.findMany).mockResolvedValue([] as any);
+    vi.spyOn(autoRemediationLoopService, 'reconcileIfOrphaned').mockResolvedValue(true);
+    const startSpy = vi.spyOn(autoRemediationLoopService, 'startAutoLoop').mockResolvedValue(undefined);
+
+    await autoRemediationLoopService.reconcileAllOrphanedRuns();
+
+    expect(startSpy).not.toHaveBeenCalled();
+    expect(prisma.comparisonTrial.findUnique).not.toHaveBeenCalled();
+  });
+
+  it('does not auto-resume when the round limit was already reached', async () => {
+    vi.mocked(prisma.comparisonTrial.findMany).mockResolvedValue([
+      { id: 'trial-1', ninjaJobId: 'job-1', autoStopRequested: false },
+    ] as any);
+    vi.mocked(prisma.pdfAutoRemediationRun.findMany).mockResolvedValue([] as any);
+    vi.spyOn(autoRemediationLoopService, 'reconcileIfOrphaned').mockResolvedValue(true);
+    vi.mocked(prisma.comparisonTrial.findUnique).mockResolvedValue(
+      makeTrial({ autoMaxRounds: 10, autoRoundsCompleted: 10, autoCostSpentUsd: 0.5 }) as any
+    );
+    const startSpy = vi.spyOn(autoRemediationLoopService, 'startAutoLoop').mockResolvedValue(undefined);
+
+    await autoRemediationLoopService.reconcileAllOrphanedRuns();
+
+    expect(startSpy).not.toHaveBeenCalled();
+  });
+
+  it('does not auto-resume when the cost limit was already reached', async () => {
+    vi.mocked(prisma.comparisonTrial.findMany).mockResolvedValue([
+      { id: 'trial-1', ninjaJobId: 'job-1', autoStopRequested: false },
+    ] as any);
+    vi.mocked(prisma.pdfAutoRemediationRun.findMany).mockResolvedValue([] as any);
+    vi.spyOn(autoRemediationLoopService, 'reconcileIfOrphaned').mockResolvedValue(true);
+    vi.mocked(prisma.comparisonTrial.findUnique).mockResolvedValue(
+      makeTrial({ autoCostLimitUsd: 2.0, autoCostSpentUsd: 2.0 }) as any
+    );
+    const startSpy = vi.spyOn(autoRemediationLoopService, 'startAutoLoop').mockResolvedValue(undefined);
+
+    await autoRemediationLoopService.reconcileAllOrphanedRuns();
+
+    expect(startSpy).not.toHaveBeenCalled();
+  });
+
+  it('does not auto-resume once the crash-recovery cap is exceeded, leaving it for manual review', async () => {
+    vi.mocked(prisma.comparisonTrial.findMany).mockResolvedValue([
+      { id: 'trial-1', ninjaJobId: 'job-1', autoStopRequested: false },
+    ] as any);
+    vi.mocked(prisma.pdfAutoRemediationRun.findMany).mockResolvedValue([] as any);
+    vi.spyOn(autoRemediationLoopService, 'reconcileIfOrphaned').mockResolvedValue(true);
+    vi.mocked(prisma.comparisonTrial.findUnique).mockResolvedValue(
+      makeTrial({ autoRoundsCompleted: 2, autoCostSpentUsd: 0.5 }) as any
+    );
+    // 3 crash-recoveries already logged within the lookback window -- over
+    // the MAX_AUTO_CRASH_RESUMES (2) cap.
+    const now = Date.now();
+    vi.mocked(remediationCycleHistoryService.listForJob).mockResolvedValue([
+      { action: 'orphan_reconciled', startedAt: new Date(now - 1000) },
+      { action: 'orphan_reconciled', startedAt: new Date(now - 2000) },
+      { action: 'orphan_reconciled', startedAt: new Date(now - 3000) },
+      { action: 'reaudit', startedAt: new Date(now - 4000) }, // unrelated action, must not count
+    ] as any);
+    const startSpy = vi.spyOn(autoRemediationLoopService, 'startAutoLoop').mockResolvedValue(undefined);
+
+    await autoRemediationLoopService.reconcileAllOrphanedRuns();
+
+    expect(startSpy).not.toHaveBeenCalled();
+  });
+
+  it('ignores crash-recoveries outside the lookback window when checking the cap', async () => {
+    vi.mocked(prisma.comparisonTrial.findMany).mockResolvedValue([
+      { id: 'trial-1', ninjaJobId: 'job-1', autoStopRequested: false },
+    ] as any);
+    vi.mocked(prisma.pdfAutoRemediationRun.findMany).mockResolvedValue([] as any);
+    vi.spyOn(autoRemediationLoopService, 'reconcileIfOrphaned').mockResolvedValue(true);
+    vi.mocked(prisma.comparisonTrial.findUnique).mockResolvedValue(
+      makeTrial({ autoRoundsCompleted: 2, autoCostSpentUsd: 0.5 }) as any
+    );
+    const now = Date.now();
+    vi.mocked(remediationCycleHistoryService.listForJob).mockResolvedValue([
+      // 3 old crashes, well outside the 1-hour lookback -- must not count
+      // toward the cap.
+      { action: 'orphan_reconciled', startedAt: new Date(now - 5 * 60 * 60 * 1000) },
+      { action: 'orphan_reconciled', startedAt: new Date(now - 6 * 60 * 60 * 1000) },
+      { action: 'orphan_reconciled', startedAt: new Date(now - 7 * 60 * 60 * 1000) },
+    ] as any);
+    const startSpy = vi.spyOn(autoRemediationLoopService, 'startAutoLoop').mockResolvedValue(undefined);
+
+    await autoRemediationLoopService.reconcileAllOrphanedRuns();
+
+    expect(startSpy).toHaveBeenCalledWith(new ComparisonTrialAutoRemediationDriver('trial-1'));
   });
 });
