@@ -9,6 +9,7 @@ import { workflowConfigService } from '../services/workflow/workflow-config.serv
 import { logger } from '../lib/logger';
 import { s3Service } from '../services/s3.service';
 import { isAuthenticated } from '../utils/auth';
+import { teamActivityReportService } from '../services/reports/team-activity-report.service';
 
 /**
  * Represents the normalized structure of a job's output data.
@@ -271,6 +272,70 @@ export class JobController {
         tenantId: req.user.tenantId,
         userId: { in: memberUserIds },
       });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
+   * Self-service slice of the Operational Reports Group 5 (RBAC/team
+   * activity) design -- same TEAM_LEADER/VIEWER-only, own-team-roster scope
+   * as listTeamJobs above, so a Team Leader can see their own Team Review
+   * throughput and team's job ownership breakdown without needing ADMIN.
+   * The ADMIN-wide, all-teams version lives at GET /admin/reports/team-activity
+   * (src/routes/admin/reports.routes.ts) and shares teamActivityReportService.
+   */
+  async getTeamReviewActivity(req: Request, res: Response, next: NextFunction) {
+    try {
+      if (!isAuthenticated(req)) {
+        throw AppError.unauthorized('Not authenticated');
+      }
+
+      const callerTeams = await prisma.teamMembership.findMany({
+        where: {
+          userId: req.user.id,
+          teamRole: { in: ['TEAM_LEADER', 'VIEWER'] },
+        },
+        select: { teamId: true },
+      });
+
+      if (callerTeams.length === 0) {
+        throw AppError.forbidden(
+          'You must be a Team Leader or Viewer on at least one team to view team activity',
+          'NOT_TEAM_LEADER_OR_VIEWER'
+        );
+      }
+
+      const teamIds = callerTeams.map((m) => m.teamId);
+      const teammates = await prisma.teamMembership.findMany({
+        where: { teamId: { in: teamIds } },
+        select: { userId: true },
+        distinct: ['userId'],
+      });
+      const memberUserIds = [...new Set(teammates.map((m) => m.userId))];
+
+      const now = new Date();
+      const DEFAULT_RANGE_MS = 30 * 24 * 60 * 60 * 1000;
+      const MAX_RANGE_MS = 90 * 24 * 60 * 60 * 1000;
+      const to = req.query.to ? new Date(String(req.query.to)) : now;
+      const from = req.query.from ? new Date(String(req.query.from)) : new Date(to.getTime() - DEFAULT_RANGE_MS);
+      if (
+        Number.isNaN(from.getTime()) ||
+        Number.isNaN(to.getTime()) ||
+        from.getTime() > to.getTime() ||
+        to.getTime() - from.getTime() > MAX_RANGE_MS
+      ) {
+        throw AppError.badRequest('Invalid from/to, or range exceeds 90 days', ErrorCodes.VALIDATION_ERROR);
+      }
+
+      const report = await teamActivityReportService.getReport({
+        tenantId: req.user.tenantId,
+        memberUserIds,
+        from,
+        to,
+      });
+
+      res.json({ success: true, data: report });
     } catch (error) {
       next(error);
     }

@@ -22,6 +22,10 @@ router.get('/team', validate(listJobsSchema), (req, res, next) =>
   jobController.listTeamJobs(req, res, next)
 );
 
+router.get('/team/review-activity', (req, res, next) =>
+  jobController.getTeamReviewActivity(req, res, next)
+);
+
 router.post('/', validate(createJobSchema), (req, res, next) => 
   jobController.create(req, res, next)
 );
