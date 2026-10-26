@@ -30,6 +30,17 @@ export interface LogCycleEventInput {
   /** This round's AI spend -- see the Prisma field's own doc comment for
    * why it's only ever populated on the 'ai_analysis' action. */
   costUsd?: number;
+  /** Per-suggestion-type applied/failed counts -- only ever populated on
+   * the 'apply_fixes' action. See the Prisma field's own doc comment. */
+  suggestionTypeBreakdown?: Record<string, { applied: number; failed: number }>;
+  /** Capped failure detail -- only ever populated on the 'apply_fixes'
+   * action, and only when there were failures. See the Prisma field's own
+   * doc comment. */
+  applyErrorsJson?: {
+    errors: Array<{ issueId: string; suggestionType: string; reason: string }>;
+    totalErrors: number;
+    truncated: boolean;
+  };
 }
 
 class RemediationCycleHistoryService {

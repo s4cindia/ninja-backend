@@ -3602,6 +3602,32 @@ class AiAnalysisService {
 
     broadcastApplyProgress(true);
 
+    // Operational Reports Group 3 (fix quality/effectiveness) -- see
+    // OPERATIONAL_REPORTS_DESIGN.md. Derived entirely from `approved` and
+    // `errors`, both already fully populated by the loop above -- this
+    // deliberately does NOT touch any of the increment sites inside
+    // applyOneSuggestion (applied++/failed++/errors.push), to keep this
+    // addition zero-risk to the actual apply logic. Every approved row goes
+    // through applyOneSuggestion exactly once (see the color-contrast
+    // partition above -- it queues rather than skips), and every one of its
+    // failure paths pairs a failed++ with an errors.push keyed on issueId,
+    // so for each suggestionType: count in `approved` == applied + failed.
+    const failedIssueIds = new Set(errors.map((e) => e.issueId));
+    const suggestionTypeBreakdown: Record<string, { applied: number; failed: number }> = {};
+    for (const analysis of approved) {
+      const entry = suggestionTypeBreakdown[analysis.suggestionType] ?? { applied: 0, failed: 0 };
+      if (failedIssueIds.has(analysis.issueId)) entry.failed += 1;
+      else entry.applied += 1;
+      suggestionTypeBreakdown[analysis.suggestionType] = entry;
+    }
+    // Capped so a round with thousands of failures doesn't blow up the
+    // history row -- the count is preserved even when the list is cut.
+    const APPLY_ERRORS_CAP = 50;
+    const applyErrorsJson =
+      errors.length > 0
+        ? { errors: errors.slice(0, APPLY_ERRORS_CAP), totalErrors: errors.length, truncated: errors.length > APPLY_ERRORS_CAP }
+        : undefined;
+
     if (applied === 0) {
       await remediationCycleHistoryService.logEvent({
         jobId,
@@ -3611,6 +3637,8 @@ class AiAnalysisService {
         status: 'failed',
         appliedCount: applied,
         failedCount: failed,
+        suggestionTypeBreakdown,
+        applyErrorsJson,
         triggeredBy,
         startedAt: cycleStartedAt,
       });
@@ -3641,6 +3669,8 @@ class AiAnalysisService {
       status: 'completed',
       appliedCount: applied,
       failedCount: failed,
+      suggestionTypeBreakdown,
+      applyErrorsJson,
       triggeredBy,
       startedAt: cycleStartedAt,
     });

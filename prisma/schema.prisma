@@ -2714,30 +2714,43 @@ model RemediationSession {
 /// RemediationChange's changeNumber, cycleNumber is deliberately NOT unique
 /// per row here -- several actions legitimately share one cycle.
 model RemediationCycleEvent {
-  id              String   @id @default(uuid())
-  jobId           String
-  job             Job      @relation(fields: [jobId], references: [id], onDelete: Cascade)
-  cycleNumber     Int
-  action          String // 'apply_fixes' | 'reaudit' | 'ai_analysis'
-  source          String // 'apply_all' | 'reaudit_pdf_upload' | 'reaudit_current_file' | 'analyze_job'
-  status          String // 'completed' | 'failed'
-  appliedCount    Int?
-  failedCount     Int?
-  resolvedCount   Int?
-  remainingCount  Int?
-  regressionCount Int?
-  resolutionRate  Float?
-  errorMessage    String?
-  triggeredBy     String?
-  startedAt       DateTime
-  completedAt     DateTime @default(now())
+  id                      String   @id @default(uuid())
+  jobId                   String
+  job                     Job      @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  cycleNumber             Int
+  action                  String // 'apply_fixes' | 'reaudit' | 'ai_analysis'
+  source                  String // 'apply_all' | 'reaudit_pdf_upload' | 'reaudit_current_file' | 'analyze_job'
+  status                  String // 'completed' | 'failed'
+  appliedCount            Int?
+  failedCount             Int?
+  resolvedCount           Int?
+  remainingCount          Int?
+  regressionCount         Int?
+  resolutionRate          Float?
+  errorMessage            String?
+  triggeredBy             String?
+  startedAt               DateTime
+  completedAt             DateTime @default(now())
   /// This round's AI spend (Operational Reports Group 2 -- see
   /// OPERATIONAL_REPORTS_DESIGN.md). Only ever populated on the 'ai_analysis'
   /// action -- that's the one action every round logs regardless of whether
   /// apply/reaudit ran, and the only point in the loop where AI cost is
   /// actually incurred. Nullable/additive -- old rows simply have no cost
   /// data, not zero.
-  costUsd         Float?
+  costUsd                 Float?
+  /// Per-suggestion-type { applied, failed } counts for this apply_fixes
+  /// event (Operational Reports Group 3 -- see OPERATIONAL_REPORTS_DESIGN.md).
+  /// Derived in ai-analysis.service.ts's applyApprovedSuggestions purely from
+  /// data it already computes (the approved list + the errors array) --
+  /// does not change any apply logic. Only ever populated on 'apply_fixes'.
+  suggestionTypeBreakdown Json?
+  /// Capped failure detail ({ errors: [...], totalErrors, truncated }) for
+  /// this apply_fixes event -- the per-suggestion-type reason detail that
+  /// was previously computed and then discarded. Capped at 50 entries so a
+  /// round with thousands of failures doesn't blow up the row; totalErrors
+  /// preserves the real count even when the list itself is cut. Only ever
+  /// populated on 'apply_fixes', and only when there were failures.
+  applyErrorsJson         Json?
 
   @@index([jobId, cycleNumber])
 }
