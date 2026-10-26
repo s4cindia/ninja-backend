@@ -9,9 +9,14 @@ import request from 'supertest';
 import express from 'express';
 
 const mockGetReport = vi.fn();
+const mockGetTeamActivityReport = vi.fn();
 
 vi.mock('../../../../src/services/reports/throughput-report.service', () => ({
   throughputReportService: { getReport: (...args: unknown[]) => mockGetReport(...args) },
+}));
+
+vi.mock('../../../../src/services/reports/team-activity-report.service', () => ({
+  teamActivityReportService: { getReport: (...args: unknown[]) => mockGetTeamActivityReport(...args) },
 }));
 
 vi.mock('../../../../src/lib/logger', () => ({
@@ -44,6 +49,7 @@ describe('admin/reports.routes', () => {
     vi.clearAllMocks();
     mockUser = { userId: 'admin-1', id: 'admin-1', role: 'ADMIN', tenantId: 't-1', email: 'admin@test.com' };
     mockGetReport.mockResolvedValue({ period: {}, queueWait: {}, initialAudit: {}, roundDuration: [], trend: [], stuckJobs: [], concurrency: null });
+    mockGetTeamActivityReport.mockResolvedValue({ period: {}, reviewThroughput: [], ownership: [] });
   });
 
   it('returns 403 for a non-ADMIN caller', async () => {
@@ -92,5 +98,28 @@ describe('admin/reports.routes', () => {
     const res = await request(buildApp()).get('/admin/reports/throughput');
     expect(res.status).toBe(500);
     expect(res.body.success).toBe(false);
+  });
+
+  describe('GET /admin/reports/team-activity', () => {
+    it('returns 403 for a non-ADMIN caller', async () => {
+      mockUser = { ...mockUser, role: 'TEAM_LEADER' };
+      const res = await request(buildApp()).get('/admin/reports/team-activity');
+      expect(res.status).toBe(403);
+      expect(mockGetTeamActivityReport).not.toHaveBeenCalled();
+    });
+
+    it('delegates to teamActivityReportService with no memberUserIds filter (tenant-wide)', async () => {
+      const res = await request(buildApp()).get('/admin/reports/team-activity');
+      expect(res.status).toBe(200);
+      const call = mockGetTeamActivityReport.mock.calls[0][0];
+      expect(call.tenantId).toBe('t-1');
+      expect(call.memberUserIds).toBeUndefined();
+    });
+
+    it('rejects a range wider than 90 days', async () => {
+      const res = await request(buildApp()).get('/admin/reports/team-activity?from=2026-01-01&to=2026-12-31');
+      expect(res.status).toBe(422);
+      expect(mockGetTeamActivityReport).not.toHaveBeenCalled();
+    });
   });
 });

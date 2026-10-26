@@ -24,9 +24,13 @@ vi.mock('../../../src/lib/prisma', () => ({
 vi.mock('../../../src/services/queue.service', () => ({
   queueService: { getJobStatus: vi.fn() },
 }));
+vi.mock('../../../src/services/reports/team-activity-report.service', () => ({
+  teamActivityReportService: { getReport: vi.fn() },
+}));
 
 import prisma from '../../../src/lib/prisma';
 import { queueService } from '../../../src/services/queue.service';
+import { teamActivityReportService } from '../../../src/services/reports/team-activity-report.service';
 import { jobController } from '../../../src/controllers/job.controller';
 
 function makeRes(): Response {
@@ -281,6 +285,54 @@ describe('JobController', () => {
       const where = (prisma.job.findMany as any).mock.calls[0][0].where;
       expect(where.tenantId).toBe('tenant-1');
       expect(where.userId).toEqual({ in: ['leader-1'] });
+    });
+  });
+
+  describe('getTeamReviewActivity() -- GET /jobs/team/review-activity (RBAC Phase 5 self-service reports)', () => {
+    it('rejects a caller with no qualifying team membership', async () => {
+      (prisma.teamMembership.findMany as any).mockResolvedValueOnce([]);
+
+      const res = makeRes();
+      await jobController.getTeamReviewActivity(makeReq({ user: { id: 'exec-1', tenantId: 'tenant-1' } } as any), res, next);
+
+      expect(next).toHaveBeenCalledTimes(1);
+      const error = (next as any).mock.calls[0][0];
+      expect(error.statusCode).toBe(403);
+      expect(error.code).toBe('NOT_TEAM_LEADER_OR_VIEWER');
+      expect(teamActivityReportService.getReport).not.toHaveBeenCalled();
+    });
+
+    it('resolves the caller\'s team roster and delegates to teamActivityReportService with it', async () => {
+      (prisma.teamMembership.findMany as any)
+        .mockResolvedValueOnce([{ teamId: 'team-1' }])
+        .mockResolvedValueOnce([{ userId: 'leader-1' }, { userId: 'member-2' }]);
+      (teamActivityReportService.getReport as any).mockResolvedValue({ period: {}, reviewThroughput: [], ownership: [] });
+
+      const res = makeRes();
+      await jobController.getTeamReviewActivity(makeReq({ user: { id: 'leader-1', tenantId: 'tenant-1' } } as any), res, next);
+
+      expect(next).not.toHaveBeenCalled();
+      expect(teamActivityReportService.getReport).toHaveBeenCalledWith(
+        expect.objectContaining({ tenantId: 'tenant-1', memberUserIds: ['leader-1', 'member-2'] })
+      );
+      expect((res.json as any).mock.calls[0][0].success).toBe(true);
+    });
+
+    it('rejects an invalid date range (from after to) with a 400', async () => {
+      (prisma.teamMembership.findMany as any)
+        .mockResolvedValueOnce([{ teamId: 'team-1' }])
+        .mockResolvedValueOnce([{ userId: 'leader-1' }]);
+
+      const res = makeRes();
+      await jobController.getTeamReviewActivity(
+        makeReq({ user: { id: 'leader-1', tenantId: 'tenant-1' }, query: { from: '2026-10-10', to: '2026-10-01' } } as any),
+        res,
+        next
+      );
+
+      expect(next).toHaveBeenCalledTimes(1);
+      expect((next as any).mock.calls[0][0].statusCode).toBe(400);
+      expect(teamActivityReportService.getReport).not.toHaveBeenCalled();
     });
   });
 });
