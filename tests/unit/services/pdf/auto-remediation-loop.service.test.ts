@@ -73,6 +73,7 @@ function makeTrial(overrides: Record<string, unknown> = {}) {
     mode: 'auto',
     autoMaxRounds: 10,
     autoCostLimitUsd: 2.0,
+    autoRoundsCompleted: 0,
     autoStopRequested: false,
     autoColorContrastMode: null,
     ...overrides,
@@ -85,6 +86,7 @@ function makeRun(overrides: Record<string, unknown> = {}) {
     jobId: 'job-1',
     autoMaxRounds: 10,
     autoCostLimitUsd: 2.0,
+    autoRoundsCompleted: 0,
     autoStopRequested: false,
     autoColorContrastMode: null,
     ...overrides,
@@ -825,6 +827,31 @@ describe('autoRemediationLoopService.reconcileIfOrphaned', () => {
 
     expect(prisma.comparisonTrial.updateMany).not.toHaveBeenCalled();
   });
+
+  it('logs an orphan_reconciled history event when it actually reconciles a stale run (Operational Reports Group 4)', async () => {
+    vi.mocked(prisma.comparisonTrial.findUnique).mockResolvedValue(
+      makeTrial({ autoStatus: 'running', autoRoundsCompleted: 3 }) as any
+    );
+    vi.mocked(remediationCycleLockService.getLockStatus).mockResolvedValue({ inProgress: false } as any);
+    mockQueryRaw.mockResolvedValue([{ remediationCycleLockedAt: new Date(Date.now() - 30 * 60 * 1000) }]);
+    mockComparisonTrialUpdateMany.mockResolvedValue({ count: 1 } as any);
+
+    await autoRemediationLoopService.reconcileIfOrphaned('trial-1');
+
+    expect(remediationCycleHistoryService.logEvent).toHaveBeenCalledWith(
+      expect.objectContaining({ jobId: 'job-1', cycleNumber: 4, action: 'orphan_reconciled', source: 'watchdog', status: 'failed' })
+    );
+  });
+
+  it('does not log an interruption event when the row lock reveals a concurrent run and nothing was actually reconciled', async () => {
+    vi.mocked(prisma.comparisonTrial.findUnique).mockResolvedValue(makeTrial({ autoStatus: 'running' }) as any);
+    vi.mocked(remediationCycleLockService.getLockStatus).mockResolvedValue({ inProgress: false } as any);
+    mockQueryRaw.mockResolvedValue([{ remediationCycleLockedAt: new Date() }]);
+
+    await autoRemediationLoopService.reconcileIfOrphaned('trial-1');
+
+    expect(remediationCycleHistoryService.logEvent).not.toHaveBeenCalled();
+  });
 });
 
 // Direct, isolated coverage of the driver extracted from startAutoLoop's own
@@ -1009,6 +1036,21 @@ describe('autoRemediationLoopService.reconcileIfOrphanedJobRun', () => {
 
     expect(prisma.pdfAutoRemediationRun.updateMany).not.toHaveBeenCalled();
   });
+
+  it('logs an orphan_reconciled history event when it actually reconciles a stale run (Operational Reports Group 4)', async () => {
+    vi.mocked(prisma.pdfAutoRemediationRun.findUnique).mockResolvedValue(
+      makeRun({ autoStatus: 'running', autoRoundsCompleted: 2 }) as any
+    );
+    vi.mocked(remediationCycleLockService.getLockStatus).mockResolvedValue({ inProgress: false } as any);
+    mockQueryRaw.mockResolvedValue([{ remediationCycleLockedAt: new Date(Date.now() - 30 * 60 * 1000) }]);
+    mockPdfAutoRemediationRunUpdateMany.mockResolvedValue({ count: 1 } as any);
+
+    await autoRemediationLoopService.reconcileIfOrphanedJobRun('run-1');
+
+    expect(remediationCycleHistoryService.logEvent).toHaveBeenCalledWith(
+      expect.objectContaining({ jobId: 'job-1', cycleNumber: 3, action: 'orphan_reconciled', source: 'watchdog', status: 'failed' })
+    );
+  });
 });
 
 // Direct, isolated coverage of the production, non-trial path's driver --
@@ -1146,6 +1188,48 @@ describe('autoRemediationLoopService.forceStopForShutdown', () => {
     mockComparisonTrialUpdateMany.mockRejectedValue(new Error('db down'));
 
     await expect(autoRemediationLoopService.forceStopForShutdown('trial', 'trial-1')).resolves.toBeUndefined();
+  });
+
+  it('logs a force_stopped history event for a trial it actually stopped (Operational Reports Group 4)', async () => {
+    // This describe block has no beforeEach reset (the existing tests above
+    // only ever use toHaveBeenCalledWith, which tolerates leaked call
+    // history from earlier tests) -- clear explicitly here since this test
+    // and the two below it DO care about call history.
+    vi.clearAllMocks();
+    mockComparisonTrialUpdateMany.mockResolvedValue({ count: 1 });
+    vi.mocked(prisma.comparisonTrial.findUnique).mockResolvedValue(
+      makeTrial({ autoRoundsCompleted: 5 }) as any
+    );
+
+    await autoRemediationLoopService.forceStopForShutdown('trial', 'trial-1');
+
+    expect(remediationCycleHistoryService.logEvent).toHaveBeenCalledWith(
+      expect.objectContaining({ jobId: 'job-1', cycleNumber: 6, action: 'force_stopped', source: 'shutdown', status: 'failed' })
+    );
+  });
+
+  it('logs a force_stopped history event for a job-run it actually stopped (Operational Reports Group 4)', async () => {
+    vi.clearAllMocks();
+    mockPdfAutoRemediationRunUpdateMany.mockResolvedValue({ count: 1 });
+    vi.mocked(prisma.pdfAutoRemediationRun.findUnique).mockResolvedValue(
+      makeRun({ autoRoundsCompleted: 1 }) as any
+    );
+
+    await autoRemediationLoopService.forceStopForShutdown('jobRun', 'run-1');
+
+    expect(remediationCycleHistoryService.logEvent).toHaveBeenCalledWith(
+      expect.objectContaining({ jobId: 'job-1', cycleNumber: 2, action: 'force_stopped', source: 'shutdown', status: 'failed' })
+    );
+  });
+
+  it('does not log an interruption event when nothing was actually running to stop', async () => {
+    vi.clearAllMocks();
+    mockComparisonTrialUpdateMany.mockResolvedValue({ count: 0 });
+
+    await autoRemediationLoopService.forceStopForShutdown('trial', 'trial-1');
+
+    expect(prisma.comparisonTrial.findUnique).not.toHaveBeenCalled();
+    expect(remediationCycleHistoryService.logEvent).not.toHaveBeenCalled();
   });
 });
 

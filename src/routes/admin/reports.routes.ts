@@ -15,6 +15,7 @@ import prisma from '../../lib/prisma';
 import { throughputReportService } from '../../services/reports/throughput-report.service';
 import { teamActivityReportService } from '../../services/reports/team-activity-report.service';
 import { costReportService } from '../../services/reports/cost-report.service';
+import { reliabilityReportService } from '../../services/reports/reliability-report.service';
 
 const router = Router();
 
@@ -154,6 +155,28 @@ router.get('/reports/cost/:jobId/rounds', authenticate, async (req: Request, res
     return res.json({ success: true, data: { jobId: req.params.jobId, rounds: trend } });
   } catch (err) {
     return internalError(res, 'GET /admin/reports/cost/:jobId/rounds', err);
+  }
+});
+
+// GET /api/v1/admin/reports/reliability
+router.get('/reports/reliability', authenticate, async (req: Request, res: Response) => {
+  try {
+    if (!isAdmin(req)) return forbidden(res);
+    const user = getUserFromReq(req);
+    if (!user?.tenantId) return noTenant(res);
+
+    const range = parseDateRange(req);
+    if (!range) {
+      return res.status(422).json({
+        success: false,
+        error: { code: 'VALIDATION_ERROR', message: 'Invalid from/to, or range exceeds 90 days' },
+      });
+    }
+
+    const report = await reliabilityReportService.getReport({ tenantId: user.tenantId, ...range });
+    return res.json({ success: true, data: report });
+  } catch (err) {
+    return internalError(res, 'GET /admin/reports/reliability', err);
   }
 });
 

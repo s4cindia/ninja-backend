@@ -10,6 +10,10 @@ import express from 'express';
 
 const mockGetReport = vi.fn();
 const mockGetTeamActivityReport = vi.fn();
+const mockGetCostReport = vi.fn();
+const mockGetRoundCostTrend = vi.fn();
+const mockGetReliabilityReport = vi.fn();
+const mockJobFindUnique = vi.fn();
 
 vi.mock('../../../../src/services/reports/throughput-report.service', () => ({
   throughputReportService: { getReport: (...args: unknown[]) => mockGetReport(...args) },
@@ -17,6 +21,21 @@ vi.mock('../../../../src/services/reports/throughput-report.service', () => ({
 
 vi.mock('../../../../src/services/reports/team-activity-report.service', () => ({
   teamActivityReportService: { getReport: (...args: unknown[]) => mockGetTeamActivityReport(...args) },
+}));
+
+vi.mock('../../../../src/services/reports/cost-report.service', () => ({
+  costReportService: {
+    getReport: (...args: unknown[]) => mockGetCostReport(...args),
+    getRoundCostTrend: (...args: unknown[]) => mockGetRoundCostTrend(...args),
+  },
+}));
+
+vi.mock('../../../../src/services/reports/reliability-report.service', () => ({
+  reliabilityReportService: { getReport: (...args: unknown[]) => mockGetReliabilityReport(...args) },
+}));
+
+vi.mock('../../../../src/lib/prisma', () => ({
+  default: { job: { findUnique: (...args: unknown[]) => mockJobFindUnique(...args) } },
 }));
 
 vi.mock('../../../../src/lib/logger', () => ({
@@ -50,6 +69,10 @@ describe('admin/reports.routes', () => {
     mockUser = { userId: 'admin-1', id: 'admin-1', role: 'ADMIN', tenantId: 't-1', email: 'admin@test.com' };
     mockGetReport.mockResolvedValue({ period: {}, queueWait: {}, initialAudit: {}, roundDuration: [], trend: [], stuckJobs: [], concurrency: null });
     mockGetTeamActivityReport.mockResolvedValue({ period: {}, reviewThroughput: [], ownership: [] });
+    mockGetCostReport.mockResolvedValue({ period: {}, totalSpentUsd: 0, runCount: 0, avgCostPerRunUsd: null, avgCostPerPageUsd: null, capHitFrequency: {}, spendByRun: [] });
+    mockGetRoundCostTrend.mockResolvedValue([]);
+    mockGetReliabilityReport.mockResolvedValue({ period: {}, interruptionCount: 0, interruptionsByAction: {}, failureCount: 0, failuresByCategory: {} });
+    mockJobFindUnique.mockResolvedValue({ tenantId: 't-1' });
   });
 
   it('returns 403 for a non-ADMIN caller', async () => {
@@ -120,6 +143,82 @@ describe('admin/reports.routes', () => {
       const res = await request(buildApp()).get('/admin/reports/team-activity?from=2026-01-01&to=2026-12-31');
       expect(res.status).toBe(422);
       expect(mockGetTeamActivityReport).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('GET /admin/reports/cost', () => {
+    it('returns 403 for a non-ADMIN caller', async () => {
+      mockUser = { ...mockUser, role: 'USER' };
+      const res = await request(buildApp()).get('/admin/reports/cost');
+      expect(res.status).toBe(403);
+      expect(mockGetCostReport).not.toHaveBeenCalled();
+    });
+
+    it('delegates to costReportService with the tenant-scoped date range', async () => {
+      const res = await request(buildApp()).get('/admin/reports/cost?from=2026-10-01&to=2026-10-15');
+      expect(res.status).toBe(200);
+      expect(mockGetCostReport).toHaveBeenCalledWith(
+        expect.objectContaining({ tenantId: 't-1' })
+      );
+    });
+
+    it('rejects a range wider than 90 days', async () => {
+      const res = await request(buildApp()).get('/admin/reports/cost?from=2026-01-01&to=2026-12-31');
+      expect(res.status).toBe(422);
+      expect(mockGetCostReport).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('GET /admin/reports/cost/:jobId/rounds', () => {
+    it('returns 403 for a non-ADMIN caller', async () => {
+      mockUser = { ...mockUser, role: 'USER' };
+      const res = await request(buildApp()).get('/admin/reports/cost/job-1/rounds');
+      expect(res.status).toBe(403);
+      expect(mockGetRoundCostTrend).not.toHaveBeenCalled();
+    });
+
+    it('returns 404 without calling the service when the job belongs to a different tenant', async () => {
+      mockJobFindUnique.mockResolvedValue({ tenantId: 'some-other-tenant' });
+      const res = await request(buildApp()).get('/admin/reports/cost/job-1/rounds');
+      expect(res.status).toBe(404);
+      expect(mockGetRoundCostTrend).not.toHaveBeenCalled();
+    });
+
+    it('returns 404 without calling the service when the job does not exist', async () => {
+      mockJobFindUnique.mockResolvedValue(null);
+      const res = await request(buildApp()).get('/admin/reports/cost/job-1/rounds');
+      expect(res.status).toBe(404);
+      expect(mockGetRoundCostTrend).not.toHaveBeenCalled();
+    });
+
+    it('delegates to getRoundCostTrend once tenant ownership is confirmed', async () => {
+      const res = await request(buildApp()).get('/admin/reports/cost/job-1/rounds');
+      expect(res.status).toBe(200);
+      expect(mockGetRoundCostTrend).toHaveBeenCalledWith('job-1');
+      expect(res.body.data.jobId).toBe('job-1');
+    });
+  });
+
+  describe('GET /admin/reports/reliability', () => {
+    it('returns 403 for a non-ADMIN caller', async () => {
+      mockUser = { ...mockUser, role: 'USER' };
+      const res = await request(buildApp()).get('/admin/reports/reliability');
+      expect(res.status).toBe(403);
+      expect(mockGetReliabilityReport).not.toHaveBeenCalled();
+    });
+
+    it('delegates to reliabilityReportService with the tenant-scoped date range', async () => {
+      const res = await request(buildApp()).get('/admin/reports/reliability');
+      expect(res.status).toBe(200);
+      expect(mockGetReliabilityReport).toHaveBeenCalledWith(
+        expect.objectContaining({ tenantId: 't-1' })
+      );
+    });
+
+    it('rejects a range wider than 90 days', async () => {
+      const res = await request(buildApp()).get('/admin/reports/reliability?from=2026-01-01&to=2026-12-31');
+      expect(res.status).toBe(422);
+      expect(mockGetReliabilityReport).not.toHaveBeenCalled();
     });
   });
 });
