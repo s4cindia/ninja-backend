@@ -18,6 +18,7 @@
 
 import { Prisma } from '@prisma/client';
 import prisma from '../../lib/prisma';
+import { extractJobFileName } from './job-filename.util';
 
 export interface QualityReportParams {
   tenantId: string;
@@ -45,10 +46,15 @@ export interface ScoreTrendPoint {
   completedAt: string;
 }
 
+export interface StuckIssueSampleJob {
+  jobId: string;
+  fileName: string | null;
+}
+
 export interface StuckIssueEntry {
   code: string;
   count: number;
-  sampleJobIds: string[];
+  sampleJobs: StuckIssueSampleJob[];
 }
 
 const STUCK_ISSUES_JOB_LIMIT = 50;
@@ -116,37 +122,40 @@ class QualityReportService {
     const [trials, runs] = await Promise.all([
       prisma.comparisonTrial.findMany({
         where: { autoStatus: 'stopped', job: { tenantId } },
-        select: { ninjaJobId: true, job: { select: { output: true } } },
+        select: { ninjaJobId: true, job: { select: { input: true, output: true } } },
         take: STUCK_ISSUES_JOB_LIMIT,
       }),
       prisma.pdfAutoRemediationRun.findMany({
         where: { autoStatus: 'stopped', job: { tenantId } },
-        select: { jobId: true, job: { select: { output: true } } },
+        select: { jobId: true, job: { select: { input: true, output: true } } },
         take: STUCK_ISSUES_JOB_LIMIT,
       }),
     ]);
 
-    const byCode = new Map<string, { count: number; sampleJobIds: string[] }>();
-    const addIssues = (jobId: string | null, output: unknown) => {
+    const byCode = new Map<string, { count: number; sampleJobs: StuckIssueSampleJob[] }>();
+    const addIssues = (jobId: string | null, input: unknown, output: unknown) => {
       if (!jobId) return;
       const auditReport = (output as Record<string, unknown> | null)?.auditReport as Record<string, unknown> | undefined;
       const issues = (auditReport?.issues as Array<{ code?: string }> | undefined) ?? [];
       for (const issue of issues) {
         if (!issue.code) continue;
-        const entry = byCode.get(issue.code) ?? { count: 0, sampleJobIds: [] };
+        const entry = byCode.get(issue.code) ?? { count: 0, sampleJobs: [] };
         entry.count += 1;
-        if (!entry.sampleJobIds.includes(jobId) && entry.sampleJobIds.length < STUCK_ISSUES_SAMPLE_LIMIT) {
-          entry.sampleJobIds.push(jobId);
+        if (
+          !entry.sampleJobs.some((j) => j.jobId === jobId) &&
+          entry.sampleJobs.length < STUCK_ISSUES_SAMPLE_LIMIT
+        ) {
+          entry.sampleJobs.push({ jobId, fileName: extractJobFileName(input, output) });
         }
         byCode.set(issue.code, entry);
       }
     };
 
-    for (const trial of trials) addIssues(trial.ninjaJobId, trial.job?.output);
-    for (const run of runs) addIssues(run.jobId, run.job?.output);
+    for (const trial of trials) addIssues(trial.ninjaJobId, trial.job?.input, trial.job?.output);
+    for (const run of runs) addIssues(run.jobId, run.job?.input, run.job?.output);
 
     return Array.from(byCode.entries())
-      .map(([code, { count, sampleJobIds }]) => ({ code, count, sampleJobIds }))
+      .map(([code, { count, sampleJobs }]) => ({ code, count, sampleJobs }))
       .sort((a, b) => b.count - a.count);
   }
 }

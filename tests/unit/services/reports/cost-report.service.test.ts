@@ -30,10 +30,10 @@ describe('CostReportService.getReport', () => {
 
   it('sums cost across both driver tables', async () => {
     (prisma.comparisonTrial.findMany as any).mockResolvedValue([
-      { ninjaJobId: 'job-1', autoCostSpentUsd: 0.5, autoStopReason: 'converged', job: { output: null } },
+      { ninjaJobId: 'job-1', autoCostSpentUsd: 0.5, autoStopReason: 'converged', job: { input: null, output: null } },
     ]);
     (prisma.pdfAutoRemediationRun.findMany as any).mockResolvedValue([
-      { jobId: 'job-2', autoCostSpentUsd: 1.25, autoStopReason: 'budget_limit', job: { output: null } },
+      { jobId: 'job-2', autoCostSpentUsd: 1.25, autoStopReason: 'budget_limit', job: { input: null, output: null } },
     ]);
 
     const report = await costReportService.getReport({ tenantId: 't-1', from: FROM, to: TO });
@@ -41,6 +41,20 @@ describe('CostReportService.getReport', () => {
     expect(report.totalSpentUsd).toBe(1.75);
     expect(report.runCount).toBe(2);
     expect(report.avgCostPerRunUsd).toBe(0.875);
+  });
+
+  it('includes the job file name from output.originalName, falling back to input', async () => {
+    (prisma.comparisonTrial.findMany as any).mockResolvedValue([
+      { ninjaJobId: 'job-1', autoCostSpentUsd: 0.5, autoStopReason: 'converged', job: { input: { fileName: 'from-input.pdf' }, output: { originalName: 'from-output.pdf' } } },
+    ]);
+    (prisma.pdfAutoRemediationRun.findMany as any).mockResolvedValue([
+      { jobId: 'job-2', autoCostSpentUsd: 1.25, autoStopReason: 'budget_limit', job: { input: { fileName: 'input-only.pdf' }, output: null } },
+    ]);
+
+    const report = await costReportService.getReport({ tenantId: 't-1', from: FROM, to: TO });
+
+    expect(report.spendByRun.find((r) => r.jobId === 'job-1')?.fileName).toBe('from-output.pdf');
+    expect(report.spendByRun.find((r) => r.jobId === 'job-2')?.fileName).toBe('input-only.pdf');
   });
 
   it('skips a ComparisonTrial row with no linked job (ninjaJobId null)', async () => {
