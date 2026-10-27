@@ -9,6 +9,7 @@ const mockTeamFindFirst = vi.fn();
 const mockUserFindFirst = vi.fn();
 const mockMembershipUpsert = vi.fn();
 const mockMembershipDeleteMany = vi.fn();
+const mockTeamDelete = vi.fn();
 
 vi.mock('../../../../src/lib/prisma', () => ({
   default: {
@@ -16,6 +17,7 @@ vi.mock('../../../../src/lib/prisma', () => ({
       create: (...args: unknown[]) => mockTeamCreate(...args),
       findMany: (...args: unknown[]) => mockTeamFindMany(...args),
       findFirst: (...args: unknown[]) => mockTeamFindFirst(...args),
+      delete: (...args: unknown[]) => mockTeamDelete(...args),
     },
     user: {
       findFirst: (...args: unknown[]) => mockUserFindFirst(...args),
@@ -206,6 +208,43 @@ describe('admin/teams.routes', () => {
     expect(res.status).toBe(404);
     expect(res.body.error.code).toBe('USER_NOT_FOUND');
     expect(mockMembershipUpsert).not.toHaveBeenCalled();
+  });
+
+  // Test 11a — DELETE /admin/teams/:id: deletes a team
+  it('DELETE /admin/teams/:id deletes a team', async () => {
+    mockTeamFindFirst.mockResolvedValue({ id: 'team-1', tenantId: 't-1' });
+    mockTeamDelete.mockResolvedValue({ id: 'team-1', tenantId: 't-1' });
+
+    const app = buildApp();
+    const res = await request(app).delete('/admin/teams/team-1');
+
+    expect(res.status).toBe(200);
+    expect(res.body.data).toEqual({ id: 'team-1' });
+    expect(mockTeamDelete).toHaveBeenCalledWith({ where: { id: 'team-1' } });
+  });
+
+  // Test 11b — DELETE /admin/teams/:id: non-admin returns 403
+  it('DELETE /admin/teams/:id returns 403 for non-admin', async () => {
+    mockUser = { userId: 'user-2', id: 'user-2', role: 'USER', tenantId: 't-1' };
+
+    const app = buildApp();
+    const res = await request(app).delete('/admin/teams/team-1');
+
+    expect(res.status).toBe(403);
+    expect(res.body.error.code).toBe('FORBIDDEN');
+    expect(mockTeamDelete).not.toHaveBeenCalled();
+  });
+
+  // Test 11c — DELETE /admin/teams/:id: 404 for a team in another tenant
+  it('DELETE /admin/teams/:id returns 404 when team is not in the admin\'s tenant', async () => {
+    mockTeamFindFirst.mockResolvedValue(null);
+
+    const app = buildApp();
+    const res = await request(app).delete('/admin/teams/other-tenant-team');
+
+    expect(res.status).toBe(404);
+    expect(res.body.error.code).toBe('NOT_FOUND');
+    expect(mockTeamDelete).not.toHaveBeenCalled();
   });
 
   // Test 11 — DELETE /admin/teams/:id/members/:userId: removes a membership
