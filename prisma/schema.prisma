@@ -215,6 +215,7 @@ model Job {
   remediationCycleEvents RemediationCycleEvent[]
   pdfAutoRemediationRun  PdfAutoRemediationRun?
   teamReviews            TeamReview[]
+  jobExternalPacReport   JobExternalPacReport?
 
   @@index([tenantId])
   @@index([status])
@@ -2676,6 +2677,31 @@ model ExternalPacReport {
   notApplicable    Int?
   uploadedById     String
   createdAt        DateTime        @default(now())
+}
+
+/// Job-native counterpart to ExternalPacReport above -- same real, external
+/// PAC-tool report upload capability, but for a regular PDF Accessibility
+/// job (single-file upload or a PdfBatchItem's job) that has no linked
+/// ComparisonTrial. Deliberately a separate model rather than making
+/// ExternalPacReport.trialId optional-plus-jobId: keeps Comparison Study's
+/// existing code/data untouched and this feature's blast radius isolated.
+model JobExternalPacReport {
+  id               String   @id @default(cuid())
+  jobId            String   @unique
+  job              Job      @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  s3Key            String
+  originalFileName String
+  mimeType         String
+  size             Int
+  pass             Int?
+  fail             Int?
+  untested         Int?
+  humanRequired    Int?
+  notApplicable    Int?
+  uploadedById     String
+  createdAt        DateTime @default(now())
+
+  @@index([jobId])
 }
 
 /// Ninja-side remediation timing for a ComparisonTrial's job. Structural
