@@ -130,6 +130,29 @@ router.get('/teams/:id', authenticate, async (req: Request, res: Response) => {
   }
 });
 
+// DELETE /api/v1/admin/teams/:id
+router.delete('/teams/:id', authenticate, async (req: Request, res: Response) => {
+  try {
+    if (!isAdmin(req)) return forbidden(res);
+
+    const tenantId = getUserFromReq(req)?.tenantId;
+    if (!tenantId) return noTenant(res);
+
+    const team = await prisma.team.findFirst({ where: { id: req.params.id, tenantId } });
+    if (!team) {
+      return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Team not found' } });
+    }
+
+    // TeamMembership.team has onDelete: Cascade, so memberships are removed
+    // automatically -- no need to delete them first.
+    await prisma.team.delete({ where: { id: team.id } });
+
+    return res.json({ success: true, data: { id: team.id } });
+  } catch (err) {
+    return internalError(res, 'DELETE /admin/teams/:id', err);
+  }
+});
+
 const addMemberBodySchema = z.object({
   userId: z.string().min(1),
   teamRole: z.enum(TEAM_ROLE_VALUES),
