@@ -11,6 +11,7 @@
  */
 
 import prisma from '../../lib/prisma';
+import { extractJobFileName } from './job-filename.util';
 
 export interface CostReportParams {
   tenantId: string;
@@ -20,6 +21,7 @@ export interface CostReportParams {
 
 export interface SpendEntry {
   jobId: string;
+  fileName: string | null;
   source: 'comparison_trial' | 'job_native';
   costUsd: number;
   stopReason: string | null;
@@ -60,7 +62,7 @@ class CostReportService {
           ninjaJobId: true,
           autoCostSpentUsd: true,
           autoStopReason: true,
-          job: { select: { output: true } },
+          job: { select: { input: true, output: true } },
         },
       }),
       prisma.pdfAutoRemediationRun.findMany({
@@ -69,7 +71,7 @@ class CostReportService {
           jobId: true,
           autoCostSpentUsd: true,
           autoStopReason: true,
-          job: { select: { output: true } },
+          job: { select: { input: true, output: true } },
         },
       }),
     ]);
@@ -79,6 +81,7 @@ class CostReportService {
         .filter((t) => t.ninjaJobId != null)
         .map((t) => ({
           jobId: t.ninjaJobId as string,
+          fileName: extractJobFileName(t.job?.input, t.job?.output),
           source: 'comparison_trial' as const,
           costUsd: t.autoCostSpentUsd,
           stopReason: t.autoStopReason,
@@ -86,6 +89,7 @@ class CostReportService {
         })),
       ...runs.map((r) => ({
         jobId: r.jobId,
+        fileName: extractJobFileName(r.job?.input, r.job?.output),
         source: 'job_native' as const,
         costUsd: r.autoCostSpentUsd,
         stopReason: r.autoStopReason,

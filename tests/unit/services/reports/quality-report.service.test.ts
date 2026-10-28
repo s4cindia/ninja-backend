@@ -102,18 +102,29 @@ describe('QualityReportService.getStuckIssues', () => {
 
   it('groups issues by code across both driver tables, sorted by count descending', async () => {
     (prisma.comparisonTrial.findMany as any).mockResolvedValue([
-      { ninjaJobId: 'job-1', job: { output: { auditReport: { issues: [{ code: 'A' }, { code: 'B' }] } } } },
+      { ninjaJobId: 'job-1', job: { input: null, output: { auditReport: { issues: [{ code: 'A' }, { code: 'B' }] } } } },
     ]);
     (prisma.pdfAutoRemediationRun.findMany as any).mockResolvedValue([
-      { jobId: 'job-2', job: { output: { auditReport: { issues: [{ code: 'A' }] } } } },
+      { jobId: 'job-2', job: { input: null, output: { auditReport: { issues: [{ code: 'A' }] } } } },
     ]);
 
     const stuck = await qualityReportService.getStuckIssues('t-1');
 
     expect(stuck).toEqual([
-      { code: 'A', count: 2, sampleJobIds: ['job-1', 'job-2'] },
-      { code: 'B', count: 1, sampleJobIds: ['job-1'] },
+      { code: 'A', count: 2, sampleJobs: [{ jobId: 'job-1', fileName: null }, { jobId: 'job-2', fileName: null }] },
+      { code: 'B', count: 1, sampleJobs: [{ jobId: 'job-1', fileName: null }] },
     ]);
+  });
+
+  it('includes the job file name alongside each sample job', async () => {
+    (prisma.comparisonTrial.findMany as any).mockResolvedValue([
+      { ninjaJobId: 'job-1', job: { input: { fileName: 'doc.pdf' }, output: { auditReport: { issues: [{ code: 'A' }] } } } },
+    ]);
+    (prisma.pdfAutoRemediationRun.findMany as any).mockResolvedValue([]);
+
+    const stuck = await qualityReportService.getStuckIssues('t-1');
+
+    expect(stuck).toEqual([{ code: 'A', count: 1, sampleJobs: [{ jobId: 'job-1', fileName: 'doc.pdf' }] }]);
   });
 
   it('skips a trial with no linked job and a job with no output', async () => {
@@ -121,7 +132,7 @@ describe('QualityReportService.getStuckIssues', () => {
       { ninjaJobId: null, job: null },
     ]);
     (prisma.pdfAutoRemediationRun.findMany as any).mockResolvedValue([
-      { jobId: 'job-2', job: { output: null } },
+      { jobId: 'job-2', job: { input: null, output: null } },
     ]);
 
     const stuck = await qualityReportService.getStuckIssues('t-1');
@@ -136,17 +147,17 @@ describe('QualityReportService.getStuckIssues', () => {
     expect((prisma.pdfAutoRemediationRun.findMany as any).mock.calls[0][0].where.autoStatus).toBe('stopped');
   });
 
-  it('caps sampleJobIds at 5 even when more jobs share the same issue code', async () => {
+  it('caps sampleJobs at 5 even when more jobs share the same issue code', async () => {
     (prisma.comparisonTrial.findMany as any).mockResolvedValue(
       Array.from({ length: 8 }, (_, i) => ({
         ninjaJobId: `job-${i}`,
-        job: { output: { auditReport: { issues: [{ code: 'A' }] } } },
+        job: { input: null, output: { auditReport: { issues: [{ code: 'A' }] } } },
       }))
     );
 
     const stuck = await qualityReportService.getStuckIssues('t-1');
 
     expect(stuck[0].count).toBe(8);
-    expect(stuck[0].sampleJobIds).toHaveLength(5);
+    expect(stuck[0].sampleJobs).toHaveLength(5);
   });
 });
