@@ -14,6 +14,14 @@ import { axes4PacService } from '../services/pdf/axes4-pac.service';
 import { axes4QuotaService } from '../services/pdf/axes4-quota.service';
 import { isAxes4EnabledForTenant } from '../services/pdf/axes4-tenant-config.service';
 import { fileStorageService } from '../services/storage/file-storage.service';
+import {
+  getJobPacReportUploadUrl,
+  confirmJobPacReportUpload,
+  getJobPacReport,
+  deleteJobPacReport,
+} from '../services/pdf/job-pac-report.service';
+import { AppError } from '../utils/app-error';
+import type { JobPacReportUploadUrlBody, JobPacReportConfirmBody } from '../schemas/job-pac-report.schemas';
 
 export class PacReportController {
   /**
@@ -209,6 +217,102 @@ export class PacReportController {
         success: false,
         data: {},
         error: { code: 'INTERNAL_ERROR', message: 'Failed to run the live PAC Cloud check', details: null },
+      });
+    }
+  }
+
+  /**
+   * POST /api/v1/pdf/:jobId/pac-report/external/upload-url
+   * Job-native counterpart to the Comparison Study admin endpoint of the
+   * same shape -- see job-pac-report.service.ts's own doc comment.
+   * authorizeJob (not authorizeJobForReview) already ran, so jobId is
+   * confirmed owned by this user (or admin) before this handler runs.
+   */
+  async getExternalUploadUrl(req: AuthenticatedRequest, res: Response): Promise<Response> {
+    try {
+      const { jobId } = req.params;
+      const { filename, contentType } = req.body as JobPacReportUploadUrlBody;
+
+      const result = await getJobPacReportUploadUrl(jobId, filename, contentType);
+      return res.status(200).json({ success: true, data: result });
+    } catch (err: unknown) {
+      if (err instanceof AppError) {
+        return res.status(err.statusCode).json({ success: false, data: {}, error: { code: err.code, message: err.message, details: null } });
+      }
+      logger.error(`[PacReport] getExternalUploadUrl failed`, err as Error);
+      return res.status(500).json({
+        success: false,
+        data: {},
+        error: { code: 'INTERNAL_ERROR', message: 'Failed to generate upload URL', details: null },
+      });
+    }
+  }
+
+  /**
+   * POST /api/v1/pdf/:jobId/pac-report/external/confirm
+   */
+  async confirmExternalUpload(req: AuthenticatedRequest, res: Response): Promise<Response> {
+    try {
+      const { jobId } = req.params;
+      const { originalFileName, mimeType, summary } = req.body as JobPacReportConfirmBody;
+      const uploadedById = req.user!.id;
+
+      const report = await confirmJobPacReportUpload(jobId, { originalFileName, mimeType, summary, uploadedById });
+      return res.status(201).json({ success: true, data: report });
+    } catch (err: unknown) {
+      if (err instanceof AppError) {
+        return res.status(err.statusCode).json({ success: false, data: {}, error: { code: err.code, message: err.message, details: null } });
+      }
+      logger.error(`[PacReport] confirmExternalUpload failed`, err as Error);
+      return res.status(500).json({
+        success: false,
+        data: {},
+        error: { code: 'INTERNAL_ERROR', message: 'Failed to confirm PAC report upload', details: null },
+      });
+    }
+  }
+
+  /**
+   * GET /api/v1/pdf/:jobId/pac-report/external
+   * Returns null (not 404) when nothing has been uploaded yet -- a valid,
+   * common state, matching getPacReport's own convention.
+   */
+  async getExternalReport(req: AuthenticatedRequest, res: Response): Promise<Response> {
+    try {
+      const { jobId } = req.params;
+      const report = await getJobPacReport(jobId);
+      return res.status(200).json({ success: true, data: report });
+    } catch (err: unknown) {
+      logger.error(`[PacReport] getExternalReport failed`, err as Error);
+      return res.status(500).json({
+        success: false,
+        data: {},
+        error: { code: 'INTERNAL_ERROR', message: 'Failed to load external PAC report', details: null },
+      });
+    }
+  }
+
+  /**
+   * DELETE /api/v1/pdf/:jobId/pac-report/external
+   */
+  async deleteExternalReport(req: AuthenticatedRequest, res: Response): Promise<Response> {
+    try {
+      const { jobId } = req.params;
+      const deleted = await deleteJobPacReport(jobId);
+      if (!deleted) {
+        return res.status(404).json({
+          success: false,
+          data: {},
+          error: { code: 'NOT_FOUND', message: 'No external PAC report attached to this job', details: null },
+        });
+      }
+      return res.status(200).json({ success: true, data: { deleted: true } });
+    } catch (err: unknown) {
+      logger.error(`[PacReport] deleteExternalReport failed`, err as Error);
+      return res.status(500).json({
+        success: false,
+        data: {},
+        error: { code: 'INTERNAL_ERROR', message: 'Failed to delete external PAC report', details: null },
       });
     }
   }
