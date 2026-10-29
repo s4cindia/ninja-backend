@@ -55,16 +55,18 @@ vi.mock('../../../../src/services/pdf/pdf-reaudit.service');
 vi.mock('../../../../src/services/pdf/remediation-cycle-lock.service');
 vi.mock('../../../../src/services/pdf/remediation-cycle-history.service');
 vi.mock('../../../../src/services/storage/file-storage.service');
+vi.mock('../../../../src/services/notification/notification.service');
 vi.mock('../../../../src/lib/logger', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
 }));
 
 import prisma from '../../../../src/lib/prisma';
 import { logger } from '../../../../src/lib/logger';
-import { autoRemediationLoopService, ComparisonTrialAutoRemediationDriver, JobAutoRemediationDriver } from '../../../../src/services/pdf/auto-remediation-loop.service';
+import { autoRemediationLoopService, ComparisonTrialAutoRemediationDriver, JobAutoRemediationDriver, describeAutoLoopStop } from '../../../../src/services/pdf/auto-remediation-loop.service';
 import { aiAnalysisService } from '../../../../src/services/pdf/ai-analysis.service';
 import { pdfReauditService } from '../../../../src/services/pdf/pdf-reaudit.service';
 import { remediationCycleLockService } from '../../../../src/services/pdf/remediation-cycle-lock.service';
+import { notificationService } from '../../../../src/services/notification/notification.service';
 import { remediationCycleHistoryService } from '../../../../src/services/pdf/remediation-cycle-history.service';
 import { fileStorageService } from '../../../../src/services/storage/file-storage.service';
 
@@ -158,6 +160,51 @@ function mockEmptyRound(colorContrastMode?: ColorContrastMode) {
   vi.mocked(prisma.aiAnalysis.count).mockResolvedValueOnce(0);
 }
 
+describe('describeAutoLoopStop', () => {
+  it('maps converged to a JOB_COMPLETED success notification', () => {
+    const result = describeAutoLoopStop('converged', '"doc.pdf"', 3, 0.42, undefined);
+    expect(result.type).toBe('JOB_COMPLETED');
+    expect(result.title).toBe('Auto Mode finished');
+    expect(result.message).toContain('"doc.pdf"');
+    expect(result.message).toContain('3 rounds');
+    expect(result.message).toContain('$0.42');
+  });
+
+  it('maps round_limit and budget_limit to SYSTEM_ALERT, not a failure', () => {
+    const roundLimit = describeAutoLoopStop('round_limit', '"doc.pdf"', 10, 2.0, undefined);
+    expect(roundLimit.type).toBe('SYSTEM_ALERT');
+    expect(roundLimit.title).toContain('round limit');
+
+    const budgetLimit = describeAutoLoopStop('budget_limit', '"doc.pdf"', 5, 2.0, undefined);
+    expect(budgetLimit.type).toBe('SYSTEM_ALERT');
+    expect(budgetLimit.title).toContain('budget limit');
+  });
+
+  it('maps stalled to SYSTEM_ALERT', () => {
+    const result = describeAutoLoopStop('stalled', '"doc.pdf"', 4, 0.10, undefined);
+    expect(result.type).toBe('SYSTEM_ALERT');
+    expect(result.title).toContain('no further progress');
+  });
+
+  it('maps error to JOB_FAILED and includes the real error message when present', () => {
+    const result = describeAutoLoopStop('error', '"doc.pdf"', 1, 0.01, 'Prisma connection lost');
+    expect(result.type).toBe('JOB_FAILED');
+    expect(result.message).toContain('Prisma connection lost');
+  });
+
+  it('falls back to a generic error message when none was captured', () => {
+    const result = describeAutoLoopStop('error', '"doc.pdf"', 0, 0, undefined);
+    expect(result.type).toBe('JOB_FAILED');
+    expect(result.message).toContain('unexpected error');
+  });
+
+  it('uses singular "round" for exactly one round', () => {
+    const result = describeAutoLoopStop('converged', '"doc.pdf"', 1, 0.01, undefined);
+    expect(result.message).toContain('1 round ');
+    expect(result.message).not.toContain('1 rounds');
+  });
+});
+
 describe('autoRemediationLoopService.startAutoLoop', () => {
   beforeEach(() => {
     // resetAllMocks (not clearAllMocks) -- also drains any unconsumed
@@ -205,6 +252,12 @@ describe('autoRemediationLoopService.startAutoLoop', () => {
     // only the initial reset (autoRoundsCompleted: 0) and the final stop
     // update happen, no separate per-round bookkeeping update in between.
     expect(prisma.comparisonTrial.update).toHaveBeenCalledTimes(2);
+
+    // Operator notification: converged is a genuine success.
+    await vi.waitFor(() => expect(notificationService.createNotification).toHaveBeenCalledTimes(1));
+    expect(notificationService.createNotification).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'JOB_COMPLETED', title: 'Auto Mode finished' })
+    );
   });
 
   it('sums Claude cost together with Gemini cost, not just Gemini alone (real bug: autoCostSpentUsd used to silently drop Claude-routed suggestion cost from the same round)', async () => {
@@ -679,6 +732,11 @@ describe('autoRemediationLoopService.startAutoLoop', () => {
       where: { id: 'trial-1' },
       data: { autoStatus: 'stopped', autoStopReason: 'manual_stop', autoStopRequested: false, autoStoppedAt: expect.any(Date) },
     });
+
+    // Operator notification: deliberately NOT sent for manual_stop -- the
+    // operator already knows, since they just did it themselves.
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(notificationService.createNotification).not.toHaveBeenCalled();
   });
 
   it('stops with reason "error" and still releases the lock when a round throws', async () => {
@@ -694,6 +752,11 @@ describe('autoRemediationLoopService.startAutoLoop', () => {
       where: { id: 'trial-1' },
       data: { autoStatus: 'stopped', autoStopReason: 'error', autoStopRequested: false, autoStoppedAt: expect.any(Date) },
     });
+
+    await vi.waitFor(() => expect(notificationService.createNotification).toHaveBeenCalledTimes(1));
+    expect(notificationService.createNotification).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'JOB_FAILED', title: 'Auto Mode stopped on error' })
+    );
   });
 
   it('logs an error and stops with zero rounds (not silently) when getRoundState() returns null right after getConfig() found the same record -- real incident, 2026-10-17: this branch previously logged nothing at all, indistinguishable from the "hang" every other PDF-batch investigation that session turned out NOT to be', async () => {

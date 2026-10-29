@@ -27,6 +27,8 @@ import { pdfReauditService } from './pdf-reaudit.service';
 import { remediationCycleLockService, STALE_LOCK_MS } from './remediation-cycle-lock.service';
 import { remediationCycleHistoryService } from './remediation-cycle-history.service';
 import { fileStorageService } from '../storage/file-storage.service';
+import { notificationService } from '../notification/notification.service';
+import type { NotificationType } from '@prisma/client';
 
 /** Suggestion type that always requires manual approval, even in auto mode --
  * a wrong decorative classification silently suppresses image content
@@ -80,6 +82,60 @@ export function resolveColorContrastMode(raw: string | null): ColorContrastMode 
 const STALL_ROUND_LIMIT = 2;
 
 export type AutoStopReason = 'converged' | 'round_limit' | 'budget_limit' | 'manual_stop' | 'stalled' | 'error';
+
+/**
+ * Maps a terminal AutoStopReason to the operator notification it deserves.
+ * 'converged' is a genuine success (nothing left to auto-fix); the two
+ * ceilings and 'stalled' are each a real decision point (continue with a
+ * higher limit, or move to manual review) rather than a failure, hence
+ * SYSTEM_ALERT rather than JOB_FAILED; 'error' is the one case that's
+ * actually broken. 'manual_stop' never reaches here -- the caller skips it
+ * entirely (see startAutoLoop's own finally block).
+ */
+export function describeAutoLoopStop(
+  stopReason: Exclude<AutoStopReason, 'manual_stop'>,
+  docLabel: string,
+  roundsCompleted: number,
+  costSpentUsd: number,
+  errorMessage: string | undefined,
+): { type: NotificationType; title: string; message: string } {
+  const spent = `$${costSpentUsd.toFixed(2)}`;
+  const rounds = `${roundsCompleted} round${roundsCompleted === 1 ? '' : 's'}`;
+  switch (stopReason) {
+    case 'converged':
+      return {
+        type: 'JOB_COMPLETED',
+        title: 'Auto Mode finished',
+        message: `${docLabel} converged after ${rounds} (${spent} spent) -- nothing left to fix automatically. Ready for your review.`,
+      };
+    case 'round_limit':
+      return {
+        type: 'SYSTEM_ALERT',
+        title: 'Auto Mode paused -- round limit reached',
+        message: `${docLabel} hit its round limit after ${rounds} (${spent} spent), with more actionable work still found. Start another round or review progress so far.`,
+      };
+    case 'budget_limit':
+      return {
+        type: 'SYSTEM_ALERT',
+        title: 'Auto Mode paused -- budget limit reached',
+        message: `${docLabel} hit its cost limit after ${rounds} (${spent} spent), with more actionable work still found. Raise the budget or review progress so far.`,
+      };
+    case 'stalled':
+      return {
+        type: 'SYSTEM_ALERT',
+        title: 'Auto Mode paused -- no further progress',
+        message: `${docLabel} stopped after ${rounds} (${spent} spent): the last few rounds made no measurable progress. Review what's left manually.`,
+      };
+    case 'error':
+      return {
+        type: 'JOB_FAILED',
+        title: 'Auto Mode stopped on error',
+        message: errorMessage
+          ? `${docLabel} stopped after ${rounds} (${spent} spent): ${errorMessage}`
+          : `${docLabel} stopped after ${rounds} (${spent} spent) due to an unexpected error.`,
+      };
+  }
+}
 
 /**
  * Driver abstraction for startAutoLoop -- lets the SAME loop body (below)
@@ -790,6 +846,7 @@ class AutoRemediationLoopService {
     let roundsCompleted = 0;
     let costSpentUsd = 0;
     let consecutiveStalls = 0;
+    let stopErrorMessage: string | undefined;
 
     try {
       while (true) {
@@ -886,8 +943,9 @@ class AutoRemediationLoopService {
       }
     } catch (err) {
       stopReason = 'error';
+      stopErrorMessage = err instanceof Error ? err.message : String(err);
       logger.error(
-        `[AutoRemediationLoop] Job ${jobId} (${driver.describe()}) stopped on error after ${roundsCompleted} round(s): ${err instanceof Error ? err.message : String(err)}`
+        `[AutoRemediationLoop] Job ${jobId} (${driver.describe()}) stopped on error after ${roundsCompleted} round(s): ${stopErrorMessage}`
       );
     } finally {
       remediationCycleLockService.stopHeartbeat(heartbeat);
@@ -933,6 +991,40 @@ class AutoRemediationLoopService {
       logger.info(
         `[AutoRemediationLoop] Job ${jobId} (${driver.describe()}) finished: ${roundsCompleted} round(s), $${costSpentUsd.toFixed(4)} spent, stopped: ${stopReason}`
       );
+
+      // Operator notification -- the whole point of autonomous rounds is
+      // that nobody has to watch them; this is the "come back, a decision
+      // is needed" signal. 'manual_stop' is deliberately excluded: the
+      // operator just stopped it themselves, so telling them it stopped
+      // would be pure noise. Fire-and-forget, same convention
+      // workflow.queue.ts's own notification calls already use -- never
+      // worth blocking or failing this method over a notification-write
+      // hiccup, after the lock is already released and the real history
+      // event already logged above.
+      if (stopReason !== 'manual_stop') {
+        // Narrowed into its own const: `stopReason` is a mutable outer `let`,
+        // so TS can't carry the `!== 'manual_stop'` narrowing through into
+        // the .then() closure below on its own.
+        const notifiableStopReason = stopReason;
+        prisma.job.findUnique({ where: { id: jobId }, select: { userId: true, input: true } })
+          .then((jobRow) => {
+            if (!jobRow) return;
+            const fileName = (jobRow.input as Record<string, unknown> | null)?.fileName as string | undefined;
+            const label = fileName ? `"${fileName}"` : 'Your document';
+            const { type, title, message } = describeAutoLoopStop(notifiableStopReason, label, roundsCompleted, costSpentUsd, stopErrorMessage);
+            return notificationService.createNotification({
+              userId: jobRow.userId,
+              tenantId,
+              type,
+              title,
+              message,
+              link: `/pdf/audit/${jobId}`,
+            });
+          })
+          .catch((notifyErr) => {
+            logger.error(`[AutoRemediationLoop] Failed to create stop notification for job ${jobId}: ${notifyErr instanceof Error ? notifyErr.message : String(notifyErr)}`);
+          });
+      }
     }
   }
 
