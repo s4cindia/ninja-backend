@@ -248,6 +248,34 @@ export class PdfStructureWriterService {
     k.insert(idx + 1, newRef);
   }
 
+  /**
+   * Same as insertIntoKidsAfter, anchored on the sibling AFTER which
+   * `newRef` should NOT go -- i.e. splices immediately BEFORE `beforeRef`'s
+   * own position. Needed (not just insertIntoKidsAfter with a different
+   * anchor) when the orphan's confirmed LEFT neighbor isn't its true
+   * adjacent sibling in `parentRef`'s own /K array -- e.g. an /Artifact
+   * with no own MCID can sit between a real left MCID-neighbor and the
+   * gap, so anchoring on the left neighbor alone would insert one slot
+   * too early. Anchoring on a confirmed RIGHT neighbor's own position is
+   * correct regardless of what sits between it and the left neighbor.
+   */
+  private insertIntoKidsBefore(doc: PDFDocument, parentRef: PDFRef, beforeRef: PDFRef, newRef: PDFRef): void {
+    const parent = doc.context.lookup(parentRef);
+    if (!(parent instanceof PDFDict)) {
+      throw new Error('insertIntoKidsBefore: parent does not resolve to a dictionary');
+    }
+    const k = parent.get(PDFName.of('K'));
+    if (!(k instanceof PDFArray)) {
+      throw new Error('insertIntoKidsBefore: parent /K is not an array -- cannot position relative to a sibling');
+    }
+    const arr = k.asArray();
+    const idx = arr.findIndex(item => item instanceof PDFRef && item.objectNumber === beforeRef.objectNumber);
+    if (idx === -1) {
+      throw new Error('insertIntoKidsBefore: beforeRef not found in parent /K array');
+    }
+    k.insert(idx, newRef);
+  }
+
   /** Remove targetRef from the /K array of the element at parentRef. */
   private removeFromKids(doc: PDFDocument, parentRef: PDFRef, targetRef: PDFRef): void {
     const parent = doc.context.lookup(parentRef);
@@ -5094,6 +5122,7 @@ export class PdfStructureWriterService {
           results.push({ issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error: `No /TR found at page ${pageNumber}, MCID ${rowMcid} -- document may have changed since the issue was generated` });
           continue;
         }
+        const trDict = doc.context.lookup(trRef, PDFDict);
 
         if (reachable.has(trRef.toString())) {
           results.push({ issueId: issue.id, success: true, before: 'already attached', after: 'already attached and reachable from the structure tree root' });
@@ -5147,7 +5176,86 @@ export class PdfStructureWriterService {
         findTables(structRoot.get(PDFName.of('K')));
 
         if (candidates.length === 0) {
-          results.push({ issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error: `No reachable /Table found with any content on page ${pageNumber} -- declining rather than guessing` });
+          // Document-flow fallback: this row may never have been wrapped in
+          // a dedicated /Table at all. Confirmed real case: Farrar page 15
+          // has a single-cell "table" whose content-stream BDC tag name is
+          // informally /Table (the same tag-name-isn't-authoritative
+          // pattern this file's Matterhorn 01-004 fix already had to
+          // account for), but whose struct element was always meant to sit
+          // directly in the surrounding document flow -- between its own
+          // left and right MCID neighbors (an /H6 and a /P sharing one
+          // common parent), with no /Table wrapper ever created. Same
+          // "resolve each neighbor's own parent, require agreement (or use
+          // whichever one resolves)" technique reattachTableCell/
+          // reattachInlineFigure already use one level down, just without
+          // requiring the neighbors to share a TYPE the way those do.
+          const pageArr = this.resolveParentTreePageArray(doc, pageNumber);
+          const pageArrRaw = pageArr?.asArray() ?? [];
+          const neighborParent = (entry: unknown): PDFRef | null => {
+            if (!(entry instanceof PDFRef)) return null;
+            const dict = doc.context.lookup(entry, PDFDict);
+            const p = dict?.get(PDFName.of('P'));
+            return p instanceof PDFRef ? p : null;
+          };
+          const leftEntry = rowMcid > 0 ? pageArrRaw[rowMcid - 1] : undefined;
+          const rightEntry = rowMcid + 1 < pageArrRaw.length ? pageArrRaw[rowMcid + 1] : undefined;
+          const leftParent = neighborParent(leftEntry);
+          const rightParent = neighborParent(rightEntry);
+
+          let flowParent: PDFRef | null = null;
+          let anchorRef: PDFRef | null = null;
+          let anchorBefore = false;
+          if (leftParent && rightParent && leftParent.objectNumber !== rightParent.objectNumber) {
+            results.push({ issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error: `No reachable /Table found with any content on page ${pageNumber}, and its left/right MCID neighbors resolve to different document-flow parents -- ambiguous, declining rather than guessing` });
+            continue;
+          }
+          if (leftParent && rightParent) {
+            flowParent = rightParent;
+            anchorRef = rightEntry as PDFRef;
+            anchorBefore = true;
+          } else if (rightParent) {
+            flowParent = rightParent;
+            anchorRef = rightEntry as PDFRef;
+            anchorBefore = true;
+          } else if (leftParent) {
+            flowParent = leftParent;
+            anchorRef = leftEntry as PDFRef;
+            anchorBefore = false;
+          }
+
+          if (!flowParent || !anchorRef) {
+            results.push({ issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error: `No reachable /Table found with any content on page ${pageNumber}, and its MCID neighbors don't resolve to a usable document-flow parent either -- declining rather than guessing` });
+            continue;
+          }
+          const flowParentDict = doc.context.lookup(flowParent, PDFDict);
+          const flowParentK = flowParentDict?.get(PDFName.of('K'));
+          if (!(flowParentK instanceof PDFArray)) {
+            results.push({ issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error: 'Document-flow parent /K is not an array' });
+            continue;
+          }
+
+          // Same existing-/P safety check as the /Table path below: only
+          // trust an orphan's own existing /P when it already names this
+          // SAME determined parent.
+          const existingFlowP = trDict?.get(PDFName.of('P'));
+          if (existingFlowP instanceof PDFRef && existingFlowP.objectNumber !== flowParent.objectNumber) {
+            results.push({ issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error: 'Row already has a /P, but it does not match this row\'s own natural document-flow reattachment point -- declining rather than guessing' });
+            continue;
+          }
+
+          if (anchorBefore) {
+            this.insertIntoKidsBefore(doc, flowParent, anchorRef, trRef);
+          } else {
+            this.insertIntoKidsAfter(doc, flowParent, anchorRef, trRef);
+          }
+          trDict!.set(PDFName.of('P'), flowParent);
+
+          results.push({
+            issueId: issue.id,
+            success: true,
+            before: 'disconnected from the structure tree',
+            after: `reattached directly into its enclosing document-flow container's own /K array (${flowParent.toString()}), between its confirmed reading-order neighbors`,
+          });
           continue;
         }
         if (candidates.length > 1) {
@@ -5186,8 +5294,7 @@ export class PdfStructureWriterService {
         // otherwise decline rather than silently overwrite an unexpected
         // existing value, same convention as every other reattach* method
         // in this file.
-        const trDictForP = doc.context.lookup(trRef, PDFDict);
-        const existingP = trDictForP?.get(PDFName.of('P'));
+        const existingP = trDict?.get(PDFName.of('P'));
         if (existingP instanceof PDFRef && existingP.objectNumber !== tableRef.objectNumber) {
           results.push({ issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error: 'Row already has a /P, but it does not match this row\'s own natural reattachment point -- declining rather than guessing' });
           continue;
@@ -5203,7 +5310,7 @@ export class PdfStructureWriterService {
         } else {
           tableK.insert(0, trRef);
         }
-        trDictForP!.set(PDFName.of('P'), tableRef);
+        trDict!.set(PDFName.of('P'), tableRef);
 
         results.push({
           issueId: issue.id,

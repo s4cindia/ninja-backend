@@ -43,6 +43,15 @@ function kidsOf(doc: PDFDocument, ref: PDFRef): unknown[] {
   return k instanceof PDFArray ? k.asArray() : [];
 }
 
+/** A flat /Nums-based /ParentTree on `structTreeRootRef`, one page array
+ * (StructParents key 0) listing `entries` by MCID position -- the shape
+ * the document-flow fallback's own neighbor lookup reads from. */
+function setFlatParentTree(doc: PDFDocument, structTreeRootRef: PDFRef, entries: PDFRef[]): void {
+  const pageArr = doc.context.obj(entries);
+  const parentTree = doc.context.obj({ Nums: [0, pageArr] });
+  doc.context.lookup(structTreeRootRef, PDFDict).set(PDFName.of('ParentTree'), parentTree);
+}
+
 /** One /TD cell (own bare MCID) wrapped in its own /TR, both /Type /StructElem. */
 function makeRow(doc: PDFDocument, pageRef: PDFRef, mcid: number): { trRef: PDFRef; cellRef: PDFRef } {
   const cellRef = doc.context.register(
@@ -159,6 +168,147 @@ describe('PdfStructureWriterService.reattachTableRow', () => {
     expect(results[0].error).toContain('No reachable /Table found');
     // The orphan itself must still exist, untouched -- not silently dropped.
     expect(doc.context.lookup(orphan.trRef, PDFDict)).toBeDefined();
+  });
+
+  // Document-flow fallback (page-15 Farrar follow-up): confirmed real
+  // shape for the one orphaned /TR PR #740 declined -- a single-cell
+  // "table" (content-stream tagged /Table but never wrapped in a
+  // dedicated /Table struct element) sitting directly in the document's
+  // own flow, between an /H6 and a /P that share one common parent, with
+  // an /Artifact (no own MCID) genuinely sitting between the /H6 and the
+  // gap in the real file's own /K array.
+  it('falls back to the shared document-flow parent of its left/right MCID neighbors when no /Table claims the page at all (the confirmed real page-15 Farrar shape)', async () => {
+    const doc = await PDFDocument.create();
+    const page = doc.addPage([612, 792]);
+    page.node.set(PDFName.of('StructParents'), doc.context.obj(0));
+
+    const leftRef = doc.context.register(doc.context.obj({ Type: PDFName.of('StructElem'), S: PDFName.of('H6'), Pg: page.ref, K: 0 }));
+    const orphan = makeRow(doc, page.ref, 1);
+    const rightRef = doc.context.register(doc.context.obj({ Type: PDFName.of('StructElem'), S: PDFName.of('P'), Pg: page.ref, K: 2 }));
+    const artifactRef = doc.context.register(doc.context.obj({ Type: PDFName.of('StructElem'), S: PDFName.of('Artifact'), Pg: page.ref }));
+
+    const flowParentRef = doc.context.register(
+      doc.context.obj({ Type: PDFName.of('StructElem'), S: PDFName.of('Document'), K: [leftRef, artifactRef, rightRef] }),
+    );
+    doc.context.lookup(leftRef, PDFDict).set(PDFName.of('P'), flowParentRef);
+    doc.context.lookup(rightRef, PDFDict).set(PDFName.of('P'), flowParentRef);
+
+    const structTreeRootRef = doc.context.register(doc.context.obj({ Type: PDFName.of('StructTreeRoot'), K: [flowParentRef] }));
+    doc.catalog.set(PDFName.of('StructTreeRoot'), structTreeRootRef);
+    setFlatParentTree(doc, structTreeRootRef, [leftRef, orphan.cellRef, rightRef]);
+
+    const results = pdfStructureWriterService.reattachTableRow(doc, [issueFor('tablerow_p1_mc1')]);
+
+    expect(results[0].success).toBe(true);
+    expect(results[0].after).toContain('document-flow container');
+    // Must land immediately before the RIGHT neighbor (after the
+    // artifact), not naively right after the left neighbor -- that would
+    // wrongly place it before the artifact instead of after it.
+    const kidRefs = kidsOf(doc, flowParentRef).map(k => (k instanceof PDFRef ? k.objectNumber : null));
+    expect(kidRefs).toEqual([leftRef.objectNumber, artifactRef.objectNumber, orphan.trRef.objectNumber, rightRef.objectNumber]);
+
+    const trDict = doc.context.lookup(orphan.trRef, PDFDict);
+    expect(trDict.get(PDFName.of('P'))?.toString()).toBe(flowParentRef.toString());
+  });
+
+  it('uses the right neighbor\'s parent alone when the orphan is first on the page (no left neighbor)', async () => {
+    const doc = await PDFDocument.create();
+    const page = doc.addPage([612, 792]);
+    page.node.set(PDFName.of('StructParents'), doc.context.obj(0));
+
+    const orphan = makeRow(doc, page.ref, 0);
+    const rightRef = doc.context.register(doc.context.obj({ Type: PDFName.of('StructElem'), S: PDFName.of('P'), Pg: page.ref, K: 1 }));
+
+    const flowParentRef = doc.context.register(
+      doc.context.obj({ Type: PDFName.of('StructElem'), S: PDFName.of('Document'), K: [rightRef] }),
+    );
+    doc.context.lookup(rightRef, PDFDict).set(PDFName.of('P'), flowParentRef);
+
+    const structTreeRootRef = doc.context.register(doc.context.obj({ Type: PDFName.of('StructTreeRoot'), K: [flowParentRef] }));
+    doc.catalog.set(PDFName.of('StructTreeRoot'), structTreeRootRef);
+    setFlatParentTree(doc, structTreeRootRef, [orphan.cellRef, rightRef]);
+
+    const results = pdfStructureWriterService.reattachTableRow(doc, [issueFor('tablerow_p1_mc0')]);
+
+    expect(results[0].success).toBe(true);
+    const kidRefs = kidsOf(doc, flowParentRef).map(k => (k instanceof PDFRef ? k.objectNumber : null));
+    expect(kidRefs).toEqual([orphan.trRef.objectNumber, rightRef.objectNumber]);
+  });
+
+  it('uses the left neighbor\'s parent alone when the orphan is last on the page (no right neighbor)', async () => {
+    const doc = await PDFDocument.create();
+    const page = doc.addPage([612, 792]);
+    page.node.set(PDFName.of('StructParents'), doc.context.obj(0));
+
+    const leftRef = doc.context.register(doc.context.obj({ Type: PDFName.of('StructElem'), S: PDFName.of('H6'), Pg: page.ref, K: 0 }));
+    const orphan = makeRow(doc, page.ref, 1);
+
+    const flowParentRef = doc.context.register(
+      doc.context.obj({ Type: PDFName.of('StructElem'), S: PDFName.of('Document'), K: [leftRef] }),
+    );
+    doc.context.lookup(leftRef, PDFDict).set(PDFName.of('P'), flowParentRef);
+
+    const structTreeRootRef = doc.context.register(doc.context.obj({ Type: PDFName.of('StructTreeRoot'), K: [flowParentRef] }));
+    doc.catalog.set(PDFName.of('StructTreeRoot'), structTreeRootRef);
+    setFlatParentTree(doc, structTreeRootRef, [leftRef, orphan.cellRef]);
+
+    const results = pdfStructureWriterService.reattachTableRow(doc, [issueFor('tablerow_p1_mc1')]);
+
+    expect(results[0].success).toBe(true);
+    const kidRefs = kidsOf(doc, flowParentRef).map(k => (k instanceof PDFRef ? k.objectNumber : null));
+    expect(kidRefs).toEqual([leftRef.objectNumber, orphan.trRef.objectNumber]);
+  });
+
+  it('declines the document-flow fallback when left and right MCID neighbors resolve to DIFFERENT parents, rather than guessing which one', async () => {
+    const doc = await PDFDocument.create();
+    const page = doc.addPage([612, 792]);
+    page.node.set(PDFName.of('StructParents'), doc.context.obj(0));
+
+    const leftRef = doc.context.register(doc.context.obj({ Type: PDFName.of('StructElem'), S: PDFName.of('H6'), Pg: page.ref, K: 0 }));
+    const orphan = makeRow(doc, page.ref, 1);
+    const rightRef = doc.context.register(doc.context.obj({ Type: PDFName.of('StructElem'), S: PDFName.of('P'), Pg: page.ref, K: 2 }));
+
+    const parentA = doc.context.register(doc.context.obj({ Type: PDFName.of('StructElem'), S: PDFName.of('Document'), K: [leftRef] }));
+    const parentB = doc.context.register(doc.context.obj({ Type: PDFName.of('StructElem'), S: PDFName.of('Document'), K: [rightRef] }));
+    doc.context.lookup(leftRef, PDFDict).set(PDFName.of('P'), parentA);
+    doc.context.lookup(rightRef, PDFDict).set(PDFName.of('P'), parentB);
+
+    const structTreeRootRef = doc.context.register(doc.context.obj({ Type: PDFName.of('StructTreeRoot'), K: [parentA, parentB] }));
+    doc.catalog.set(PDFName.of('StructTreeRoot'), structTreeRootRef);
+    setFlatParentTree(doc, structTreeRootRef, [leftRef, orphan.cellRef, rightRef]);
+
+    const results = pdfStructureWriterService.reattachTableRow(doc, [issueFor('tablerow_p1_mc1')]);
+
+    expect(results[0].success).toBe(false);
+    expect(results[0].error).toContain('different document-flow parents');
+  });
+
+  it('declines the document-flow fallback when the row already has a /P that does not match the determined parent', async () => {
+    const doc = await PDFDocument.create();
+    const page = doc.addPage([612, 792]);
+    page.node.set(PDFName.of('StructParents'), doc.context.obj(0));
+
+    const leftRef = doc.context.register(doc.context.obj({ Type: PDFName.of('StructElem'), S: PDFName.of('H6'), Pg: page.ref, K: 0 }));
+    const orphan = makeRow(doc, page.ref, 1);
+    const rightRef = doc.context.register(doc.context.obj({ Type: PDFName.of('StructElem'), S: PDFName.of('P'), Pg: page.ref, K: 2 }));
+
+    const flowParentRef = doc.context.register(
+      doc.context.obj({ Type: PDFName.of('StructElem'), S: PDFName.of('Document'), K: [leftRef, rightRef] }),
+    );
+    doc.context.lookup(leftRef, PDFDict).set(PDFName.of('P'), flowParentRef);
+    doc.context.lookup(rightRef, PDFDict).set(PDFName.of('P'), flowParentRef);
+
+    const wrongParent = doc.context.register(doc.context.obj({ Type: PDFName.of('StructElem'), S: PDFName.of('Document'), K: [] }));
+    doc.context.lookup(orphan.trRef, PDFDict).set(PDFName.of('P'), wrongParent);
+
+    const structTreeRootRef = doc.context.register(doc.context.obj({ Type: PDFName.of('StructTreeRoot'), K: [flowParentRef] }));
+    doc.catalog.set(PDFName.of('StructTreeRoot'), structTreeRootRef);
+    setFlatParentTree(doc, structTreeRootRef, [leftRef, orphan.cellRef, rightRef]);
+
+    const results = pdfStructureWriterService.reattachTableRow(doc, [issueFor('tablerow_p1_mc1')]);
+
+    expect(results[0].success).toBe(false);
+    expect(results[0].error).toContain('does not match this row\'s own natural document-flow reattachment point');
   });
 
   it('declines when more than one reachable /Table has content on the orphan\'s page, rather than guessing which one', async () => {
