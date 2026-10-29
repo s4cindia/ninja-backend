@@ -61,6 +61,8 @@ type Token = ReturnType<typeof tokenize>[number];
 // PDF32000-1:2008 §8.5.2 (path construction) and §8.5.3 (path-painting).
 const PATH_START_OPS = new Set(['m', 're', 'l', 'c', 'v', 'y', 'h']);
 const PATH_PAINT_OPS = new Set(['f', 'F', 'f*', 'S', 's', 'B', 'B*', 'b', 'b*']);
+// PDF32000-1:2008 §9.4.3 text-showing operators.
+const TEXT_SHOW_OPS = new Set(["Tj", 'TJ', "'", '"']);
 
 // Curve-construction operators specifically (a subset of PATH_START_OPS) —
 // see UntaggedPathRun.hasCurves's own doc comment for why this matters.
@@ -422,4 +424,283 @@ export function splitArtifactAroundTaggedContent(content: string): { content: st
   }
 
   return { content: out, count: violations.length };
+}
+
+export interface OversizedArtifactSpan {
+  /** Offset of the top-level Artifact's own opening BDC/BMC operator. */
+  openOpStart: number;
+  /** Offset right after that opening operator -- where the span's own content begins. */
+  contentStart: number;
+  /** Offset of the matching EMC operator that closes this span. */
+  closeOpStart: number;
+  /** Offset right after that matching EMC. */
+  closeOpEnd: number;
+  /** Count of text-show/path-paint operators found directly inside this span (depth 1, not inside any further nested tag). */
+  opCount: number;
+  /** True if any PATH-painting operator (not just text) was found inside -- see findOversizedArtifactSpans's own doc comment for why this gates auto-fix eligibility. */
+  hasPathOps: boolean;
+}
+
+// Real legitimate decorative spans (page numbers, running heads) confirmed
+// on Farrar_2E_Comp_188910.pdf top out around 2 ops; every confirmed real
+// swallowing case on that same document (23 of 124 pages, scanned via
+// scripts/scan-artifact-swallowing-wide.ts) was 59-317 ops. 15 sits safely
+// between the two clusters.
+const DEFAULT_SWALLOWED_CONTENT_OP_THRESHOLD = 15;
+
+/**
+ * Finds every TOP-LEVEL `/Artifact BMC … EMC` span (one not already nested
+ * inside something else -- a nested one is a different, already-covered
+ * shape, see findTaggedContentInsideArtifact above) whose own directly-
+ * contained text-show/path-paint operator count exceeds a legitimate
+ * header/footer/page-number's real size.
+ *
+ * Distinct from BOTH existing Artifact-related defects in this file:
+ * unlike findTaggedContentInsideArtifact (01-004), the content in here
+ * carries NO real tag at all, nested or otherwise; unlike
+ * findUntaggedPathRuns (01-005), the content isn't bare -- it already has
+ * an Artifact wrapper, just one whose own boundary is wrong. Confirmed live
+ * on Farrar_2E_Comp_188910.pdf's page 12: a single `/Artifact BMC` opens
+ * covering a legitimate page-number + running-head, but never closes where
+ * it should -- it continues straight through two full real body paragraphs
+ * and a heading, all genuinely never tagged, finally closing 1870+
+ * characters later. A real validator (PAC/axesPAC) flags this as untagged
+ * content because Artifact-wrapped content is invisible to the structure
+ * tree exactly as if it had no tag at all; Ninja's own existing 01-005
+ * detection (findUntaggedPathRuns) can't see it either, by design --
+ * findUntaggedPathRuns deliberately treats ANY existing BDC/BMC (Artifact
+ * included) as "already handled," since a bona fide decorative Artifact is
+ * legitimate and correct.
+ */
+export function findOversizedArtifactSpans(
+  content: string,
+  opThreshold = DEFAULT_SWALLOWED_CONTENT_OP_THRESHOLD
+): OversizedArtifactSpan[] {
+  const tokens = tokenize(content);
+  const spans: OversizedArtifactSpan[] = [];
+
+  let depth = 0;
+  let current: { openOpStart: number; contentStart: number; opCount: number; hasPathOps: boolean } | null = null;
+  const operands: Token[] = [];
+
+  for (let k = 0; k < tokens.length; k++) {
+    const tk = tokens[k];
+    if (tk.t !== 'op') { operands.push(tk); continue; }
+    const op = tk.v;
+
+    if (op === 'BDC' || op === 'BMC') {
+      const tagName = operands.length ? operands[0].v : '';
+      if (depth === 0 && tagName === '/Artifact') {
+        current = { openOpStart: tk.start, contentStart: tk.end, opCount: 0, hasPathOps: false };
+      }
+      depth++;
+      operands.length = 0;
+      continue;
+    }
+    if (op === 'EMC') {
+      depth = Math.max(0, depth - 1);
+      if (depth === 0 && current) {
+        if (current.opCount > opThreshold) {
+          spans.push({
+            openOpStart: current.openOpStart,
+            contentStart: current.contentStart,
+            closeOpStart: tk.start,
+            closeOpEnd: tk.end,
+            opCount: current.opCount,
+            hasPathOps: current.hasPathOps,
+          });
+        }
+        current = null;
+      }
+      operands.length = 0;
+      continue;
+    }
+    if (op === 'BI') {
+      // Inline image: skip the binary payload, same hazard/fix as every
+      // other function in this file.
+      const idm = /\bID\b/.exec(content.slice(tk.end));
+      const from = idm ? tk.end + idm.index + 2 : tk.end;
+      const eim = /\sEI\b/.exec(content.slice(from));
+      const eiEnd = eim ? from + eim.index + eim[0].length : content.length;
+      while (k + 1 < tokens.length && tokens[k + 1].start < eiEnd) k++;
+      operands.length = 0;
+      continue;
+    }
+
+    if (depth === 1 && current && (TEXT_SHOW_OPS.has(op) || PATH_PAINT_OPS.has(op))) {
+      current.opCount++;
+      if (PATH_PAINT_OPS.has(op)) current.hasPathOps = true;
+    }
+    operands.length = 0;
+  }
+
+  return spans;
+}
+
+export interface ArtifactTextRun {
+  /** Decoded (PDF-string-escape-resolved) visible text shown by this text-show call. Whitespace-only calls are omitted. */
+  text: string;
+  /** Byte offset of this text-show operator's own first operand -- the correct splice anchor if this run is chosen as the real-content boundary. */
+  start: number;
+  /** Device-space baseline Y at the moment this text was shown (PDF Y-up convention: larger is higher on the page). */
+  y: number;
+}
+
+function decodePdfStringLiteral(raw: string): string {
+  const inner = raw.slice(1, -1); // strip the surrounding ( )
+  let out = '';
+  for (let i = 0; i < inner.length; i++) {
+    const c = inner[i];
+    if (c !== '\\') { out += c; continue; }
+    const next = inner[i + 1];
+    if (next === 'n') { out += '\n'; i++; }
+    else if (next === 'r') { out += '\r'; i++; }
+    else if (next === 't') { out += '\t'; i++; }
+    else if (next === 'b') { out += '\b'; i++; }
+    else if (next === 'f') { out += '\f'; i++; }
+    else if (next === '(' || next === ')' || next === '\\') { out += next; i++; }
+    else if (next === '\n' || next === '\r') { i++; } // escaped line break -- not part of the string
+    else if (next >= '0' && next <= '7') {
+      let oct = next;
+      let consumed = 1;
+      while (consumed < 3 && inner[i + 1 + consumed] >= '0' && inner[i + 1 + consumed] <= '7') {
+        oct += inner[i + 1 + consumed];
+        consumed++;
+      }
+      out += String.fromCharCode(parseInt(oct, 8) & 0xff);
+      i += consumed;
+    } else { out += next; i++; }
+  }
+  return out;
+}
+
+/**
+ * Extracts every text-show call (`Tj`/`TJ`/`'`/`"`) whose operator offset
+ * falls within `[rangeStart, rangeEnd)`, each with its decoded visible text
+ * and the device-space Y it was shown at. Tracks CTM/text-matrix state
+ * (`q`/`Q`/`cm`/`BT`/`Td`/`TD`/`Tm`/`T*`) across the WHOLE content stream
+ * (not just the range) so a transform established before the range starts
+ * is still correctly accounted for -- same state-tracking convention as
+ * zone-extractor/seam-c/content-stream.ts's own tagContentStream, scoped
+ * here to just the Y position of EVERY text-show call rather than only the
+ * first one per BT block.
+ */
+export function extractArtifactTextRuns(content: string, rangeStart: number, rangeEnd: number): ArtifactTextRun[] {
+  const tokens = tokenize(content);
+  const runs: ArtifactTextRun[] = [];
+
+  type Ctm = { a: number; d: number; e: number; f: number };
+  let ctm: Ctm = { a: 1, d: 1, e: 0, f: 0 };
+  const ctmStack: Ctm[] = [];
+  // Only the Y (baseline) component matters for this function's own
+  // boundary-candidate purpose -- unlike Seam-C's own tagContentStream,
+  // which also tracks X for column/zone assignment.
+  let tmF = 0;
+  let tld = 0;
+  const deviceY = (tF: number): number => ctm.d * tF + ctm.f;
+  const num = (t: Token | undefined): number => (t && t.t === 'n' ? parseFloat(t.v) : 0);
+  const operands: Token[] = [];
+
+  const recordTextShow = (tk: Token): void => {
+    if (tk.start < rangeStart || tk.start >= rangeEnd) return;
+    const strOperands = operands.filter((o) => o.t === 's');
+    if (strOperands.length === 0) return;
+    const text = strOperands.map((o) => decodePdfStringLiteral(o.v)).join('');
+    if (text.trim().length === 0) return;
+    runs.push({ text, start: operands[0].start, y: deviceY(tmF) });
+  };
+
+  for (let k = 0; k < tokens.length; k++) {
+    const tk = tokens[k];
+    if (tk.t !== 'op') { operands.push(tk); continue; }
+    const op = tk.v;
+
+    switch (op) {
+      case 'q': ctmStack.push({ ...ctm }); break;
+      case 'Q': { const p = ctmStack.pop(); if (p) ctm = p; break; }
+      case 'cm': {
+        const a = num(operands[operands.length - 6]);
+        const d = num(operands[operands.length - 3]);
+        const e = num(operands[operands.length - 2]);
+        const f = num(operands[operands.length - 1]);
+        ctm = { a: ctm.a * a, d: ctm.d * d, e: ctm.a * e + ctm.e, f: ctm.d * f + ctm.f };
+        break;
+      }
+      case 'BT': tmF = 0; break;
+      case 'TL': tld = num(operands[operands.length - 1]); break;
+      case 'Td': case 'TD': {
+        const ty = num(operands[operands.length - 1]);
+        if (op === 'TD') tld = -ty;
+        tmF += ty;
+        break;
+      }
+      case 'Tm':
+        tmF = num(operands[operands.length - 1]);
+        break;
+      case 'T*': tmF -= tld; break;
+      case "'": case '"':
+        tmF -= tld;
+        // falls through -- these also show text, same as Tj/TJ
+      case 'Tj': case 'TJ':
+        recordTextShow(tk);
+        break;
+      case 'BI': {
+        const idm = /\bID\b/.exec(content.slice(tk.end));
+        const from = idm ? tk.end + idm.index + 2 : tk.end;
+        const eim = /\sEI\b/.exec(content.slice(from));
+        const eiEnd = eim ? from + eim.index + eim[0].length : content.length;
+        while (k + 1 < tokens.length && tokens[k + 1].start < eiEnd) k++;
+        break;
+      }
+      default: break;
+    }
+    operands.length = 0;
+  }
+
+  return runs;
+}
+
+/**
+ * Candidate split point between an Artifact span's legitimate decorative
+ * opening (page number, running head) and the real content it wrongly
+ * swallows: the single largest consecutive baseline-Y drop (PDF Y-up --
+ * moving down the page) among the span's own text runs. Confirmed shape on
+ * Farrar_2E_Comp_188910.pdf page 12: one large drop from the running
+ * head's own baseline to the first real paragraph's baseline, with every
+ * OTHER drop (line-to-line within a paragraph) consistently much smaller.
+ * Only a starting hint for the AI-assisted confirmation step -- never
+ * trusted on its own, see analyzeArtifactSwallowsContent in
+ * ai-analysis.service.ts.
+ */
+export function computeHeuristicBoundaryIndex(runs: ArtifactTextRun[]): number {
+  if (runs.length < 2) return 0;
+  let maxDrop = -Infinity;
+  let maxDropIndex = 0;
+  for (let i = 1; i < runs.length; i++) {
+    const drop = runs[i - 1].y - runs[i].y;
+    if (drop > maxDrop) { maxDrop = drop; maxDropIndex = i; }
+  }
+  return maxDropIndex;
+}
+
+/**
+ * Splits an oversized Artifact span at `realContentStart`: closes the
+ * Artifact there and immediately opens a fresh `/Span <</MCID n>>` tag for
+ * whatever follows. Deliberately a SINGLE insertion, not a close+reopen
+ * pair the way splitArtifactAroundTaggedContent needs -- the span's own
+ * PRE-EXISTING closing EMC (never touched) now correctly closes the new
+ * Span instead of the Artifact, since the Artifact was already closed by
+ * this one insertion. v1 scope: treats everything from realContentStart
+ * through the span's own original close as real content -- does not
+ * detect or preserve a second trailing decorative footer within the same
+ * span (not seen in any real case so far; see this function's own
+ * call site for the real-document verification this was checked against).
+ * Leading space on the insertion, same established reason as
+ * splitArtifactAroundTaggedContent above: realContentStart can land
+ * immediately after a bare keyword operator, and plain letters aren't
+ * self-delimiting.
+ */
+export function applyArtifactUnwrap(content: string, realContentStart: number, mcid: number): string {
+  const insertion = ` EMC /Span <</MCID ${mcid}>> BDC `;
+  return content.slice(0, realContentStart) + insertion + content.slice(realContentStart);
 }

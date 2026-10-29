@@ -107,3 +107,28 @@ export function pageContentMcids(doc: PDFDocument, pageNumber: number): Set<numb
   }
   return mcids;
 }
+
+export interface PositionedMcid {
+  mcid: number;
+  /** Byte offset of the `<<` that opens this MCID's own property dict (where its own BDC sequence begins). */
+  start: number;
+}
+
+/**
+ * Same detection as pageContentMcids, but on already-decoded content (no
+ * page re-decode) and keeping each MCID's own byte offset in document
+ * (content-stream) order. Needed by callers that must find the nearest
+ * EXISTING tagged neighbor to a specific splice point -- e.g. deciding
+ * which document-flow parent a newly-inserted struct element belongs next
+ * to -- not just confirm an MCID value exists somewhere on the page.
+ */
+export function orderedPageContentMcids(content: string): PositionedMcid[] {
+  const results: PositionedMcid[] = [];
+  BDC_PROPS_RE.lastIndex = 0;
+  let m: RegExpExecArray | null;
+  while ((m = BDC_PROPS_RE.exec(content)) !== null) {
+    const mcidMatch = MCID_ATTR_RE.exec(m[1]);
+    if (mcidMatch) results.push({ mcid: Number(mcidMatch[1]), start: m.index });
+  }
+  return results;
+}

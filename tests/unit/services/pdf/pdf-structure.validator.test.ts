@@ -391,6 +391,114 @@ describe('PDFStructureValidator', () => {
     });
   });
 
+  describe('oversized Artifact spans swallowing real content (ARTIFACT-SWALLOWS-CONTENT)', () => {
+    async function validateWithRealPage(content: string): Promise<ParsedPDF['pdfLibDoc']> {
+      const doc = await PDFDocument.create();
+      doc.addPage([612, 792]);
+      writePageContent(doc, 1, content);
+      return doc;
+    }
+
+    const manyTj = (count: number): string =>
+      Array.from({ length: count }, (_, i) => `(line ${i})Tj\n`).join('');
+
+    it('flags a page with a text-only oversized top-level Artifact span', async () => {
+      const content = `/Artifact BMC\nBT\n${manyTj(20)}ET\nEMC\n`;
+      const pdfLibDoc = await validateWithRealPage(content);
+      const mockParsedPdf = { ...createMockParsedPdf({ isTagged: true, hasLanguage: true, hasTitle: true }), pdfLibDoc };
+      const mockStructure = createMockStructure({
+        isTaggedPDF: true, hasProperHeadingHierarchy: true, hasDocumentLanguage: true, hasLogicalReadingOrder: true,
+      });
+      vi.mocked(pdfParserService.parse).mockResolvedValue(mockParsedPdf);
+      vi.mocked(pdfParserService.close).mockResolvedValue(undefined);
+      vi.mocked(structureAnalyzerService.analyzeStructure).mockResolvedValue(mockStructure);
+
+      const result = await pdfStructureValidator.validateFromFile('/path/to/test.pdf');
+
+      const issue = result.issues.find(i => i.code === 'ARTIFACT-SWALLOWS-CONTENT');
+      expect(issue).toBeDefined();
+      expect(result.issues.find(i => i.code === 'ARTIFACT-SWALLOWS-CONTENT-COMPLEX')).toBeUndefined();
+      expect(issue?.matterhornCheckpoint).toBe('01-005');
+      expect(issue?.matterhornHow).toBe('M');
+      expect(issue?.severity).toBe('serious');
+      expect(issue?.pageNumber).toBe(1);
+      expect(issue?.location).toBe('Page 1');
+      expect(issue?.message).toContain('1 /Artifact span');
+    });
+
+    it('flags a span containing path-paint ops (not just text) as the -COMPLEX variant instead', async () => {
+      const content = `/Artifact BMC\nBT\n${manyTj(20)}ET\n0 0 m\n10 10 l\nS\nEMC\n`;
+      const pdfLibDoc = await validateWithRealPage(content);
+      const mockParsedPdf = { ...createMockParsedPdf({ isTagged: true, hasLanguage: true, hasTitle: true }), pdfLibDoc };
+      const mockStructure = createMockStructure({
+        isTaggedPDF: true, hasProperHeadingHierarchy: true, hasDocumentLanguage: true, hasLogicalReadingOrder: true,
+      });
+      vi.mocked(pdfParserService.parse).mockResolvedValue(mockParsedPdf);
+      vi.mocked(pdfParserService.close).mockResolvedValue(undefined);
+      vi.mocked(structureAnalyzerService.analyzeStructure).mockResolvedValue(mockStructure);
+
+      const result = await pdfStructureValidator.validateFromFile('/path/to/test.pdf');
+
+      expect(result.issues.find(i => i.code === 'ARTIFACT-SWALLOWS-CONTENT')).toBeUndefined();
+      const issue = result.issues.find(i => i.code === 'ARTIFACT-SWALLOWS-CONTENT-COMPLEX');
+      expect(issue).toBeDefined();
+      expect(issue?.matterhornCheckpoint).toBe('01-005');
+      expect(issue?.message).toContain('vector graphics');
+    });
+
+    it('does not flag a small legitimate Artifact span (e.g. a real page number + running head)', async () => {
+      const content = `/Artifact BMC\nBT\n(5)Tj\n(Running Head)Tj\nET\nEMC\n`;
+      const pdfLibDoc = await validateWithRealPage(content);
+      const mockParsedPdf = { ...createMockParsedPdf({ isTagged: true, hasLanguage: true, hasTitle: true }), pdfLibDoc };
+      const mockStructure = createMockStructure({
+        isTaggedPDF: true, hasProperHeadingHierarchy: true, hasDocumentLanguage: true, hasLogicalReadingOrder: true,
+      });
+      vi.mocked(pdfParserService.parse).mockResolvedValue(mockParsedPdf);
+      vi.mocked(pdfParserService.close).mockResolvedValue(undefined);
+      vi.mocked(structureAnalyzerService.analyzeStructure).mockResolvedValue(mockStructure);
+
+      const result = await pdfStructureValidator.validateFromFile('/path/to/test.pdf');
+
+      expect(result.issues.find(i => i.code === 'ARTIFACT-SWALLOWS-CONTENT')).toBeUndefined();
+      expect(result.issues.find(i => i.code === 'ARTIFACT-SWALLOWS-CONTENT-COMPLEX')).toBeUndefined();
+    });
+
+    it('does not run this check on an untagged document (no /Artifact spans exist to swallow anything)', async () => {
+      const content = `/Artifact BMC\nBT\n${manyTj(20)}ET\nEMC\n`;
+      const pdfLibDoc = await validateWithRealPage(content);
+      const mockParsedPdf = { ...createMockParsedPdf({ isTagged: false, hasLanguage: true, hasTitle: true }), pdfLibDoc };
+      const mockStructure = createMockStructure({
+        isTaggedPDF: false, hasProperHeadingHierarchy: true, hasDocumentLanguage: true, hasLogicalReadingOrder: true,
+      });
+      vi.mocked(pdfParserService.parse).mockResolvedValue(mockParsedPdf);
+      vi.mocked(pdfParserService.close).mockResolvedValue(undefined);
+      vi.mocked(structureAnalyzerService.analyzeStructure).mockResolvedValue(mockStructure);
+
+      const result = await pdfStructureValidator.validateFromFile('/path/to/test.pdf');
+
+      expect(result.issues.find(i => i.code === 'ARTIFACT-SWALLOWS-CONTENT')).toBeUndefined();
+    });
+
+    it('reports one issue per page, counting multiple oversized spans and their total op count', async () => {
+      const content = `/Artifact BMC\nBT\n${manyTj(20)}ET\nEMC\n/Artifact BMC\nBT\n${manyTj(20)}ET\nEMC\n`;
+      const pdfLibDoc = await validateWithRealPage(content);
+      const mockParsedPdf = { ...createMockParsedPdf({ isTagged: true, hasLanguage: true, hasTitle: true }), pdfLibDoc };
+      const mockStructure = createMockStructure({
+        isTaggedPDF: true, hasProperHeadingHierarchy: true, hasDocumentLanguage: true, hasLogicalReadingOrder: true,
+      });
+      vi.mocked(pdfParserService.parse).mockResolvedValue(mockParsedPdf);
+      vi.mocked(pdfParserService.close).mockResolvedValue(undefined);
+      vi.mocked(structureAnalyzerService.analyzeStructure).mockResolvedValue(mockStructure);
+
+      const result = await pdfStructureValidator.validateFromFile('/path/to/test.pdf');
+
+      const issues = result.issues.filter(i => i.code === 'ARTIFACT-SWALLOWS-CONTENT');
+      expect(issues).toHaveLength(1);
+      expect(issues[0].message).toContain('2 /Artifact span');
+      expect(issues[0].message).toContain('40 content operation');
+    });
+  });
+
   describe('structure-tree reference integrity (STRUCTURE-DANGLING-REFERENCE)', () => {
     // Real incident this check closes a blind spot for: Math_Olszewski_PDF.pdf's
     // remediated output had 3 struct elements silently dropped by pdf-lib's own

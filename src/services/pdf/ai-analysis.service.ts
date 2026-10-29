@@ -40,6 +40,7 @@ import { TABLE_LIKELY_FORMULA_CODE } from './validators/pdf-table.validator';
 import type { ParsedPDF } from './pdf-parser.service';
 import type { TextRunMatch } from './contrast-content-stream';
 import { computeCompliantColor } from './color-contrast-correction';
+import { findOversizedArtifactSpans, extractArtifactTextRuns, computeHeuristicBoundaryIndex } from './pdf-artifact-tagger';
 
 // ─── Config Types ──────────────────────────────────────────────────────────────
 
@@ -273,6 +274,17 @@ const TABLE_CELL_DISCONNECTED_CODES = new Set(['TABLE-CELL-DISCONNECTED']);
 // needs a separate detection pass, and reattachTableRow's own doc comment
 // for why it's a separate writer too.
 const TABLE_ROW_DISCONNECTED_CODES = new Set(['TABLE-ROW-DISCONNECTED']);
+// pdf-structure.validator.ts's validateArtifactSwallowsContent: a top-level
+// /Artifact span far larger than any legitimate decorative header/footer,
+// swallowing real content that was never given its own tag at all -- a
+// third, distinct Artifact-related defect (see that validator's header
+// comment). Only the text-only variant is here -- ARTIFACT-SWALLOWS-
+// CONTENT-COMPLEX (any path-paint ops inside) always routes to manual
+// review, same as UNTAGGED_CONTENT_COMPLEX_CODES below, since this
+// module's boundary detection has no geometry-based signal for vector
+// content.
+const ARTIFACT_SWALLOWS_CONTENT_CODES = new Set(['ARTIFACT-SWALLOWS-CONTENT']);
+const ARTIFACT_SWALLOWS_CONTENT_COMPLEX_CODES = new Set(['ARTIFACT-SWALLOWS-CONTENT-COMPLEX']);
 const UNTAGGED_CONTENT_COMPLEX_CODES = new Set(['UNTAGGED-CONTENT-COMPLEX']);
 const TABLE_HEADER_SCOPE_CODES = new Set(['TABLE-HEADER-MISSING-SCOPE']);
 
@@ -415,6 +427,29 @@ const FORMULA_ACTUALTEXT_SCHEMA: Schema = {
 const FormulaActualTextResult = z.object({
   latex: z.string().optional(),
   actualText: z.string(),
+});
+
+// Boundary-determination for analyzeArtifactSwallowsContent: asks Gemini to
+// pick the INDEX of the first genuinely real text run among a numbered list
+// extracted directly from the page's own content stream, rather than
+// asking it to re-type a verbatim snippet. Deliberately index-based, not
+// text-based -- the safety-net verification step only needs to confirm the
+// returned index is in bounds (an exact, unambiguous structural check),
+// avoiding any whitespace/encoding fragility a free-form verbatim-text
+// match against re-typed output would have.
+const ARTIFACT_BOUNDARY_SCHEMA: Schema = {
+  type: SchemaType.OBJECT,
+  properties: {
+    firstRealContentIndex: { type: SchemaType.NUMBER },
+    confidence: { type: SchemaType.NUMBER },
+    rationale: { type: SchemaType.STRING },
+  },
+  required: ['firstRealContentIndex', 'confidence'],
+};
+const ArtifactBoundaryResult = z.object({
+  firstRealContentIndex: z.number(),
+  confidence: z.number(),
+  rationale: z.string().optional(),
 });
 
 // Same MAX_TOKENS-truncation trap as FORMULA_ACTUALTEXT_SCHEMA above, confirmed
@@ -1627,6 +1662,26 @@ class AiAnalysisService {
         rationale: 'Deterministic fix — closes the enclosing Artifact span right before the nested tag and reopens it right after, never touches the real tag\'s own bytes or any path/text/image operator',
         model: 'rule-based',
         applyMode: 'apply-to-pdf',
+      };
+    }
+
+    if (ARTIFACT_SWALLOWS_CONTENT_CODES.has(code)) {
+      if (!issue.pageNumber || !parsed.parsedPdf) return null;
+      return this.analyzeArtifactSwallowsContent(issue, parsed.parsedPdf);
+    }
+
+    if (ARTIFACT_SWALLOWS_CONTENT_COMPLEX_CODES.has(code)) {
+      // Contains real path-paint ops, not just text -- this module's
+      // boundary detection only has a text-baseline-Y signal, see
+      // ARTIFACT_SWALLOWS_CONTENT_COMPLEX_CODES's own doc comment.
+      return {
+        suggestionType: 'artifact-unwrap-review',
+        guidance: 'This page has an oversized /Artifact span likely swallowing real content, including vector graphics -- the real-content boundary needs manual review before it can be safely split out.',
+        confidence: 0.3,
+        rationale: 'Contains path-paint operators, not just text -- no geometry-based boundary signal available',
+        model: 'rule-based',
+        applyMode: 'guidance-only',
+        requiresManualReview: true,
       };
     }
 
@@ -2928,6 +2983,125 @@ class AiAnalysisService {
   }
 
   /**
+   * ARTIFACT-SWALLOWS-CONTENT: determines, for each oversized top-level
+   * Artifact span on this page (findOversizedArtifactSpans), exactly where
+   * its legitimate decorative opening ends and the real, never-tagged
+   * content begins. Re-derives spans fresh from the current page bytes
+   * (not cached from validation time) -- this issue is page-level, and a
+   * page can carry more than one oversized span.
+   *
+   * Safety net: Gemini is asked to pick the INDEX of the first real-content
+   * run from a numbered list extracted directly from the page's own bytes
+   * (extractArtifactTextRuns), not to re-type anything -- the returned
+   * index either resolves to a real run or it doesn't, an exact structural
+   * check with no verbatim-text/whitespace fragility. Any span that fails
+   * this check (bad index, no text runs to work with at all, or the model
+   * call itself fails) drops the WHOLE page to guidance-only rather than
+   * partially applying some spans and not others -- same "decline rather
+   * than guess" discipline as every other ambiguity check in this
+   * pipeline. The confirmed run's own TEXT (not its index, not a raw byte
+   * offset) is what's persisted in `value` -- stable to re-derive from at
+   * apply time even if other fixes rewrite this same page first (see
+   * pdf-structure-writer.service.ts's fixArtifactSwallowsContent).
+   */
+  private async analyzeArtifactSwallowsContent(
+    issue: AuditIssue,
+    parsedPdf: ParsedPDF
+  ): Promise<AiSuggestionResult | null> {
+    if (!issue.pageNumber) return null;
+    const content = decodePageContent(parsedPdf.pdfLibDoc, issue.pageNumber);
+    if (!content) return null;
+
+    const spans = findOversizedArtifactSpans(content);
+    if (spans.length === 0) return null; // already fixed or moved since validation
+
+    const confirmedSnippets: string[] = [];
+    let lowestConfidence = 1.0;
+    let anyFailure = false;
+    let failureReason = '';
+    let totalUsage: { promptTokens: number; completionTokens: number } | undefined;
+
+    for (const span of spans) {
+      const runs = extractArtifactTextRuns(content, span.contentStart, span.closeOpStart);
+      if (runs.length === 0) {
+        anyFailure = true;
+        failureReason = 'one of this page\'s oversized Artifact spans has no extractable text runs to determine a boundary from';
+        break;
+      }
+
+      const heuristicIndex = computeHeuristicBoundaryIndex(runs);
+      const listedRuns = runs.slice(0, 150);
+      const prompt =
+        'A PDF page has a producer-authored "Artifact" (decorative) marked-content region far larger than ' +
+        'a normal running header/footer or page number -- it likely swallows real body content that was ' +
+        'never given its own accessibility tag. Below is every text run inside that region, in document ' +
+        'order, each with its own index.\n\n' +
+        listedRuns.map((r, i) => `[${i}] "${r.text.replace(/"/g, '\\"').slice(0, 200)}"`).join('\n') +
+        '\n\nIdentify the index of the FIRST run that is genuine body content (a paragraph, heading, list ' +
+        'item, caption, etc.) rather than decoration (a page number, running head, footer, or similar ' +
+        `repeated page-template text). A rough position-based heuristic suggests index ${heuristicIndex}, ` +
+        'but read the actual text and use your own judgment -- if the whole region is already real content ' +
+        'with no decorative prefix, respond with index 0.\n\n' +
+        'Respond ONLY with JSON: {"firstRealContentIndex": <int>, "confidence": 0.0-1.0, "rationale": "brief"}';
+
+      let data: { firstRealContentIndex: number; confidence: number };
+      let usage: { promptTokens: number; completionTokens: number } | undefined;
+      try {
+        const result = await geminiService.generateWithSchema(prompt, ArtifactBoundaryResult, {
+          model: 'flash',
+          maxOutputTokens: 1024,
+          responseSchema: ARTIFACT_BOUNDARY_SCHEMA,
+        });
+        data = result.data;
+        usage = result.usage;
+      } catch (err) {
+        anyFailure = true;
+        failureReason = `AI boundary call failed: ${err instanceof Error ? err.message : String(err)}`;
+        break;
+      }
+
+      const index = Math.trunc(data.firstRealContentIndex);
+      if (!Number.isInteger(index) || index < 0 || index >= listedRuns.length) {
+        anyFailure = true;
+        failureReason = `AI returned an out-of-range run index (${data.firstRealContentIndex}) for a ${listedRuns.length}-run span`;
+        break;
+      }
+
+      confirmedSnippets.push(listedRuns[index].text);
+      lowestConfidence = Math.min(lowestConfidence, typeof data.confidence === 'number' ? data.confidence : 0.5);
+      if (usage) {
+        totalUsage = totalUsage
+          ? { promptTokens: totalUsage.promptTokens + usage.promptTokens, completionTokens: totalUsage.completionTokens + usage.completionTokens }
+          : { ...usage };
+      }
+    }
+
+    if (anyFailure) {
+      return {
+        suggestionType: 'artifact-unwrap-review',
+        guidance: `This page has ${spans.length} oversized /Artifact span(s) likely swallowing real content, but the real-content boundary could not be confidently determined (${failureReason}). Review manually.`,
+        confidence: 0.3,
+        rationale: failureReason,
+        model: 'rule-based',
+        applyMode: 'guidance-only',
+        requiresManualReview: true,
+      };
+    }
+
+    return {
+      suggestionType: 'artifact-unwrap-fix',
+      value: JSON.stringify(confirmedSnippets),
+      guidance: `${spans.length} oversized /Artifact span(s) on this page will be split so the real content they swallow gets its own structure tag.`,
+      confidence: Math.min(0.85, lowestConfidence),
+      rationale: 'AI identified the exact run (by index into the page\'s own extracted text, verified in-bounds) where real content begins inside each oversized Artifact span',
+      model: 'gemini-flash',
+      applyMode: 'apply-to-pdf',
+      requiresManualReview: true,
+      usage: totalUsage,
+    };
+  }
+
+  /**
    * Render a page region (top-left PDF-point boundingBox) to a cropped PNG
    * base64. Renders the whole page at `scale`, then crops with a small pad so
    * the model sees a little context around the formula.
@@ -3518,6 +3692,16 @@ class AiAnalysisService {
           // untagged-content-fix above, for the same reason: a later
           // color-contrast-fix on this same page needs to know its
           // pre-resolved byte offsets may now be stale.
+          if (r.success && originalIssue.pageNumber !== undefined) {
+            pagesRewrittenSincePreResolve.add(originalIssue.pageNumber);
+          }
+        } else if (suggestionType === 'artifact-unwrap-fix') {
+          const r = pdfStructureWriterService.fixArtifactSwallowsContent(doc, originalIssue, value);
+          modification = { success: r.success, description: r.after, error: r.error };
+          // Rewrites the page's own content stream (closes the Artifact
+          // early and opens a fresh /Span) -- same pagesRewrittenSincePreResolve
+          // tracking as tagged-content-artifact-split-fix above, for the
+          // same reason.
           if (r.success && originalIssue.pageNumber !== undefined) {
             pagesRewrittenSincePreResolve.add(originalIssue.pageNumber);
           }

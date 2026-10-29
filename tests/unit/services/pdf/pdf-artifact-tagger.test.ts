@@ -1,5 +1,14 @@
 import { describe, it, expect } from 'vitest';
-import { findUntaggedPathRuns, tagUntaggedPaintedPaths, findTaggedContentInsideArtifact, splitArtifactAroundTaggedContent } from '../../../../src/services/pdf/pdf-artifact-tagger';
+import {
+  findUntaggedPathRuns,
+  tagUntaggedPaintedPaths,
+  findTaggedContentInsideArtifact,
+  splitArtifactAroundTaggedContent,
+  findOversizedArtifactSpans,
+  extractArtifactTextRuns,
+  computeHeuristicBoundaryIndex,
+  applyArtifactUnwrap,
+} from '../../../../src/services/pdf/pdf-artifact-tagger';
 
 describe('findUntaggedPathRuns', () => {
   it('finds a single untagged painted-path run', () => {
@@ -329,5 +338,160 @@ describe('splitArtifactAroundTaggedContent', () => {
     const result = splitArtifactAroundTaggedContent(content);
     expect(result.content).toContain('(Header)Tj');
     expect(result.content).toContain('9 0 0 9 100 700 Tm');
+  });
+});
+
+describe('findOversizedArtifactSpans', () => {
+  const buildPage = (bodyTjCount: number): string => {
+    const header = `10 0 0 10 50 800 Tm\n(5)Tj\n10 0 0 10 100 800 Tm\n(Running Head)Tj\n`;
+    const body = Array.from({ length: bodyTjCount }, (_, i) => `10 0 0 10 50 ${700 - i * 10} Tm\n(Paragraph line ${i})Tj\n`).join('');
+    return `/Artifact BMC\nBT\n${header}${body}ET\nEMC\n`;
+  };
+
+  it('does not flag a small legitimate Artifact span (op count at or below threshold)', () => {
+    // 2 Tj calls total (just a page number + running head) -- well under
+    // even a generously low threshold.
+    const content = buildPage(0);
+    expect(findOversizedArtifactSpans(content, 2)).toHaveLength(0);
+  });
+
+  it('flags a top-level Artifact span whose op count exceeds the threshold', () => {
+    const content = buildPage(10); // 2 header Tj + 10 body Tj = 12 ops
+    const spans = findOversizedArtifactSpans(content, 5);
+    expect(spans).toHaveLength(1);
+    expect(spans[0].opCount).toBe(12);
+    expect(spans[0].openOpStart).toBe(content.indexOf('BMC'));
+    expect(spans[0].contentStart).toBe(content.indexOf('BMC') + 'BMC'.length);
+    expect(spans[0].closeOpStart).toBe(content.lastIndexOf('EMC'));
+    expect(spans[0].hasPathOps).toBe(false);
+  });
+
+  it('uses the real-document-confirmed default threshold (15) when none is passed', () => {
+    // A legitimate real header/footer confirmed to be 1-10 ops must not be
+    // flagged at the default threshold.
+    const content = buildPage(3); // 2 + 3 = 5 ops, well under 15
+    expect(findOversizedArtifactSpans(content)).toHaveLength(0);
+  });
+
+  it('marks hasPathOps when a path-paint operator appears inside, in addition to text', () => {
+    const content = `/Artifact BMC\nBT\n${Array.from({ length: 10 }, (_, i) => `(line ${i})Tj\n`).join('')}ET\n0 0 m\n10 10 l\nS\nEMC\n`;
+    const spans = findOversizedArtifactSpans(content, 5);
+    expect(spans).toHaveLength(1);
+    expect(spans[0].hasPathOps).toBe(true);
+  });
+
+  it('does not treat a NESTED Artifact (inside a real tag) as a top-level oversized span', () => {
+    // The outer wrapper here is a real /P, not /Artifact -- an inner
+    // Artifact nested inside it never starts at depth 0, so it's simply
+    // not this function's concern regardless of its own op count.
+    const innerOps = Array.from({ length: 20 }, (_, i) => `(line ${i})Tj\n`).join('');
+    const content = `/P <</MCID 0 >>BDC\n/Artifact BMC\nBT\n${innerOps}ET\nEMC\nEMC\n`;
+    expect(findOversizedArtifactSpans(content, 5)).toHaveLength(0);
+  });
+
+  it('does not corrupt an inline image by parsing its binary payload as content ops', () => {
+    const content = `/Artifact BMC\nBI\n/W 2/H 1/BPC 8/CS/G\nID \x00m 0 0 l S\x00\nEI\nEMC\n`;
+    expect(findOversizedArtifactSpans(content, 0)).toHaveLength(0);
+  });
+});
+
+describe('extractArtifactTextRuns', () => {
+  it('extracts each text run with its decoded text and device-space Y from the most recent Tm', () => {
+    const content = `BT\n10 0 0 10 50 800 Tm\n(Header)Tj\n10 0 0 10 50 700 Tm\n(Body)Tj\nET\n`;
+    const runs = extractArtifactTextRuns(content, 0, content.length);
+    expect(runs).toHaveLength(2);
+    expect(runs[0]).toMatchObject({ text: 'Header', y: 800 });
+    expect(runs[1]).toMatchObject({ text: 'Body', y: 700 });
+  });
+
+  it('ignores text-show calls entirely outside the given range', () => {
+    const content = `BT\n10 0 0 10 50 800 Tm\n(Before)Tj\n10 0 0 10 50 700 Tm\n(Inside)Tj\nET\n`;
+    const rangeStart = content.indexOf('(Inside)') - 20; // starts after "Before"'s own Tj
+    const runs = extractArtifactTextRuns(content, rangeStart, content.length);
+    expect(runs).toHaveLength(1);
+    expect(runs[0].text).toBe('Inside');
+  });
+
+  it('decodes escaped characters in a string literal operand', () => {
+    const content = `BT\n10 0 0 10 50 800 Tm\n(Line one \\(escaped\\) and \\n newline)Tj\nET\n`;
+    const runs = extractArtifactTextRuns(content, 0, content.length);
+    expect(runs).toHaveLength(1);
+    expect(runs[0].text).toBe('Line one (escaped) and \n newline');
+  });
+
+  it('concatenates TJ array string operands in order, ignoring kerning numbers', () => {
+    const content = `BT\n10 0 0 10 50 800 Tm\n[(Hel)-20(lo)]TJ\nET\n`;
+    const runs = extractArtifactTextRuns(content, 0, content.length);
+    expect(runs).toHaveLength(1);
+    expect(runs[0].text).toBe('Hello');
+  });
+
+  it('omits a whitespace-only text-show call', () => {
+    const content = `BT\n10 0 0 10 50 800 Tm\n( )Tj\n10 0 0 10 50 700 Tm\n(Real)Tj\nET\n`;
+    const runs = extractArtifactTextRuns(content, 0, content.length);
+    expect(runs).toHaveLength(1);
+    expect(runs[0].text).toBe('Real');
+  });
+
+  it('tracks baseline Y across Td (relative) moves, not just Tm (absolute)', () => {
+    const content = `BT\n10 0 0 10 50 800 Tm\n(Header)Tj\n0 -50 Td\n(Body)Tj\nET\n`;
+    const runs = extractArtifactTextRuns(content, 0, content.length);
+    expect(runs).toHaveLength(2);
+    expect(runs[1].y).toBe(750);
+  });
+
+  it('does not corrupt an inline image by parsing its binary payload as text operators', () => {
+    const content = `BT\n10 0 0 10 50 800 Tm\n(Real)Tj\nET\nBI\n/W 2/H 1/BPC 8/CS/G\nID \x00(fake)Tj\x00\nEI\n`;
+    const runs = extractArtifactTextRuns(content, 0, content.length);
+    expect(runs).toHaveLength(1);
+    expect(runs[0].text).toBe('Real');
+  });
+});
+
+describe('computeHeuristicBoundaryIndex', () => {
+  it('returns 0 for fewer than 2 runs', () => {
+    expect(computeHeuristicBoundaryIndex([])).toBe(0);
+    expect(computeHeuristicBoundaryIndex([{ text: 'a', start: 0, y: 100 }])).toBe(0);
+  });
+
+  it('finds the index of the single largest consecutive Y-drop', () => {
+    // Confirmed real shape: a running head at the top, then a large drop
+    // to the first real paragraph, then small, consistent line-to-line
+    // drops within the paragraph.
+    const runs = [
+      { text: 'Running Head', start: 0, y: 800 },
+      { text: 'First real paragraph line one', start: 10, y: 700 }, // big drop: 100
+      { text: 'line two', start: 20, y: 690 }, // small drop: 10
+      { text: 'line three', start: 30, y: 680 }, // small drop: 10
+    ];
+    expect(computeHeuristicBoundaryIndex(runs)).toBe(1);
+  });
+});
+
+describe('applyArtifactUnwrap', () => {
+  it('inserts a leading-space-safe close-Artifact/open-Span sequence at the given offset', () => {
+    const content = `/Artifact BMC\n(decorative)Tj\n(real content)Tj\nEMC\n`;
+    const realContentStart = content.indexOf('(real content)');
+    const result = applyArtifactUnwrap(content, realContentStart, 3);
+    expect(result).toBe(
+      `/Artifact BMC\n(decorative)Tj\n EMC /Span <</MCID 3>> BDC (real content)Tj\nEMC\n`
+    );
+  });
+
+  it('leaves everything before the insertion point byte-for-byte unchanged', () => {
+    const content = `/Artifact BMC\n(decorative header text)Tj\n(real)Tj\nEMC\n`;
+    const realContentStart = content.indexOf('(real)');
+    const result = applyArtifactUnwrap(content, realContentStart, 0);
+    expect(result.slice(0, realContentStart)).toBe(content.slice(0, realContentStart));
+  });
+
+  it("the pre-existing closing EMC now correctly closes the new Span, not the Artifact -- confirmed by exactly one EMC appearing before the new Span's own BDC never closes it prematurely", () => {
+    const content = `/Artifact BMC\n(decorative)Tj\n(real)Tj\nEMC\n`;
+    const realContentStart = content.indexOf('(real)');
+    const result = applyArtifactUnwrap(content, realContentStart, 7);
+    // Exactly one EMC exists after the new BDC (the original one, now
+    // closing the Span) -- no second EMC was inserted.
+    const afterBdc = result.slice(result.indexOf('BDC'));
+    expect((afterBdc.match(/EMC/g) ?? []).length).toBe(1);
   });
 });
