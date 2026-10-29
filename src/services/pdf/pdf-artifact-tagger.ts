@@ -275,3 +275,151 @@ export function tagUntaggedPaintedPaths(content: string): { content: string; cou
 
   return { content: out, count: runs.length };
 }
+
+export interface ArtifactNestingViolation {
+  /**
+   * Byte offset of the nested real tag's own FIRST operand (its tag name,
+   * e.g. `/Span` -- NOT the BDC/BMC operator's own offset, which sits AFTER
+   * the tag name in PDF's postfix syntax; splicing at the operator's offset
+   * would leave the tag name itself stranded outside both spans, corrupting
+   * the content stream -- same hazard pdf-structure-writer.service.ts's own
+   * findEnclosingBdcTarget already documents and guards against). Insert
+   * `EMC ` here to close the enclosing Artifact early, right before this tag
+   * opens.
+   */
+  closeArtifactBefore: number;
+  /** Byte offset right after this real tag's own matching EMC. Insert `/Artifact BMC ` here to reopen the Artifact for whatever comes next. */
+  reopenArtifactAfter: number;
+}
+
+/**
+ * Matterhorn 01-004 ("Tagged content is present inside content marked as
+ * Artifact", UA1:7.1-1, machine-testable) — confirmed live via a real
+ * PAC/axesPAC report on Farrar_2E_Comp_188910.pdf: 76 real structure
+ * elements (Span/Figure/PlacedPDF/H6) nested inside an /Artifact span,
+ * inherited untouched from the document's original (InDesign) producer.
+ * Unlike findUntaggedPathRuns above, this never has to decide whether
+ * something is decorative — the nested content already carries its own
+ * real structure tag, so the only question is a pure structural fact: does
+ * the enclosing Artifact's own marked-content boundary wrongly include it.
+ *
+ * Only the OUTERMOST real tag in a nested chain is reported (and later
+ * fixed) — a real tag nested inside another real tag that's already being
+ * excised from the Artifact doesn't need (or get) its own separate
+ * violation, since splitting the Artifact around the outer tag already
+ * carries the inner one out along with it.
+ */
+export function findTaggedContentInsideArtifact(content: string): ArtifactNestingViolation[] {
+  const tokens = tokenize(content);
+  const violations: ArtifactNestingViolation[] = [];
+
+  const stack: Array<{ isArtifact: boolean; ownsViolation: boolean }> = [];
+  const openViolationStarts: Array<number | null> = [];
+  const operands: Token[] = [];
+
+  for (let k = 0; k < tokens.length; k++) {
+    const tk = tokens[k];
+    if (tk.t !== 'op') { operands.push(tk); continue; }
+    const op = tk.v;
+
+    if (op === 'BDC' || op === 'BMC') {
+      const tagName = operands.length ? operands[0].v : '';
+      const tagStart = operands.length ? operands[0].start : tk.start;
+      const isArtifact = tagName === '/Artifact';
+      const isOC = tagName === '/OC';
+      const isReal = op === 'BDC' && !isArtifact && !isOC;
+
+      const hasArtifactAncestor = stack.some((s) => s.isArtifact);
+      const hasViolationAncestor = stack.some((s) => s.ownsViolation);
+      const isNewViolation = isReal && hasArtifactAncestor && !hasViolationAncestor;
+
+      stack.push({ isArtifact, ownsViolation: isNewViolation });
+      openViolationStarts.push(isNewViolation ? tagStart : null);
+      operands.length = 0;
+      continue;
+    }
+    if (op === 'EMC') {
+      stack.pop();
+      const openStart = openViolationStarts.pop() ?? null;
+      if (openStart !== null) {
+        violations.push({ closeArtifactBefore: openStart, reopenArtifactAfter: tk.end });
+      }
+      operands.length = 0;
+      continue;
+    }
+
+    if (op === 'BI') {
+      // Inline image: BI <dict> ID <binary> EI -- same corruption hazard
+      // (and same fix) as findUntaggedPathRuns's own BI handling above:
+      // locate EI directly in the source and skip every token inside that
+      // span, never letting the tokenizer interpret raw image bytes.
+      const idm = /\bID\b/.exec(content.slice(tk.end));
+      const from = idm ? tk.end + idm.index + 2 : tk.end;
+      const eim = /\sEI\b/.exec(content.slice(from));
+      const eiEnd = eim ? from + eim.index + eim[0].length : content.length;
+      while (k + 1 < tokens.length && tokens[k + 1].start < eiEnd) k++;
+      operands.length = 0;
+      continue;
+    }
+
+    operands.length = 0;
+  }
+
+  return violations;
+}
+
+/**
+ * Applies findTaggedContentInsideArtifact's violations: for each one,
+ * closes the enclosing Artifact right before the nested real tag opens and
+ * reopens a fresh Artifact right after it closes -- splitting one
+ * `/Artifact BMC … EMC` span into two around the real content, never
+ * touching the real tag's own bytes or any path/text/image operator.
+ * Applied right-to-left so earlier insertions don't invalidate later
+ * offsets (same convention as tagUntaggedPaintedPaths above). When two
+ * violations are adjacent -- one's reopen point and the next one's close
+ * point have nothing but whitespace between them, the overwhelmingly
+ * common real shape for a run of back-to-back real tags all sharing one
+ * outer Artifact (e.g. 38 consecutive Spans confirmed real on one page of
+ * Farrar_2E_Comp_188910.pdf) -- the pair is skipped rather than inserting
+ * an empty open/close Artifact span with nothing meaningful between them.
+ *
+ * Both insertions carry a LEADING space -- confirmed real and necessary
+ * live: `closeArtifactBefore` can land immediately after a bare keyword
+ * operator (e.g. `BT`, confirmed on Farrar_2E_Comp_188910.pdf's page 68),
+ * and unlike `/` (a real PDF delimiter, safe with no leading space before
+ * the reopened `/Artifact`), plain letters are NOT self-delimiting --
+ * `BT` immediately followed by an unspaced `EMC` tokenizes as the single
+ * garbage operator `BTEMC`, silently swallowing the fix and leaving the
+ * Artifact open. A leading space is always harmless and guarantees a real
+ * token boundary regardless of what precedes the insertion point.
+ */
+export function splitArtifactAroundTaggedContent(content: string): { content: string; count: number } {
+  const violations = findTaggedContentInsideArtifact(content);
+  if (violations.length === 0) return { content, count: 0 };
+
+  const isOnlyWhitespaceBetween = (start: number, end: number): boolean =>
+    end >= start && content.slice(start, end).trim() === '';
+
+  const sorted = [...violations].sort((a, b) => a.closeArtifactBefore - b.closeArtifactBefore);
+  type Edit = { offset: number; text: string };
+  const edits: Edit[] = [];
+  for (let i = 0; i < sorted.length; i++) {
+    const v = sorted[i];
+    const prev = i > 0 ? sorted[i - 1] : null;
+    if (!(prev && isOnlyWhitespaceBetween(prev.reopenArtifactAfter, v.closeArtifactBefore))) {
+      edits.push({ offset: v.closeArtifactBefore, text: ' EMC ' });
+    }
+    const next = i + 1 < sorted.length ? sorted[i + 1] : null;
+    if (!(next && isOnlyWhitespaceBetween(v.reopenArtifactAfter, next.closeArtifactBefore))) {
+      edits.push({ offset: v.reopenArtifactAfter, text: ' /Artifact BMC ' });
+    }
+  }
+
+  edits.sort((a, b) => b.offset - a.offset);
+  let out = content;
+  for (const edit of edits) {
+    out = out.slice(0, edit.offset) + edit.text + out.slice(edit.offset);
+  }
+
+  return { content: out, count: violations.length };
+}

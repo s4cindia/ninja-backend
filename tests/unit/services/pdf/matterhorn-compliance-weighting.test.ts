@@ -84,6 +84,24 @@ describe('generateMatterhornResults — per-checkpoint affectedPageRatio', () =>
     expect(tagged.affectedPageRatio).toBe(1);
   });
 
+  it('counts a TAGGED-CONTENT-INSIDE-ARTIFACT issue toward checkpoint 01 generically via matterhornCheckpoint, not a hardcoded code string', () => {
+    const validation = emptyValidation();
+    validation.structureIssues = [makeIssue({ code: 'TAGGED-CONTENT-INSIDE-ARTIFACT', matterhornCheckpoint: '01-004', pageNumber: 3 })];
+    const results = service.generateMatterhornResults(validation, 10);
+    const tagged = results.find(r => r.checkpointId === '01')!;
+    expect(tagged.passed).toBe(false);
+    expect(tagged.failureCount).toBe(1);
+  });
+
+  it('does NOT count a Suspects-flag (MATTERHORN-01-007) issue toward checkpoint 01 -- a suspect tag structure is a warning flag, not evidence the document itself is untagged', () => {
+    const validation = emptyValidation();
+    validation.structureIssues = [makeIssue({ code: 'MATTERHORN-01-007', matterhornCheckpoint: '01-007', pageNumber: 1 })];
+    const results = service.generateMatterhornResults(validation, 10);
+    const tagged = results.find(r => r.checkpointId === '01')!;
+    expect(tagged.passed).toBe(true);
+    expect(tagged.failureCount).toBe(0);
+  });
+
   it('gives every checkpoint a 0 ratio on a fully clean document', () => {
     const results = service.generateMatterhornResults(emptyValidation(), 20);
     expect(results).toHaveLength(8);

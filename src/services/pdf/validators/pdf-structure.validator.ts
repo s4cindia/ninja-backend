@@ -14,7 +14,7 @@ import { AuditIssue, IssueSeverity } from '../../audit/base-audit.service';
 import { structureAnalyzerService, DocumentStructure } from '../structure-analyzer.service';
 import { pdfParserService, ParsedPDF } from '../pdf-parser.service';
 import { decodePageContent } from '../pdf-content-stream-io';
-import { findUntaggedPathRuns, type UntaggedPathRun } from '../pdf-artifact-tagger';
+import { findUntaggedPathRuns, type UntaggedPathRun, findTaggedContentInsideArtifact } from '../pdf-artifact-tagger';
 import { logger } from '../../../lib/logger';
 
 // validateUntaggedContent's own recurring-decorative-curve refinement (see
@@ -138,6 +138,14 @@ class PDFStructureValidator {
       issues.push(...this.validateUntaggedContent(parsedPdf));
     }
 
+    // Validate tagged content nested inside an /Artifact span (Matterhorn
+    // 01-004) -- tagged PDFs only, same reasoning as the untagged-content
+    // check above (no /Artifact spans exist to nest inside on an untagged
+    // document).
+    if (structure.isTaggedPDF) {
+      issues.push(...this.validateTaggedContentInsideArtifact(parsedPdf));
+    }
+
     // Structure-tree reference integrity -- tagged PDFs only (an untagged
     // document has no /StructTreeRoot to walk at all).
     if (structure.isTaggedPDF) {
@@ -204,19 +212,25 @@ class PDFStructureValidator {
       }));
     }
 
-    // Check for suspect tag structure (Matterhorn 01-004)
+    // Check for suspect tag structure (Matterhorn 01-007 -- "Suspects entry
+    // has a value of true". Previously mislabeled 01-004, which is a
+    // different condition entirely ("Tagged content is present inside
+    // content marked as Artifact", see validateTaggedContentInsideArtifact
+    // below for real coverage of that one) -- fixed alongside adding that
+    // validator. pdf-audit.service.ts's checkpoint-01 rollup filters by this
+    // exact code string and was updated in the same change.)
     if (structure.isTaggedPDF && parsedPdf.structure.metadata.suspect) {
       issues.push(this.createIssue({
         source: 'pdf-structure',
         severity: 'serious',
-        code: 'MATTERHORN-01-004',
+        code: 'MATTERHORN-01-007',
         message: 'Document has suspect tag structure',
         wcagCriteria: ['1.3.1'],
         location: 'Document',
         suggestion: 'Review and fix the tag structure. The Suspects flag indicates potential tagging problems.',
         category: 'structure',
         pageNumber: 1,
-        matterhornCheckpoint: '01-004',
+        matterhornCheckpoint: '01-007',
         matterhornHow: 'M',
       }));
     }
@@ -642,6 +656,70 @@ class PDFStructureValidator {
         category: 'structure',
         pageNumber,
         matterhornCheckpoint: '01-005',
+        matterhornHow: 'M',
+      }));
+    }
+
+    return issues;
+  }
+
+  /**
+   * Matterhorn 01-004 ("Tagged content is present inside content marked as
+   * Artifact", UA1:7.1-1, machine-testable) — confirmed live via a real
+   * PAC/axesPAC report the user shared on Farrar_2E_Comp_188910.pdf: 76
+   * real structure elements (Span/Figure/PlacedPDF/H6) nested inside an
+   * /Artifact span, inherited untouched from the document's original
+   * (InDesign) producer -- Seam-C's own content-stream tagger produces
+   * strictly flat, non-nested marked-content regions by construction, and
+   * its own upfront "does this need retagging" gate only checks for an
+   * empty/heading-shell structure tree, not nesting validity, so a document
+   * with real headings elsewhere (like this one) sails through untouched.
+   *
+   * One issue per affected page (not per raw nesting occurrence) -- same
+   * reviewability-at-scale reasoning as validateUntaggedContent above; a
+   * single decorative wrapper can carry dozens of individually-nested real
+   * elements (confirmed real: 38 on one page of the document this was found
+   * on). No manual-review gate (unlike UNTAGGED-CONTENT-COMPLEX): the
+   * nested content already carries its own real structure tag, so there's
+   * no "decorative or meaningful?" judgment call -- only whether the
+   * enclosing Artifact's own marked-content boundary should exclude it,
+   * which splitArtifactAroundTaggedContent resolves as a pure, unambiguous
+   * content-stream edit.
+   */
+  private validateTaggedContentInsideArtifact(parsedPdf: ParsedPDF): AuditIssue[] {
+    const issues: AuditIssue[] = [];
+    let pageCount: number;
+    try {
+      pageCount = parsedPdf.pdfLibDoc.getPageCount();
+    } catch (err) {
+      logger.debug(`[PDFStructureValidator] Could not read page count for artifact-nesting check: ${err instanceof Error ? err.message : String(err)}`);
+      return issues;
+    }
+
+    for (let pageNumber = 1; pageNumber <= pageCount; pageNumber++) {
+      let content: string | null;
+      try {
+        content = decodePageContent(parsedPdf.pdfLibDoc, pageNumber);
+      } catch (err) {
+        logger.debug(`[PDFStructureValidator] Could not decode page ${pageNumber} for artifact-nesting check: ${err instanceof Error ? err.message : String(err)}`);
+        continue;
+      }
+      if (!content) continue;
+
+      const violations = findTaggedContentInsideArtifact(content);
+      if (violations.length === 0) continue;
+
+      issues.push(this.createIssue({
+        source: 'pdf-structure',
+        severity: 'serious',
+        code: 'TAGGED-CONTENT-INSIDE-ARTIFACT',
+        message: `${violations.length} real structure element(s) on this page are nested inside an /Artifact marked-content span -- invisible to assistive technology and compliance checkers despite carrying their own tag`,
+        wcagCriteria: ['1.3.1'],
+        location: `Page ${pageNumber}`,
+        suggestion: 'Split the enclosing Artifact span so it no longer encloses the real tagged content.',
+        category: 'structure',
+        pageNumber,
+        matterhornCheckpoint: '01-004',
         matterhornHow: 'M',
       }));
     }

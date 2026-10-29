@@ -29,6 +29,7 @@ import { pdfFormulaValidator } from './validators/pdf-formula.validator';
 import { pdfFigureStructTreeValidator } from './validators/pdf-figure-structtree.validator';
 import { pdfFigureCaptionTreeValidator } from './validators/pdf-figure-caption-tree.validator';
 import { pdfInlineFigureTreeValidator } from './validators/pdf-inline-figure-tree.validator';
+import { pdfTableCellTreeValidator } from './validators/pdf-table-cell-tree.validator';
 import { pdfFontToUnicodeValidator } from './validators/pdf-font-tounicode.validator';
 import { pdfTableHeaderScopeValidator } from './validators/pdf-table-header-scope.validator';
 import { pdfStructureValidator } from './validators/pdf-structure.validator';
@@ -436,6 +437,26 @@ class PdfAuditService extends BaseAuditService<PdfParseResult, PdfValidationResu
             const errorMessage = error instanceof Error ? error.message : 'Unknown error';
             logger.error(`[PdfAudit] PdfInlineFigureTreeValidator failed:`, error);
             result.validatorErrors.push({ validator: 'PdfInlineFigureTreeValidator', error: errorMessage });
+          }
+        }
+
+        // 1c-2. Table-Cell Tree-Reachability Validator (same disconnection
+        // shape as PdfFigureCaptionTreeValidator/PdfInlineFigureTreeValidator
+        // above, but for /TD and /TH table cells -- see that validator's own
+        // header comment for the real, confirmed 5-cell defect this catches
+        // on Farrar_2E_Comp_188910.pdf that no other structural check in
+        // this codebase can see.
+        if (willRunStructure) {
+          try {
+            logger.info(`[PdfAudit] Running PdfTableCellTreeValidator...`);
+            const tableCellTreeResult = await pdfTableCellTreeValidator.validate(parsedPdf);
+            result.structureIssues.push(...tableCellTreeResult.issues);
+            result.issues.push(...tableCellTreeResult.issues);
+            logger.info(`[PdfAudit] PdfTableCellTreeValidator found ${tableCellTreeResult.issues.length} issues`);
+          } catch (error) {
+            const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+            logger.error(`[PdfAudit] PdfTableCellTreeValidator failed:`, error);
+            result.validatorErrors.push({ validator: 'PdfTableCellTreeValidator', error: errorMessage });
           }
         }
 
@@ -1165,9 +1186,17 @@ class PdfAuditService extends BaseAuditService<PdfParseResult, PdfValidationResu
     // FIGURE-CAPTION-DISCONNECTED (this PR) and the pre-existing
     // UNTAGGED-CONTENT (PR #588) issues carry that checkpoint but neither
     // code string, so a document with either (or both) could still show
-    // checkpoint 01 as passing.
+    // checkpoint 01 as passing. TABLE-CELL-DISCONNECTED also carries
+    // '01-005' and is picked up the same generic way.
+    //
+    // 'MATTERHORN-01-004' here is TAGGED-CONTENT-INSIDE-ARTIFACT's own real
+    // code (see validateTaggedContentInsideArtifact) -- not the Suspects-flag
+    // check, which was relabeled from (mislabeled) '01-004' to its real
+    // condition, '01-007', and is deliberately NOT included here: a suspect
+    // tag structure is a document-level warning flag, not evidence the
+    // document itself is untagged.
     const untaggedIssues = validation.structureIssues.filter(
-      i => i.code === 'MATTERHORN-01-004' || i.code === 'PDF-UNTAGGED' || i.matterhornCheckpoint === '01-005'
+      i => i.code === 'PDF-UNTAGGED' || i.matterhornCheckpoint === '01-004' || i.matterhornCheckpoint === '01-005'
     );
     const isTagged = untaggedIssues.length === 0;
     results.push({

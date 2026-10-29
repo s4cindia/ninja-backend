@@ -31,7 +31,7 @@ import { AuditIssue } from '../audit/base-audit.service';
 import { logger } from '../../lib/logger';
 import { pageContentMcids, decodePageContent, writePageContent } from './pdf-content-stream-io';
 import { locateMcidBoundingBoxes } from './mcid-bounding-box';
-import { tagUntaggedPaintedPaths } from './pdf-artifact-tagger';
+import { tagUntaggedPaintedPaths, splitArtifactAroundTaggedContent } from './pdf-artifact-tagger';
 import {
   matchCellRanges,
   insertMarkedContentSpans,
@@ -3526,6 +3526,50 @@ export class PdfStructureWriterService {
   }
 
   /**
+   * Matterhorn 01-004 fix — splits each issue's page's enclosing
+   * `/Artifact BMC … EMC` span around any real tagged content found nested
+   * inside it (see pdf-artifact-tagger.ts's findTaggedContentInsideArtifact
+   * for the full detection logic and the real-document finding behind it).
+   * Purely a marked-content boundary change: never touches the real tag's
+   * own bytes or any path/text/image operator, so it's always a
+   * deterministic, no-AI, risk-free apply-to-pdf fix, same class as
+   * fixUntaggedContent above.
+   */
+  fixTaggedContentInsideArtifact(doc: PDFDocument, issues: AuditIssue[]): FixResult[] {
+    return issues.map((issue) => {
+      if (!issue.pageNumber) {
+        return { issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error: 'Issue has no pageNumber' };
+      }
+
+      let content: string | null;
+      try {
+        content = decodePageContent(doc, issue.pageNumber);
+      } catch (err) {
+        return {
+          issueId: issue.id, success: false, before: 'unknown', after: 'unknown',
+          error: `Could not decode page ${issue.pageNumber}: ${err instanceof Error ? err.message : String(err)}`,
+        };
+      }
+      if (!content) {
+        return { issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error: `Page ${issue.pageNumber} has no content stream` };
+      }
+
+      const { content: fixed, count } = splitArtifactAroundTaggedContent(content);
+      if (count === 0) {
+        return { issueId: issue.id, success: false, before: 'tagged content nested inside an Artifact span', after: 'unknown', error: 'No Artifact-nested real content found on this page (already fixed or moved)' };
+      }
+
+      writePageContent(doc, issue.pageNumber, fixed);
+      return {
+        issueId: issue.id,
+        success: true,
+        before: `${count} real structure element(s) nested inside an /Artifact span`,
+        after: `${count} element(s) excised from the Artifact's marked-content range`,
+      };
+    });
+  }
+
+  /**
    * Matterhorn 01-005-adjacent fix: wraps a SPECIFIC text run — one whose
    * measured ink color exactly matches its background
    * (pdf-contrast.validator.ts's own "single uniform color" detection) —
@@ -4725,6 +4769,447 @@ export class PdfStructureWriterService {
           success: true,
           before: 'disconnected from the structure tree',
           after: `reattached into ${finalContainerRef.toString()}'s own /K array, immediately after MCID ${figureMcid - 1}`,
+        });
+      } catch (err) {
+        results.push({ issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error: err instanceof Error ? err.message : String(err) });
+      }
+    }
+
+    return results;
+  }
+
+  /**
+   * Reattaches a disconnected /TD or /TH table-cell struct element into its
+   * containing /TR's own /K array, in correct left-to-right column order --
+   * same disconnection SHAPE as reattachInlineFigure above (tagged,
+   * ParentTree-cross-referenced, missing from any parent's /K), adapted for
+   * one real structural difference: a /TR's own /K array holds TH/TD
+   * struct-element REFS (buildTableFromLayout's own column-ordering
+   * convention), never bare MCID numbers the way an /fc caption's flat /K
+   * array can -- so this anchors splicing on insertIntoKidsAfter's
+   * ref-identity shape, not insertIntoKidsAfterMcid's bare-number shape.
+   *
+   * Confirmed real via direct struct-tree inspection of
+   * Farrar_2E_Comp_188910.pdf's remediated output: 5 disconnected /TD
+   * elements, each with a clean one-slot gap at its own MCID position.
+   *
+   * Finding the containing /TR is NOT a direct port of
+   * reattachInlineFigure's own "left and right MCID neighbor must be the
+   * SAME struct element" technique -- that works for an /fc caption only
+   * because multiple MCIDs there funnel to ONE shared owner directly. A
+   * table cell owns its OWN MCID, so a row's adjacent cells are naturally
+   * DIFFERENT struct elements; requiring them to match would fail on every
+   * ordinary multi-column row. Instead: each neighbor cell's own /P is
+   * followed to see if it names a /TR, and when both neighbors exist and
+   * name one, they must agree -- when only one neighbor exists or only one
+   * resolves to a /TR (the orphan is the row's first or last column), that
+   * one alone is used. Declines (never guesses) when neither neighbor
+   * yields a /TR, the two neighbors disagree, or the row's existing cells'
+   * own MCIDs aren't in ascending order.
+   */
+  reattachTableCell(doc: PDFDocument, issues: AuditIssue[]): FixResult[] {
+    const results: FixResult[] = [];
+
+    for (const issue of issues) {
+      try {
+        const m = /^tablecell_p(\d+)_mc(\d+)$/.exec(issue.element ?? '');
+        if (!m) { results.push({ issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error: `Unrecognized element id "${issue.element}"` }); continue; }
+        const pageNumber = parseInt(m[1], 10);
+        const cellMcid = parseInt(m[2], 10);
+
+        const pageArr = this.resolveParentTreePageArray(doc, pageNumber);
+        if (!pageArr) { results.push({ issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error: `No ParentTree page array found for page ${pageNumber}` }); continue; }
+        const pageArrRaw = pageArr.asArray();
+
+        const cellEntry = pageArrRaw[cellMcid];
+        if (!(cellEntry instanceof PDFRef)) { results.push({ issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error: `No struct element found at MCID ${cellMcid} on page ${pageNumber}` }); continue; }
+        const cellDict = doc.context.lookup(cellEntry, PDFDict);
+        const cellType = cellDict?.get(PDFName.of('S'))?.toString().replace(/^\//, '');
+        if (cellType !== 'TD' && cellType !== 'TH') { results.push({ issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error: `Struct element at MCID ${cellMcid} is /${cellType}, not /TD or /TH` }); continue; }
+
+        // Derive the natural reattachment point from this MCID's own left
+        // and right neighbor CELLS' own /TR parent -- see this method's own
+        // doc comment for why this differs from reattachInlineFigure's
+        // same-ref-on-both-sides technique.
+        const trOfNeighbor = (entry: unknown): PDFRef | null => {
+          if (!(entry instanceof PDFRef)) return null;
+          const neighborDict = doc.context.lookup(entry, PDFDict);
+          const p = neighborDict?.get(PDFName.of('P'));
+          if (!(p instanceof PDFRef)) return null;
+          const pType = doc.context.lookup(p, PDFDict)?.get(PDFName.of('S'))?.toString().replace(/^\//, '');
+          return pType === 'TR' ? p : null;
+        };
+
+        const leftTr = cellMcid > 0 ? trOfNeighbor(pageArrRaw[cellMcid - 1]) : null;
+        const rightTr = cellMcid + 1 < pageArrRaw.length ? trOfNeighbor(pageArrRaw[cellMcid + 1]) : null;
+
+        let containerRef: PDFRef | null = null;
+        let neighborError: string | null = null;
+        if (leftTr && rightTr) {
+          if (leftTr.objectNumber === rightTr.objectNumber) {
+            containerRef = leftTr;
+          } else {
+            neighborError = 'Left and right neighbor cells belong to different rows -- ambiguous reattachment point';
+          }
+        } else if (leftTr) {
+          containerRef = leftTr; // orphan is the row's last column
+        } else if (rightTr) {
+          containerRef = rightTr; // orphan is the row's first column
+        } else {
+          neighborError = 'Neither neighbor cell resolves to a /TR-parented sibling to anchor reattachment';
+        }
+
+        const existingP = cellDict!.get(PDFName.of('P'));
+        if (existingP instanceof PDFRef) {
+          const parentDict = doc.context.lookup(existingP, PDFDict);
+          const parentK = parentDict?.get(PDFName.of('K'));
+          const parentKids = parentK instanceof PDFArray ? parentK.asArray() : [];
+          const alreadyLinked = parentKids.some(item => item instanceof PDFRef && item.objectNumber === cellEntry.objectNumber);
+
+          if (alreadyLinked) {
+            if (this.isReachableFromRoot(doc, existingP)) {
+              results.push({ issueId: issue.id, success: true, before: 'already attached', after: `already attached under ${existingP.toString()}` });
+            } else {
+              results.push({ issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error: 'Cell\'s /P and that parent\'s own /K reference each other, but the parent itself is not reachable from the structure tree root -- not actually fixed' });
+            }
+            continue;
+          }
+
+          if (!containerRef || existingP.objectNumber !== containerRef.objectNumber) {
+            results.push({ issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error: 'Cell already has a /P, but that parent\'s own /K does not reference it back, and it does not match this cell\'s own natural reattachment point -- declining rather than guessing' });
+            continue;
+          }
+        } else if (!containerRef) {
+          results.push({ issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error: neighborError! });
+          continue;
+        }
+
+        const finalContainerRef = containerRef!;
+        const containerDict = doc.context.lookup(finalContainerRef, PDFDict);
+        const containerType = containerDict?.get(PDFName.of('S'))?.toString().replace(/^\//, '');
+        if (containerType !== 'TR') {
+          results.push({ issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error: `Natural reattachment point is /${containerType}, not /TR -- declining rather than guessing` });
+          continue;
+        }
+        const containerK = containerDict?.get(PDFName.of('K'));
+        if (!(containerK instanceof PDFArray)) {
+          results.push({ issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error: 'Container (/TR) /K is not an array' });
+          continue;
+        }
+
+        // Resolve each existing sibling cell's own min-MCID (same technique
+        // pdf-table-cell-tree.validator.ts's own bottom-up walk uses), in
+        // /K array order -- i.e. column reading order.
+        const siblingRefs = containerK.asArray().filter((item): item is PDFRef => item instanceof PDFRef);
+        const siblingMcids: Array<{ ref: PDFRef; mcid: number }> = [];
+        for (const ref of siblingRefs) {
+          const sDict = doc.context.lookup(ref, PDFDict);
+          const kRaw = sDict?.get(PDFName.of('K'));
+          const mcids: number[] = [];
+          if (kRaw instanceof PDFArray) {
+            for (const item of kRaw.asArray()) if (item instanceof PDFNumber) mcids.push(item.asNumber());
+          } else if (kRaw instanceof PDFNumber) {
+            mcids.push(kRaw.asNumber());
+          }
+          if (mcids.length > 0) siblingMcids.push({ ref, mcid: Math.min(...mcids) });
+        }
+
+        // Safety check, same reasoning as reattachInlineFigure's own: a
+        // "find the sibling before this MCID" positional splice only means
+        // anything if the row's existing cells are themselves in ascending
+        // MCID (== column) order.
+        const isAscending = siblingMcids.every((s, i) => i === 0 || s.mcid > siblingMcids[i - 1].mcid);
+        if (!isAscending) {
+          results.push({ issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error: 'Row\'s existing cells do not have ascending MCIDs -- cannot safely determine a positional insertion point' });
+          continue;
+        }
+
+        // Last sibling whose own MCID is still below the orphan's -- insert
+        // right after it. None found means the orphan is the row's first
+        // column (a case reattachInlineFigure's flat-array splice doesn't
+        // need to handle, but a /TD legitimately can be).
+        let afterRef: PDFRef | null = null;
+        for (const s of siblingMcids) {
+          if (s.mcid < cellMcid) afterRef = s.ref; else break;
+        }
+
+        if (afterRef) {
+          this.insertIntoKidsAfter(doc, finalContainerRef, afterRef, cellEntry);
+        } else {
+          containerK.insert(0, cellEntry);
+        }
+        cellDict!.set(PDFName.of('P'), finalContainerRef);
+
+        results.push({
+          issueId: issue.id,
+          success: true,
+          before: 'disconnected from the structure tree',
+          after: `reattached into its containing /TR's own /K array (${finalContainerRef.toString()}), in column order`,
+        });
+      } catch (err) {
+        results.push({ issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error: err instanceof Error ? err.message : String(err) });
+      }
+    }
+
+    return results;
+  }
+
+  /**
+   * Finds the first (page, MCID) pair reachable from a struct element's
+   * own /K subtree -- same technique and same reason as
+   * pdf-table-cell-tree.validator.ts's own `firstPageAndMcid` (duplicated
+   * locally rather than imported, matching this file's own established
+   * convention of keeping structure-tree-walking helpers self-contained
+   * per file): a /TR carries neither /Pg nor an own MCID in the
+   * confirmed-real document shape, so both detecting it (the validator)
+   * and re-locating it later (this writer) have to derive its identity
+   * from its TD/TH children the same way.
+   */
+  private rowPageAndMcid(
+    doc: PDFDocument,
+    node: unknown,
+    pageByRef: Map<string, number>,
+    depth = 0,
+  ): { page: number; mcid: number } | null {
+    if (depth > 10) return null;
+    const resolved = node instanceof PDFRef ? doc.context.lookup(node) : node;
+    if (resolved instanceof PDFArray) {
+      for (const item of resolved.asArray()) {
+        const found = this.rowPageAndMcid(doc, item, pageByRef, depth + 1);
+        if (found) return found;
+      }
+      return null;
+    }
+    if (!(resolved instanceof PDFDict)) return null;
+    const pgRaw = resolved.get(PDFName.of('Pg'));
+    const page = pgRaw instanceof PDFRef ? pageByRef.get(pgRaw.toString()) : undefined;
+    const kRaw = resolved.get(PDFName.of('K'));
+    const mcids: number[] = [];
+    const collectMcids = (n: unknown): void => {
+      const r = n instanceof PDFRef ? doc.context.lookup(n) : n;
+      if (r instanceof PDFNumber) { mcids.push(r.asNumber()); return; }
+      if (r instanceof PDFArray) { for (const item of r.asArray()) collectMcids(item); }
+    };
+    if (kRaw !== undefined) collectMcids(kRaw);
+    if (page !== undefined && mcids.length > 0) return { page, mcid: Math.min(...mcids) };
+    if (kRaw !== undefined) {
+      const found = this.rowPageAndMcid(doc, kRaw, pageByRef, depth + 1);
+      if (found) return found;
+    }
+    return null;
+  }
+
+  /**
+   * Reattaches a disconnected /TR table-row struct element into its
+   * containing /Table's own /K array, in correct row order -- one level
+   * up from reattachTableCell's own /TD-into-/TR case, for the SAME
+   * underlying defect: this document's 5 disconnected /TD cells are each
+   * already correctly linked to their own /TR (reattachTableCell finds
+   * nothing to fix there), but the /TR itself was never linked into its
+   * /Table's own /K array. Confirmed real via direct struct-tree
+   * inspection of Farrar_2E_Comp_188910.pdf's remediated output: of 5
+   * orphaned /TR elements (one per orphaned /TD's own row), 4 are cleanly
+   * the missing FIRST (header) row of an otherwise fully-connected,
+   * reachable /Table -- this writer's own scope. The 5th (a table with no
+   * reachable /Table sibling rows on its page at all) is a genuinely
+   * different, harder shape left for manual review rather than guessed at.
+   *
+   * Locating the orphan is NOT a /ParentTree lookup the way
+   * reattachInlineFigure/reattachTableCell/reattachFigureCaption all do --
+   * a /TR has no own MCID to be cross-referenced by, so this re-derives
+   * each orphan's (page, MCID) identity from its own TD/TH children (via
+   * rowPageAndMcid), the same technique
+   * pdf-table-cell-tree.validator.ts's own /TR detection pass used to
+   * build the issue's `element` id in the first place, and matches
+   * against the ENTIRE set of real /TR StructElems in the file (not just
+   * currently-orphaned ones) so an already-fixed row re-dispatched without
+   * a fresh audit reports a clean "already attached" rather than a
+   * confusing "not found".
+   *
+   * Finding the containing /Table is done by locating every reachable
+   * /Table whose own descendant subtree contains a TD/TH on the orphan's
+   * page -- requiring EXACTLY ONE match (zero or multiple candidates
+   * decline rather than guess, same philosophy as every other bail-out in
+   * this file). Within that Table, the insertion point is the last
+   * existing /TR sibling whose own min-MCID is still below the orphan's
+   * (or index 0 if none -- the orphan is the table's first row), with the
+   * same ascending-order safety check reattachTableCell/reattachInlineFigure
+   * both already apply to their own siblings before trusting a positional
+   * splice.
+   */
+  reattachTableRow(doc: PDFDocument, issues: AuditIssue[]): FixResult[] {
+    const results: FixResult[] = [];
+
+    const structRoot = this.getStructTreeRoot(doc);
+    if (!structRoot) {
+      return issues.map(issue => ({ issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error: 'No /StructTreeRoot found' }));
+    }
+
+    const pageByRef = new Map<string, number>();
+    doc.getPages().forEach((p, i) => pageByRef.set(p.ref.toString(), i + 1));
+
+    // Top-down reachable set, built once up front (not per-issue/per-target
+    // the way isReachableFromRoot is elsewhere) -- this method needs to
+    // classify EVERY real /TR in the file as connected or orphaned, not
+    // check one target ref at a time.
+    const reachable = new Set<string>();
+    const seenWalk = new Set<string>();
+    const visitTopDown = (nodeRef: unknown): void => {
+      if (nodeRef instanceof PDFRef) {
+        const key = nodeRef.toString();
+        if (seenWalk.has(key)) return;
+        seenWalk.add(key);
+        reachable.add(key);
+      }
+      const node = nodeRef instanceof PDFRef ? doc.context.lookup(nodeRef) : nodeRef;
+      if (node instanceof PDFArray) { for (const item of node.asArray()) visitTopDown(item); return; }
+      if (!(node instanceof PDFDict)) return;
+      const k = node.get(PDFName.of('K'));
+      if (k !== undefined) visitTopDown(k);
+    };
+    visitTopDown(structRoot.get(PDFName.of('K')));
+
+    // Every real /TR in the file, by its derived (page, MCID) identity --
+    // reachable or not, so a re-dispatched already-fixed issue resolves to
+    // a real, now-reachable row instead of "not found".
+    const rowsByKey = new Map<string, PDFRef>();
+    for (const [ref, obj] of doc.context.enumerateIndirectObjects()) {
+      if (!(obj instanceof PDFDict)) continue;
+      if (obj.get(PDFName.of('Type'))?.toString() !== '/StructElem') continue;
+      if (obj.get(PDFName.of('S'))?.toString().replace(/^\//, '') !== 'TR') continue;
+      const located = this.rowPageAndMcid(doc, obj.get(PDFName.of('K')), pageByRef);
+      if (!located) continue;
+      rowsByKey.set(`${located.page}:${located.mcid}`, ref);
+    }
+
+    for (const issue of issues) {
+      try {
+        const m = /^tablerow_p(\d+)_mc(\d+)$/.exec(issue.element ?? '');
+        if (!m) { results.push({ issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error: `Unrecognized element id "${issue.element}"` }); continue; }
+        const pageNumber = parseInt(m[1], 10);
+        const rowMcid = parseInt(m[2], 10);
+
+        const trRef = rowsByKey.get(`${pageNumber}:${rowMcid}`);
+        if (!trRef) {
+          results.push({ issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error: `No /TR found at page ${pageNumber}, MCID ${rowMcid} -- document may have changed since the issue was generated` });
+          continue;
+        }
+
+        if (reachable.has(trRef.toString())) {
+          results.push({ issueId: issue.id, success: true, before: 'already attached', after: 'already attached and reachable from the structure tree root' });
+          continue;
+        }
+
+        // Find every reachable /Table whose own descendant subtree
+        // contains a TD/TH on this exact page -- requiring exactly one
+        // match, same "decline rather than guess" philosophy as every
+        // other ambiguity check in this file.
+        const candidates: PDFRef[] = [];
+        const seenTables = new Set<string>();
+        const findTables = (nodeRef: unknown): void => {
+          if (nodeRef instanceof PDFRef) {
+            const key = nodeRef.toString();
+            if (seenTables.has(key)) return;
+            seenTables.add(key);
+          }
+          const node = nodeRef instanceof PDFRef ? doc.context.lookup(nodeRef) : nodeRef;
+          if (node instanceof PDFArray) { for (const item of node.asArray()) findTables(item); return; }
+          if (!(node instanceof PDFDict)) return;
+          const s = node.get(PDFName.of('S'))?.toString().replace(/^\//, '');
+          if (s === 'Table' && nodeRef instanceof PDFRef) {
+            let hasMatch = false;
+            const seenSub = new Set<string>();
+            const scanSubtree = (n2: unknown): void => {
+              if (hasMatch) return;
+              if (n2 instanceof PDFRef) {
+                const key2 = n2.toString();
+                if (seenSub.has(key2)) return;
+                seenSub.add(key2);
+              }
+              const nd = n2 instanceof PDFRef ? doc.context.lookup(n2) : n2;
+              if (nd instanceof PDFArray) { for (const item of nd.asArray()) scanSubtree(item); return; }
+              if (!(nd instanceof PDFDict)) return;
+              const ss = nd.get(PDFName.of('S'))?.toString().replace(/^\//, '');
+              if (ss === 'TD' || ss === 'TH') {
+                const pgRaw = nd.get(PDFName.of('Pg'));
+                const pg = pgRaw instanceof PDFRef ? pageByRef.get(pgRaw.toString()) : undefined;
+                if (pg === pageNumber) hasMatch = true;
+              }
+              const kk = nd.get(PDFName.of('K'));
+              if (kk !== undefined) scanSubtree(kk);
+            };
+            scanSubtree(node.get(PDFName.of('K')));
+            if (hasMatch) candidates.push(nodeRef);
+          }
+          const k = node.get(PDFName.of('K'));
+          if (k !== undefined) findTables(k);
+        };
+        findTables(structRoot.get(PDFName.of('K')));
+
+        if (candidates.length === 0) {
+          results.push({ issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error: `No reachable /Table found with any content on page ${pageNumber} -- declining rather than guessing` });
+          continue;
+        }
+        if (candidates.length > 1) {
+          results.push({ issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error: `${candidates.length} reachable /Table candidates found with content on page ${pageNumber} -- ambiguous, declining rather than guessing` });
+          continue;
+        }
+        const tableRef = candidates[0];
+        const tableDict = doc.context.lookup(tableRef, PDFDict);
+        const tableK = tableDict?.get(PDFName.of('K'));
+        if (!(tableK instanceof PDFArray)) {
+          results.push({ issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error: 'Table /K is not an array' });
+          continue;
+        }
+
+        // Resolve each existing sibling /TR's own min-MCID, in /K array
+        // order -- same technique reattachTableCell uses for its own TD
+        // siblings, one level up.
+        const siblingRefs = tableK.asArray().filter((item): item is PDFRef => item instanceof PDFRef);
+        const siblingMcids: Array<{ ref: PDFRef; mcid: number }> = [];
+        for (const ref of siblingRefs) {
+          const sDict = doc.context.lookup(ref, PDFDict);
+          if (sDict?.get(PDFName.of('S'))?.toString().replace(/^\//, '') !== 'TR') continue;
+          const located = this.rowPageAndMcid(doc, sDict.get(PDFName.of('K')), pageByRef);
+          if (located && located.page === pageNumber) siblingMcids.push({ ref, mcid: located.mcid });
+        }
+
+        const isAscending = siblingMcids.every((s, i) => i === 0 || s.mcid > siblingMcids[i - 1].mcid);
+        if (!isAscending) {
+          results.push({ issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error: 'Table\'s existing rows on this page do not have ascending MCIDs -- cannot safely determine a positional insertion point' });
+          continue;
+        }
+
+        // An orphan (not in `reachable`) can still have its own /P already
+        // set, e.g. a half-made link from a previous partial write -- only
+        // trust it when it already names this SAME determined table,
+        // otherwise decline rather than silently overwrite an unexpected
+        // existing value, same convention as every other reattach* method
+        // in this file.
+        const trDictForP = doc.context.lookup(trRef, PDFDict);
+        const existingP = trDictForP?.get(PDFName.of('P'));
+        if (existingP instanceof PDFRef && existingP.objectNumber !== tableRef.objectNumber) {
+          results.push({ issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error: 'Row already has a /P, but it does not match this row\'s own natural reattachment point -- declining rather than guessing' });
+          continue;
+        }
+
+        let afterRef: PDFRef | null = null;
+        for (const s of siblingMcids) {
+          if (s.mcid < rowMcid) afterRef = s.ref; else break;
+        }
+
+        if (afterRef) {
+          this.insertIntoKidsAfter(doc, tableRef, afterRef, trRef);
+        } else {
+          tableK.insert(0, trRef);
+        }
+        trDictForP!.set(PDFName.of('P'), tableRef);
+
+        results.push({
+          issueId: issue.id,
+          success: true,
+          before: 'disconnected from the structure tree',
+          after: `reattached into its containing /Table's own /K array (${tableRef.toString()}), in row order`,
         });
       } catch (err) {
         results.push({ issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error: err instanceof Error ? err.message : String(err) });

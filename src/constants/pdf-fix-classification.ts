@@ -62,7 +62,7 @@ export const MANUAL_CODES = new Set([
   'MATTERHORN-07-001',      // Metadata missing - requires StructTreeRoot creation
 
   // Actual validator codes - Structure
-  'MATTERHORN-01-004',      // Suspect tag structure
+  'MATTERHORN-01-007',      // Suspect tag structure (relabeled from the mislabeled 01-004 -- see pdf-structure.validator.ts)
   'MATTERHORN-09-004',      // Reading order not logical
 
   // Heading structure issues (require document restructuring)
