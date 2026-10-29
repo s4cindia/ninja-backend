@@ -14,6 +14,7 @@ import { aiConfig } from '../../config/ai.config';
 import { pdfConfig } from '../../config/pdf.config';
 import prisma from '../../lib/prisma';
 import { logger } from '../../lib/logger';
+import { notificationService } from '../../services/notification/notification.service';
 
 // ─── Language utilities (Step 8) ─────────────────────────────────────────────
 
@@ -409,6 +410,26 @@ async function processPdfAccessibility(
         } else {
           logger.info(`[PDF Worker] AI Analysis for job ${dbJobId}: ${analyzed} analyzed, ${skipped} skipped`);
         }
+
+        // Operator notification: the audit + AI analysis is the FIRST
+        // "come back and decide what's next" moment after upload (Auto
+        // Mode is never auto-started from here -- it's always a separate,
+        // later, explicit action, so there's no risk of this firing right
+        // before Auto Mode immediately consumes the same suggestions).
+        // Fire-and-forget, same convention as every other notification
+        // call in this codebase.
+        notificationService.createNotification({
+          userId,
+          tenantId,
+          type: serviceDegraded ? 'SYSTEM_ALERT' : 'JOB_COMPLETED',
+          title: serviceDegraded ? 'Audit complete — AI analysis unavailable' : 'Audit complete',
+          message: serviceDegraded
+            ? `"${fileName}" was audited, but AI suggestion analysis is temporarily unavailable (${serviceError ?? 'service degraded'}). Issues are ready for manual review.`
+            : `"${fileName}" was audited and ${analyzed} issue${analyzed === 1 ? '' : 's'} analyzed for AI-suggested fixes. Ready for your review.`,
+          link: `/pdf/audit/${dbJobId}`,
+        }).catch((notifyErr) => {
+          logger.error(`[PDF Worker] Failed to create audit-complete notification for job ${dbJobId}: ${notifyErr instanceof Error ? notifyErr.message : String(notifyErr)}`);
+        });
         // Estimate token usage: ~700 tokens per analyzed issue (Gemini Flash + Claude Haiku mix)
         const tokensUsed = analyzed * 700;
         const estimatedCostUsd = parseFloat((tokensUsed * 0.000000375).toFixed(4));

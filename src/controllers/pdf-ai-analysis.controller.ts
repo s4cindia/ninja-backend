@@ -27,6 +27,7 @@ import type { AuditIssue } from '../services/audit/base-audit.service';
 import { aiConfig } from '../config/ai.config';
 import { remediationCycleLockService } from '../services/pdf/remediation-cycle-lock.service';
 import { remediationCycleHistoryService } from '../services/pdf/remediation-cycle-history.service';
+import { notificationService } from '../services/notification/notification.service';
 
 // ─── Validation Schemas ───────────────────────────────────────────────────────
 
@@ -785,6 +786,21 @@ export class PdfAiAnalysisController {
               triggeredBy: req.user!.id,
               startedAt: cycleStartedAt,
             });
+            // Operator notification: confirms the manually-triggered re-audit
+            // actually finished and what it found. Fire-and-forget, same
+            // convention as every other notification call in this codebase.
+            notificationService.createNotification({
+              userId: req.user!.id,
+              tenantId: req.user!.tenantId,
+              type: comparison.success ? 'JOB_COMPLETED' : 'SYSTEM_ALERT',
+              title: comparison.success ? 'Re-audit complete' : 'Re-audit finished with issues',
+              message: comparison.success
+                ? `"${fileName}": ${resolvedCount} issue${resolvedCount === 1 ? '' : 's'} resolved, ${remainingCount} remaining${regressionCount > 0 ? `, ${regressionCount} regression${regressionCount === 1 ? '' : 's'}` : ''}.`
+                : `"${fileName}": the post-remediation re-audit didn't complete cleanly (${comparison.error ?? 'unknown error'}). Fixes were applied, but results may be stale.`,
+              link: `/pdf/audit/${jobId}`,
+            }).catch((notifyErr) => {
+              logger.error(`[ApplyAll] Failed to create re-audit notification for job ${jobId}: ${notifyErr instanceof Error ? notifyErr.message : String(notifyErr)}`);
+            });
           })
           .catch(async (err) => {
             const message = err instanceof Error ? err.message : String(err);
@@ -806,6 +822,16 @@ export class PdfAiAnalysisController {
               errorMessage: message,
               triggeredBy: req.user!.id,
               startedAt: cycleStartedAt,
+            });
+            notificationService.createNotification({
+              userId: req.user!.id,
+              tenantId: req.user!.tenantId,
+              type: 'JOB_FAILED',
+              title: 'Re-audit failed',
+              message: `"${fileName}": the post-remediation re-audit failed to run (${message}). Fixes were applied, but results could not be verified.`,
+              link: `/pdf/audit/${jobId}`,
+            }).catch((notifyErr) => {
+              logger.error(`[ApplyAll] Failed to create re-audit-failure notification for job ${jobId}: ${notifyErr instanceof Error ? notifyErr.message : String(notifyErr)}`);
             });
           })
           .finally(() => {

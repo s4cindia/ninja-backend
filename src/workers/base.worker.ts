@@ -5,6 +5,16 @@ import { queueService } from '../services/queue.service';
 import { logger } from '../lib/logger';
 import prisma from '../lib/prisma';
 import { FileStatus } from '@prisma/client';
+import { notificationService } from '../services/notification/notification.service';
+
+// Human-readable label per JobType, for the failure notification's title --
+// deliberately local/minimal (just the types that reach this generic worker
+// in practice) rather than importing JOB_TYPES, to avoid this file needing
+// to track every job type the rest of the app ever adds.
+const JOB_TYPE_LABELS: Record<string, string> = {
+  PDF_ACCESSIBILITY: 'PDF accessibility job',
+  EPUB_ACCESSIBILITY: 'EPUB accessibility job',
+};
 
 export type JobProcessor = (job: Job<JobData, JobResult>) => Promise<JobResult>;
 
@@ -70,6 +80,24 @@ export function createWorker(options: WorkerOptions): Worker<JobData, JobResult>
 
           await queueService.updateJobStatus(jobId, 'FAILED', {
             error: errorMessage,
+          });
+
+          // Fire-and-forget: the operator's own notification bell/toast,
+          // not something the (already-failed) job should wait on or be
+          // further broken by a notification-write hiccup. Only PDF jobs
+          // have a results page to link to today; other types still notify,
+          // just without a link.
+          const jobOptions = job.data.options as { dbJobId?: string } | undefined;
+          const linkJobId = job.data.type === 'PDF_ACCESSIBILITY' ? (jobOptions?.dbJobId ?? jobId) : undefined;
+          notificationService.createNotification({
+            userId: job.data.userId,
+            tenantId: job.data.tenantId,
+            type: 'JOB_FAILED',
+            title: `${JOB_TYPE_LABELS[job.data.type] ?? 'Job'} failed`,
+            message: errorMessage,
+            link: linkJobId ? `/pdf/audit/${linkJobId}` : undefined,
+          }).catch((notifyErr) => {
+            logger.error(`Failed to create failure notification for job ${jobId}: ${notifyErr instanceof Error ? notifyErr.message : String(notifyErr)}`);
           });
 
           if (job.data.fileId) {
