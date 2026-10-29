@@ -26,6 +26,7 @@ import { aiAnalysisService } from './ai-analysis.service';
 import { pdfReauditService } from './pdf-reaudit.service';
 import { remediationCycleLockService, STALE_LOCK_MS } from './remediation-cycle-lock.service';
 import { remediationCycleHistoryService } from './remediation-cycle-history.service';
+import { fileStorageService } from '../storage/file-storage.service';
 
 /** Suggestion type that always requires manual approval, even in auto mode --
  * a wrong decorative classification silently suppresses image content
@@ -540,6 +541,118 @@ class AutoRemediationLoopService {
       }
     } catch (err) {
       logger.warn(`[AutoRemediationLoop] Periodic orphan-reconcile sweep failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  /**
+   * Self-heals a job whose job.output.postRemediationStatus was left at
+   * 'pending' forever. Real, confirmed incident (2026-10-29): a job's
+   * downloadable remediated PDF was 12.8MB while its own stored
+   * auditReport (and the "Role mapping"/alt-text results built from it)
+   * still reflected a 9.66MB file, because the process that applied those
+   * fixes died between two steps that are NOT atomic: saving the modified
+   * PDF to storage (AiAnalysisService.applyApprovedSuggestions sets
+   * postRemediationStatus: 'pending' synchronously, right after that
+   * save) and the follow-up re-audit that's supposed to flip it to
+   * 'complete'/'failed' once it finishes. That follow-up is fire-and-
+   * forget in the apply_all HTTP endpoint (pdf-ai-analysis.controller.ts)
+   * and merely awaited-within-the-same-process in the auto_loop path
+   * (runRound above) -- a full process death (deploy, OOM, crash) in that
+   * window leaves the exact same symptom either way, with nothing left
+   * running to ever notice or retry it.
+   *
+   * Reuses the SAME free-or-stale remediation-cycle-lock check
+   * reconcileIfOrphaned/reconcileAllOrphanedRuns already use for the
+   * identical reason: a lock this job's own cycle still legitimately
+   * holds proves its re-audit genuinely hasn't finished yet, so this must
+   * never race a cycle that's still in flight. Goes one step further than
+   * those two (which only ever flip a status flag) by re-acquiring that
+   * SAME lock itself (source 'watchdog') before doing any work -- if a
+   * real new cycle grabs it first, this job is simply skipped this tick
+   * and that cycle's own completion will resolve it normally.
+   */
+  async reconcileStalePostRemediation(): Promise<void> {
+    const staleThreshold = new Date(Date.now() - STALE_LOCK_MS);
+    const candidates = await prisma.job.findMany({
+      where: {
+        output: { path: ['postRemediationStatus'], equals: 'pending' },
+        OR: [
+          { remediationCycleLockedAt: null },
+          { remediationCycleLockedAt: { lt: staleThreshold } },
+        ],
+      },
+      select: { id: true },
+    });
+
+    for (const { id: jobId } of candidates) {
+      const lock = await remediationCycleLockService.acquireLock(jobId, 'watchdog', 'watchdog');
+      if (!lock.acquired) continue; // a legitimate cycle just grabbed it -- let it finish normally
+
+      const startedAt = new Date();
+      try {
+        // Re-check under the lock: another cycle may have already
+        // resolved this between the findMany above and acquiring the
+        // lock just now.
+        const latestJob = await prisma.job.findUnique({ where: { id: jobId } });
+        const output = (latestJob?.output ?? {}) as Record<string, unknown>;
+        if (output.postRemediationStatus !== 'pending') continue;
+
+        const fileName = output.fileName as string | undefined;
+        const remediatedFileUrl = output.remediatedFileUrl as string | undefined;
+        if (!fileName || !remediatedFileUrl) {
+          logger.warn(`[AutoRemediationLoop] Job ${jobId} stuck at postRemediationStatus 'pending' but has no remediated file recorded -- cannot reconcile, leaving as-is`);
+          continue;
+        }
+
+        const buffer = await fileStorageService.getRemediatedFile(jobId, fileName);
+        if (!buffer) {
+          logger.warn(`[AutoRemediationLoop] Job ${jobId} stuck at postRemediationStatus 'pending' but its remediated file is missing from storage -- cannot reconcile, leaving as-is`);
+          continue;
+        }
+
+        logger.warn(`[AutoRemediationLoop] Reconciling orphaned post-remediation re-audit for job ${jobId} -- postRemediationStatus stuck at 'pending' with a free/stale lock (the process that applied these fixes must have died before its own re-audit finished)`);
+
+        const comparison = await pdfReauditService.reauditAndCompare(jobId, buffer, fileName);
+        const freshJob = await prisma.job.findUnique({ where: { id: jobId } });
+        const freshOutput = (freshJob?.output ?? {}) as Record<string, unknown>;
+        const { resolvedCount, remainingCount, regressionCount, resolutionRate } = comparison.metrics;
+        await prisma.job.update({
+          where: { id: jobId },
+          data: {
+            output: {
+              ...freshOutput,
+              ...(comparison.success && comparison.reauditReport ? { auditReport: comparison.reauditReport } : {}),
+              postRemediationStatus: comparison.success ? 'complete' : 'failed',
+              postRemediationAudit: {
+                runAt: new Date().toISOString(),
+                resolved: resolvedCount,
+                remaining: remainingCount,
+                regressions: regressionCount,
+                resolutionRate,
+              },
+            } as unknown as Prisma.InputJsonObject,
+          },
+        });
+        await remediationCycleHistoryService.logEvent({
+          jobId,
+          cycleNumber: lock.cycleNumber!,
+          action: 'reaudit',
+          source: 'watchdog',
+          status: comparison.success ? 'completed' : 'failed',
+          resolvedCount,
+          remainingCount,
+          regressionCount,
+          resolutionRate,
+          errorMessage: comparison.success ? undefined : comparison.error,
+          triggeredBy: 'watchdog',
+          startedAt,
+        });
+        logger.info(`[AutoRemediationLoop] Reconciled stale post-remediation status for job ${jobId}: ${resolvedCount} resolved, ${regressionCount} regressions`);
+      } catch (err) {
+        logger.warn(`[AutoRemediationLoop] Failed to reconcile stale post-remediation status for job ${jobId} (non-fatal -- will retry next watchdog tick): ${err instanceof Error ? err.message : String(err)}`);
+      } finally {
+        await remediationCycleLockService.releaseLock(jobId, lock.cycleNumber!);
+      }
     }
   }
 
