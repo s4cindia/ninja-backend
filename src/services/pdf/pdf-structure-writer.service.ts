@@ -29,9 +29,15 @@ import {
 } from 'pdf-lib';
 import { AuditIssue } from '../audit/base-audit.service';
 import { logger } from '../../lib/logger';
-import { pageContentMcids, decodePageContent, writePageContent } from './pdf-content-stream-io';
+import { pageContentMcids, orderedPageContentMcids, decodePageContent, writePageContent } from './pdf-content-stream-io';
 import { locateMcidBoundingBoxes } from './mcid-bounding-box';
-import { tagUntaggedPaintedPaths, splitArtifactAroundTaggedContent } from './pdf-artifact-tagger';
+import {
+  tagUntaggedPaintedPaths,
+  splitArtifactAroundTaggedContent,
+  findOversizedArtifactSpans,
+  extractArtifactTextRuns,
+  applyArtifactUnwrap,
+} from './pdf-artifact-tagger';
 import {
   matchCellRanges,
   insertMarkedContentSpans,
@@ -3595,6 +3601,221 @@ export class PdfStructureWriterService {
         after: `${count} element(s) excised from the Artifact's marked-content range`,
       };
     });
+  }
+
+  /**
+   * ARTIFACT-SWALLOWS-CONTENT fix: splits each confirmed-boundary oversized
+   * Artifact span (see pdf-artifact-tagger.ts's findOversizedArtifactSpans
+   * and ai-analysis.service.ts's analyzeArtifactSwallowsContent for the
+   * full detection/AI-verification trail) and gives the real content its
+   * own fresh /Span struct element, wired into the structure tree at its
+   * correct document-flow position.
+   *
+   * `storedValue` is the AI analysis's own persisted decision -- a
+   * JSON-encoded array of the confirmed real-content-opening TEXT, one per
+   * oversized span on this page, in document order (not a raw byte
+   * offset, which wouldn't survive another fix rewriting this same page's
+   * content stream first; not an array index, which wouldn't survive this
+   * page's span list re-deriving in a different order after an unrelated
+   * edit). Relocated here by an EXACT text match against a fresh
+   * re-extraction of this page's own text runs -- if even one span's
+   * confirmed text can no longer be found, the whole page's fix is
+   * declined rather than guessing which spans still apply.
+   *
+   * Document-flow insertion mirrors reattachTableRow's own fallback
+   * technique one level down: resolves the nearest EXISTING tagged
+   * neighbors by CONTENT-STREAM POSITION, not MCID value -- the new
+   * span's MCID is freshly allocated and always larger than everything
+   * already on the page, so value-based neighbor arithmetic (mcid-1/
+   * mcid+1) doesn't apply the way it does for an already-numbered orphan.
+   * Resolves each neighbor's own document-flow parent via its /P and
+   * requires left/right agreement (or accepts whichever one resolves),
+   * same "decline rather than guess" philosophy as every other ambiguity
+   * check in this file.
+   *
+   * All-or-nothing per page: one content-stream rewrite covers every span
+   * on this page, so a failure partway through rolls back every struct
+   * element created so far (the content-stream rewrite itself is only
+   * ever applied after every struct element succeeds, so there's nothing
+   * to roll back on that side).
+   */
+  fixArtifactSwallowsContent(doc: PDFDocument, issue: AuditIssue, storedValue: string | null): FixResult {
+    if (!issue.pageNumber) {
+      return { issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error: 'Issue has no pageNumber' };
+    }
+    if (!storedValue) {
+      return { issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error: 'No AI-confirmed boundary data available for this issue' };
+    }
+
+    let confirmedSnippets: string[];
+    try {
+      const parsedValue = JSON.parse(storedValue);
+      if (!Array.isArray(parsedValue) || !parsedValue.every((s): s is string => typeof s === 'string')) {
+        throw new Error('not a string array');
+      }
+      confirmedSnippets = parsedValue;
+    } catch {
+      return { issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error: 'Stored AI value is not a valid JSON string array' };
+    }
+
+    const pageNumber = issue.pageNumber;
+    let originalContent: string | null;
+    try {
+      originalContent = decodePageContent(doc, pageNumber);
+    } catch (err) {
+      return { issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error: `Could not decode page ${pageNumber}: ${err instanceof Error ? err.message : String(err)}` };
+    }
+    if (!originalContent) {
+      return { issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error: `Page ${pageNumber} has no content stream` };
+    }
+
+    const spans = findOversizedArtifactSpans(originalContent);
+    if (spans.length === 0) {
+      return { issueId: issue.id, success: false, before: 'oversized Artifact span(s) present', after: 'unknown', error: 'No oversized Artifact spans found on this page (already fixed or moved)' };
+    }
+    if (spans.length !== confirmedSnippets.length) {
+      return {
+        issueId: issue.id, success: false, before: 'unknown', after: 'unknown',
+        error: `Page's oversized-Artifact-span count (${spans.length}) no longer matches the analyzed count (${confirmedSnippets.length}) -- declining rather than guessing which spans still apply`,
+      };
+    }
+
+    const realContentStarts: number[] = [];
+    for (let i = 0; i < spans.length; i++) {
+      const runs = extractArtifactTextRuns(originalContent, spans[i].contentStart, spans[i].closeOpStart);
+      const match = runs.find((r) => r.text === confirmedSnippets[i]);
+      if (!match) {
+        return { issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error: `Could not relocate span ${i + 1}'s confirmed real-content text on the current page -- it may have changed since analysis` };
+      }
+      realContentStarts.push(match.start);
+    }
+
+    const structRoot = this.getStructTreeRoot(doc);
+    if (!structRoot) {
+      return { issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error: 'No /StructTreeRoot found' };
+    }
+    const pageArr = this.resolveParentTreePageArray(doc, pageNumber);
+    if (!pageArr) {
+      return { issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error: `No /ParentTree entry found for page ${pageNumber}` };
+    }
+    const pageArrRaw = pageArr.asArray();
+    const positionedMcids = orderedPageContentMcids(originalContent);
+
+    const resolveEntry = (mcid: number | undefined): PDFRef | null => {
+      if (mcid === undefined) return null;
+      const entry = pageArrRaw[mcid];
+      return entry instanceof PDFRef ? entry : null;
+    };
+    const resolveParentOf = (entryRef: PDFRef | null): PDFRef | null => {
+      if (!entryRef) return null;
+      const dict = doc.context.lookup(entryRef, PDFDict);
+      const p = dict?.get(PDFName.of('P'));
+      return p instanceof PDFRef ? p : null;
+    };
+
+    interface PlannedInsertion {
+      mcid: number;
+      insertOffset: number;
+      flowParent: PDFRef;
+      anchorRef: PDFRef;
+      anchorBefore: boolean;
+    }
+
+    const existingMcids = pageContentMcids(doc, pageNumber) ?? new Set<number>();
+    let nextMcid = existingMcids.size > 0 ? Math.max(...existingMcids) + 1 : 0;
+
+    const planned: PlannedInsertion[] = [];
+    for (let i = 0; i < spans.length; i++) {
+      const span = spans[i];
+      const realContentStart = realContentStarts[i];
+
+      const leftCandidate = [...positionedMcids].reverse().find((p) => p.start < realContentStart);
+      const rightCandidate = positionedMcids.find((p) => p.start > span.closeOpEnd);
+      const leftEntry = resolveEntry(leftCandidate?.mcid);
+      const rightEntry = resolveEntry(rightCandidate?.mcid);
+      const leftParent = resolveParentOf(leftEntry);
+      const rightParent = resolveParentOf(rightEntry);
+
+      if (leftParent && rightParent && leftParent.objectNumber !== rightParent.objectNumber) {
+        return { issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error: `Span ${i + 1}'s left/right tagged neighbors resolve to different document-flow parents -- ambiguous, declining rather than guessing` };
+      }
+
+      let flowParent: PDFRef | null = null;
+      let anchorRef: PDFRef | null = null;
+      let anchorBefore = false;
+      if (rightParent && rightEntry) {
+        flowParent = rightParent; anchorRef = rightEntry; anchorBefore = true;
+      } else if (leftParent && leftEntry) {
+        flowParent = leftParent; anchorRef = leftEntry; anchorBefore = false;
+      }
+
+      if (!flowParent || !anchorRef) {
+        return { issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error: `Span ${i + 1} has no usable tagged neighbor on this page to anchor its document-flow position to -- declining rather than guessing` };
+      }
+
+      planned.push({ mcid: nextMcid, insertOffset: realContentStart, flowParent, anchorRef, anchorBefore });
+      nextMcid++;
+    }
+
+    const sortedByOffsetDesc = [...planned].sort((a, b) => b.insertOffset - a.insertOffset);
+    let newContent = originalContent;
+    for (const p of sortedByOffsetDesc) {
+      newContent = applyArtifactUnwrap(newContent, p.insertOffset, p.mcid);
+    }
+
+    const pageRef = doc.getPages()[pageNumber - 1].ref;
+    const createdRefs: PDFRef[] = [];
+    const parentTreeEntries: Array<{ mcid: number; structElementRef: PDFRef }> = [];
+    const lastInsertedByAnchor = new Map<number, PDFRef>();
+
+    try {
+      for (const p of planned) {
+        const spanObj = doc.context.obj({
+          Type: PDFName.of('StructElem'),
+          S: PDFName.of('Span'),
+          P: p.flowParent,
+          Pg: pageRef,
+          K: PDFNumber.of(p.mcid),
+        });
+        const spanRef = doc.context.register(spanObj as PDFDict);
+        createdRefs.push(spanRef);
+
+        if (p.anchorBefore) {
+          this.insertIntoKidsBefore(doc, p.flowParent, p.anchorRef, spanRef);
+        } else {
+          const insertAfter = lastInsertedByAnchor.get(p.anchorRef.objectNumber) ?? p.anchorRef;
+          this.insertIntoKidsAfter(doc, p.flowParent, insertAfter, spanRef);
+          lastInsertedByAnchor.set(p.anchorRef.objectNumber, spanRef);
+        }
+
+        const spanDict = doc.context.lookup(spanRef, PDFDict);
+        spanDict?.set(PDFName.of('P'), p.flowParent);
+
+        parentTreeEntries.push({ mcid: p.mcid, structElementRef: spanRef });
+      }
+
+      writePageContent(doc, pageNumber, newContent);
+      parentTreeEntries.sort((a, b) => a.mcid - b.mcid);
+      this.extendParentTree(doc, pageNumber, parentTreeEntries);
+    } catch (err) {
+      // Full rollback (same reasoning as buildFigureFromImage's own
+      // CodeRabbit/Codex-confirmed fix on PR #555): deleteElement alone
+      // would leave this page's newly-spliced BDC/MCID marks sitting in
+      // the content stream with no owning struct element if
+      // extendParentTree is what throws (writePageContent above already
+      // ran by then) -- restore the page's own original bytes too, not
+      // just the struct-tree side.
+      writePageContent(doc, pageNumber, originalContent);
+      for (const ref of createdRefs) this.deleteElement(doc, ref);
+      return { issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error: err instanceof Error ? err.message : String(err) };
+    }
+
+    return {
+      issueId: issue.id,
+      success: true,
+      before: `${spans.length} oversized /Artifact span(s) swallowing real, never-tagged content`,
+      after: `${spans.length} span(s) split; real content given a fresh /Span structure tag, wired into the document flow`,
+    };
   }
 
   /**

@@ -14,7 +14,7 @@ import { AuditIssue, IssueSeverity } from '../../audit/base-audit.service';
 import { structureAnalyzerService, DocumentStructure } from '../structure-analyzer.service';
 import { pdfParserService, ParsedPDF } from '../pdf-parser.service';
 import { decodePageContent } from '../pdf-content-stream-io';
-import { findUntaggedPathRuns, type UntaggedPathRun, findTaggedContentInsideArtifact } from '../pdf-artifact-tagger';
+import { findUntaggedPathRuns, type UntaggedPathRun, findTaggedContentInsideArtifact, findOversizedArtifactSpans } from '../pdf-artifact-tagger';
 import { logger } from '../../../lib/logger';
 
 // validateUntaggedContent's own recurring-decorative-curve refinement (see
@@ -144,6 +144,14 @@ class PDFStructureValidator {
     // document).
     if (structure.isTaggedPDF) {
       issues.push(...this.validateTaggedContentInsideArtifact(parsedPdf));
+    }
+
+    // Validate oversized Artifact spans that swallow real, never-tagged
+    // content (a third, distinct Artifact-related defect -- see
+    // validateArtifactSwallowsContent's own doc comment) -- tagged PDFs
+    // only, same reasoning as the two checks above.
+    if (structure.isTaggedPDF) {
+      issues.push(...this.validateArtifactSwallowsContent(parsedPdf));
     }
 
     // Structure-tree reference integrity -- tagged PDFs only (an untagged
@@ -720,6 +728,78 @@ class PDFStructureValidator {
         category: 'structure',
         pageNumber,
         matterhornCheckpoint: '01-004',
+        matterhornHow: 'M',
+      }));
+    }
+
+    return issues;
+  }
+
+  /**
+   * Third, distinct Artifact-related defect -- a top-level `/Artifact
+   * BMC … EMC` span whose own boundary is simply wrong, swallowing real
+   * content that was never given its own tag at all. Unlike
+   * validateTaggedContentInsideArtifact (01-004), there's no nested real
+   * tag here to excise; unlike validateUntaggedContent (01-005), the
+   * content isn't bare -- it already sits inside SOME marked-content span,
+   * just the wrong one. Confirmed live on Farrar_2E_Comp_188910.pdf: 23 of
+   * 124 pages, 1,955 total swallowed text/path operations (see
+   * findOversizedArtifactSpans's own doc comment for the full forensic
+   * trail). Reported against 01-005 -- PAC/axesPAC itself reports this
+   * shape as untagged content, since Artifact-wrapped content is invisible
+   * to the structure tree exactly as if bare.
+   *
+   * Split into two codes, same convention as UNTAGGED-CONTENT /
+   * UNTAGGED-CONTENT-COMPLEX: a page where every oversized span is
+   * text-only is a real candidate for the AI-assisted boundary-splice fix
+   * (ai-analysis.service.ts's analyzeArtifactSwallowsContent); a page where
+   * ANY oversized span also contains real path-paint operators is reported
+   * as -COMPLEX and never auto-fix-eligible -- this module's boundary
+   * detection only has a text-baseline-Y signal to work with (see
+   * extractArtifactTextRuns), not a geometry-based one for vector content,
+   * and guessing at a path-content boundary without that signal risks
+   * silently mis-splicing real graphical content.
+   */
+  private validateArtifactSwallowsContent(parsedPdf: ParsedPDF): AuditIssue[] {
+    const issues: AuditIssue[] = [];
+    let pageCount: number;
+    try {
+      pageCount = parsedPdf.pdfLibDoc.getPageCount();
+    } catch (err) {
+      logger.debug(`[PDFStructureValidator] Could not read page count for oversized-artifact check: ${err instanceof Error ? err.message : String(err)}`);
+      return issues;
+    }
+
+    for (let pageNumber = 1; pageNumber <= pageCount; pageNumber++) {
+      let content: string | null;
+      try {
+        content = decodePageContent(parsedPdf.pdfLibDoc, pageNumber);
+      } catch (err) {
+        logger.debug(`[PDFStructureValidator] Could not decode page ${pageNumber} for oversized-artifact check: ${err instanceof Error ? err.message : String(err)}`);
+        continue;
+      }
+      if (!content) continue;
+
+      const spans = findOversizedArtifactSpans(content);
+      if (spans.length === 0) continue;
+
+      const hasPathOps = spans.some((s) => s.hasPathOps);
+      const totalOps = spans.reduce((sum, s) => sum + s.opCount, 0);
+
+      issues.push(this.createIssue({
+        source: 'pdf-structure',
+        severity: 'serious',
+        code: hasPathOps ? 'ARTIFACT-SWALLOWS-CONTENT-COMPLEX' : 'ARTIFACT-SWALLOWS-CONTENT',
+        message: `${spans.length} /Artifact span(s) on this page are far larger than a legitimate decorative header/footer (${totalOps} content operation(s) total) -- likely swallowing real, never-tagged content` +
+          (hasPathOps ? ', including vector graphics (needs manual review to confirm the real-content boundary)' : ''),
+        wcagCriteria: ['1.3.1'],
+        location: `Page ${pageNumber}`,
+        suggestion: hasPathOps
+          ? 'Review this page\'s oversized Artifact span(s) manually -- determine where the real content begins and give it its own structure tag.'
+          : 'The real content boundary inside this Artifact span will be determined and given its own structure tag.',
+        category: 'structure',
+        pageNumber,
+        matterhornCheckpoint: '01-005',
         matterhornHow: 'M',
       }));
     }
