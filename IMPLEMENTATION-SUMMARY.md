@@ -157,7 +157,7 @@ npm test pdf-structure.validator.test.ts
 - MATTERHORN-01-003: PDF not tagged
 
 ### Serious (7 types)
-- MATTERHORN-01-004: Suspect tag structure
+- MATTERHORN-01-007: Suspect tag structure
 - MATTERHORN-06-001: Missing H1 heading
 - MATTERHORN-09-004: Illogical reading order
 - MATTERHORN-11-001: Missing document language

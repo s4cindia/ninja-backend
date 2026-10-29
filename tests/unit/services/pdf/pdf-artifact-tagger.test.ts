@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { findUntaggedPathRuns, tagUntaggedPaintedPaths } from '../../../../src/services/pdf/pdf-artifact-tagger';
+import { findUntaggedPathRuns, tagUntaggedPaintedPaths, findTaggedContentInsideArtifact, splitArtifactAroundTaggedContent } from '../../../../src/services/pdf/pdf-artifact-tagger';
 
 describe('findUntaggedPathRuns', () => {
   it('finds a single untagged painted-path run', () => {
@@ -219,5 +219,115 @@ describe('tagUntaggedPaintedPaths', () => {
     expect(result.content).toContain('(3.14)Tj');
     expect(result.content).toContain('/Artifact BMC 100 690 200 -19 re\nf EMC');
     expect(result.content).toContain('/Artifact BMC 0 0 m\n-15 0 l\nS EMC');
+  });
+});
+
+describe('findTaggedContentInsideArtifact', () => {
+  it('finds no violation when there is no Artifact at all', () => {
+    const content = `/P <</MCID 0 >>BDC\n(x)Tj\nEMC\n`;
+    expect(findTaggedContentInsideArtifact(content)).toHaveLength(0);
+  });
+
+  it('finds no violation when real content sits beside (not inside) an Artifact', () => {
+    const content = `/Artifact BMC\n0 0 m\n10 10 l\nS\nEMC\n/P <</MCID 0 >>BDC\n(x)Tj\nEMC\n`;
+    expect(findTaggedContentInsideArtifact(content)).toHaveLength(0);
+  });
+
+  it('detects a real tag nested directly inside an Artifact span, at the tag NAME offset not the BDC operator offset', () => {
+    const content = `/Artifact BMC\n/Span <</MCID 0 >>BDC\n(x)Tj\nEMC\nEMC\n`;
+    const violations = findTaggedContentInsideArtifact(content);
+    expect(violations).toHaveLength(1);
+    expect(violations[0].closeArtifactBefore).toBe(content.indexOf('/Span'));
+    expect(violations[0].reopenArtifactAfter).toBe(content.indexOf('EMC\nEMC') + 'EMC'.length);
+  });
+
+  it('only reports the OUTERMOST real tag when one real tag is nested inside another, both inside an Artifact', () => {
+    const content = `/Artifact BMC\n/P <</MCID 0 >>BDC\n/Span <</MCID 1 >>BDC\n(x)Tj\nEMC\nEMC\nEMC\n`;
+    const violations = findTaggedContentInsideArtifact(content);
+    expect(violations).toHaveLength(1);
+    expect(violations[0].closeArtifactBefore).toBe(content.indexOf('/P'));
+  });
+
+  it('detects a violation even with an Artifact TWO levels up the ancestor chain', () => {
+    const content = `/Artifact BMC\n/Artifact BMC\n/Span <</MCID 0 >>BDC\n(x)Tj\nEMC\nEMC\nEMC\n`;
+    expect(findTaggedContentInsideArtifact(content)).toHaveLength(1);
+  });
+
+  it('does not treat /OC (optional-content layer) as either an Artifact or real content', () => {
+    // An /OC-wrapped real tag inside an Artifact is still a real violation
+    // -- OC is unrelated to accessibility semantics and must not provide
+    // cover.
+    const content = `/Artifact BMC\n/OC /MC0 BDC\n/Span <</MCID 0 >>BDC\n(x)Tj\nEMC\nEMC\nEMC\n`;
+    expect(findTaggedContentInsideArtifact(content)).toHaveLength(1);
+  });
+
+  it('does not flag two separate back-to-back real tags as two independent nesting levels', () => {
+    const content = `/Artifact BMC\n/Span <</MCID 0 >>BDC\n(a)Tj\nEMC\n/Span <</MCID 1 >>BDC\n(b)Tj\nEMC\nEMC\n`;
+    expect(findTaggedContentInsideArtifact(content)).toHaveLength(2);
+  });
+
+  it('does not corrupt an inline image by parsing its binary payload as marked-content operators', () => {
+    const content = `/Artifact BMC\nBI\n/W 2/H 1/BPC 8/CS/G\nID \x00/Span BDC EMC\x00\nEI\nEMC\n`;
+    expect(findTaggedContentInsideArtifact(content)).toHaveLength(0);
+  });
+});
+
+describe('splitArtifactAroundTaggedContent', () => {
+  it('returns the original string unchanged when there is nothing to split', () => {
+    const content = `/P <</MCID 0 >>BDC\n(x)Tj\nEMC\n`;
+    const result = splitArtifactAroundTaggedContent(content);
+    expect(result.count).toBe(0);
+    expect(result.content).toBe(content);
+  });
+
+  it('splits a single nested real tag out of its enclosing Artifact', () => {
+    const content = `/Artifact BMC\n/Span <</MCID 0 >>BDC\n(x)Tj\nEMC\nEMC\n`;
+    const result = splitArtifactAroundTaggedContent(content);
+    expect(result.count).toBe(1);
+    // The real tag's own bytes are untouched and still present verbatim.
+    expect(result.content).toContain('/Span <</MCID 0 >>BDC\n(x)Tj\nEMC');
+    // The Artifact is closed right before the real tag opens, and reopened
+    // right after it closes -- both insertions carry a leading space so
+    // they can never merge with whatever precedes them into a garbage
+    // token (confirmed real: an unspaced "EMC" landing right after a bare
+    // keyword like "BT" tokenizes as "BTEMC", silently swallowing the fix).
+    expect(result.content).toBe(`/Artifact BMC\n EMC /Span <</MCID 0 >>BDC\n(x)Tj\nEMC /Artifact BMC \nEMC\n`);
+  });
+
+  it('merges a run of back-to-back real tags into a single excised block, not one split per tag', () => {
+    const content = `/Artifact BMC\n/Span <</MCID 0 >>BDC\n(a)Tj\nEMC\n/Span <</MCID 1 >>BDC\n(b)Tj\nEMC\nEMC\n`;
+    const result = splitArtifactAroundTaggedContent(content);
+    expect(result.count).toBe(2);
+    // Exactly one close-then-reopen pair around the WHOLE back-to-back
+    // block, not an empty open/close Artifact wedged between the two Spans.
+    expect((result.content.match(/\/Artifact BMC/g) ?? []).length).toBe(2); // original open + one reopen after the block
+    expect((result.content.match(/EMC/g) ?? []).length).toBe(4); // 2 real Span EMCs + 1 early-close + 1 final close
+    expect(result.content).not.toMatch(/EMC\s*\/Artifact BMC\s*\/Span/); // no empty wedge between the two Spans
+  });
+
+  it('regression: never merges the inserted EMC with a bare preceding keyword like BT into a garbage token (confirmed real on Farrar_2E_Comp_188910.pdf page 68: "BT/Span" with no space)', () => {
+    // The real shape: a text object's own BT is immediately followed, with
+    // no whitespace, by the nested real tag's BDC -- exactly the case
+    // where an unspaced "EMC" insertion would tokenize as "BTEMC" (a
+    // single, unrecognized operator), silently swallowing the fix and
+    // leaving the Artifact open.
+    const content = `/Artifact BMC\nBT/Span <</MCID 1 >>BDC\n(GLOSSARY)Tj EMC\nET\nEMC\n/Table <</MCID 0 >>BDC\n(data)Tj\nEMC\n`;
+    const before = findTaggedContentInsideArtifact(content);
+    expect(before).toHaveLength(1); // /Table is NOT nested (Artifact already closed by then)
+
+    const result = splitArtifactAroundTaggedContent(content);
+    expect(result.count).toBe(1);
+
+    const after = findTaggedContentInsideArtifact(result.content);
+    expect(after).toHaveLength(0);
+    // The real tag's own bytes are untouched and still present verbatim.
+    expect(result.content).toContain('/Span <</MCID 1 >>BDC\n(GLOSSARY)Tj EMC');
+  });
+
+  it('never touches path/text operator bytes, only marked-content boundaries', () => {
+    const content = `/Artifact BMC\n/Span <</MCID 0 >>BDC\nBT\n9 0 0 9 100 700 Tm\n(Header)Tj\nET\nEMC\nEMC\n`;
+    const result = splitArtifactAroundTaggedContent(content);
+    expect(result.content).toContain('(Header)Tj');
+    expect(result.content).toContain('9 0 0 9 100 700 Tm');
   });
 });

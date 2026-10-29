@@ -6,7 +6,7 @@ Validates PDF document structure for accessibility compliance according to WCAG 
 
 - **Document Structure Validation**
   - PDF tagging verification (Matterhorn 01-003)
-  - Suspect tag structure detection (Matterhorn 01-004)
+  - Suspect tag structure detection (Matterhorn 01-007)
   - Heading hierarchy validation (Matterhorn 06-001, WCAG 2.4.6)
   - Reading order verification (Matterhorn 09-004, WCAG 1.3.2)
   - Document language check (Matterhorn 11-001, WCAG 3.1.1)
@@ -73,8 +73,12 @@ try {
   - The document lacks structural tags required for accessibility
 
 ### Serious Issues
-- **MATTERHORN-01-004**: Suspect tag structure
+- **MATTERHORN-01-007**: Suspect tag structure
   - The document has potential tagging problems
+- **TAGGED-CONTENT-INSIDE-ARTIFACT** (Matterhorn 01-004): Real content nested inside an Artifact span
+  - A tagged element sits inside a decorative /Artifact region, so top-down readers credit it as decoration
+- **TABLE-CELL-DISCONNECTED** (Matterhorn 01-005): Table cell unreachable from the structure tree
+  - A /TD or /TH is tagged and ParentTree-cross-referenced, but missing from its row's /K array
 - **MATTERHORN-06-001**: Missing H1 heading
   - Document lacks a main heading
 - **MATTERHORN-09-004**: Illogical reading order
@@ -114,7 +118,9 @@ try {
 | Checkpoint | Description |
 |------------|-------------|
 | 01-003 | Document not tagged |
-| 01-004 | Suspect tag structure |
+| 01-004 | Tagged content present inside an Artifact span |
+| 01-005 | Content neither tagged nor marked as Artifact (incl. tree-disconnected content) |
+| 01-007 | Suspect tag structure |
 | 06-001 | Heading structure |
 | 09-004 | Reading order |
 | 11-001 | Document language |

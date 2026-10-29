@@ -309,6 +309,88 @@ describe('PDFStructureValidator', () => {
     });
   });
 
+  describe('tagged content inside an Artifact span (Matterhorn 01-004)', () => {
+    async function validateWithRealPage(content: string): Promise<ParsedPDF['pdfLibDoc']> {
+      const doc = await PDFDocument.create();
+      doc.addPage([612, 792]);
+      writePageContent(doc, 1, content);
+      return doc;
+    }
+
+    it('flags a page with a real tag nested inside an /Artifact span', async () => {
+      const pdfLibDoc = await validateWithRealPage('/Artifact BMC\n/Span <</MCID 0 >>BDC\n(x)Tj\nEMC\nEMC\n');
+      const mockParsedPdf = { ...createMockParsedPdf({ isTagged: true, hasLanguage: true, hasTitle: true }), pdfLibDoc };
+      const mockStructure = createMockStructure({
+        isTaggedPDF: true, hasProperHeadingHierarchy: true, hasDocumentLanguage: true, hasLogicalReadingOrder: true,
+      });
+      vi.mocked(pdfParserService.parse).mockResolvedValue(mockParsedPdf);
+      vi.mocked(pdfParserService.close).mockResolvedValue(undefined);
+      vi.mocked(structureAnalyzerService.analyzeStructure).mockResolvedValue(mockStructure);
+
+      const result = await pdfStructureValidator.validateFromFile('/path/to/test.pdf');
+
+      const issue = result.issues.find(i => i.code === 'TAGGED-CONTENT-INSIDE-ARTIFACT');
+      expect(issue).toBeDefined();
+      expect(issue?.matterhornCheckpoint).toBe('01-004');
+      expect(issue?.matterhornHow).toBe('M');
+      expect(issue?.severity).toBe('serious');
+      expect(issue?.pageNumber).toBe(1);
+      expect(issue?.location).toBe('Page 1');
+      expect(issue?.message).toContain('1 real structure element');
+    });
+
+    it('does not flag a page where real content sits beside, not inside, an Artifact', async () => {
+      const pdfLibDoc = await validateWithRealPage('/Artifact BMC\n0 0 m\n10 10 l\nS\nEMC\n/P <</MCID 0 >>BDC\n(x)Tj\nEMC\n');
+      const mockParsedPdf = { ...createMockParsedPdf({ isTagged: true, hasLanguage: true, hasTitle: true }), pdfLibDoc };
+      const mockStructure = createMockStructure({
+        isTaggedPDF: true, hasProperHeadingHierarchy: true, hasDocumentLanguage: true, hasLogicalReadingOrder: true,
+      });
+      vi.mocked(pdfParserService.parse).mockResolvedValue(mockParsedPdf);
+      vi.mocked(pdfParserService.close).mockResolvedValue(undefined);
+      vi.mocked(structureAnalyzerService.analyzeStructure).mockResolvedValue(mockStructure);
+
+      const result = await pdfStructureValidator.validateFromFile('/path/to/test.pdf');
+
+      expect(result.issues.find(i => i.code === 'TAGGED-CONTENT-INSIDE-ARTIFACT')).toBeUndefined();
+    });
+
+    it('does not run this check on an untagged document (no /Artifact spans exist to nest inside)', async () => {
+      const pdfLibDoc = await validateWithRealPage('/Artifact BMC\n/Span <</MCID 0 >>BDC\n(x)Tj\nEMC\nEMC\n');
+      const mockParsedPdf = { ...createMockParsedPdf({ isTagged: false, hasLanguage: true, hasTitle: true }), pdfLibDoc };
+      const mockStructure = createMockStructure({
+        isTaggedPDF: false, hasProperHeadingHierarchy: true, hasDocumentLanguage: true, hasLogicalReadingOrder: true,
+      });
+      vi.mocked(pdfParserService.parse).mockResolvedValue(mockParsedPdf);
+      vi.mocked(pdfParserService.close).mockResolvedValue(undefined);
+      vi.mocked(structureAnalyzerService.analyzeStructure).mockResolvedValue(mockStructure);
+
+      const result = await pdfStructureValidator.validateFromFile('/path/to/test.pdf');
+
+      expect(result.issues.find(i => i.code === 'TAGGED-CONTENT-INSIDE-ARTIFACT')).toBeUndefined();
+    });
+
+    it('reports one issue per page, counting multiple nested real tags on that page', async () => {
+      const content =
+        '/Artifact BMC\n/Span <</MCID 0 >>BDC\n(a)Tj\nEMC\n' +
+        '/Span <</MCID 1 >>BDC\n(b)Tj\nEMC\n' +
+        '/Span <</MCID 2 >>BDC\n(c)Tj\nEMC\nEMC\n';
+      const pdfLibDoc = await validateWithRealPage(content);
+      const mockParsedPdf = { ...createMockParsedPdf({ isTagged: true, hasLanguage: true, hasTitle: true }), pdfLibDoc };
+      const mockStructure = createMockStructure({
+        isTaggedPDF: true, hasProperHeadingHierarchy: true, hasDocumentLanguage: true, hasLogicalReadingOrder: true,
+      });
+      vi.mocked(pdfParserService.parse).mockResolvedValue(mockParsedPdf);
+      vi.mocked(pdfParserService.close).mockResolvedValue(undefined);
+      vi.mocked(structureAnalyzerService.analyzeStructure).mockResolvedValue(mockStructure);
+
+      const result = await pdfStructureValidator.validateFromFile('/path/to/test.pdf');
+
+      const issues = result.issues.filter(i => i.code === 'TAGGED-CONTENT-INSIDE-ARTIFACT');
+      expect(issues).toHaveLength(1);
+      expect(issues[0].message).toContain('3 real structure element');
+    });
+  });
+
   describe('structure-tree reference integrity (STRUCTURE-DANGLING-REFERENCE)', () => {
     // Real incident this check closes a blind spot for: Math_Olszewski_PDF.pdf's
     // remediated output had 3 struct elements silently dropped by pdf-lib's own
