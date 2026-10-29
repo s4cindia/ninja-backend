@@ -690,6 +690,27 @@ describe('aiAnalysisService.applyApprovedSuggestions', () => {
     expect(result.failed).toBe(0);
   });
 
+  it('dispatches a table-row-reattach-fix suggestion (no value, rule-based) to reattachTableRow', async () => {
+    vi.mocked(prisma.aiAnalysis.findMany).mockResolvedValue([
+      { issueId: 'row-1', suggestionType: 'table-row-reattach-fix' },
+    ] as any);
+    vi.mocked(fileStorageService.getRemediatedFile).mockResolvedValue(Buffer.from('pdf'));
+    vi.mocked(pdfModifierService.loadPDF).mockResolvedValue({} as any);
+    vi.mocked(pdfModifierService.savePDF).mockResolvedValue(Buffer.from('modified-pdf'));
+    vi.mocked(fileStorageService.saveRemediatedFile).mockResolvedValue('s3://remediated/doc.pdf');
+
+    const { pdfStructureWriterService } = await import('../../../../src/services/pdf/pdf-structure-writer.service');
+    vi.mocked(pdfStructureWriterService.reattachTableRow).mockReturnValue([
+      { issueId: 'row-1', success: true, before: 'disconnected from the structure tree', after: 'reattached into its containing /Table' },
+    ]);
+
+    const result = await aiAnalysisService.applyApprovedSuggestions('job-1', 1, 'user-1', 'apply_all');
+
+    expect(pdfStructureWriterService.reattachTableRow).toHaveBeenCalled();
+    expect(result.applied).toBe(1);
+    expect(result.failed).toBe(0);
+  });
+
   it('does not call pdfComprehensiveParserService when no table-from-layout-fix suggestions are in the batch', async () => {
     vi.mocked(prisma.aiAnalysis.findMany).mockResolvedValue([
       { issueId: 'issue-1', suggestionType: 'alt-text', value: 'A red apple' },

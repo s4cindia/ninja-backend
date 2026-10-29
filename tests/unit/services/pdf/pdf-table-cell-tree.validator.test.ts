@@ -20,8 +20,15 @@ import type { ParsedPDF } from '../../../../src/services/pdf/pdf-parser.service'
  * one cell's own ref either included (connected) or left as a gap
  * (disconnected). /ParentTree always cross-references every real MCID
  * regardless of `connected`.
+ *
+ * `orphanRow`, when true, matches the OTHER confirmed-real shape (the one
+ * reattachTableRow exists to fix): every /TD cell is correctly linked
+ * into its /TR's own /K (so TD detection reports nothing), but the /TR
+ * itself is left out of its own would-be parent's /K entirely, and has no
+ * /P of its own -- a /TR has no MCID, so unlike a disconnected /TD it is
+ * invisible to /ParentTree and can only be found by direct enumeration.
  */
-async function buildDoc(opts: { connected: boolean; hierarchicalParentTree?: boolean }): Promise<ParsedPDF> {
+async function buildDoc(opts: { connected: boolean; hierarchicalParentTree?: boolean; orphanRow?: boolean }): Promise<ParsedPDF> {
   const doc = await PDFDocument.create();
   const page = doc.addPage([612, 792]);
   page.node.set(PDFName.of('StructParents'), doc.context.obj(0));
@@ -30,17 +37,23 @@ async function buildDoc(opts: { connected: boolean; hierarchicalParentTree?: boo
   const cellCol1 = doc.context.register(doc.context.obj({ S: PDFName.of('TD'), Pg: page.ref, K: 1 }));
   const cellCol2 = doc.context.register(doc.context.obj({ S: PDFName.of('TD'), Pg: page.ref, K: 2 }));
 
-  const trKids = opts.connected ? [cellCol0, cellCol1, cellCol2] : [cellCol0, cellCol2];
-  const trRef = doc.context.register(doc.context.obj({ S: PDFName.of('TR'), Pg: page.ref, K: trKids }));
+  const trKids = opts.orphanRow || opts.connected ? [cellCol0, cellCol1, cellCol2] : [cellCol0, cellCol2];
+  // /Type /StructElem matches the confirmed real-document shape (every
+  // StructElem dict in Farrar_2E_Comp_188910.pdf's remediated output sets
+  // it) -- the /TR enumeration pass requires it, the same safety filter
+  // that keeps it from matching unrelated dicts elsewhere in the file.
+  const trRef = doc.context.register(doc.context.obj({ Type: PDFName.of('StructElem'), S: PDFName.of('TR'), K: trKids }));
   doc.context.lookup(cellCol0, PDFDict).set(PDFName.of('P'), trRef);
   doc.context.lookup(cellCol2, PDFDict).set(PDFName.of('P'), trRef);
-  if (opts.connected) {
+  if (opts.connected || opts.orphanRow) {
     doc.context.lookup(cellCol1, PDFDict).set(PDFName.of('P'), trRef);
   }
 
-  const docNode = doc.context.obj({ S: PDFName.of('Document'), K: [trRef] });
+  const docNode = doc.context.obj({ S: PDFName.of('Document'), K: opts.orphanRow ? [] : [trRef] });
   const docRef = doc.context.register(docNode);
-  doc.context.lookup(trRef, PDFDict).set(PDFName.of('P'), docRef);
+  if (!opts.orphanRow) {
+    doc.context.lookup(trRef, PDFDict).set(PDFName.of('P'), docRef);
+  }
 
   const structTreeRootRef = doc.context.register(doc.context.obj({ Type: PDFName.of('StructTreeRoot'), K: [docRef] }));
 
@@ -67,7 +80,7 @@ describe('PdfTableCellTreeValidator', () => {
 
     const result = await pdfTableCellTreeValidator.validate(parsedPdf);
 
-    expect(result.metadata).toEqual({ totalCells: 3, disconnectedCells: 1 });
+    expect(result.metadata).toEqual({ totalCells: 3, disconnectedCells: 1, totalRows: 1, disconnectedRows: 0 });
     expect(result.issues).toHaveLength(1);
     expect(result.issues[0].code).toBe('TABLE-CELL-DISCONNECTED');
     expect(result.issues[0].matterhornCheckpoint).toBe('01-005');
@@ -80,7 +93,7 @@ describe('PdfTableCellTreeValidator', () => {
 
     const result = await pdfTableCellTreeValidator.validate(parsedPdf);
 
-    expect(result.metadata).toEqual({ totalCells: 3, disconnectedCells: 0 });
+    expect(result.metadata).toEqual({ totalCells: 3, disconnectedCells: 0, totalRows: 1, disconnectedRows: 0 });
     expect(result.issues).toHaveLength(0);
   });
 
@@ -89,7 +102,7 @@ describe('PdfTableCellTreeValidator', () => {
 
     const result = await pdfTableCellTreeValidator.validate(parsedPdf);
 
-    expect(result.metadata).toEqual({ totalCells: 3, disconnectedCells: 1 });
+    expect(result.metadata).toEqual({ totalCells: 3, disconnectedCells: 1, totalRows: 1, disconnectedRows: 0 });
     expect(result.issues[0].element).toBe('tablecell_p1_mc1');
   });
 
@@ -101,6 +114,34 @@ describe('PdfTableCellTreeValidator', () => {
     const result = await pdfTableCellTreeValidator.validate(parsedPdf);
 
     expect(result.issues).toHaveLength(0);
-    expect(result.metadata).toEqual({ totalCells: 0, disconnectedCells: 0 });
+    expect(result.metadata).toEqual({ totalCells: 0, disconnectedCells: 0, totalRows: 0, disconnectedRows: 0 });
+  });
+
+  it('flags a /TR whose cells are all correctly linked to it, but which is itself missing from its parent\'s own /K array', async () => {
+    const parsedPdf = await buildDoc({ connected: true, orphanRow: true });
+
+    const result = await pdfTableCellTreeValidator.validate(parsedPdf);
+
+    // Reachability is transitive: an orphaned /TR's own TD children are
+    // ALSO genuinely unreachable from root (their only path to it is
+    // through the orphaned /TR), so the existing /TD /TH pass correctly
+    // flags all 3 too -- matching the confirmed real shape where each
+    // orphaned row happens to have exactly one TD child, so its own TD
+    // and TR issues always come in a 1:1 pair.
+    expect(result.metadata).toEqual({ totalCells: 3, disconnectedCells: 3, totalRows: 1, disconnectedRows: 1 });
+    const rowIssues = result.issues.filter(i => i.code === 'TABLE-ROW-DISCONNECTED');
+    expect(rowIssues).toHaveLength(1);
+    expect(rowIssues[0].matterhornCheckpoint).toBe('01-005');
+    expect(rowIssues[0].pageNumber).toBe(1);
+    // Derived from the row's own first (lowest-MCID) cell, mc0.
+    expect(rowIssues[0].element).toBe('tablerow_p1_mc0');
+  });
+
+  it('does not flag a /TR that IS reachable from the structure tree root', async () => {
+    const parsedPdf = await buildDoc({ connected: true });
+
+    const result = await pdfTableCellTreeValidator.validate(parsedPdf);
+
+    expect(result.issues.filter(i => i.code === 'TABLE-ROW-DISCONNECTED')).toHaveLength(0);
   });
 });

@@ -267,6 +267,12 @@ const TAGGED_CONTENT_INSIDE_ARTIFACT_CODES = new Set(['TAGGED-CONTENT-INSIDE-ART
 // -- see pdf-table-cell-tree.validator.ts's header comment for the real
 // 5-cell defect this catches on Farrar_2E_Comp_188910.pdf.
 const TABLE_CELL_DISCONNECTED_CODES = new Set(['TABLE-CELL-DISCONNECTED']);
+// One level up from TABLE_CELL_DISCONNECTED_CODES: the /TR row itself,
+// not one of its /TD /TH cells, is what's missing from the structure tree
+// -- see pdf-table-cell-tree.validator.ts's header comment for why this
+// needs a separate detection pass, and reattachTableRow's own doc comment
+// for why it's a separate writer too.
+const TABLE_ROW_DISCONNECTED_CODES = new Set(['TABLE-ROW-DISCONNECTED']);
 const UNTAGGED_CONTENT_COMPLEX_CODES = new Set(['UNTAGGED-CONTENT-COMPLEX']);
 const TABLE_HEADER_SCOPE_CODES = new Set(['TABLE-HEADER-MISSING-SCOPE']);
 
@@ -1630,6 +1636,17 @@ class AiAnalysisService {
         guidance: 'This table cell is tagged but not reachable from the structure tree — it will be reattached into its row at its natural column position.',
         confidence: 1.0,
         rationale: 'Deterministic fix — splices the cell\'s existing struct element into its containing row\'s own /K array, in correct column order, never creates new content or MCIDs',
+        model: 'rule-based',
+        applyMode: 'apply-to-pdf',
+      };
+    }
+
+    if (TABLE_ROW_DISCONNECTED_CODES.has(code)) {
+      return {
+        suggestionType: 'table-row-reattach-fix',
+        guidance: 'This table row is tagged but not reachable from the structure tree — it will be reattached into its table at its natural row position.',
+        confidence: 1.0,
+        rationale: 'Deterministic fix — splices the row\'s existing struct element into its containing table\'s own /K array, in correct row order, never creates new content or MCIDs',
         model: 'rule-based',
         applyMode: 'apply-to-pdf',
       };
@@ -3360,7 +3377,7 @@ class AiAnalysisService {
     // for repeat contrast fixes.
     const pagesRewrittenSincePreResolve = new Set<number>();
 
-    const STRUCTURE_WRITER_TYPES = new Set(['heading-fix', 'list-fix', 'table-header-fix', 'table-header-fix-column', 'table-header-scope-fix', 'table-artifact-fix', 'table-from-layout-fix', 'bookmark-generate', 'heading-multiple-h1-fix', 'pdfua-identifier', 'color-contrast-fix', 'alt-text-decorative', 'untagged-content-fix', 'invisible-text-artifact-fix', 'figure-caption-reattach-fix', 'inline-figure-reattach-fix', 'tagged-content-artifact-split-fix', 'table-cell-reattach-fix', 'font-tounicode-synthesis-fix', 'font-tounicode-extend-fix']);
+    const STRUCTURE_WRITER_TYPES = new Set(['heading-fix', 'list-fix', 'table-header-fix', 'table-header-fix-column', 'table-header-scope-fix', 'table-artifact-fix', 'table-from-layout-fix', 'bookmark-generate', 'heading-multiple-h1-fix', 'pdfua-identifier', 'color-contrast-fix', 'alt-text-decorative', 'untagged-content-fix', 'invisible-text-artifact-fix', 'figure-caption-reattach-fix', 'inline-figure-reattach-fix', 'tagged-content-artifact-split-fix', 'table-cell-reattach-fix', 'table-row-reattach-fix', 'font-tounicode-synthesis-fix', 'font-tounicode-extend-fix']);
 
     let applied = 0;
     let failed = 0;
@@ -3485,6 +3502,11 @@ class AiAnalysisService {
           // Struct-tree-only, same as figure-caption-reattach-fix/
           // inline-figure-reattach-fix above.
           const results = pdfStructureWriterService.reattachTableCell(doc, [originalIssue]);
+          const r = results[0];
+          modification = { success: r.success, description: r.after, error: r.error };
+        } else if (suggestionType === 'table-row-reattach-fix') {
+          // Struct-tree-only, same as table-cell-reattach-fix above.
+          const results = pdfStructureWriterService.reattachTableRow(doc, [originalIssue]);
           const r = results[0];
           modification = { success: r.success, description: r.after, error: r.error };
         } else if (suggestionType === 'tagged-content-artifact-split-fix') {
