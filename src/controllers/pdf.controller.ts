@@ -988,6 +988,19 @@ export class PdfController {
         },
       });
 
+      // Mirrors file.controller.ts's EPUB triggerAudit, which has always
+      // set this for EPUB jobs -- PDF jobs never did, which is exactly why
+      // Files.tsx's "view results" action (keyed off this field) silently
+      // had nothing to navigate to for a completed PDF audit. Set at
+      // creation (not completion), same "most recent job for this file"
+      // semantics as the EPUB path, not "most recent completed job".
+      await prisma.file.update({
+        where: { id: fileRecord.id },
+        data: { latestJobId: job.id },
+      }).catch((err: unknown) => {
+        logger.warn(`[PDF] Failed to set latestJobId on file ${fileRecord.id} for job ${job.id}: ${err instanceof Error ? err.message : 'Unknown error'}`);
+      });
+
       res.status(202).json({
         success: true,
         data: {
