@@ -39,7 +39,7 @@ vi.mock('../../../../src/lib/prisma', () => ({
   default: {
     comparisonTrial: { findUnique: vi.fn(), findMany: vi.fn(), update: vi.fn(), updateMany: mockComparisonTrialUpdateMany },
     pdfAutoRemediationRun: { findUnique: vi.fn(), findMany: vi.fn(), update: vi.fn(), updateMany: mockPdfAutoRemediationRunUpdateMany },
-    job: { findUnique: vi.fn(), update: vi.fn() },
+    job: { findUnique: vi.fn(), findMany: vi.fn(), update: vi.fn() },
     aiAnalysis: { updateMany: vi.fn(), count: vi.fn(), deleteMany: vi.fn() },
     $queryRaw: mockQueryRaw,
     $transaction: (fn: (tx: unknown) => Promise<unknown>) =>
@@ -54,6 +54,7 @@ vi.mock('../../../../src/services/pdf/ai-analysis.service');
 vi.mock('../../../../src/services/pdf/pdf-reaudit.service');
 vi.mock('../../../../src/services/pdf/remediation-cycle-lock.service');
 vi.mock('../../../../src/services/pdf/remediation-cycle-history.service');
+vi.mock('../../../../src/services/storage/file-storage.service');
 vi.mock('../../../../src/lib/logger', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
 }));
@@ -65,6 +66,7 @@ import { aiAnalysisService } from '../../../../src/services/pdf/ai-analysis.serv
 import { pdfReauditService } from '../../../../src/services/pdf/pdf-reaudit.service';
 import { remediationCycleLockService } from '../../../../src/services/pdf/remediation-cycle-lock.service';
 import { remediationCycleHistoryService } from '../../../../src/services/pdf/remediation-cycle-history.service';
+import { fileStorageService } from '../../../../src/services/storage/file-storage.service';
 
 function makeTrial(overrides: Record<string, unknown> = {}) {
   return {
@@ -1266,6 +1268,176 @@ describe('autoRemediationLoopService.reconcileAllOrphanedRuns', () => {
     await expect(autoRemediationLoopService.reconcileAllOrphanedRuns()).resolves.toBeUndefined();
 
     reconcileSpy.mockRestore();
+  });
+});
+
+// Real incident, 2026-10-29: a job's postRemediationStatus was stuck at
+// 'pending' -- the process that applied its fixes died between the
+// (synchronous) PDF save and the re-audit that was meant to follow it --
+// leaving its audit report stale relative to a newer file already on
+// storage. See reconcileStalePostRemediation's own doc comment for the
+// full shape.
+describe('autoRemediationLoopService.reconcileStalePostRemediation', () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  function mockStuckJob(outputOverrides: Record<string, unknown> = {}) {
+    vi.mocked(prisma.job.findMany).mockResolvedValue([{ id: 'job-1' }] as any);
+    vi.mocked(prisma.job.findUnique).mockResolvedValue({
+      id: 'job-1',
+      output: {
+        postRemediationStatus: 'pending',
+        fileName: 'doc.pdf',
+        remediatedFileUrl: 's3://remediated/doc.pdf',
+        ...outputOverrides,
+      },
+    } as any);
+  }
+
+  it('does nothing when no job has a stuck pending status', async () => {
+    vi.mocked(prisma.job.findMany).mockResolvedValue([] as any);
+
+    await autoRemediationLoopService.reconcileStalePostRemediation();
+
+    expect(remediationCycleLockService.acquireLock).not.toHaveBeenCalled();
+  });
+
+  it('queries only jobs with a free-or-stale remediation-cycle lock, same threshold as reconcileIfOrphaned', async () => {
+    vi.mocked(prisma.job.findMany).mockResolvedValue([] as any);
+
+    await autoRemediationLoopService.reconcileStalePostRemediation();
+
+    expect(prisma.job.findMany).toHaveBeenCalledWith({
+      where: {
+        output: { path: ['postRemediationStatus'], equals: 'pending' },
+        OR: [
+          { remediationCycleLockedAt: null },
+          { remediationCycleLockedAt: { lt: expect.any(Date) } },
+        ],
+      },
+      select: { id: true },
+    });
+  });
+
+  it('skips a job when a legitimate cycle wins the lock first, without touching its data', async () => {
+    mockStuckJob();
+    vi.mocked(remediationCycleLockService.acquireLock).mockResolvedValue({ acquired: false } as any);
+
+    await autoRemediationLoopService.reconcileStalePostRemediation();
+
+    expect(pdfReauditService.reauditAndCompare).not.toHaveBeenCalled();
+    expect(prisma.job.update).not.toHaveBeenCalled();
+    expect(remediationCycleLockService.releaseLock).not.toHaveBeenCalled();
+  });
+
+  it('skips and releases the lock when the re-check under the lock finds the status already resolved', async () => {
+    vi.mocked(prisma.job.findMany).mockResolvedValue([{ id: 'job-1' }] as any);
+    vi.mocked(prisma.job.findUnique).mockResolvedValue({
+      id: 'job-1',
+      output: { postRemediationStatus: 'complete' },
+    } as any);
+    vi.mocked(remediationCycleLockService.acquireLock).mockResolvedValue({ acquired: true, cycleNumber: 5 } as any);
+
+    await autoRemediationLoopService.reconcileStalePostRemediation();
+
+    expect(pdfReauditService.reauditAndCompare).not.toHaveBeenCalled();
+    expect(remediationCycleLockService.releaseLock).toHaveBeenCalledWith('job-1', 5);
+  });
+
+  it('skips and releases the lock when the job has no recorded remediated file to re-audit', async () => {
+    mockStuckJob({ fileName: undefined, remediatedFileUrl: undefined });
+    vi.mocked(remediationCycleLockService.acquireLock).mockResolvedValue({ acquired: true, cycleNumber: 5 } as any);
+
+    await autoRemediationLoopService.reconcileStalePostRemediation();
+
+    expect(fileStorageService.getRemediatedFile).not.toHaveBeenCalled();
+    expect(pdfReauditService.reauditAndCompare).not.toHaveBeenCalled();
+    expect(remediationCycleLockService.releaseLock).toHaveBeenCalledWith('job-1', 5);
+  });
+
+  it('skips and releases the lock when the remediated file is missing from storage', async () => {
+    mockStuckJob();
+    vi.mocked(remediationCycleLockService.acquireLock).mockResolvedValue({ acquired: true, cycleNumber: 5 } as any);
+    vi.mocked(fileStorageService.getRemediatedFile).mockResolvedValue(null);
+
+    await autoRemediationLoopService.reconcileStalePostRemediation();
+
+    expect(pdfReauditService.reauditAndCompare).not.toHaveBeenCalled();
+    expect(remediationCycleLockService.releaseLock).toHaveBeenCalledWith('job-1', 5);
+  });
+
+  it('re-audits the current file and marks postRemediationStatus complete on success', async () => {
+    mockStuckJob();
+    vi.mocked(remediationCycleLockService.acquireLock).mockResolvedValue({ acquired: true, cycleNumber: 5 } as any);
+    vi.mocked(fileStorageService.getRemediatedFile).mockResolvedValue(Buffer.from('pdf'));
+    vi.mocked(pdfReauditService.reauditAndCompare).mockResolvedValue({
+      success: true,
+      jobId: 'job-1',
+      originalAuditId: 'job-1',
+      reauditId: 'job-1-reaudit',
+      fileName: 'doc.pdf',
+      comparison: { resolved: [], remaining: [], regressions: [] },
+      metrics: { totalOriginal: 0, totalNew: 0, resolvedCount: 3, remainingCount: 1, regressionCount: 0, resolutionRate: 75 },
+      reauditReport: { issues: [{ id: 'issue-1' }] } as any,
+    } as any);
+
+    await autoRemediationLoopService.reconcileStalePostRemediation();
+
+    expect(pdfReauditService.reauditAndCompare).toHaveBeenCalledWith('job-1', Buffer.from('pdf'), 'doc.pdf');
+    expect(prisma.job.update).toHaveBeenCalledWith({
+      where: { id: 'job-1' },
+      data: {
+        output: expect.objectContaining({
+          auditReport: { issues: [{ id: 'issue-1' }] },
+          postRemediationStatus: 'complete',
+          postRemediationAudit: expect.objectContaining({ resolved: 3, remaining: 1, regressions: 0, resolutionRate: 75 }),
+        }),
+      },
+    });
+    expect(remediationCycleHistoryService.logEvent).toHaveBeenCalledWith(
+      expect.objectContaining({ jobId: 'job-1', cycleNumber: 5, action: 'reaudit', source: 'watchdog', status: 'completed', triggeredBy: 'watchdog' })
+    );
+    expect(remediationCycleLockService.releaseLock).toHaveBeenCalledWith('job-1', 5);
+  });
+
+  it('marks postRemediationStatus failed when the re-audit itself reports failure, without throwing', async () => {
+    mockStuckJob();
+    vi.mocked(remediationCycleLockService.acquireLock).mockResolvedValue({ acquired: true, cycleNumber: 5 } as any);
+    vi.mocked(fileStorageService.getRemediatedFile).mockResolvedValue(Buffer.from('pdf'));
+    vi.mocked(pdfReauditService.reauditAndCompare).mockResolvedValue({
+      success: false,
+      jobId: 'job-1',
+      originalAuditId: 'job-1',
+      reauditId: '',
+      fileName: 'doc.pdf',
+      comparison: { resolved: [], remaining: [], regressions: [] },
+      metrics: { totalOriginal: 0, totalNew: 0, resolvedCount: 0, remainingCount: 0, regressionCount: 0, resolutionRate: 0 },
+      error: 'audit failed',
+    } as any);
+
+    await autoRemediationLoopService.reconcileStalePostRemediation();
+
+    expect(prisma.job.update).toHaveBeenCalledWith({
+      where: { id: 'job-1' },
+      data: { output: expect.objectContaining({ postRemediationStatus: 'failed' }) },
+    });
+    expect(remediationCycleHistoryService.logEvent).toHaveBeenCalledWith(
+      expect.objectContaining({ status: 'failed', errorMessage: 'audit failed' })
+    );
+    expect(remediationCycleLockService.releaseLock).toHaveBeenCalledWith('job-1', 5);
+  });
+
+  it('still releases the lock when reauditAndCompare itself throws', async () => {
+    mockStuckJob();
+    vi.mocked(remediationCycleLockService.acquireLock).mockResolvedValue({ acquired: true, cycleNumber: 5 } as any);
+    vi.mocked(fileStorageService.getRemediatedFile).mockResolvedValue(Buffer.from('pdf'));
+    vi.mocked(pdfReauditService.reauditAndCompare).mockRejectedValue(new Error('storage unavailable'));
+
+    await expect(autoRemediationLoopService.reconcileStalePostRemediation()).resolves.toBeUndefined();
+
+    expect(prisma.job.update).not.toHaveBeenCalled();
+    expect(remediationCycleLockService.releaseLock).toHaveBeenCalledWith('job-1', 5);
   });
 });
 

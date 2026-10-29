@@ -563,6 +563,17 @@ export function startBackgroundWorkers(): void {
       autoRemediationLoopService.reconcileAllOrphanedRuns().catch(err => {
         logger.error('[Watchdog] Periodic auto-remediation orphan sweep failed:', err);
       });
+      // Real incident, 2026-10-29: a job's postRemediationStatus was stuck
+      // at 'pending' -- and its audit report stale relative to a newer
+      // remediated file already on storage -- because the process that
+      // applied fixes died between the (synchronous) save and the
+      // (fire-and-forget or awaited-but-same-process) re-audit that was
+      // supposed to follow it. See reconcileStalePostRemediation's own doc
+      // comment for the full shape; this closes the same crash-recovery
+      // gap reconcileAllOrphanedRuns already closes for autoStatus.
+      autoRemediationLoopService.reconcileStalePostRemediation().catch(err => {
+        logger.error('[Watchdog] Periodic post-remediation staleness sweep failed:', err);
+      });
       // Nothing else in the repo schedules this -- without it, a lease held
       // by a worker process that crashed mid-item (not a clean SIGTERM)
       // would never be reclaimed, permanently shrinking that tenant's
