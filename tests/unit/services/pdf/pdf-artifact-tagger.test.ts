@@ -8,6 +8,8 @@ import {
   extractArtifactTextRuns,
   computeHeuristicBoundaryIndex,
   applyArtifactUnwrap,
+  findRealTextSegmentsInSpan,
+  buildArtifactSplitEdits,
 } from '../../../../src/services/pdf/pdf-artifact-tagger';
 
 describe('findUntaggedPathRuns', () => {
@@ -493,5 +495,95 @@ describe('applyArtifactUnwrap', () => {
     // closing the Span) -- no second EMC was inserted.
     const afterBdc = result.slice(result.indexOf('BDC'));
     expect((afterBdc.match(/EMC/g) ?? []).length).toBe(1);
+  });
+});
+
+describe('findRealTextSegmentsInSpan', () => {
+  it('finds a single real-text segment sandwiched between decorative path-paint ops', () => {
+    const content = `/Artifact BMC\n0 0 m\n10 10 l\nS\n(Term A)Tj\n0 0 m\n5 5 l\nS\nEMC\n`;
+    const spans = findOversizedArtifactSpans(content, 2);
+    expect(spans).toHaveLength(1);
+    const segments = findRealTextSegmentsInSpan(content, spans[0]);
+    expect(segments).toHaveLength(1);
+    expect(content.slice(segments[0].start, segments[0].end)).toBe('(Term A)Tj');
+  });
+
+  it('splits into one segment per text run whenever a path-paint op separates them', () => {
+    const content = `/Artifact BMC\n0 0 m\n10 10 l\nS\n(Term A)Tj\n0 0 m\n5 5 l\nS\n(Term B)Tj\nEMC\n`;
+    const spans = findOversizedArtifactSpans(content, 2);
+    const segments = findRealTextSegmentsInSpan(content, spans[0]);
+    expect(segments).toHaveLength(2);
+    expect(content.slice(segments[0].start, segments[0].end)).toBe('(Term A)Tj');
+    expect(content.slice(segments[1].start, segments[1].end)).toBe('(Term B)Tj');
+  });
+
+  it('groups consecutive text-show ops with no intervening path-paint op into one segment', () => {
+    const content = `/Artifact BMC\n0 0 m\n10 10 l\nS\n(Line one)Tj\n(Line two)Tj\nEMC\n`;
+    const spans = findOversizedArtifactSpans(content, 2);
+    const segments = findRealTextSegmentsInSpan(content, spans[0]);
+    expect(segments).toHaveLength(1);
+    expect(content.slice(segments[0].start, segments[0].end)).toBe('(Line one)Tj\n(Line two)Tj');
+  });
+
+  it('returns no segments for a purely decorative span (no real text at all)', () => {
+    const content = `/Artifact BMC\n0 0 m\n10 10 l\nS\n0 0 m\n5 5 l\nS\nEMC\n`;
+    const spans = findOversizedArtifactSpans(content, 1); // 2 path-paint ops (S, S)
+    const segments = findRealTextSegmentsInSpan(content, spans[0]);
+    expect(segments).toHaveLength(0);
+  });
+
+  it('omits a whitespace-only text-show call rather than treating it as real content', () => {
+    const content = `/Artifact BMC\n0 0 m\n10 10 l\nS\n( )Tj\n(Real)Tj\nEMC\n`;
+    const spans = findOversizedArtifactSpans(content, 2);
+    const segments = findRealTextSegmentsInSpan(content, spans[0]);
+    expect(segments).toHaveLength(1);
+    expect(content.slice(segments[0].start, segments[0].end)).toBe('(Real)Tj');
+  });
+
+  it('ignores text-show ops already nested inside their own real tag within the span', () => {
+    // Already-tagged nested content is a different, already-handled shape
+    // (Matterhorn 01-004) -- this function only ever frees content that
+    // has NO tag of its own at all.
+    const content = `/Artifact BMC\n0 0 m\n10 10 l\nS\n/P <</MCID 5>>BDC\n(Nested text)Tj\nEMC\n(Loose text)Tj\nEMC\n`;
+    const spans = findOversizedArtifactSpans(content, 1); // S (depth 1) + "Loose text" Tj (depth 1) = 2 ops; the nested Tj sits at depth 2, not counted
+    const segments = findRealTextSegmentsInSpan(content, spans[0]);
+    expect(segments).toHaveLength(1);
+    expect(content.slice(segments[0].start, segments[0].end)).toBe('(Loose text)Tj');
+  });
+});
+
+describe('buildArtifactSplitEdits', () => {
+  it('builds a single open-only edit (no reopen) when the segment runs to the end of the span', () => {
+    const segments = [{ start: 20, end: 30 }];
+    const { edits, mcids } = buildArtifactSplitEdits(segments, 30, 5);
+    expect(mcids).toEqual([5]);
+    expect(edits).toEqual([{ offset: 20, text: ' EMC /Span <</MCID 5>> BDC ' }]);
+  });
+
+  it('adds a reopen-Artifact edit when decorative content follows the segment before the span closes', () => {
+    const segments = [{ start: 20, end: 30 }];
+    const { edits, mcids } = buildArtifactSplitEdits(segments, 50, 5);
+    expect(mcids).toEqual([5]);
+    expect(edits).toEqual([
+      { offset: 20, text: ' EMC /Span <</MCID 5>> BDC ' },
+      { offset: 30, text: ' EMC /Artifact BMC ' },
+    ]);
+  });
+
+  it('assigns sequential MCIDs starting at mcidStart and reopens Artifact between adjacent segments', () => {
+    const segments = [{ start: 10, end: 15 }, { start: 25, end: 30 }];
+    const { edits, mcids } = buildArtifactSplitEdits(segments, 30, 100);
+    expect(mcids).toEqual([100, 101]);
+    expect(edits).toEqual([
+      { offset: 10, text: ' EMC /Span <</MCID 100>> BDC ' },
+      { offset: 15, text: ' EMC /Artifact BMC ' },
+      { offset: 25, text: ' EMC /Span <</MCID 101>> BDC ' },
+    ]);
+  });
+
+  it('returns no edits for an empty segment list', () => {
+    const { edits, mcids } = buildArtifactSplitEdits([], 100, 0);
+    expect(edits).toEqual([]);
+    expect(mcids).toEqual([]);
   });
 });

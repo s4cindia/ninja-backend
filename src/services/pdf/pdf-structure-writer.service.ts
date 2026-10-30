@@ -37,6 +37,8 @@ import {
   findOversizedArtifactSpans,
   extractArtifactTextRuns,
   applyArtifactUnwrap,
+  findRealTextSegmentsInSpan,
+  buildArtifactSplitEdits,
 } from './pdf-artifact-tagger';
 import {
   matchCellRanges,
@@ -3823,6 +3825,191 @@ export class PdfStructureWriterService {
       success: true,
       before: `${spans.length} oversized /Artifact span(s) swallowing real, never-tagged content`,
       after: `${spans.length} span(s) split; real content given a fresh /Span structure tag, wired into the document flow`,
+    };
+  }
+
+  /**
+   * ARTIFACT-SWALLOWS-CONTENT-COMPLEX fix: the "has path-paint ops too"
+   * sibling of fixArtifactSwallowsContent, for oversized Artifact spans
+   * that interleave real text WITH decorative drawing (see
+   * findRealTextSegmentsInSpan's own doc comment for why this never has to
+   * decide whether that drawing is itself decorative or a real
+   * chart/diagram -- it only ever acts on text). Finds every real text
+   * segment fresh from the CURRENT page content; no AI-confirmed stored
+   * value needed, unlike fixArtifactSwallowsContent's heuristic text-
+   * baseline-Y boundary guess -- "a text-show op not immediately preceded
+   * by another text-show op since the last path-paint op" is a purely
+   * structural fact about the content stream, not a judgment call. Splits
+   * each segment out into its own fresh /Span, leaving the decorative
+   * drawing between them exactly as Artifact as it already was.
+   *
+   * Confirmed live on Farrar_2E_Comp_188910.pdf: 9 of 16 remaining
+   * "complex" oversized-Artifact pages have real swallowed text (two-
+   * column glossary tables, section running heads, body paragraphs) mixed
+   * with decorative grid lines/shading -- the other 7 are pure decorative
+   * graphics with no text inside at all and correctly stay declined by
+   * this method returning a no-real-text failure for them.
+   *
+   * Document-flow insertion mirrors fixArtifactSwallowsContent exactly:
+   * resolves each span's own nearest EXISTING tagged neighbors by
+   * content-stream position (left of the span's first real segment, right
+   * of the span's own close), requires left/right agreement, and chains
+   * every segment inside the same span off that one anchor point in order.
+   *
+   * All-or-nothing per page, same rollback convention as
+   * fixArtifactSwallowsContent and buildFigureFromImage before it.
+   */
+  fixArtifactSwallowsContentComplex(doc: PDFDocument, issue: AuditIssue): FixResult {
+    if (!issue.pageNumber) {
+      return { issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error: 'Issue has no pageNumber' };
+    }
+    const pageNumber = issue.pageNumber;
+
+    let originalContent: string | null;
+    try {
+      originalContent = decodePageContent(doc, pageNumber);
+    } catch (err) {
+      return { issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error: `Could not decode page ${pageNumber}: ${err instanceof Error ? err.message : String(err)}` };
+    }
+    if (!originalContent) {
+      return { issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error: `Page ${pageNumber} has no content stream` };
+    }
+
+    const spans = findOversizedArtifactSpans(originalContent).filter((s) => s.hasPathOps);
+    if (spans.length === 0) {
+      return { issueId: issue.id, success: false, before: 'oversized Artifact span(s) present', after: 'unknown', error: 'No complex oversized Artifact spans found on this page (already fixed or moved)' };
+    }
+
+    const structRoot = this.getStructTreeRoot(doc);
+    if (!structRoot) {
+      return { issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error: 'No /StructTreeRoot found' };
+    }
+    const pageArr = this.resolveParentTreePageArray(doc, pageNumber);
+    if (!pageArr) {
+      return { issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error: `No /ParentTree entry found for page ${pageNumber}` };
+    }
+    const pageArrRaw = pageArr.asArray();
+    const positionedMcids = orderedPageContentMcids(originalContent);
+
+    const resolveEntry = (mcid: number | undefined): PDFRef | null => {
+      if (mcid === undefined) return null;
+      const entry = pageArrRaw[mcid];
+      return entry instanceof PDFRef ? entry : null;
+    };
+    const resolveParentOf = (entryRef: PDFRef | null): PDFRef | null => {
+      if (!entryRef) return null;
+      const dict = doc.context.lookup(entryRef, PDFDict);
+      const p = dict?.get(PDFName.of('P'));
+      return p instanceof PDFRef ? p : null;
+    };
+
+    interface PlannedSegment {
+      mcid: number;
+      flowParent: PDFRef;
+      anchorRef: PDFRef;
+      anchorBefore: boolean;
+    }
+
+    const existingMcids = pageContentMcids(doc, pageNumber) ?? new Set<number>();
+    let nextMcid = existingMcids.size > 0 ? Math.max(...existingMcids) + 1 : 0;
+
+    const allEdits: Array<{ offset: number; text: string }> = [];
+    const planned: PlannedSegment[] = [];
+    let totalSegments = 0;
+
+    for (const span of spans) {
+      const segments = findRealTextSegmentsInSpan(originalContent, span);
+      if (segments.length === 0) continue; // pure decorative span after all -- leave untouched
+
+      const leftCandidate = [...positionedMcids].reverse().find((p) => p.start < segments[0].start);
+      const rightCandidate = positionedMcids.find((p) => p.start > span.closeOpEnd);
+      const leftEntry = resolveEntry(leftCandidate?.mcid);
+      const rightEntry = resolveEntry(rightCandidate?.mcid);
+      const leftParent = resolveParentOf(leftEntry);
+      const rightParent = resolveParentOf(rightEntry);
+
+      if (leftParent && rightParent && leftParent.objectNumber !== rightParent.objectNumber) {
+        return { issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error: 'Span\'s left/right tagged neighbors resolve to different document-flow parents -- ambiguous, declining rather than guessing' };
+      }
+
+      let flowParent: PDFRef | null = null;
+      let anchorRef: PDFRef | null = null;
+      let anchorBefore = false;
+      if (rightParent && rightEntry) {
+        flowParent = rightParent; anchorRef = rightEntry; anchorBefore = true;
+      } else if (leftParent && leftEntry) {
+        flowParent = leftParent; anchorRef = leftEntry; anchorBefore = false;
+      }
+
+      if (!flowParent || !anchorRef) {
+        return { issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error: 'Span has no usable tagged neighbor on this page to anchor its document-flow position to -- declining rather than guessing' };
+      }
+
+      const { edits, mcids } = buildArtifactSplitEdits(segments, span.closeOpStart, nextMcid);
+      allEdits.push(...edits);
+      for (const mcid of mcids) {
+        planned.push({ mcid, flowParent, anchorRef, anchorBefore });
+      }
+      nextMcid += segments.length;
+      totalSegments += segments.length;
+    }
+
+    if (totalSegments === 0) {
+      return { issueId: issue.id, success: false, before: 'oversized Artifact span(s) present', after: 'unknown', error: 'No real text found inside this page\'s complex Artifact span(s) -- purely decorative, nothing to free' };
+    }
+
+    allEdits.sort((a, b) => b.offset - a.offset);
+    let newContent = originalContent;
+    for (const e of allEdits) {
+      newContent = newContent.slice(0, e.offset) + e.text + newContent.slice(e.offset);
+    }
+
+    const pageRef = doc.getPages()[pageNumber - 1].ref;
+    const createdRefs: PDFRef[] = [];
+    const parentTreeEntries: Array<{ mcid: number; structElementRef: PDFRef }> = [];
+    const lastInsertedByAnchor = new Map<number, PDFRef>();
+
+    try {
+      for (const p of planned) {
+        const spanObj = doc.context.obj({
+          Type: PDFName.of('StructElem'),
+          S: PDFName.of('Span'),
+          P: p.flowParent,
+          Pg: pageRef,
+          K: PDFNumber.of(p.mcid),
+        });
+        const spanRef = doc.context.register(spanObj as PDFDict);
+        createdRefs.push(spanRef);
+
+        if (p.anchorBefore) {
+          this.insertIntoKidsBefore(doc, p.flowParent, p.anchorRef, spanRef);
+        } else {
+          const insertAfter = lastInsertedByAnchor.get(p.anchorRef.objectNumber) ?? p.anchorRef;
+          this.insertIntoKidsAfter(doc, p.flowParent, insertAfter, spanRef);
+          lastInsertedByAnchor.set(p.anchorRef.objectNumber, spanRef);
+        }
+
+        const spanDict = doc.context.lookup(spanRef, PDFDict);
+        spanDict?.set(PDFName.of('P'), p.flowParent);
+
+        parentTreeEntries.push({ mcid: p.mcid, structElementRef: spanRef });
+      }
+
+      writePageContent(doc, pageNumber, newContent);
+      parentTreeEntries.sort((a, b) => a.mcid - b.mcid);
+      this.extendParentTree(doc, pageNumber, parentTreeEntries);
+    } catch (err) {
+      // Same full-rollback reasoning as fixArtifactSwallowsContent above.
+      writePageContent(doc, pageNumber, originalContent);
+      for (const ref of createdRefs) this.deleteElement(doc, ref);
+      return { issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error: err instanceof Error ? err.message : String(err) };
+    }
+
+    return {
+      issueId: issue.id,
+      success: true,
+      before: `${spans.length} complex oversized /Artifact span(s) swallowing real content alongside decorative drawing`,
+      after: `${totalSegments} real text segment(s) split out into their own /Span structure tag(s); the decorative drawing stays Artifact-wrapped`,
     };
   }
 

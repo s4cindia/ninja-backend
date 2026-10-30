@@ -704,3 +704,95 @@ export function applyArtifactUnwrap(content: string, realContentStart: number, m
   const insertion = ` EMC /Span <</MCID ${mcid}>> BDC `;
   return content.slice(0, realContentStart) + insertion + content.slice(realContentStart);
 }
+
+export interface ArtifactTextSegment {
+  /** Offset where this segment's own fresh /Span should open (closing whatever's currently open there -- the enclosing Artifact, or a re-opened one from an earlier segment in the same span). */
+  start: number;
+  /** Offset right after this segment's last real text-show operator. */
+  end: number;
+}
+
+/**
+ * Within a single "complex" oversized Artifact span (one with hasPathOps
+ * true -- see findOversizedArtifactSpans), finds every maximal run of real
+ * text-show operators uninterrupted by any path-paint op. Each returned
+ * segment is exactly the real content that needs its own structure tag;
+ * everything NOT covered by a segment (the decorative drawing in between)
+ * is left exactly as-is, still Artifact-wrapped -- this function never has
+ * to judge whether that graphics content is itself decorative or a real
+ * chart/diagram, which is the one thing a geometry-only check can't safely
+ * do (see ai-analysis.service.ts's own ARTIFACT_SWALLOWS_CONTENT_COMPLEX_CODES
+ * doc comment). Confirmed live on Farrar_2E_Comp_188910.pdf's two-column
+ * glossary-table pages: draw a grid-line separator, print one term +
+ * definition pair, draw the next separator, repeat -- each term/definition
+ * pair comes back as its own segment, 1 to a few dozen per page.
+ */
+export function findRealTextSegmentsInSpan(content: string, span: OversizedArtifactSpan): ArtifactTextSegment[] {
+  const segments: ArtifactTextSegment[] = [];
+  const tokens = tokenize(content.slice(span.contentStart, span.closeOpStart));
+  const operands: Token[] = [];
+  let depth = 0;
+  let currentStart: number | null = null;
+  let currentEnd = 0;
+
+  const flush = (): void => {
+    if (currentStart !== null) {
+      segments.push({ start: span.contentStart + currentStart, end: span.contentStart + currentEnd });
+      currentStart = null;
+    }
+  };
+
+  for (const tk of tokens) {
+    if (tk.t !== 'op') { operands.push(tk); continue; }
+    const op = tk.v;
+    if (op === 'BDC' || op === 'BMC') { depth++; operands.length = 0; continue; }
+    if (op === 'EMC') { depth = Math.max(0, depth - 1); operands.length = 0; continue; }
+    if (depth === 0 && TEXT_SHOW_OPS.has(op)) {
+      const strOperands = operands.filter((o) => o.t === 's');
+      const text = strOperands.map((o) => decodePdfStringLiteral(o.v)).join('');
+      if (text.trim().length > 0) {
+        if (currentStart === null) currentStart = operands.length ? operands[0].start : tk.start;
+        currentEnd = tk.end;
+      }
+      operands.length = 0;
+      continue;
+    }
+    if (depth === 0 && PATH_PAINT_OPS.has(op)) flush();
+    operands.length = 0;
+  }
+  flush();
+  return segments;
+}
+
+/**
+ * Builds the content-stream edits (and the fresh MCIDs assigned to each
+ * one) that free every segment findRealTextSegmentsInSpan found inside a
+ * single span -- closes the Artifact right before each segment, opens a
+ * fresh `/Span <</MCID n>>` there, closes that Span right after the
+ * segment's own last text-show op, and re-opens `/Artifact BMC` immediately
+ * after IF there's more content before the next segment (or the span's own
+ * original close) -- skipped when there isn't, so the span's pre-existing
+ * closing EMC keeps closing the new Span directly, same convention as
+ * applyArtifactUnwrap's own single-cut case (of which this is the general
+ * N-segment form). Pure/offset-only -- apply with the caller's own
+ * right-to-left splice pass, same as every other multi-edit content-stream
+ * rewrite in this codebase.
+ */
+export function buildArtifactSplitEdits(
+  segments: ArtifactTextSegment[],
+  spanCloseOpStart: number,
+  mcidStart: number
+): { edits: Array<{ offset: number; text: string }>; mcids: number[] } {
+  const edits: Array<{ offset: number; text: string }> = [];
+  const mcids: number[] = [];
+  segments.forEach((seg, i) => {
+    const mcid = mcidStart + i;
+    mcids.push(mcid);
+    edits.push({ offset: seg.start, text: ` EMC /Span <</MCID ${mcid}>> BDC ` });
+    const nextBoundary = i + 1 < segments.length ? segments[i + 1].start : spanCloseOpStart;
+    if (seg.end < nextBoundary) {
+      edits.push({ offset: seg.end, text: ` EMC /Artifact BMC ` });
+    }
+  });
+  return { edits, mcids };
+}
