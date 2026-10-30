@@ -2397,23 +2397,27 @@ export class PdfStructureWriterService {
    * Finds (or creates) the PDF 2.0 (ISO 32000-2) standard structure
    * namespace entry in /StructTreeRoot's /Namespaces array, returning its
    * ref so a caller can bind an element to it via that element's own /NS
-   * entry. /Artifact is a standard STRUCTURE type only in this namespace
-   * (in PDF 1.7/ISO 32000-1, /Artifact is solely a content-stream
-   * marked-content tag, a different mechanism entirely) -- CodeRabbit
-   * finding on PR #547, confirmed live: Math_Kim declares no /Namespaces
-   * at all (a plain PDF 1.7 document), so an unnamespaced "/S /Artifact"
-   * struct element would be non-standard there. PDF 2.0 explicitly
-   * supports introducing this namespace incrementally into an
-   * otherwise-1.7 tree, binding only the specific elements that need it --
-   * ISO/TS 32005:2023 requires the DOCUMENT itself to be versioned as PDF
-   * 2.0 (via the catalog /Version, avoiding a header rewrite for an
-   * incremental update like this one) whenever that namespace is actually
-   * used, not just the individual namespace entry -- CodeRabbit finding on
-   * PR #547: pdf-lib always writes a %PDF-1.7 header, so without this a
-   * saved file would advertise 1.7 while containing a 2.0-only /Artifact
-   * structure type. Set every time this runs (idempotent -- same value
-   * each call), not only on first creation, since an already-existing
-   * namespace being reused still means the document uses it.
+   * entry.
+   *
+   * ONLY used by buildTableFromLayout's own ParentTree-wiring-failure
+   * rollback (the one spot left after markTableAsArtifact and this
+   * method's other former caller were switched to deleteElement instead --
+   * see markTableAsArtifact's own doc comment for why: a real PAC report
+   * found PAC 26.1.0.0 doesn't recognize this namespace mechanism at all,
+   * regardless of how correctly it's bound, so an /S /Artifact struct
+   * element built this way still fails PAC's "Role mapping" check every
+   * time). That rollback path is different from the two deleted-instead
+   * callers: it's inertifying a table that was just built from REAL
+   * layout-detected content with genuine MCID-tagged children, not an
+   * always-empty decorative box -- deleting it outright would leave those
+   * children's content-stream MCID tags orphaned (unresolvable via
+   * /ParentTree), a worse defect than the known PAC gap this still carries.
+   * Converting that content-stream region to a proper tag-free /Artifact
+   * span instead of relying on this namespace trick would close that gap
+   * too, but is real additional content-stream-splice work out of scope
+   * for this pass -- this path is a rare, "accepted residual risk" failure
+   * fallback (see its own call site), not a proven-live defect the way the
+   * two deleted-instead cases were.
    */
   private getOrCreatePdf2Namespace(doc: PDFDocument, structRoot: PDFDict): PDFRef {
     const PDF2_STRUCTURE_NAMESPACE_URI = 'http://iso.org/pdf2/ssn';
@@ -2918,8 +2922,6 @@ export class PdfStructureWriterService {
       }
       const mcidById = new Map(inserted.map(s => [s.id!, s.mcid]));
 
-      const nsRef = this.getOrCreatePdf2Namespace(doc, structRoot);
-
       // Collected across ALL of this page's valid entries and committed to
       // /ParentTree in ONE call below, sorted by MCID -- not once per entry.
       // insertMarkedContentSpans assigns MCIDs in content-stream byte-offset
@@ -2953,10 +2955,13 @@ export class PdfStructureWriterService {
           pageTableRefsByEntry.set(entryIndex, tableRef);
           this.insertIntoKidsAfter(doc, parentRaw, targetRef, tableRef);
 
-          // Retag the spuriously-paired trivial box to /Artifact, same
-          // operations markTableAsArtifact performs (renameElement + PDF2
-          // namespace binding + clearing now-meaningless /K children). This
-          // is not just cleanup: structure-analyzer.service.ts's
+          // Remove the spuriously-paired trivial box from the tree entirely,
+          // same operation markTableAsArtifact performs (deleteElement --
+          // see that method's own doc comment for why this replaced an
+          // earlier rename-to-/Artifact design: PAC doesn't recognize the
+          // PDF 2.0 namespace binding that design relied on to stay
+          // spec-valid, confirmed live against a real PAC report). This is
+          // not just cleanup: structure-analyzer.service.ts's
           // enhanceTablesFromTags pairs LAYOUT candidates to real struct-tree
           // /Table elements via queue-based FIFO positional matching per
           // page (findTaggedTables/consumeNextTable) -- walking the tree in
@@ -2968,21 +2973,15 @@ export class PdfStructureWriterService {
           // against Math_Kim: the flagged issue stayed flagged (still paired
           // to the untouched old box) while an UNRELATED table on the same
           // page got its structural match corrupted to the new table's own
-          // shape. Retagging removes the box from the walk's /Table count
+          // shape. Deleting removes the box from the walk's /Table count
           // entirely (net-zero change to the page's tally at that tree
           // position), restoring correct FIFO alignment for every other
           // same-page table. Also the semantically correct outcome, not a
           // workaround: MATTERHORN-15-001 is genuinely tabular LAYOUT content
           // spuriously paired with a decorative box (PR #546) -- that box is
-          // exactly what MATTERHORN-15-005's existing fix already retags,
+          // exactly what MATTERHORN-15-005's existing fix already removes,
           // so it no longer sits around as an untouched leftover here either.
-          const targetDict = doc.context.lookup(targetRef);
-          if (targetDict instanceof PDFDict) {
-            this.renameElement(doc, targetRef, 'Artifact');
-            targetDict.set(PDFName.of('NS'), nsRef);
-            this.detachDirectChildrenParentPointers(doc, targetDict.get(PDFName.of('K')));
-            targetDict.delete(PDFName.of('K'));
-          }
+          this.deleteElement(doc, targetRef);
 
           const myCells = cellPlans.filter(cp => cp.entryIndex === entryIndex);
           const byRow = new Map<number, CellPlan[]>();
@@ -3071,6 +3070,7 @@ export class PdfStructureWriterService {
           // document anyway, what's left behind is an inert, non-misleading
           // Artifact rather than a structurally-complete-looking table with
           // orphaned MCIDs no reader can correctly resolve.
+          const rollbackNsRef = this.getOrCreatePdf2Namespace(doc, structRoot);
           validEntries.forEach((ve, i) => {
             const r = pageResults[i];
             if (!r.success) return;
@@ -3078,7 +3078,7 @@ export class PdfStructureWriterService {
             const tableDict = tableRef ? doc.context.lookup(tableRef) : undefined;
             if (tableDict instanceof PDFDict) {
               this.renameElement(doc, tableRef!, 'Artifact');
-              tableDict.set(PDFName.of('NS'), nsRef);
+              tableDict.set(PDFName.of('NS'), rollbackNsRef);
               // Same "descendants become unreachable garbage, not literally
               // removed from the file" semantics deleteElement already
               // documents -- the TR/TH/TD/Span children below still exist
@@ -3193,19 +3193,33 @@ export class PdfStructureWriterService {
    * apply" change, a materially larger effort, not worth blocking this fix
    * on given the primary automated/batch remediation path is fully safe).
    *
-   * Also addresses a second real finding from the same review round: the
-   * target element's own TR/TD children no longer make structural sense
-   * once it becomes an Artifact (they were only ever decorative box
-   * padding -- that's this whole fix's premise). Cleared via the same
-   * "descendants become unreachable, not literally removed from the file"
-   * semantics deleteElement already documents, rather than leaving a
-   * dangling Table-shaped subtree under a role that no longer describes it.
-   *
-   * Not independently verified against a real PDF/UA validator -- veraPDF
-   * is unavailable in this environment (see pdf-audit.service.ts's own
-   * fallback). The same veraPDF pass already wired into the staging audit
-   * pipeline will re-check this once deployed, matching how every other
-   * structural fix in this file gets its real-world confirmation.
+   * Deletes the target element outright (via deleteElement) rather than
+   * retagging it to /S /Artifact -- a real PAC/axesPAC report against a
+   * remediated Farrar 2E PDF found this fix's ORIGINAL design (rename to
+   * Artifact, bound to the PDF 2.0 structure namespace via /NS so the
+   * non-standard type would be spec-valid per ISO/TS 32005:2023) still
+   * failing every time as "Non-standard structure type Artifact is neither
+   * mapped to a standard structure type nor to another non-standard
+   * structure type" -- PAC 26.1.0.0 simply doesn't recognize PDF 2.0
+   * namespace-scoped structure types at all, regardless of how correctly
+   * they're bound (confirmed live: catalog /Version was /2.0, the
+   * element's own /NS correctly pointed at a /Namespaces entry whose /NS
+   * URI was exactly http://iso.org/pdf2/ssn -- spec-correct, tool-rejected
+   * anyway). /Artifact was never meant to be a structure-tree element type
+   * in the first place (PDF 1.7/ISO 32000-1: it's solely a content-stream
+   * marked-content tag, a different mechanism); every target this fix has
+   * ever been confirmed to touch -- all 5 live Farrar cases, and every
+   * existing unit-test fixture for this method -- has a /K-less TD (no
+   * MCID, no painted content at all under it, confirmed via a direct
+   * raw-object scan of the real remediated file finding zero orphaned
+   * struct elements of any kind after this fix runs), so there is no
+   * content-stream region that ever needs an Artifact tag of its own --
+   * removing the element from the tree is both simpler and the only
+   * variant actually proven to satisfy a real external validator. The
+   * target element's own TR/TD children (if a future case ever has any)
+   * become unreachable along with it, via the same "descendants remain in
+   * the PDF context but are unreachable, not literally removed from the
+   * file" semantics deleteElement already documents.
    *
    * @param issues - MATTERHORN-15-005 AuditIssues for a confirmed-decorative
    *   trivial-struct-match table (see ai-analysis.service.ts's dispatch gate)
@@ -3238,9 +3252,6 @@ export class PdfStructureWriterService {
       target: preResolvedTargets?.get(issue.id) ?? this.findTargetTable(doc, structRoot, issue.element),
     }));
 
-    const anyTarget = targets.some(t => t.target);
-    const nsRef = anyTarget ? this.getOrCreatePdf2Namespace(doc, structRoot) : null;
-
     const results: FixResult[] = [];
 
     for (const { issue, target } of targets) {
@@ -3254,16 +3265,13 @@ export class PdfStructureWriterService {
           continue;
         }
 
-        this.renameElement(doc, target.ref, 'Artifact');
-        target.dict.set(PDFName.of('NS'), nsRef!);
-        this.detachDirectChildrenParentPointers(doc, target.dict.get(PDFName.of('K')));
-        target.dict.delete(PDFName.of('K')); // TR/TD children no longer make sense under Artifact
+        this.deleteElement(doc, target.ref);
 
         results.push({
           issueId: issue.id,
           success: true,
           before: 'Tagged as Table (decorative box, no real column grid)',
-          after: 'Retagged as Artifact',
+          after: 'Removed from the structure tree (decorative, no tag required)',
         });
       } catch (err) {
         results.push({
@@ -5402,14 +5410,28 @@ export class PdfStructureWriterService {
           // has a single-cell "table" whose content-stream BDC tag name is
           // informally /Table (the same tag-name-isn't-authoritative
           // pattern this file's Matterhorn 01-004 fix already had to
-          // account for), but whose struct element was always meant to sit
-          // directly in the surrounding document flow -- between its own
-          // left and right MCID neighbors (an /H6 and a /P sharing one
-          // common parent), with no /Table wrapper ever created. Same
-          // "resolve each neighbor's own parent, require agreement (or use
-          // whichever one resolves)" technique reattachTableCell/
-          // reattachInlineFigure already use one level down, just without
-          // requiring the neighbors to share a TYPE the way those do.
+          // account for), with its real H6/P document-flow neighbors
+          // sharing one common parent and no /Table wrapper ever created.
+          // Locating that document-flow position uses the same "resolve
+          // each neighbor's own parent, require agreement (or use whichever
+          // one resolves)" technique reattachTableCell/reattachInlineFigure
+          // already use one level down, just without requiring the
+          // neighbors to share a TYPE the way those do -- but a /TR can
+          // never be inserted AT that position directly: PDF/UA requires
+          // every /TR to sit inside a /Table (or THead/TBody/TFoot)
+          // ancestor, never bare in document flow alongside /H6/P siblings.
+          // A real PAC report caught exactly this: the first version of
+          // this fallback inserted the bare /TR straight into the
+          // document-flow parent's own /K, which PAC correctly flagged as
+          // "Invalid use of a TR structure element" even though the row was
+          // technically reachable (this method's own `reachable` check,
+          // same as every reachability-only validator in this codebase,
+          // has no way to see that). Fixed by creating a minimal single-row
+          // /Table wrapper AT that position instead, and reattaching the
+          // orphaned /TR as ITS sole child -- the wrapper is new, 1-cell,
+          // and real (it wraps genuinely orphaned row content), so none of
+          // markTableAsArtifact's "always-empty decorative box" assumptions
+          // apply to it.
           const pageArr = this.resolveParentTreePageArray(doc, pageNumber);
           const pageArrRaw = pageArr?.asArray() ?? [];
           const neighborParent = (entry: unknown): PDFRef | null => {
@@ -5455,27 +5477,46 @@ export class PdfStructureWriterService {
             continue;
           }
 
-          // Same existing-/P safety check as the /Table path below: only
-          // trust an orphan's own existing /P when it already names this
-          // SAME determined parent.
+          // A /TR can only ever legitimately have a /Table-family /P (never
+          // a bare document-flow container like /Document) -- so unlike the
+          // positional /Table path below, an orphan's own pre-existing /P
+          // is never trustworthy here: it's either unset (a genuine first
+          // attempt) or a leftover bare-document-flow link from before this
+          // fix existed (exactly the invalid shape being corrected). Decline
+          // rather than guess at either, matching every other reattach*
+          // method's "unexpected existing /P" bail-out in this file -- a
+          // leftover bad link needs the document re-run through audit from
+          // scratch, not a patch here, since the audit's own disconnection
+          // check (reachability-only, same blind spot this fix's own doc
+          // comment above describes) would never have re-flagged it.
           const existingFlowP = trDict?.get(PDFName.of('P'));
-          if (existingFlowP instanceof PDFRef && existingFlowP.objectNumber !== flowParent.objectNumber) {
-            results.push({ issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error: 'Row already has a /P, but it does not match this row\'s own natural document-flow reattachment point -- declining rather than guessing' });
+          if (existingFlowP instanceof PDFRef) {
+            results.push({ issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error: 'Row already has a /P from a previous attempt -- declining rather than guessing whether it\'s safe to replace' });
             continue;
           }
 
+          const pageRef = doc.getPages()[pageNumber - 1]?.ref;
+          const wrapperTableObj = doc.context.obj({
+            Type: PDFName.of('StructElem'),
+            S: PDFName.of('Table'),
+            P: flowParent,
+            ...(pageRef ? { Pg: pageRef } : {}),
+          });
+          const wrapperTableRef = doc.context.register(wrapperTableObj as PDFDict);
+
           if (anchorBefore) {
-            this.insertIntoKidsBefore(doc, flowParent, anchorRef, trRef);
+            this.insertIntoKidsBefore(doc, flowParent, anchorRef, wrapperTableRef);
           } else {
-            this.insertIntoKidsAfter(doc, flowParent, anchorRef, trRef);
+            this.insertIntoKidsAfter(doc, flowParent, anchorRef, wrapperTableRef);
           }
-          trDict!.set(PDFName.of('P'), flowParent);
+          (doc.context.lookup(wrapperTableRef) as PDFDict).set(PDFName.of('K'), doc.context.obj([trRef]));
+          trDict!.set(PDFName.of('P'), wrapperTableRef);
 
           results.push({
             issueId: issue.id,
             success: true,
             before: 'disconnected from the structure tree',
-            after: `reattached directly into its enclosing document-flow container's own /K array (${flowParent.toString()}), between its confirmed reading-order neighbors`,
+            after: `reattached inside a new single-row /Table wrapper (${wrapperTableRef.toString()}), spliced into its enclosing document-flow container's own /K array (${flowParent.toString()}) between its confirmed reading-order neighbors`,
           });
           continue;
         }

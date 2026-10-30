@@ -170,6 +170,17 @@ describe('PdfStructureWriterService.reattachTableRow', () => {
     expect(doc.context.lookup(orphan.trRef, PDFDict)).toBeDefined();
   });
 
+  /** Finds the one kid of `parentRef` tagged /Table, for locating a newly-created wrapper. */
+  function findTableKid(doc: PDFDocument, parentRef: PDFRef): PDFRef {
+    const found = kidsOf(doc, parentRef).find(k => {
+      if (!(k instanceof PDFRef)) return false;
+      const d = doc.context.lookup(k, PDFDict);
+      return d.get(PDFName.of('S'))?.toString() === '/Table';
+    });
+    if (!(found instanceof PDFRef)) throw new Error('No /Table kid found');
+    return found;
+  }
+
   // Document-flow fallback (page-15 Farrar follow-up): confirmed real
   // shape for the one orphaned /TR PR #740 declined -- a single-cell
   // "table" (content-stream tagged /Table but never wrapped in a
@@ -177,6 +188,13 @@ describe('PdfStructureWriterService.reattachTableRow', () => {
   // own flow, between an /H6 and a /P that share one common parent, with
   // an /Artifact (no own MCID) genuinely sitting between the /H6 and the
   // gap in the real file's own /K array.
+  //
+  // The /TR itself is never spliced directly into that document-flow
+  // parent (a real PAC report caught exactly that as "Invalid use of a TR
+  // structure element" -- a /TR must always sit inside a /Table-family
+  // ancestor, never bare in document flow): a new single-row /Table
+  // wrapper is created AT that position instead, with the orphaned /TR
+  // reattached as its sole child.
   it('falls back to the shared document-flow parent of its left/right MCID neighbors when no /Table claims the page at all (the confirmed real page-15 Farrar shape)', async () => {
     const doc = await PDFDocument.create();
     const page = doc.addPage([612, 792]);
@@ -200,15 +218,20 @@ describe('PdfStructureWriterService.reattachTableRow', () => {
     const results = pdfStructureWriterService.reattachTableRow(doc, [issueFor('tablerow_p1_mc1')]);
 
     expect(results[0].success).toBe(true);
-    expect(results[0].after).toContain('document-flow container');
-    // Must land immediately before the RIGHT neighbor (after the
-    // artifact), not naively right after the left neighbor -- that would
-    // wrongly place it before the artifact instead of after it.
+    expect(results[0].after).toContain('new single-row /Table wrapper');
+    // The wrapper /Table (not the bare /TR) must land immediately before
+    // the RIGHT neighbor (after the artifact), not naively right after the
+    // left neighbor -- that would wrongly place it before the artifact
+    // instead of after it.
+    const wrapperRef = findTableKid(doc, flowParentRef);
     const kidRefs = kidsOf(doc, flowParentRef).map(k => (k instanceof PDFRef ? k.objectNumber : null));
-    expect(kidRefs).toEqual([leftRef.objectNumber, artifactRef.objectNumber, orphan.trRef.objectNumber, rightRef.objectNumber]);
+    expect(kidRefs).toEqual([leftRef.objectNumber, artifactRef.objectNumber, wrapperRef.objectNumber, rightRef.objectNumber]);
 
+    // The /TR itself is nested one level deeper, inside the wrapper.
+    expect(kidsOf(doc, wrapperRef)).toEqual([orphan.trRef]);
     const trDict = doc.context.lookup(orphan.trRef, PDFDict);
-    expect(trDict.get(PDFName.of('P'))?.toString()).toBe(flowParentRef.toString());
+    expect(trDict.get(PDFName.of('P'))?.toString()).toBe(wrapperRef.toString());
+    expect(doc.context.lookup(wrapperRef, PDFDict).get(PDFName.of('S'))?.toString()).toBe('/Table');
   });
 
   it('uses the right neighbor\'s parent alone when the orphan is first on the page (no left neighbor)', async () => {
@@ -231,8 +254,10 @@ describe('PdfStructureWriterService.reattachTableRow', () => {
     const results = pdfStructureWriterService.reattachTableRow(doc, [issueFor('tablerow_p1_mc0')]);
 
     expect(results[0].success).toBe(true);
+    const wrapperRef = findTableKid(doc, flowParentRef);
     const kidRefs = kidsOf(doc, flowParentRef).map(k => (k instanceof PDFRef ? k.objectNumber : null));
-    expect(kidRefs).toEqual([orphan.trRef.objectNumber, rightRef.objectNumber]);
+    expect(kidRefs).toEqual([wrapperRef.objectNumber, rightRef.objectNumber]);
+    expect(kidsOf(doc, wrapperRef)).toEqual([orphan.trRef]);
   });
 
   it('uses the left neighbor\'s parent alone when the orphan is last on the page (no right neighbor)', async () => {
@@ -255,8 +280,10 @@ describe('PdfStructureWriterService.reattachTableRow', () => {
     const results = pdfStructureWriterService.reattachTableRow(doc, [issueFor('tablerow_p1_mc1')]);
 
     expect(results[0].success).toBe(true);
+    const wrapperRef = findTableKid(doc, flowParentRef);
     const kidRefs = kidsOf(doc, flowParentRef).map(k => (k instanceof PDFRef ? k.objectNumber : null));
-    expect(kidRefs).toEqual([leftRef.objectNumber, orphan.trRef.objectNumber]);
+    expect(kidRefs).toEqual([leftRef.objectNumber, wrapperRef.objectNumber]);
+    expect(kidsOf(doc, wrapperRef)).toEqual([orphan.trRef]);
   });
 
   it('declines the document-flow fallback when left and right MCID neighbors resolve to DIFFERENT parents, rather than guessing which one', async () => {
@@ -283,7 +310,7 @@ describe('PdfStructureWriterService.reattachTableRow', () => {
     expect(results[0].error).toContain('different document-flow parents');
   });
 
-  it('declines the document-flow fallback when the row already has a /P that does not match the determined parent', async () => {
+  it('declines the document-flow fallback when the row already has a /P from a previous attempt, rather than trusting or guessing at it', async () => {
     const doc = await PDFDocument.create();
     const page = doc.addPage([612, 792]);
     page.node.set(PDFName.of('StructParents'), doc.context.obj(0));
@@ -298,8 +325,12 @@ describe('PdfStructureWriterService.reattachTableRow', () => {
     doc.context.lookup(leftRef, PDFDict).set(PDFName.of('P'), flowParentRef);
     doc.context.lookup(rightRef, PDFDict).set(PDFName.of('P'), flowParentRef);
 
-    const wrongParent = doc.context.register(doc.context.obj({ Type: PDFName.of('StructElem'), S: PDFName.of('Document'), K: [] }));
-    doc.context.lookup(orphan.trRef, PDFDict).set(PDFName.of('P'), wrongParent);
+    // Even a /P that DOES match the determined flow parent (e.g. a leftover
+    // link from this fix's own earlier, since-corrected bare-/TR-in-flow
+    // design) is never trusted here -- a /TR's only ever-valid /P is a
+    // /Table-family ancestor, so any pre-existing /P is either a genuine
+    // first attempt (shouldn't exist yet) or a known-bad shape.
+    doc.context.lookup(orphan.trRef, PDFDict).set(PDFName.of('P'), flowParentRef);
 
     const structTreeRootRef = doc.context.register(doc.context.obj({ Type: PDFName.of('StructTreeRoot'), K: [flowParentRef] }));
     doc.catalog.set(PDFName.of('StructTreeRoot'), structTreeRootRef);
@@ -308,7 +339,7 @@ describe('PdfStructureWriterService.reattachTableRow', () => {
     const results = pdfStructureWriterService.reattachTableRow(doc, [issueFor('tablerow_p1_mc1')]);
 
     expect(results[0].success).toBe(false);
-    expect(results[0].error).toContain('does not match this row\'s own natural document-flow reattachment point');
+    expect(results[0].error).toContain('Row already has a /P from a previous attempt');
   });
 
   it('declines when more than one reachable /Table has content on the orphan\'s page, rather than guessing which one', async () => {

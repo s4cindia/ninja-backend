@@ -2,19 +2,30 @@
  * Regression coverage for markTableAsArtifact (MATTERHORN-15-005 mechanical
  * fix, added alongside the trivial-struct-match reclassification in PR #546,
  * refined on PR #547 after real CodeRabbit/Codex findings against live
- * Math_Kim data): retags the specific /Table struct element each issue's id
- * refers to as /Artifact, targeting via findTargetTable (same as
- * fixSimpleTableHeaders) -- deliberately NOT a whole-document sweep for "any
- * structurally trivial /Table" (an earlier version of this fix tried that
- * and it was wrong: it also converted the trivial boxes underlying
- * MATTERHORN-15-001 issues, which pdf-table.validator.ts's tagged-PDF
- * matching then silently discards as an unmatched text-detector false
- * positive -- hiding, not fixing, that separate finding). Only the specific
- * element a confirmed MATTERHORN-15-005 issue names may be touched.
+ * Math_Kim data): removes the specific /Table struct element each issue's id
+ * refers to from the structure tree entirely, targeting via findTargetTable
+ * (same as fixSimpleTableHeaders) -- deliberately NOT a whole-document sweep
+ * for "any structurally trivial /Table" (an earlier version of this fix
+ * tried that and it was wrong: it also converted the trivial boxes
+ * underlying MATTERHORN-15-001 issues, which pdf-table.validator.ts's
+ * tagged-PDF matching then silently discards as an unmatched text-detector
+ * false positive -- hiding, not fixing, that separate finding). Only the
+ * specific element a confirmed MATTERHORN-15-005 issue names may be touched.
+ *
+ * Originally retagged the element to /S /Artifact instead (bound to the PDF
+ * 2.0 structure namespace so the non-standard type would stay spec-valid).
+ * Switched to outright deletion after a real PAC/axesPAC report against a
+ * remediated Farrar 2E PDF found PAC 26.1.0.0 doesn't recognize PDF 2.0
+ * namespace-scoped structure types at all, regardless of how correctly
+ * they're bound -- every live target this fix has ever touched has a
+ * /K-less TD (no MCID, no painted content), so there's no content-stream
+ * region that ever needed an Artifact tag of its own; removing the element
+ * is both simpler and the only variant actually proven to satisfy a real
+ * external validator. See markTableAsArtifact's own doc comment.
  */
 
 import { describe, it, expect } from 'vitest';
-import { PDFDocument, PDFName, PDFRef, PDFDict, PDFArray, PDFString } from 'pdf-lib';
+import { PDFDocument, PDFName, PDFRef, PDFDict, PDFArray } from 'pdf-lib';
 import { pdfStructureWriterService } from '../../../../src/services/pdf/pdf-structure-writer.service';
 import type { AuditIssue } from '../../../../src/services/audit/base-audit.service';
 
@@ -45,8 +56,27 @@ function tagOf(doc: PDFDocument, ref: PDFRef): string | undefined {
   return dict instanceof PDFDict ? dict.get(PDFName.of('S'))?.toString() : undefined;
 }
 
+/**
+ * deleteElement (which markTableAsArtifact now uses) finds the parent to
+ * remove a target from via that target's own /P -- buildTrivialTable never
+ * sets it (renameElement, the fix's former mechanism, never needed it), so
+ * every test below sets it explicitly once the real parent ref is known.
+ */
+function setParent(doc: PDFDocument, childRef: PDFRef, parentRef: PDFRef): void {
+  (doc.context.lookup(childRef) as PDFDict).set(PDFName.of('P'), parentRef);
+}
+
+/** True if childRef still appears in parentRef's own /K array. */
+function isChildOf(doc: PDFDocument, parentRef: PDFRef, childRef: PDFRef): boolean {
+  const parent = doc.context.lookup(parentRef);
+  if (!(parent instanceof PDFDict)) return false;
+  const k = parent.get(PDFName.of('K'));
+  if (!(k instanceof PDFArray)) return k instanceof PDFRef ? k.toString() === childRef.toString() : false;
+  return k.asArray().some(r => r instanceof PDFRef && r.toString() === childRef.toString());
+}
+
 describe('PdfStructureWriterService.markTableAsArtifact', () => {
-  it('retags only the table the issue is about, leaving other tables untouched', async () => {
+  it('removes only the table the issue is about, leaving other tables untouched', async () => {
     const doc = await PDFDocument.create();
     doc.addPage([400, 600]); // page 1
     doc.addPage([400, 600]); // page 2
@@ -58,6 +88,8 @@ describe('PdfStructureWriterService.markTableAsArtifact', () => {
     const documentRef = doc.context.register(
       doc.context.obj({ S: PDFName.of('Document'), K: [tableOnPage1Ref, tableOnPage2Ref] })
     );
+    setParent(doc, tableOnPage1Ref, documentRef);
+    setParent(doc, tableOnPage2Ref, documentRef);
     const structTreeRootRef = doc.context.register(
       doc.context.obj({ Type: PDFName.of('StructTreeRoot'), K: [documentRef] })
     );
@@ -67,13 +99,14 @@ describe('PdfStructureWriterService.markTableAsArtifact', () => {
 
     expect(results).toHaveLength(1);
     expect(results[0].success).toBe(true);
-    expect(results[0].after).toContain('Artifact');
+    expect(results[0].after).toContain('Removed');
 
-    // The table the issue named was retagged...
-    expect(tagOf(doc, tableOnPage2Ref)).toBe('/Artifact');
+    // The table the issue named was removed from the tree...
+    expect(isChildOf(doc, documentRef, tableOnPage2Ref)).toBe(false);
     // ...and the OTHER table (a completely separate, unrelated finding --
     // e.g. it could be the trivial box underlying a MATTERHORN-15-001
     // issue) was not touched.
+    expect(isChildOf(doc, documentRef, tableOnPage1Ref)).toBe(true);
     expect(tagOf(doc, tableOnPage1Ref)).toBe('/Table');
   });
 
@@ -88,6 +121,8 @@ describe('PdfStructureWriterService.markTableAsArtifact', () => {
     const documentRef = doc.context.register(
       doc.context.obj({ S: PDFName.of('Document'), K: [firstTableRef, secondTableRef] })
     );
+    setParent(doc, firstTableRef, documentRef);
+    setParent(doc, secondTableRef, documentRef);
     const structTreeRootRef = doc.context.register(
       doc.context.obj({ Type: PDFName.of('StructTreeRoot'), K: [documentRef] })
     );
@@ -96,7 +131,8 @@ describe('PdfStructureWriterService.markTableAsArtifact', () => {
     const results = pdfStructureWriterService.markTableAsArtifact(doc, [issueFor('table_p1_1')]);
     expect(results[0].success).toBe(true);
 
-    expect(tagOf(doc, secondTableRef)).toBe('/Artifact');
+    expect(isChildOf(doc, documentRef, secondTableRef)).toBe(false);
+    expect(isChildOf(doc, documentRef, firstTableRef)).toBe(true);
     expect(tagOf(doc, firstTableRef)).toBe('/Table');
   });
 
@@ -105,10 +141,10 @@ describe('PdfStructureWriterService.markTableAsArtifact', () => {
    * cases failed before this fix): findTargetTable re-derives "the Nth
    * /Table on this page" fresh on every call by filtering for
    * `sTag === 'Table'`. Unlike fixSimpleTableHeaders (which never changes a
-   * /Table's own /S), this method DOES rename the /Table itself -- so
-   * renaming table_p1_0 eagerly, before processing table_p1_1 in the same
+   * /Table's own /S), this method DOES remove the /Table itself -- so
+   * removing table_p1_0 eagerly, before processing table_p1_1 in the same
    * batch, would make the later lookup's fresh re-walk see only 1 remaining
-   * /Table on the page (the one already renamed no longer matches), shifting
+   * /Table on the page (the one already removed no longer matches), shifting
    * what index 1 means and spuriously failing to find a real, valid table.
    */
   it('fixes multiple tables on the same page in one batch without an earlier fix shifting a later lookup\'s index', async () => {
@@ -122,6 +158,8 @@ describe('PdfStructureWriterService.markTableAsArtifact', () => {
     const documentRef = doc.context.register(
       doc.context.obj({ S: PDFName.of('Document'), K: [firstTableRef, secondTableRef] })
     );
+    setParent(doc, firstTableRef, documentRef);
+    setParent(doc, secondTableRef, documentRef);
     const structTreeRootRef = doc.context.register(
       doc.context.obj({ Type: PDFName.of('StructTreeRoot'), K: [documentRef] })
     );
@@ -137,65 +175,18 @@ describe('PdfStructureWriterService.markTableAsArtifact', () => {
     expect(results[0].success).toBe(true);
     expect(results[1].success).toBe(true);
 
-    expect(tagOf(doc, firstTableRef)).toBe('/Artifact');
-    expect(tagOf(doc, secondTableRef)).toBe('/Artifact');
+    expect(isChildOf(doc, documentRef, firstTableRef)).toBe(false);
+    expect(isChildOf(doc, documentRef, secondTableRef)).toBe(false);
   });
 
-  it('binds converted elements to the PDF 2.0 structure namespace, reusing the same namespace entry across calls', async () => {
-    const doc = await PDFDocument.create();
-    doc.addPage([400, 600]);
-    doc.addPage([400, 600]);
-    const [page1Ref, page2Ref] = doc.getPages().map(p => p.ref);
-    const table1Ref = buildTrivialTable(doc, page1Ref);
-    const table2Ref = buildTrivialTable(doc, page2Ref);
-
-    const documentRef = doc.context.register(
-      doc.context.obj({ S: PDFName.of('Document'), K: [table1Ref, table2Ref] })
-    );
-    const structTreeRootRef = doc.context.register(
-      doc.context.obj({ Type: PDFName.of('StructTreeRoot'), K: [documentRef] })
-    );
-    doc.catalog.set(PDFName.of('StructTreeRoot'), structTreeRootRef);
-
-    pdfStructureWriterService.markTableAsArtifact(doc, [issueFor('table_p1_0')]);
-
-    const structTreeRoot = doc.context.lookup(structTreeRootRef) as PDFDict;
-    const namespaces = structTreeRoot.get(PDFName.of('Namespaces'));
-    expect(namespaces).toBeInstanceOf(PDFArray);
-    const nsArray = (namespaces as PDFArray).asArray();
-    expect(nsArray).toHaveLength(1);
-
-    const nsDict = doc.context.lookup(nsArray[0] as PDFRef) as PDFDict;
-    expect((nsDict.get(PDFName.of('NS')) as PDFString).decodeText()).toBe('http://iso.org/pdf2/ssn');
-
-    const table1Dict = doc.context.lookup(table1Ref) as PDFDict;
-    expect(table1Dict.get(PDFName.of('NS'))).toEqual(nsArray[0]);
-
-    // A second table, fixed in a LATER call, must reuse the SAME namespace
-    // entry rather than creating a duplicate.
-    pdfStructureWriterService.markTableAsArtifact(doc, [issueFor('table_p2_0')]);
-    const namespacesAfter = (structTreeRoot.get(PDFName.of('Namespaces')) as PDFArray).asArray();
-    expect(namespacesAfter).toHaveLength(1);
-    const table2Dict = doc.context.lookup(table2Ref) as PDFDict;
-    expect(table2Dict.get(PDFName.of('NS'))).toEqual(nsArray[0]);
-  });
-
-  /**
-   * Regression for CodeRabbit's second-round finding on PR #547: pdf-lib
-   * always writes a %PDF-1.7 header, so binding a struct element to the PDF
-   * 2.0 structure namespace (NS: http://iso.org/pdf2/ssn) without also
-   * bumping the catalog's own /Version to 2.0 leaves the saved file
-   * advertising 1.7 while containing a 2.0-only structure type --
-   * ISO/TS 32005:2023 requires document-level PDF 2.0 versioning wherever
-   * that namespace is used.
-   */
-  it('bumps the catalog Version to 2.0 when a table is actually converted', async () => {
+  it('does not create a PDF 2.0 namespace entry or bump the catalog Version -- removing the element needs neither', async () => {
     const doc = await PDFDocument.create();
     doc.addPage([400, 600]);
     const [pageRef] = doc.getPages().map(p => p.ref);
     const tableRef = buildTrivialTable(doc, pageRef);
 
     const documentRef = doc.context.register(doc.context.obj({ S: PDFName.of('Document'), K: [tableRef] }));
+    setParent(doc, tableRef, documentRef);
     const structTreeRootRef = doc.context.register(
       doc.context.obj({ Type: PDFName.of('StructTreeRoot'), K: [documentRef] })
     );
@@ -203,18 +194,22 @@ describe('PdfStructureWriterService.markTableAsArtifact', () => {
 
     expect(doc.catalog.get(PDFName.of('Version'))).toBeUndefined();
 
-    pdfStructureWriterService.markTableAsArtifact(doc, [issueFor('table_p1_0')]);
+    const results = pdfStructureWriterService.markTableAsArtifact(doc, [issueFor('table_p1_0')]);
+    expect(results[0].success).toBe(true);
 
-    expect(doc.catalog.get(PDFName.of('Version'))).toEqual(PDFName.of('2.0'));
+    const structTreeRoot = doc.context.lookup(structTreeRootRef) as PDFDict;
+    expect(structTreeRoot.get(PDFName.of('Namespaces'))).toBeUndefined();
+    expect(doc.catalog.get(PDFName.of('Version'))).toBeUndefined();
   });
 
-  it('clears TR/TD children on a converted Table, since they no longer make structural sense under Artifact', async () => {
+  it('clears a removed table\'s own /K, same "descendants become unreachable" semantics deleteElement documents', async () => {
     const doc = await PDFDocument.create();
     doc.addPage([400, 600]);
     const [pageRef] = doc.getPages().map(p => p.ref);
     const tableRef = buildTrivialTable(doc, pageRef);
 
     const documentRef = doc.context.register(doc.context.obj({ S: PDFName.of('Document'), K: [tableRef] }));
+    setParent(doc, tableRef, documentRef);
     const structTreeRootRef = doc.context.register(
       doc.context.obj({ Type: PDFName.of('StructTreeRoot'), K: [documentRef] })
     );
@@ -224,9 +219,11 @@ describe('PdfStructureWriterService.markTableAsArtifact', () => {
 
     const tableDict = doc.context.lookup(tableRef) as PDFDict;
     expect(tableDict.get(PDFName.of('K'))).toBeUndefined();
+    expect(tableDict.get(PDFName.of('P'))).toBeUndefined();
+    expect(isChildOf(doc, documentRef, tableRef)).toBe(false);
   });
 
-  it('does not create a namespace entry when nothing could be fixed', async () => {
+  it('does not touch the tree when nothing could be fixed', async () => {
     const doc = await PDFDocument.create();
     doc.addPage([400, 600]);
     const [pageRef] = doc.getPages().map(p => p.ref);
@@ -241,9 +238,8 @@ describe('PdfStructureWriterService.markTableAsArtifact', () => {
     const results = pdfStructureWriterService.markTableAsArtifact(doc, [issueFor('not-a-table-id')]);
     expect(results[0].success).toBe(false);
 
-    const structTreeRoot = doc.context.lookup(structTreeRootRef) as PDFDict;
-    expect(structTreeRoot.get(PDFName.of('Namespaces'))).toBeUndefined();
-    expect(doc.catalog.get(PDFName.of('Version'))).toBeUndefined();
+    expect(isChildOf(doc, documentRef, tableRef)).toBe(true);
+    expect(tagOf(doc, tableRef)).toBe('/Table');
   });
 
   it('fails rather than guessing when the issue has no resolvable element id', async () => {
@@ -275,12 +271,13 @@ describe('PdfStructureWriterService.markTableAsArtifact', () => {
   // Real incident this guards against: Math_Olszewski_PDF.pdf's remediated
   // output had a surviving struct element's /P pointing at an object that
   // had been dropped from the file entirely -- a genuine dangling reference.
-  // This retag path doesn't drop the parent (it stays registered, just
-  // renamed to /Artifact), so a child's /P here still *resolves* rather than
-  // dangling outright -- but it would keep pointing at an object that's no
-  // longer a structure element at all, the same orphaning shape flagged
-  // during that incident's own broader code survey. Confirm it's cleaned up.
-  it('clears the TR child\'s own /P when the table it pointed to is retagged to Artifact', async () => {
+  // deleteElement clears the removed table's own /K (so a TR child, even
+  // though it still exists as a registered object, is no longer reachable
+  // through it) but only clears the TABLE's own /P, not a deeper
+  // grandchild's -- the TD's /P still correctly points at the
+  // still-existing (merely unreachable) TR, matching deleteElement's own
+  // "descendants remain in the PDF context but are unreachable" semantics.
+  it('removes the table from the tree without corrupting its former children\'s own /P pointers', async () => {
     const doc = await PDFDocument.create();
     doc.addPage([400, 600]);
     const [pageRef] = doc.getPages().map(p => p.ref);
@@ -292,6 +289,7 @@ describe('PdfStructureWriterService.markTableAsArtifact', () => {
     (doc.context.lookup(tableRef) as PDFDict).set(PDFName.of('K'), doc.context.obj([trRef]));
 
     const documentRef = doc.context.register(doc.context.obj({ S: PDFName.of('Document'), K: [tableRef] }));
+    setParent(doc, tableRef, documentRef);
     const structTreeRootRef = doc.context.register(
       doc.context.obj({ Type: PDFName.of('StructTreeRoot'), K: [documentRef] })
     );
@@ -299,13 +297,17 @@ describe('PdfStructureWriterService.markTableAsArtifact', () => {
 
     const results = pdfStructureWriterService.markTableAsArtifact(doc, [issueFor('table_p1_0')]);
     expect(results[0].success).toBe(true);
-    expect(tagOf(doc, tableRef)).toBe('/Artifact');
+    expect(isChildOf(doc, documentRef, tableRef)).toBe(false);
 
+    const tableDict = doc.context.lookup(tableRef) as PDFDict;
+    expect(tableDict.get(PDFName.of('P'))).toBeUndefined();
+    expect(tableDict.get(PDFName.of('K'))).toBeUndefined();
+
+    // TR and TD still exist as registered objects (deleteElement never
+    // literally deletes anything), and the TD's /P still correctly points
+    // at the still-existing TR -- only the table's own /P/K were touched.
     const trDict = doc.context.lookup(trRef) as PDFDict;
-    expect(trDict.get(PDFName.of('P'))).toBeUndefined();
-    // Only the direct child's /P is touched -- the TD grandchild's own /P
-    // still correctly points at the still-existing (merely unreachable) TR,
-    // since TR itself was never deleted, only unlinked from the table.
+    expect(trDict.get(PDFName.of('S'))).toEqual(PDFName.of('TR'));
     const tdDict = doc.context.lookup(tdRef) as PDFDict;
     expect(tdDict.get(PDFName.of('P'))).toEqual(trRef);
   });

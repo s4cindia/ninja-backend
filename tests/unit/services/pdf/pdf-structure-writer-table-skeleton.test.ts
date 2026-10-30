@@ -169,17 +169,25 @@ function getScope(doc: PDFDocument, ref: PDFRef): string | undefined {
   return undefined;
 }
 
-/** Finds the ref spliced in immediately after `afterRef` in `parentRef`'s /K array. */
-function findRefAfter(doc: PDFDocument, parentRef: PDFRef, afterRef: PDFRef): PDFRef {
+/**
+ * Finds the one kid of `parentRef` tagged /Table. Safe to use once a
+ * trivial-box fix has run: the box is removed from the tree entirely (not
+ * left behind retagged), so the newly-built Table is the only /Table left.
+ */
+function findTableKid(doc: PDFDocument, parentRef: PDFRef): PDFRef {
   const parent = doc.context.lookup(parentRef) as PDFDict;
   const kids = (parent.get(PDFName.of('K')) as PDFArray).asArray();
-  const idx = kids.findIndex(r => (r as PDFRef).objectNumber === afterRef.objectNumber);
-  return kids[idx + 1] as PDFRef;
+  const found = kids.find(r => {
+    const d = doc.context.lookup(r as PDFRef) as PDFDict;
+    return d.get(PDFName.of('S'))?.toString() === '/Table';
+  });
+  if (!found) throw new Error('No /Table kid found');
+  return found as PDFRef;
 }
 
 describe('PdfStructureWriterService.buildTableFromLayout', () => {
   it('builds a simple fully-resolved 2x2 table with correct Table/TR/TD/Span/K/ParentTree wiring', async () => {
-    const { doc, trivialBoxRef } = await buildDocWithTrivialBoxAndSiblings([
+    const { doc, parentRef } = await buildDocWithTrivialBoxAndSiblings([
       { text: 'Alpha', x: 50, y: 500 },
       { text: 'Beta', x: 200, y: 500 },
       { text: 'Gamma', x: 50, y: 470 },
@@ -200,13 +208,15 @@ describe('PdfStructureWriterService.buildTableFromLayout', () => {
     expect(results[0].success).toBe(true);
     expect(results[0].issueId).toBe(issue.id);
 
-    // Placement: new Table inserted immediately after the trivial box.
-    const parentDict = doc.context.lookup(
-      (doc.context.lookup(trivialBoxRef) as PDFDict).get(PDFName.of('P')) as PDFRef
-    ) as PDFDict;
+    // Placement: new Table took over the trivial box's own slot (the box
+    // is removed entirely, not left behind retagged -- see
+    // markTableAsArtifact's own doc comment for why).
+    const parentDict = doc.context.lookup(parentRef) as PDFDict;
     const kids = (parentDict.get(PDFName.of('K')) as PDFArray).asArray();
-    const trivialIdx = kids.findIndex(r => (r as PDFRef).objectNumber === trivialBoxRef.objectNumber);
-    const newTableRef = kids[trivialIdx + 1] as PDFRef;
+    const newTableRef = kids.find(r => {
+      const d = doc.context.lookup(r as PDFRef) as PDFDict;
+      return d.get(PDFName.of('S'))?.toString() === '/Table';
+    }) as PDFRef;
     const newTable = doc.context.lookup(newTableRef) as PDFDict;
     expect(newTable.get(PDFName.of('S'))?.toString()).toBe('/Table');
 
@@ -293,7 +303,7 @@ describe('PdfStructureWriterService.buildTableFromLayout', () => {
     expect(results[0].after).toContain('0 tagged MCID span(s)');
   });
 
-  it('inserts the new Table immediately after the trivial box, and retags the box to Artifact', async () => {
+  it('inserts the new Table into the trivial box\'s own slot, removing the box entirely', async () => {
     const { doc, parentRef } = await buildDocWithTrivialBoxAndSiblings(
       [{ text: 'Solo', x: 50, y: 500 }], 2, 2
     );
@@ -305,10 +315,14 @@ describe('PdfStructureWriterService.buildTableFromLayout', () => {
     pdfStructureWriterService.buildTableFromLayout(doc, [{ issue: issueFor('table_p1_0'), table }]);
 
     const after = getKidsTags(doc, parentRef);
-    // Sibling order and count preserved; the trivial box's own slot now
-    // reads /Artifact (not /Table) since it's retagged in place, and the
-    // new real Table is spliced in immediately after it. Retagging the box
-    // is required, not just cleanup: structure-analyzer.service.ts's
+    // Sibling order and count preserved; the trivial box is removed from
+    // the tree entirely (not left behind retagged to /Artifact -- see
+    // markTableAsArtifact's own doc comment for why: PAC doesn't recognize
+    // the PDF 2.0 namespace binding that used to make that valid), and the
+    // new real Table lands in the exact slot the box occupied (inserted
+    // right after it, then the box itself is deleted). Removing the box
+    // from this walk is required, not just cleanup, for the same reason
+    // retagging it used to be: structure-analyzer.service.ts's
     // enhanceTablesFromTags pairs LAYOUT candidates to struct-tree /Table
     // elements via queue-based FIFO positional matching per page -- leaving
     // the old box tagged /Table alongside the new one would make the walk
@@ -317,7 +331,7 @@ describe('PdfStructureWriterService.buildTableFromLayout', () => {
     // Math_Kim: the flagged issue stayed flagged, and an unrelated table on
     // the same page got its structural match corrupted to the new table's
     // shape).
-    expect(after).toEqual(['P', 'P', 'Artifact', 'Table', 'P', 'P']);
+    expect(after).toEqual(['P', 'P', 'Table', 'P', 'P']);
   });
 
   /**
@@ -353,12 +367,14 @@ describe('PdfStructureWriterService.buildTableFromLayout', () => {
     expect(results[0].success).toBe(true);
     expect(results[1].success).toBe(true);
 
-    // Both trivial boxes retagged to Artifact, both new Tables present --
-    // 2 Artifact + 2 Table = 4 kids, up from the original 2 trivial boxes.
+    // Both trivial boxes removed entirely, each replaced in place by its
+    // own new Table -- 2 kids in, 2 kids out, no Artifact left behind (see
+    // markTableAsArtifact's own doc comment for why deletion replaced
+    // retag-to-Artifact as this fix's mechanism).
     const after = getKidsTags(doc, parentRef);
-    expect(after.filter(t => t === 'Artifact')).toHaveLength(2);
+    expect(after.filter(t => t === 'Artifact')).toHaveLength(0);
     expect(after.filter(t => t === 'Table')).toHaveLength(2);
-    expect(after).toHaveLength(4);
+    expect(after).toHaveLength(2);
   });
 
   it('fails honestly when the positioning anchor cannot be resolved', async () => {
@@ -392,7 +408,7 @@ describe('PdfStructureWriterService.buildTableFromLayout', () => {
    * only the header-column condition (Scope=Row); (1,1) is a plain TD.
    */
   it('writes the correct /Scope on generated TH cells, derived independently of isHeader', async () => {
-    const { doc, trivialBoxRef, parentRef } = await buildDocWithTrivialBoxAndSiblings([
+    const { doc, parentRef } = await buildDocWithTrivialBoxAndSiblings([
       { text: 'Corner', x: 50, y: 500 },
       { text: 'ColHead', x: 200, y: 500 },
       { text: 'RowHead', x: 50, y: 470 },
@@ -413,7 +429,9 @@ describe('PdfStructureWriterService.buildTableFromLayout', () => {
     const results = pdfStructureWriterService.buildTableFromLayout(doc, [{ issue: issueFor('table_p1_0'), table }]);
     expect(results[0].success).toBe(true);
 
-    const newTableRef = findRefAfter(doc, parentRef, trivialBoxRef);
+    // The trivial box is removed entirely (not left behind retagged), so
+    // the new Table is the only /Table-tagged kid left to find.
+    const newTableRef = findTableKid(doc, parentRef);
     const newTable = doc.context.lookup(newTableRef) as PDFDict;
     const trRefs = (newTable.get(PDFName.of('K')) as PDFArray).asArray() as PDFRef[];
 
@@ -612,9 +630,12 @@ describe('PdfStructureWriterService.buildTableFromLayout', () => {
     // finding on PR #552: no full transactional rollback): the newly-built
     // Table this call can no longer honestly wire into /ParentTree must not
     // be left looking like a complete, valid table -- it's retagged to
-    // /Artifact in place, same as the trivial box already is. Both slots
-    // read /Artifact; neither reads /Table. (Default siblingCountBefore/
-    // After from buildDocWithTrivialBoxAndSiblings is 3 each.)
-    expect(getKidsTags(doc, parentRef)).toEqual(['P', 'P', 'P', 'Artifact', 'Artifact', 'P', 'P', 'P']);
+    // /Artifact in place. The trivial box itself is already gone by this
+    // point (removed from the tree, not retagged, the moment the new Table
+    // was spliced into its slot -- see markTableAsArtifact's own doc
+    // comment for why), so there's exactly one Artifact here, not two.
+    // (Default siblingCountBefore/After from buildDocWithTrivialBoxAndSiblings
+    // is 3 each.)
+    expect(getKidsTags(doc, parentRef)).toEqual(['P', 'P', 'P', 'Artifact', 'P', 'P', 'P']);
   });
 });
