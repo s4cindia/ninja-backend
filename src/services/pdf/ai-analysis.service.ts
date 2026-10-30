@@ -40,7 +40,7 @@ import { TABLE_LIKELY_FORMULA_CODE } from './validators/pdf-table.validator';
 import type { ParsedPDF } from './pdf-parser.service';
 import type { TextRunMatch } from './contrast-content-stream';
 import { computeCompliantColor } from './color-contrast-correction';
-import { findOversizedArtifactSpans, extractArtifactTextRuns, computeHeuristicBoundaryIndex } from './pdf-artifact-tagger';
+import { findOversizedArtifactSpans, extractArtifactTextRuns, computeHeuristicBoundaryIndex, findRealTextSegmentsInSpan } from './pdf-artifact-tagger';
 
 // ─── Config Types ──────────────────────────────────────────────────────────────
 
@@ -1672,8 +1672,31 @@ class AiAnalysisService {
 
     if (ARTIFACT_SWALLOWS_CONTENT_COMPLEX_CODES.has(code)) {
       // Contains real path-paint ops, not just text -- this module's
-      // boundary detection only has a text-baseline-Y signal, see
-      // ARTIFACT_SWALLOWS_CONTENT_COMPLEX_CODES's own doc comment.
+      // boundary detection only has a text-baseline-Y signal for the
+      // SIMPLE case (see ARTIFACT_SWALLOWS_CONTENT_COMPLEX_CODES's own doc
+      // comment). But a text-show op interleaved with decorative drawing
+      // is still unambiguously real, never-tagged content regardless of
+      // what the drawing itself is -- findRealTextSegmentsInSpan never has
+      // to judge the drawing, only the text (see its own doc comment).
+      // Route there whenever such text exists; a page whose complex spans
+      // really are pure decorative graphics (confirmed live on
+      // Farrar_2E_Comp_188910.pdf: 7 of its 16 complex pages) has nothing
+      // to free, so that case keeps declining to manual review below.
+      if (issue.pageNumber && parsed.parsedPdf) {
+        const content = decodePageContent(parsed.parsedPdf.pdfLibDoc, issue.pageNumber);
+        const complexSpans = content ? findOversizedArtifactSpans(content).filter((s) => s.hasPathOps) : [];
+        const hasRealText = content !== null && complexSpans.some((s) => findRealTextSegmentsInSpan(content, s).length > 0);
+        if (hasRealText) {
+          return {
+            suggestionType: 'artifact-unwrap-complex-fix',
+            guidance: 'This page has an oversized /Artifact span mixing real text with decorative drawing (e.g. a table grid or background shading) -- the real text will be split out into its own structure tag(s); the decorative drawing stays Artifact-wrapped exactly as before.',
+            confidence: 1.0,
+            rationale: 'Deterministic fix -- a text-show operator not immediately preceded by another text-show op since the last path-paint op is unambiguously real content, a structural fact about the content stream, not a judgment call about the drawing itself',
+            model: 'rule-based',
+            applyMode: 'apply-to-pdf',
+          };
+        }
+      }
       return {
         suggestionType: 'artifact-unwrap-review',
         guidance: 'This page has an oversized /Artifact span likely swallowing real content, including vector graphics -- the real-content boundary needs manual review before it can be safely split out.',
@@ -3702,6 +3725,13 @@ class AiAnalysisService {
           // early and opens a fresh /Span) -- same pagesRewrittenSincePreResolve
           // tracking as tagged-content-artifact-split-fix above, for the
           // same reason.
+          if (r.success && originalIssue.pageNumber !== undefined) {
+            pagesRewrittenSincePreResolve.add(originalIssue.pageNumber);
+          }
+        } else if (suggestionType === 'artifact-unwrap-complex-fix') {
+          const r = pdfStructureWriterService.fixArtifactSwallowsContentComplex(doc, originalIssue);
+          modification = { success: r.success, description: r.after, error: r.error };
+          // Same content-stream-rewrite reasoning as artifact-unwrap-fix above.
           if (r.success && originalIssue.pageNumber !== undefined) {
             pagesRewrittenSincePreResolve.add(originalIssue.pageNumber);
           }
