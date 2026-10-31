@@ -3592,7 +3592,18 @@ class AiAnalysisService {
     // for repeat contrast fixes.
     const pagesRewrittenSincePreResolve = new Set<number>();
 
-    const STRUCTURE_WRITER_TYPES = new Set(['heading-fix', 'list-fix', 'table-header-fix', 'table-header-fix-column', 'table-header-scope-fix', 'table-artifact-fix', 'table-from-layout-fix', 'bookmark-generate', 'heading-multiple-h1-fix', 'pdfua-identifier', 'color-contrast-fix', 'alt-text-decorative', 'untagged-content-fix', 'invisible-text-artifact-fix', 'figure-caption-reattach-fix', 'inline-figure-reattach-fix', 'tagged-content-artifact-split-fix', 'table-cell-reattach-fix', 'table-row-reattach-fix', 'font-tounicode-synthesis-fix', 'font-tounicode-extend-fix']);
+    // 'artifact-unwrap-complex-fix' and 'placedpdf-retag-fix' both dispatch
+    // with no `value` (deterministic, rule-based, apply-to-pdf fixes -- see
+    // their own dispatchIssue branches above) and were missing from this
+    // Set when each was first added (#747, #748) -- a real production bug,
+    // not just a theoretical gap: both failed 100% of real apply attempts
+    // with "No value and not a structure-writer type" (confirmed live on
+    // Farrar_2E_Comp_188910.pdf's own remediation-cycle-history: 347
+    // placedpdf-retag-fix failures, 11/11 artifact-unwrap-complex-fix
+    // failures in a single round), never once reaching the real writer
+    // calls (fixArtifactSwallowsContentComplex / retagPlacedPdfAsFigure)
+    // below despite both being fully implemented, tested, and merged.
+    const STRUCTURE_WRITER_TYPES = new Set(['heading-fix', 'list-fix', 'table-header-fix', 'table-header-fix-column', 'table-header-scope-fix', 'table-artifact-fix', 'table-from-layout-fix', 'bookmark-generate', 'heading-multiple-h1-fix', 'pdfua-identifier', 'color-contrast-fix', 'alt-text-decorative', 'untagged-content-fix', 'invisible-text-artifact-fix', 'figure-caption-reattach-fix', 'inline-figure-reattach-fix', 'tagged-content-artifact-split-fix', 'table-cell-reattach-fix', 'table-row-reattach-fix', 'font-tounicode-synthesis-fix', 'font-tounicode-extend-fix', 'artifact-unwrap-complex-fix', 'placedpdf-retag-fix']);
 
     let applied = 0;
     let failed = 0;
