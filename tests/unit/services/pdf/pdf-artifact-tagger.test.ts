@@ -10,6 +10,8 @@ import {
   applyArtifactUnwrap,
   findRealTextSegmentsInSpan,
   buildArtifactSplitEdits,
+  findPlacedPdfSpans,
+  buildPlacedPdfRetagEdit,
 } from '../../../../src/services/pdf/pdf-artifact-tagger';
 
 describe('findUntaggedPathRuns', () => {
@@ -585,5 +587,62 @@ describe('buildArtifactSplitEdits', () => {
     const { edits, mcids } = buildArtifactSplitEdits([], 100, 0);
     expect(edits).toEqual([]);
     expect(mcids).toEqual([]);
+  });
+});
+
+describe('findPlacedPdfSpans', () => {
+  it('finds a top-level /PlacedPDF span using the named-properties-reference form', () => {
+    const content = `/PlacedPDF /MC0 BDC\n0 0 m\n10 10 l\nf\nEMC\n`;
+    const spans = findPlacedPdfSpans(content);
+    expect(spans).toHaveLength(1);
+    expect(content.slice(spans[0].tagStart, spans[0].contentStart)).toBe('/PlacedPDF /MC0 BDC');
+    expect(content.slice(spans[0].closeOpStart, spans[0].closeOpEnd)).toBe('EMC');
+  });
+
+  it('finds a top-level /PlacedPDF span using an inline-dict properties form', () => {
+    const content = `/PlacedPDF <</Owner (Adobe)>> BDC\n0 0 m\n10 10 l\nf\nEMC\n`;
+    const spans = findPlacedPdfSpans(content);
+    expect(spans).toHaveLength(1);
+    expect(content.slice(spans[0].tagStart, spans[0].contentStart)).toBe('/PlacedPDF <</Owner (Adobe)>> BDC');
+  });
+
+  it('only reports the OUTERMOST span when a /PlacedPDF is nested inside another /PlacedPDF', () => {
+    const content = `/PlacedPDF /MC0 BDC\n0 0 m\nf\n/PlacedPDF /MC1 BDC\n1 1 m\nf\nEMC\nEMC\n`;
+    const spans = findPlacedPdfSpans(content);
+    expect(spans).toHaveLength(1);
+    expect(content.slice(spans[0].tagStart, spans[0].tagStart + 10)).toBe('/PlacedPDF');
+    // The span's own close is the OUTER EMC (the second one), not the inner one.
+    expect(spans[0].closeOpStart).toBe(content.lastIndexOf('EMC'));
+  });
+
+  it('skips a span with no content at all between its own BDC and EMC', () => {
+    const content = `/PlacedPDF /MC0 BDC\nEMC\n`;
+    expect(findPlacedPdfSpans(content)).toHaveLength(0);
+  });
+
+  it('does not corrupt an inline image by parsing its binary payload as marked-content operators', () => {
+    const content = `/PlacedPDF /MC0 BDC\nBI\n/W 2/H 1/BPC 8/CS/G\nID \x00m 0 0 l S\x00\nEI\nEMC\n`;
+    const spans = findPlacedPdfSpans(content);
+    expect(spans).toHaveLength(1);
+  });
+
+  it('finds multiple independent top-level spans on the same page', () => {
+    const content = `/PlacedPDF /MC0 BDC\n0 0 m\nf\nEMC\n(between)Tj\n/PlacedPDF /MC1 BDC\n1 1 m\nf\nEMC\n`;
+    const spans = findPlacedPdfSpans(content);
+    expect(spans).toHaveLength(2);
+  });
+});
+
+describe('buildPlacedPdfRetagEdit', () => {
+  it('replaces the whole "/PlacedPDF <properties> BDC" opening with a fresh MCID-bearing /Figure tag', () => {
+    const content = `/PlacedPDF /MC0 BDC\n0 0 m\nf\nEMC\n`;
+    const spans = findPlacedPdfSpans(content);
+    const edit = buildPlacedPdfRetagEdit(spans[0], 7);
+    expect(edit).toEqual({ offset: 0, deleteThrough: content.indexOf('BDC') + 3, text: '/Figure <</MCID 7>> BDC ' });
+    const result = content.slice(0, edit.offset) + edit.text + content.slice(edit.deleteThrough);
+    expect(result).toBe(`/Figure <</MCID 7>> BDC \n0 0 m\nf\nEMC\n`);
+    // The pre-existing closing EMC is untouched -- it still correctly
+    // closes the new /Figure tag directly.
+    expect((result.match(/EMC/g) ?? []).length).toBe(1);
   });
 });

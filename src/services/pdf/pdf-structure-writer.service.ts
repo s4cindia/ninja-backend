@@ -39,6 +39,8 @@ import {
   applyArtifactUnwrap,
   findRealTextSegmentsInSpan,
   buildArtifactSplitEdits,
+  findPlacedPdfSpans,
+  buildPlacedPdfRetagEdit,
 } from './pdf-artifact-tagger';
 import {
   matchCellRanges,
@@ -4010,6 +4012,181 @@ export class PdfStructureWriterService {
       success: true,
       before: `${spans.length} complex oversized /Artifact span(s) swallowing real content alongside decorative drawing`,
       after: `${totalSegments} real text segment(s) split out into their own /Span structure tag(s); the decorative drawing stays Artifact-wrapped`,
+    };
+  }
+
+  /**
+   * PLACEDPDF-NOT-TAGGED fix: retags every top-level `/PlacedPDF <properties>
+   * BDC … EMC` span (see pdf-artifact-tagger.ts's findPlacedPdfSpans for the
+   * full forensic trail — Adobe InDesign's own non-standard tag for placed
+   * vector art, whose own properties reference resolves to `<< /Metadata
+   * ... >>`, never an `/MCID`, so this content has never been reachable from
+   * the structure tree at all despite looking tagged) as a fresh `/Figure`
+   * with a real MCID, wired into the document flow. Deterministic — no AI
+   * judgment needed, since this never decides decorative-vs-informative on
+   * its own: every retagged region becomes a real, structure-tree-reachable
+   * Figure with NO /Alt set, which the existing alt-text validator/writer
+   * pipeline (PdfFigureStructTreeValidator, buildFigureFromImage and
+   * friends) already picks up as an ordinary missing-alt-text issue on the
+   * next audit pass — the same honest, already-proven hand-off this
+   * codebase uses whenever a Figure can't get its alt text resolved in the
+   * same step it's created (confirmed live: "buildFigureFromImage: 1/1
+   * image(s) could not get a Figure built -- setAltText will fail honestly
+   * for these" is already a normal, non-crashing outcome this pipeline
+   * handles every day). Marking these Artifact instead was deliberately
+   * rejected — some of this content (labeled anatomy diagrams, step-by-step
+   * instructional figures) is genuinely informative, and silently excluding
+   * real content from the accessible tree is worse than leaving it for the
+   * alt-text pipeline to judge.
+   *
+   * Document-flow insertion mirrors fixArtifactSwallowsContentComplex
+   * exactly: resolves each span's own nearest EXISTING tagged neighbors by
+   * content-stream position, requires left/right agreement, and chains
+   * every span on the same page off their own anchor point in order.
+   *
+   * All-or-nothing per page, same rollback convention as every other
+   * content-stream-plus-struct-tree fix in this file.
+   */
+  retagPlacedPdfAsFigure(doc: PDFDocument, issue: AuditIssue): FixResult {
+    if (!issue.pageNumber) {
+      return { issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error: 'Issue has no pageNumber' };
+    }
+    const pageNumber = issue.pageNumber;
+
+    let originalContent: string | null;
+    try {
+      originalContent = decodePageContent(doc, pageNumber);
+    } catch (err) {
+      return { issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error: `Could not decode page ${pageNumber}: ${err instanceof Error ? err.message : String(err)}` };
+    }
+    if (!originalContent) {
+      return { issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error: `Page ${pageNumber} has no content stream` };
+    }
+
+    const spans = findPlacedPdfSpans(originalContent);
+    if (spans.length === 0) {
+      return { issueId: issue.id, success: false, before: '/PlacedPDF span(s) present', after: 'unknown', error: 'No top-level /PlacedPDF spans found on this page (already fixed or moved)' };
+    }
+
+    const structRoot = this.getStructTreeRoot(doc);
+    if (!structRoot) {
+      return { issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error: 'No /StructTreeRoot found' };
+    }
+    const pageArr = this.resolveParentTreePageArray(doc, pageNumber);
+    if (!pageArr) {
+      return { issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error: `No /ParentTree entry found for page ${pageNumber}` };
+    }
+    const pageArrRaw = pageArr.asArray();
+    const positionedMcids = orderedPageContentMcids(originalContent);
+
+    const resolveEntry = (mcid: number | undefined): PDFRef | null => {
+      if (mcid === undefined) return null;
+      const entry = pageArrRaw[mcid];
+      return entry instanceof PDFRef ? entry : null;
+    };
+    const resolveParentOf = (entryRef: PDFRef | null): PDFRef | null => {
+      if (!entryRef) return null;
+      const dict = doc.context.lookup(entryRef, PDFDict);
+      const p = dict?.get(PDFName.of('P'));
+      return p instanceof PDFRef ? p : null;
+    };
+
+    interface PlannedFigure {
+      mcid: number;
+      flowParent: PDFRef;
+      anchorRef: PDFRef;
+      anchorBefore: boolean;
+    }
+
+    const existingMcids = pageContentMcids(doc, pageNumber) ?? new Set<number>();
+    let nextMcid = existingMcids.size > 0 ? Math.max(...existingMcids) + 1 : 0;
+
+    const allEdits: Array<{ offset: number; deleteThrough: number; text: string }> = [];
+    const planned: PlannedFigure[] = [];
+
+    for (const span of spans) {
+      const leftCandidate = [...positionedMcids].reverse().find((p) => p.start < span.tagStart);
+      const rightCandidate = positionedMcids.find((p) => p.start > span.closeOpEnd);
+      const leftEntry = resolveEntry(leftCandidate?.mcid);
+      const rightEntry = resolveEntry(rightCandidate?.mcid);
+      const leftParent = resolveParentOf(leftEntry);
+      const rightParent = resolveParentOf(rightEntry);
+
+      if (leftParent && rightParent && leftParent.objectNumber !== rightParent.objectNumber) {
+        return { issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error: 'Span\'s left/right tagged neighbors resolve to different document-flow parents -- ambiguous, declining rather than guessing' };
+      }
+
+      let flowParent: PDFRef | null = null;
+      let anchorRef: PDFRef | null = null;
+      let anchorBefore = false;
+      if (rightParent && rightEntry) {
+        flowParent = rightParent; anchorRef = rightEntry; anchorBefore = true;
+      } else if (leftParent && leftEntry) {
+        flowParent = leftParent; anchorRef = leftEntry; anchorBefore = false;
+      }
+
+      if (!flowParent || !anchorRef) {
+        return { issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error: 'Span has no usable tagged neighbor on this page to anchor its document-flow position to -- declining rather than guessing' };
+      }
+
+      const mcid = nextMcid;
+      allEdits.push(buildPlacedPdfRetagEdit(span, mcid));
+      planned.push({ mcid, flowParent, anchorRef, anchorBefore });
+      nextMcid++;
+    }
+
+    allEdits.sort((a, b) => b.offset - a.offset);
+    let newContent = originalContent;
+    for (const e of allEdits) {
+      newContent = newContent.slice(0, e.offset) + e.text + newContent.slice(e.deleteThrough);
+    }
+
+    const pageRef = doc.getPages()[pageNumber - 1].ref;
+    const createdRefs: PDFRef[] = [];
+    const parentTreeEntries: Array<{ mcid: number; structElementRef: PDFRef }> = [];
+    const lastInsertedByAnchor = new Map<number, PDFRef>();
+
+    try {
+      for (const p of planned) {
+        const figureObj = doc.context.obj({
+          Type: PDFName.of('StructElem'),
+          S: PDFName.of('Figure'),
+          P: p.flowParent,
+          Pg: pageRef,
+          K: PDFNumber.of(p.mcid),
+        });
+        const figureRef = doc.context.register(figureObj as PDFDict);
+        createdRefs.push(figureRef);
+
+        if (p.anchorBefore) {
+          this.insertIntoKidsBefore(doc, p.flowParent, p.anchorRef, figureRef);
+        } else {
+          const insertAfter = lastInsertedByAnchor.get(p.anchorRef.objectNumber) ?? p.anchorRef;
+          this.insertIntoKidsAfter(doc, p.flowParent, insertAfter, figureRef);
+          lastInsertedByAnchor.set(p.anchorRef.objectNumber, figureRef);
+        }
+
+        const figureDict = doc.context.lookup(figureRef, PDFDict);
+        figureDict?.set(PDFName.of('P'), p.flowParent);
+
+        parentTreeEntries.push({ mcid: p.mcid, structElementRef: figureRef });
+      }
+
+      writePageContent(doc, pageNumber, newContent);
+      parentTreeEntries.sort((a, b) => a.mcid - b.mcid);
+      this.extendParentTree(doc, pageNumber, parentTreeEntries);
+    } catch (err) {
+      // Same full-rollback reasoning as fixArtifactSwallowsContent/Complex above.
+      writePageContent(doc, pageNumber, originalContent);
+      for (const ref of createdRefs) this.deleteElement(doc, ref);
+      return { issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error: err instanceof Error ? err.message : String(err) };
+    }
+
+    return {
+      issueId: issue.id,
+      success: true,
+      before: `${spans.length} /PlacedPDF span(s) with no real MCID, unreachable from the structure tree`,
+      after: `${spans.length} span(s) retagged as /Figure with a real MCID, wired into the document flow (alt text to follow via the normal missing-alt-text pipeline)`,
     };
   }
 

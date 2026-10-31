@@ -287,6 +287,13 @@ const ARTIFACT_SWALLOWS_CONTENT_CODES = new Set(['ARTIFACT-SWALLOWS-CONTENT']);
 const ARTIFACT_SWALLOWS_CONTENT_COMPLEX_CODES = new Set(['ARTIFACT-SWALLOWS-CONTENT-COMPLEX']);
 const UNTAGGED_CONTENT_COMPLEX_CODES = new Set(['UNTAGGED-CONTENT-COMPLEX']);
 const TABLE_HEADER_SCOPE_CODES = new Set(['TABLE-HEADER-MISSING-SCOPE']);
+// Adobe InDesign's own non-standard "placed vector art" tag -- never
+// carries a real /MCID (its own properties reference resolves to
+// << /Metadata ... >> instead), so it's deterministically retaggable:
+// no AI judgment needed, see pdf-structure.validator.ts's
+// validatePlacedPdfContent and pdf-structure-writer.service.ts's
+// retagPlacedPdfAsFigure for the full detection/fix trail.
+const PLACEDPDF_NOT_TAGGED_CODES = new Set(['PLACEDPDF-NOT-TAGGED']);
 
 // Document-level codes always produce the same result for the whole document,
 // so the suggestion cache below keys them by code alone.
@@ -1705,6 +1712,17 @@ class AiAnalysisService {
         model: 'rule-based',
         applyMode: 'guidance-only',
         requiresManualReview: true,
+      };
+    }
+
+    if (PLACEDPDF_NOT_TAGGED_CODES.has(code)) {
+      return {
+        suggestionType: 'placedpdf-retag-fix',
+        guidance: 'This page has placed vector artwork (Adobe InDesign\'s own tag) that was never connected to the structure tree -- it will be retagged as a real /Figure structure element and wired into the document flow.',
+        confidence: 1.0,
+        rationale: 'Deterministic fix -- the tag\'s own properties reference resolves to document metadata, never an /MCID, so this content was never reachable from the structure tree regardless of what it depicts; no judgment call needed to retag it, only to later decide its alt text (left to the normal missing-alt-text pipeline)',
+        model: 'rule-based',
+        applyMode: 'apply-to-pdf',
       };
     }
 
@@ -3730,6 +3748,13 @@ class AiAnalysisService {
           }
         } else if (suggestionType === 'artifact-unwrap-complex-fix') {
           const r = pdfStructureWriterService.fixArtifactSwallowsContentComplex(doc, originalIssue);
+          modification = { success: r.success, description: r.after, error: r.error };
+          // Same content-stream-rewrite reasoning as artifact-unwrap-fix above.
+          if (r.success && originalIssue.pageNumber !== undefined) {
+            pagesRewrittenSincePreResolve.add(originalIssue.pageNumber);
+          }
+        } else if (suggestionType === 'placedpdf-retag-fix') {
+          const r = pdfStructureWriterService.retagPlacedPdfAsFigure(doc, originalIssue);
           modification = { success: r.success, description: r.after, error: r.error };
           // Same content-stream-rewrite reasoning as artifact-unwrap-fix above.
           if (r.success && originalIssue.pageNumber !== undefined) {
