@@ -711,6 +711,57 @@ describe('aiAnalysisService.applyApprovedSuggestions', () => {
     expect(result.failed).toBe(0);
   });
 
+  /**
+   * Regression: both suggestion types dispatch with no `value` (see their
+   * own dispatchIssue branches) and were missing from STRUCTURE_WRITER_TYPES
+   * when each was first added -- a real production bug confirmed live on
+   * Farrar_2E_Comp_188910.pdf (347 placedpdf-retag-fix failures, 11/11
+   * artifact-unwrap-complex-fix failures in a single round), where every
+   * attempt failed with "No value and not a structure-writer type" before
+   * ever reaching the real writer call below.
+   */
+  it('dispatches an artifact-unwrap-complex-fix suggestion (no value, rule-based) to fixArtifactSwallowsContentComplex', async () => {
+    vi.mocked(prisma.aiAnalysis.findMany).mockResolvedValue([
+      { issueId: 'complex-1', suggestionType: 'artifact-unwrap-complex-fix' },
+    ] as any);
+    vi.mocked(fileStorageService.getRemediatedFile).mockResolvedValue(Buffer.from('pdf'));
+    vi.mocked(pdfModifierService.loadPDF).mockResolvedValue({} as any);
+    vi.mocked(pdfModifierService.savePDF).mockResolvedValue(Buffer.from('modified-pdf'));
+    vi.mocked(fileStorageService.saveRemediatedFile).mockResolvedValue('s3://remediated/doc.pdf');
+
+    const { pdfStructureWriterService } = await import('../../../../src/services/pdf/pdf-structure-writer.service');
+    vi.mocked(pdfStructureWriterService.fixArtifactSwallowsContentComplex).mockReturnValue(
+      { issueId: 'complex-1', success: true, before: 'real text swallowed alongside decorative drawing', after: 'real text split out' },
+    );
+
+    const result = await aiAnalysisService.applyApprovedSuggestions('job-1', 1, 'user-1', 'apply_all');
+
+    expect(pdfStructureWriterService.fixArtifactSwallowsContentComplex).toHaveBeenCalled();
+    expect(result.applied).toBe(1);
+    expect(result.failed).toBe(0);
+  });
+
+  it('dispatches a placedpdf-retag-fix suggestion (no value, rule-based) to retagPlacedPdfAsFigure', async () => {
+    vi.mocked(prisma.aiAnalysis.findMany).mockResolvedValue([
+      { issueId: 'placed-1', suggestionType: 'placedpdf-retag-fix' },
+    ] as any);
+    vi.mocked(fileStorageService.getRemediatedFile).mockResolvedValue(Buffer.from('pdf'));
+    vi.mocked(pdfModifierService.loadPDF).mockResolvedValue({} as any);
+    vi.mocked(pdfModifierService.savePDF).mockResolvedValue(Buffer.from('modified-pdf'));
+    vi.mocked(fileStorageService.saveRemediatedFile).mockResolvedValue('s3://remediated/doc.pdf');
+
+    const { pdfStructureWriterService } = await import('../../../../src/services/pdf/pdf-structure-writer.service');
+    vi.mocked(pdfStructureWriterService.retagPlacedPdfAsFigure).mockReturnValue(
+      { issueId: 'placed-1', success: true, before: '/PlacedPDF content unreachable from the structure tree', after: 'retagged as /Figure' },
+    );
+
+    const result = await aiAnalysisService.applyApprovedSuggestions('job-1', 1, 'user-1', 'apply_all');
+
+    expect(pdfStructureWriterService.retagPlacedPdfAsFigure).toHaveBeenCalled();
+    expect(result.applied).toBe(1);
+    expect(result.failed).toBe(0);
+  });
+
   it('does not call pdfComprehensiveParserService when no table-from-layout-fix suggestions are in the batch', async () => {
     vi.mocked(prisma.aiAnalysis.findMany).mockResolvedValue([
       { issueId: 'issue-1', suggestionType: 'alt-text', value: 'A red apple' },
