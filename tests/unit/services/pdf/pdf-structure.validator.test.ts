@@ -499,6 +499,88 @@ describe('PDFStructureValidator', () => {
     });
   });
 
+  describe('/PlacedPDF content unreachable from the structure tree (PLACEDPDF-NOT-TAGGED)', () => {
+    async function validateWithRealPage(content: string): Promise<ParsedPDF['pdfLibDoc']> {
+      const doc = await PDFDocument.create();
+      doc.addPage([612, 792]);
+      writePageContent(doc, 1, content);
+      return doc;
+    }
+
+    it('flags a page with a top-level /PlacedPDF span', async () => {
+      const content = '/PlacedPDF /MC0 BDC\n0 0 m\n10 10 l\nf\nEMC\n';
+      const pdfLibDoc = await validateWithRealPage(content);
+      const mockParsedPdf = { ...createMockParsedPdf({ isTagged: true, hasLanguage: true, hasTitle: true }), pdfLibDoc };
+      const mockStructure = createMockStructure({
+        isTaggedPDF: true, hasProperHeadingHierarchy: true, hasDocumentLanguage: true, hasLogicalReadingOrder: true,
+      });
+      vi.mocked(pdfParserService.parse).mockResolvedValue(mockParsedPdf);
+      vi.mocked(pdfParserService.close).mockResolvedValue(undefined);
+      vi.mocked(structureAnalyzerService.analyzeStructure).mockResolvedValue(mockStructure);
+
+      const result = await pdfStructureValidator.validateFromFile('/path/to/test.pdf');
+
+      const issue = result.issues.find(i => i.code === 'PLACEDPDF-NOT-TAGGED');
+      expect(issue).toBeDefined();
+      expect(issue?.matterhornCheckpoint).toBe('01-005');
+      expect(issue?.matterhornHow).toBe('M');
+      expect(issue?.severity).toBe('serious');
+      expect(issue?.pageNumber).toBe(1);
+      expect(issue?.location).toBe('Page 1');
+      expect(issue?.message).toContain('1 /PlacedPDF region');
+    });
+
+    it('does not flag a page with no /PlacedPDF content at all', async () => {
+      const content = '/P <</MCID 0 >>BDC\n(Ordinary paragraph)Tj\nEMC\n';
+      const pdfLibDoc = await validateWithRealPage(content);
+      const mockParsedPdf = { ...createMockParsedPdf({ isTagged: true, hasLanguage: true, hasTitle: true }), pdfLibDoc };
+      const mockStructure = createMockStructure({
+        isTaggedPDF: true, hasProperHeadingHierarchy: true, hasDocumentLanguage: true, hasLogicalReadingOrder: true,
+      });
+      vi.mocked(pdfParserService.parse).mockResolvedValue(mockParsedPdf);
+      vi.mocked(pdfParserService.close).mockResolvedValue(undefined);
+      vi.mocked(structureAnalyzerService.analyzeStructure).mockResolvedValue(mockStructure);
+
+      const result = await pdfStructureValidator.validateFromFile('/path/to/test.pdf');
+
+      expect(result.issues.find(i => i.code === 'PLACEDPDF-NOT-TAGGED')).toBeUndefined();
+    });
+
+    it('does not run this check on an untagged document', async () => {
+      const content = '/PlacedPDF /MC0 BDC\n0 0 m\n10 10 l\nf\nEMC\n';
+      const pdfLibDoc = await validateWithRealPage(content);
+      const mockParsedPdf = { ...createMockParsedPdf({ isTagged: false, hasLanguage: true, hasTitle: true }), pdfLibDoc };
+      const mockStructure = createMockStructure({
+        isTaggedPDF: false, hasProperHeadingHierarchy: true, hasDocumentLanguage: true, hasLogicalReadingOrder: true,
+      });
+      vi.mocked(pdfParserService.parse).mockResolvedValue(mockParsedPdf);
+      vi.mocked(pdfParserService.close).mockResolvedValue(undefined);
+      vi.mocked(structureAnalyzerService.analyzeStructure).mockResolvedValue(mockStructure);
+
+      const result = await pdfStructureValidator.validateFromFile('/path/to/test.pdf');
+
+      expect(result.issues.find(i => i.code === 'PLACEDPDF-NOT-TAGGED')).toBeUndefined();
+    });
+
+    it('reports one issue per page, counting multiple top-level spans', async () => {
+      const content = '/PlacedPDF /MC0 BDC\n0 0 m\nf\nEMC\n(between)Tj\n/PlacedPDF /MC1 BDC\n1 1 m\nf\nEMC\n';
+      const pdfLibDoc = await validateWithRealPage(content);
+      const mockParsedPdf = { ...createMockParsedPdf({ isTagged: true, hasLanguage: true, hasTitle: true }), pdfLibDoc };
+      const mockStructure = createMockStructure({
+        isTaggedPDF: true, hasProperHeadingHierarchy: true, hasDocumentLanguage: true, hasLogicalReadingOrder: true,
+      });
+      vi.mocked(pdfParserService.parse).mockResolvedValue(mockParsedPdf);
+      vi.mocked(pdfParserService.close).mockResolvedValue(undefined);
+      vi.mocked(structureAnalyzerService.analyzeStructure).mockResolvedValue(mockStructure);
+
+      const result = await pdfStructureValidator.validateFromFile('/path/to/test.pdf');
+
+      const issues = result.issues.filter(i => i.code === 'PLACEDPDF-NOT-TAGGED');
+      expect(issues).toHaveLength(1);
+      expect(issues[0].message).toContain('2 /PlacedPDF region');
+    });
+  });
+
   describe('structure-tree reference integrity (STRUCTURE-DANGLING-REFERENCE)', () => {
     // Real incident this check closes a blind spot for: Math_Olszewski_PDF.pdf's
     // remediated output had 3 struct elements silently dropped by pdf-lib's own

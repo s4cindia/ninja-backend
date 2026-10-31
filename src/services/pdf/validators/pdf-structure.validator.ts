@@ -14,7 +14,7 @@ import { AuditIssue, IssueSeverity } from '../../audit/base-audit.service';
 import { structureAnalyzerService, DocumentStructure } from '../structure-analyzer.service';
 import { pdfParserService, ParsedPDF } from '../pdf-parser.service';
 import { decodePageContent } from '../pdf-content-stream-io';
-import { findUntaggedPathRuns, type UntaggedPathRun, findTaggedContentInsideArtifact, findOversizedArtifactSpans } from '../pdf-artifact-tagger';
+import { findUntaggedPathRuns, type UntaggedPathRun, findTaggedContentInsideArtifact, findOversizedArtifactSpans, findPlacedPdfSpans } from '../pdf-artifact-tagger';
 import { logger } from '../../../lib/logger';
 
 // validateUntaggedContent's own recurring-decorative-curve refinement (see
@@ -152,6 +152,16 @@ class PDFStructureValidator {
     // only, same reasoning as the two checks above.
     if (structure.isTaggedPDF) {
       issues.push(...this.validateArtifactSwallowsContent(parsedPdf));
+    }
+
+    // Validate /PlacedPDF content -- Adobe InDesign's own non-standard tag
+    // for placed vector art whose own properties reference carries
+    // provenance /Metadata, never a real /MCID, so it's unreachable from
+    // the structure tree despite looking tagged (see
+    // validatePlacedPdfContent's own doc comment). Tagged PDFs only, same
+    // reasoning as the Artifact-related checks above.
+    if (structure.isTaggedPDF) {
+      issues.push(...this.validatePlacedPdfContent(parsedPdf));
     }
 
     // Structure-tree reference integrity -- tagged PDFs only (an untagged
@@ -797,6 +807,69 @@ class PDFStructureValidator {
         suggestion: hasPathOps
           ? 'Review this page\'s oversized Artifact span(s) manually -- determine where the real content begins and give it its own structure tag.'
           : 'The real content boundary inside this Artifact span will be determined and given its own structure tag.',
+        category: 'structure',
+        pageNumber,
+        matterhornCheckpoint: '01-005',
+        matterhornHow: 'M',
+      }));
+    }
+
+    return issues;
+  }
+
+  /**
+   * Detects content wrapped in Adobe InDesign's own non-standard
+   * `/PlacedPDF` marked-content tag -- used for vector art "placed" into
+   * the layout from an external file (Illustrator logos, hand-drawn
+   * elements, diagrams). Confirmed live on Farrar_2E_Comp_188910.pdf: 56 of
+   * 124 pages, 77 top-level spans, and in EVERY instance the tag's own
+   * properties reference (e.g. `/MC0`) resolves to `<< /Metadata ... >>` --
+   * InDesign's own provenance metadata for the placed object, never an
+   * `/MCID`. With no MCID, this content has no possible path into the
+   * structure tree via /ParentTree -- it LOOKS tagged (a real BDC/EMC
+   * wrapper exists) to any check that only verifies "is there an existing
+   * tag" (which is exactly why findUntaggedPathRuns's own "any existing
+   * BDC/BMC counts as already handled" design -- correct for every OTHER
+   * untagged-content shape this file checks -- silently misses it), but
+   * it's exactly as inaccessible as bare content. PAC correctly reports
+   * every path/text object inside it as "not tagged".
+   *
+   * Reported against 01-005, same checkpoint as the other genuinely-
+   * untagged-content shapes in this file -- PAC itself reports this shape
+   * identically to bare content, since the root cause (unreachable from
+   * the structure tree) is the same.
+   */
+  private validatePlacedPdfContent(parsedPdf: ParsedPDF): AuditIssue[] {
+    const issues: AuditIssue[] = [];
+    let pageCount: number;
+    try {
+      pageCount = parsedPdf.pdfLibDoc.getPageCount();
+    } catch (err) {
+      logger.debug(`[PDFStructureValidator] Could not read page count for /PlacedPDF check: ${err instanceof Error ? err.message : String(err)}`);
+      return issues;
+    }
+
+    for (let pageNumber = 1; pageNumber <= pageCount; pageNumber++) {
+      let content: string | null;
+      try {
+        content = decodePageContent(parsedPdf.pdfLibDoc, pageNumber);
+      } catch (err) {
+        logger.debug(`[PDFStructureValidator] Could not decode page ${pageNumber} for /PlacedPDF check: ${err instanceof Error ? err.message : String(err)}`);
+        continue;
+      }
+      if (!content) continue;
+
+      const spans = findPlacedPdfSpans(content);
+      if (spans.length === 0) continue;
+
+      issues.push(this.createIssue({
+        source: 'pdf-structure',
+        severity: 'serious',
+        code: 'PLACEDPDF-NOT-TAGGED',
+        message: `${spans.length} /PlacedPDF region(s) on this page carry no real MCID and are unreachable from the structure tree -- producer-authored placed artwork (Adobe InDesign) that was never given accessibility tagging`,
+        wcagCriteria: ['1.3.1'],
+        location: `Page ${pageNumber}`,
+        suggestion: 'Each region will be retagged as a real /Figure structure element, wired into the document flow; alt text follows via the normal missing-alt-text review.',
         category: 'structure',
         pageNumber,
         matterhornCheckpoint: '01-005',

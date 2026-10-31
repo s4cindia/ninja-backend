@@ -796,3 +796,114 @@ export function buildArtifactSplitEdits(
   });
   return { edits, mcids };
 }
+
+export interface PlacedPdfSpan {
+  /** Offset of the '/PlacedPDF' tag-name token itself -- the start of the whole "/PlacedPDF <properties> BDC" sequence to be replaced. */
+  tagStart: number;
+  /** Offset right after the matching BDC/BMC operator -- where the span's own content begins. */
+  contentStart: number;
+  /** Offset of the matching EMC operator that closes this span. */
+  closeOpStart: number;
+  /** Offset right after that matching EMC. */
+  closeOpEnd: number;
+}
+
+/**
+ * Finds every TOP-LEVEL `/PlacedPDF <properties> BDC … EMC` span -- Adobe
+ * InDesign's own non-standard marked-content tag for vector art "placed"
+ * into the layout from an external file (Illustrator logos, hand-drawn
+ * elements, diagrams). Confirmed live on Farrar_2E_Comp_188910.pdf: 56 of
+ * 124 pages, 77 top-level spans, and in EVERY instance the tag's own
+ * `/MC0`-style properties reference resolves to `<< /Metadata ... >>` --
+ * InDesign's own provenance metadata for the placed object, never an
+ * `/MCID`. With no MCID, this content has no possible connection to any
+ * structure element via /ParentTree -- it LOOKS tagged (a real BDC/EMC
+ * wrapper exists) to any check that only verifies "is there an existing
+ * tag" (which is why findUntaggedPathRuns's own "any existing BDC/BMC
+ * counts as already handled" design, correct for every OTHER shape this
+ * file handles, silently skips it), but it is exactly as inaccessible as
+ * if it had no tag at all -- PAC correctly reports every path/text object
+ * inside it as "not tagged".
+ *
+ * Only tracks TOP-level occurrences (depth 0) -- a /PlacedPDF nested
+ * inside another /PlacedPDF (seen live: some placed artwork embeds
+ * another placed object one level down) or inside a real tag is left
+ * alone; retagging the outer span already carries its descendants along
+ * as part of the new Figure's own marked-content range, nested tags and
+ * all, exactly as a real illustration's own decorative sub-regions should
+ * look.
+ */
+export function findPlacedPdfSpans(content: string): PlacedPdfSpan[] {
+  const tokens = tokenize(content);
+  const spans: PlacedPdfSpan[] = [];
+
+  let depth = 0;
+  let current: { tagStart: number; contentStart: number; sawAnyOp: boolean } | null = null;
+  const operands: Token[] = [];
+
+  for (let k = 0; k < tokens.length; k++) {
+    const tk = tokens[k];
+    if (tk.t !== 'op') { operands.push(tk); continue; }
+    const op = tk.v;
+    // The EMC that closes `current` itself is its own terminator, not
+    // content inside it -- only mark sawAnyOp for anything else (including
+    // a NESTED tag's own EMC, which does leave depth > 0 afterward).
+    if (current && !(op === 'EMC' && depth === 1)) current.sawAnyOp = true;
+
+    if (op === 'BDC' || op === 'BMC') {
+      const tagName = operands.length ? operands[0].v : '';
+      if (depth === 0 && tagName === '/PlacedPDF') {
+        current = { tagStart: operands[0].start, contentStart: tk.end, sawAnyOp: false };
+      }
+      depth++;
+      operands.length = 0;
+      continue;
+    }
+    if (op === 'EMC') {
+      depth = Math.max(0, depth - 1);
+      if (depth === 0 && current) {
+        if (current.sawAnyOp) {
+          spans.push({
+            tagStart: current.tagStart,
+            contentStart: current.contentStart,
+            closeOpStart: tk.start,
+            closeOpEnd: tk.end,
+          });
+        }
+        current = null;
+      }
+      operands.length = 0;
+      continue;
+    }
+    if (op === 'BI') {
+      // Inline image: skip the binary payload, same hazard/fix as every
+      // other function in this file.
+      const idm = /\bID\b/.exec(content.slice(tk.end));
+      const from = idm ? tk.end + idm.index + 2 : tk.end;
+      const eim = /\sEI\b/.exec(content.slice(from));
+      const eiEnd = eim ? from + eim.index + eim[0].length : content.length;
+      while (k + 1 < tokens.length && tokens[k + 1].start < eiEnd) k++;
+      operands.length = 0;
+      continue;
+    }
+    operands.length = 0;
+  }
+
+  return spans;
+}
+
+/**
+ * Builds the single content-stream edit that retags one PlacedPdfSpan: a
+ * plain replace of the whole "/PlacedPDF <properties> BDC" opening (the
+ * old provenance-only properties reference is simply dropped -- it carries
+ * no accessibility information) with "/Figure <</MCID n>> BDC". The span's
+ * own pre-existing closing EMC is never touched -- it already correctly
+ * closes whatever opens at tagStart, Figure included.
+ */
+export function buildPlacedPdfRetagEdit(span: PlacedPdfSpan, mcid: number): { offset: number; deleteThrough: number; text: string } {
+  return {
+    offset: span.tagStart,
+    deleteThrough: span.contentStart,
+    text: `/Figure <</MCID ${mcid}>> BDC `,
+  };
+}
