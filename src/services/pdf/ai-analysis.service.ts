@@ -3421,6 +3421,16 @@ class AiAnalysisService {
     const auditIssues = (auditReport.issues ?? []) as AuditIssue[];
     const elementById = new Map(auditIssues.map(i => [i.id, i.element ?? i.id]));
     const issueById = new Map(auditIssues.map(i => [i.id, i]));
+    // A suggestion's issueId is a per-audit sequential counter that gets
+    // reassigned whenever a re-audit replaces the audit report (see
+    // AiAnalysis.issueFingerprint's own schema comment) -- a suggestion
+    // approved against an older audit pass can carry an issueId that no
+    // longer exists in auditIssues even though the underlying finding (same
+    // page, same defect) still does, just under a new id. issueByFingerprint
+    // re-resolves the SAME real issue under its current id via the stable
+    // code+element/page identity buildIssueFingerprint already computes for
+    // suggestion dedup -- see resolveIssue below.
+    const issueByFingerprint = new Map(auditIssues.map(i => [buildIssueFingerprint(i), i]));
 
     // Build every missing Figure this approval run's alt-text suggestions
     // need FIRST, before any other batch below touches doc -- see
@@ -3634,12 +3644,26 @@ class AiAnalysisService {
       }, job.tenantId ?? undefined);
     };
 
+    // issueById.get(issueId) misses whenever this suggestion's issueId
+    // predates the job's most recent re-audit (see issueByFingerprint's own
+    // comment above) -- issueFingerprint re-resolves the same real finding
+    // under its current id before giving up and returning a bare
+    // {id: issueId} placeholder, which every structure-writer fix rejects
+    // immediately with "Issue has no pageNumber" since it carries no
+    // pageNumber/element at all. Confirmed live on Txy95HNmrAcanUAR0yctt: 9
+    // of 11 placedpdf-retag-fix/artifact-unwrap-complex-fix suggestions hit
+    // exactly this, all pre-dating the job's latest re-audit.
+    const resolveIssue = (id: string, fingerprint: string | null): AuditIssue =>
+      issueById.get(id)
+      ?? (fingerprint ? issueByFingerprint.get(fingerprint) : undefined)
+      ?? ({ id } as AuditIssue);
+
     // Extracted from the former single sequential loop so the same
     // per-suggestion dispatch body can be reused for both the sequential
     // document-global pass and the page-grouped concurrent color-contrast
     // pass below, unchanged either way.
     const applyOneSuggestion = async (analysis: (typeof approved)[number]): Promise<void> => {
-      const { suggestionType, value, issueId } = analysis;
+      const { suggestionType, value, issueId, issueFingerprint } = analysis;
 
       if (!value && !STRUCTURE_WRITER_TYPES.has(suggestionType)) {
         failed++;
@@ -3649,8 +3673,12 @@ class AiAnalysisService {
 
       try {
         let modification;
-        const elementId = elementById.get(issueId) ?? issueId;
-        const originalIssue = issueById.get(issueId) ?? ({ id: issueId } as AuditIssue);
+        const originalIssue = resolveIssue(issueId, issueFingerprint);
+        // Resolved the same way as originalIssue above -- a fingerprint-
+        // matched issue's own (current) element must be used here too, not
+        // elementById's lookup by the suggestion's stale issueId, which would
+        // miss for exactly the same reason originalIssue did.
+        const elementId = originalIssue.element ?? elementById.get(issueId) ?? issueId;
 
         if (suggestionType === 'heading-fix') {
           const results = pdfStructureWriterService.fixHeadingHierarchy(doc, [originalIssue]);
