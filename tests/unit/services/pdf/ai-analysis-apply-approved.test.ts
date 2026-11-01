@@ -762,6 +762,59 @@ describe('aiAnalysisService.applyApprovedSuggestions', () => {
     expect(result.failed).toBe(0);
   });
 
+  /**
+   * Regression: a suggestion's issueId is a per-audit sequential counter
+   * that gets reassigned whenever a re-audit replaces the audit report --
+   * a suggestion approved against an older audit pass can carry an issueId
+   * that no longer exists in the fresh auditReport.issues even though the
+   * underlying finding (same page, same defect) still does, just under a
+   * new id. Falling straight back to a bare {id: issueId} placeholder with
+   * no pageNumber made every structure-writer fix reject it immediately --
+   * confirmed live on Txy95HNmrAcanUAR0yctt (9 of 11 placedpdf-retag-fix/
+   * artifact-unwrap-complex-fix suggestions, all pre-dating the job's most
+   * recent re-audit, all failing with "Issue has no pageNumber"). This
+   * re-resolves the same real issue via issueFingerprint before giving up.
+   */
+  it('resolves a suggestion via issueFingerprint when its issueId no longer matches any issue in the fresh audit report', async () => {
+    const { buildIssueFingerprint } = await import('../../../../src/services/pdf/ai-analysis.service');
+    const freshIssue = {
+      id: 'fresh-id-42',
+      source: 'structure',
+      severity: 'serious',
+      code: 'PLACEDPDF-NOT-TAGGED',
+      message: 'unused in this test',
+      pageNumber: 7,
+      element: 'placedpdf_p7_x100_y200',
+    };
+    const fingerprint = buildIssueFingerprint(freshIssue as any);
+
+    vi.mocked(prisma.job.findUnique).mockResolvedValue({
+      id: 'job-1',
+      output: { fileName: 'doc.pdf', auditReport: { issues: [freshIssue] } },
+    } as any);
+    vi.mocked(prisma.aiAnalysis.findMany).mockResolvedValue([
+      { issueId: 'stale-id-999', issueFingerprint: fingerprint, suggestionType: 'placedpdf-retag-fix' },
+    ] as any);
+    vi.mocked(fileStorageService.getRemediatedFile).mockResolvedValue(Buffer.from('pdf'));
+    vi.mocked(pdfModifierService.loadPDF).mockResolvedValue({} as any);
+    vi.mocked(pdfModifierService.savePDF).mockResolvedValue(Buffer.from('modified-pdf'));
+    vi.mocked(fileStorageService.saveRemediatedFile).mockResolvedValue('s3://remediated/doc.pdf');
+
+    const { pdfStructureWriterService } = await import('../../../../src/services/pdf/pdf-structure-writer.service');
+    vi.mocked(pdfStructureWriterService.retagPlacedPdfAsFigure).mockReturnValue(
+      { issueId: 'stale-id-999', success: true, before: '/PlacedPDF content unreachable from the structure tree', after: 'retagged as /Figure' },
+    );
+
+    const result = await aiAnalysisService.applyApprovedSuggestions('job-1', 1, 'user-1', 'apply_all');
+
+    expect(pdfStructureWriterService.retagPlacedPdfAsFigure).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ id: 'fresh-id-42', pageNumber: 7, element: 'placedpdf_p7_x100_y200' }),
+    );
+    expect(result.applied).toBe(1);
+    expect(result.failed).toBe(0);
+  });
+
   it('does not call pdfComprehensiveParserService when no table-from-layout-fix suggestions are in the batch', async () => {
     vi.mocked(prisma.aiAnalysis.findMany).mockResolvedValue([
       { issueId: 'issue-1', suggestionType: 'alt-text', value: 'A red apple' },
