@@ -540,11 +540,22 @@ export class PdfContrastWriterService {
    *   is resolved TOGETHER, not one at a time. Falls back to the original
    *   single-issue locateTextRun call when omitted (single-suggestion
    *   apply endpoint, no batch to precompute from).
+   * @param backplateExclusionRects - a caller-owned, per-page array (top-
+   *   left-origin PDF points) this method APPENDS to whenever its own
+   *   backplate tier succeeds, and reads from on every call to exclude
+   *   earlier-in-this-batch backplates from this issue's own verification
+   *   sampling. Pass the SAME array reference across every same-page issue
+   *   in a batch (see ai-analysis.service.ts's color-contrast-fix dispatch)
+   *   -- omit only for a genuinely single, unbatched apply, where no sibling
+   *   backplate could exist yet. See verifyContrastInRegion's own
+   *   extraExcludeRects doc comment for the real, live-reproduced failure
+   *   this prevents.
    */
   async fixColorContrast(
     doc: PDFDocument,
     issue: AuditIssue,
     preResolvedMatches?: Map<string, TextRunMatch | null>,
+    backplateExclusionRects?: Array<{ x: number; y: number; width: number; height: number }>,
   ): Promise<FixResult> {
     const cd = issue.contrastData;
     if (!cd) {
@@ -597,7 +608,7 @@ export class PdfContrastWriterService {
     // had. Every existing success path, including the backplate tier's
     // own trueTextRgb-based color computation (PR #596), stays completely
     // unchanged and gets zero exposure to the sibling logic below.
-    const primaryResult = await this.fixOneRun(issue.id, doc, pageNumber, match, boundingBox, cd, before);
+    const primaryResult = await this.fixOneRun(issue.id, doc, pageNumber, match, boundingBox, cd, before, backplateExclusionRects);
 
     // A run located by POSITION isn't always the one that's actually
     // low-contrast. pdfjs's own text-item merging coalesces adjacent
@@ -695,7 +706,7 @@ export class PdfContrastWriterService {
         pageWidth: boundingBox.pageWidth,
         pageHeight: boundingBox.pageHeight,
       };
-      const result = await this.fixOneRun(issue.id, doc, pageNumber, sibling, siblingBoundingBox, cd, before);
+      const result = await this.fixOneRun(issue.id, doc, pageNumber, sibling, siblingBoundingBox, cd, before, backplateExclusionRects);
       if (!result.success) break; // this sibling's true color won't change by retrying — stop rather than looping
       fixedDescriptions.push(result.after);
     }
@@ -791,6 +802,7 @@ export class PdfContrastWriterService {
     boundingBox: NonNullable<AuditIssue['boundingBox']>,
     cd: NonNullable<AuditIssue['contrastData']>,
     before: string,
+    backplateExclusionRects?: Array<{ x: number; y: number; width: number; height: number }>,
   ): Promise<FixResult> {
     const content = decodePageContent(doc, pageNumber);
     if (content === null) {
@@ -830,7 +842,7 @@ export class PdfContrastWriterService {
       // concurrent contrast fixes on different pages).
       const buffer = await this.extractSinglePageBuffer(doc, pageNumber);
       if (!buffer) return null;
-      return verifyContrastInRegion(buffer, 1, boundingBox, cd.requiredRatio, cd.background);
+      return verifyContrastInRegion(buffer, 1, boundingBox, cd.requiredRatio, cd.background, backplateExclusionRects);
     };
 
     let appliedColor = computeCompliantColor(cd.foreground, cd.background, cd.requiredRatio).color;
@@ -956,6 +968,19 @@ export class PdfContrastWriterService {
             `[ContrastWriter] Backplate ${backplateColorHex} behind original text verified ` +
             `(${backplateVerification.ratio}:1) on page ${pageNumber}`
           );
+          // Register this backplate's real footprint (converted back to
+          // top-left-origin PDF points -- computeBackplateRect's own `rect`
+          // is bottom-left-origin, for the `re` operator it feeds) so a
+          // LATER same-page issue's own verification excludes it. See
+          // verifyContrastInRegion's extraExcludeRects doc comment.
+          if (backplateExclusionRects) {
+            backplateExclusionRects.push({
+              x: rect.x,
+              y: boundingBox.pageHeight - (rect.y + rect.height),
+              width: rect.width,
+              height: rect.height,
+            });
+          }
           return {
             issueId,
             success: true,
