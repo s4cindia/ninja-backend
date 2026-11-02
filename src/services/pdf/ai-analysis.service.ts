@@ -3602,6 +3602,18 @@ class AiAnalysisService {
     // for repeat contrast fixes.
     const pagesRewrittenSincePreResolve = new Set<number>();
 
+    // Per-page, cross-call accumulator of backplate footprints already
+    // drawn THIS batch -- passed by reference into every same-page
+    // color-contrast-fix dispatch below, so a later issue's own
+    // verification excludes an earlier issue's own backplate instead of
+    // sampling straight into it. See fixColorContrast's own
+    // backplateExclusionRects doc comment and verifyContrastInRegion's
+    // extraExcludeRects doc comment for the real, live-reproduced failure
+    // this prevents (6 real failures on one document, all "did not verify
+    // even after escalating to #000000" with suspiciously low measured
+    // ratios despite pure black text).
+    const backplateRectsByPage = new Map<number, Array<{ x: number; y: number; width: number; height: number }>>();
+
     // 'artifact-unwrap-complex-fix' and 'placedpdf-retag-fix' both dispatch
     // with no `value` (deterministic, rule-based, apply-to-pdf fixes -- see
     // their own dispatchIssue branches above) and were missing from this
@@ -3836,7 +3848,15 @@ class AiAnalysisService {
           if (originalIssue.pageNumber !== undefined && pagesRewrittenSincePreResolve.has(originalIssue.pageNumber)) {
             preResolvedContrastMatches = resolveColorContrastTargets(doc, colorContrastIssues);
           }
-          const result = await pdfContrastWriterService.fixColorContrast(doc, originalIssue, preResolvedContrastMatches);
+          let backplateExclusionRects: Array<{ x: number; y: number; width: number; height: number }> | undefined;
+          if (originalIssue.pageNumber !== undefined) {
+            backplateExclusionRects = backplateRectsByPage.get(originalIssue.pageNumber);
+            if (!backplateExclusionRects) {
+              backplateExclusionRects = [];
+              backplateRectsByPage.set(originalIssue.pageNumber, backplateExclusionRects);
+            }
+          }
+          const result = await pdfContrastWriterService.fixColorContrast(doc, originalIssue, preResolvedContrastMatches, backplateExclusionRects);
           modification = { success: result.success, description: result.after, error: result.error };
           if (result.success && originalIssue.pageNumber !== undefined) {
             pagesRewrittenSincePreResolve.add(originalIssue.pageNumber);

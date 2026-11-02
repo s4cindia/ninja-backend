@@ -56,13 +56,28 @@ export interface ContrastVerificationResult {
  * originally-detected `contrastData.background`), disambiguates which of
  * several equally-flat nearby candidates is the text's actual background —
  * see sampleBackgroundRobust for why flatness alone isn't sufficient.
+ *
+ * `extraExcludeRects`, when passed, are additional regions (top-left-origin,
+ * unscaled PDF points — the same convention as `boundingBox`) to exclude
+ * from background-candidate sampling, same purpose as `otherTextBoxes`
+ * below but for regions `otherTextBoxes` can't see: a backplate rectangle
+ * an EARLIER color-contrast-fix in this same batch already drew on this
+ * page. A backplate is a filled `re`/`f` rectangle, never a text-rendering
+ * operator, so it never appears in `page.getTextContent()` and is
+ * otherwise invisible to this function — without this, a later same-page
+ * issue's own verification can sample straight into an earlier fix's own
+ * backplate, reading a flat, low-variance (so never flagged `uncertain`)
+ * but meaningless ratio. Confirmed live: 6 real color-contrast-fix
+ * failures on one document, all "did not verify even after escalating to
+ * #000000" with suspiciously low measured ratios despite pure black text.
  */
 export async function verifyContrastInRegion(
   buffer: Buffer,
   pageNumber: number,
   boundingBox: { x: number; y: number; width: number; height: number },
   requiredRatio: number,
-  expectedBackgroundHex?: string
+  expectedBackgroundHex?: string,
+  extraExcludeRects?: Array<{ x: number; y: number; width: number; height: number }>
 ): Promise<ContrastVerificationResult | null> {
   let pdfjsDoc: pdfjsLib.PDFDocumentProxy | null = null;
   try {
@@ -119,6 +134,20 @@ export async function verifyContrastInRegion(
     } catch {
       // Non-fatal -- falls back to the pre-existing behavior (no exclusion)
       // if text content can't be extracted for this page.
+    }
+
+    // Same canvas-space conversion as boundingBox itself above, applied to
+    // each caller-supplied region -- see extraExcludeRects's own doc
+    // comment on why these exist alongside otherTextBoxes rather than
+    // folding into it.
+    if (extraExcludeRects) {
+      for (const r of extraExcludeRects) {
+        const rx = Math.round(r.x * RENDER_SCALE);
+        const ry = Math.round(r.y * RENDER_SCALE);
+        const rw = Math.round(r.width * RENDER_SCALE);
+        const rh = Math.round(r.height * RENDER_SCALE);
+        otherTextBoxes.push({ x: rx, y: ry, w: rw, h: rh });
+      }
     }
 
     const expectedBackground = expectedBackgroundHex ? pdfContrastValidator.hexToRgb(expectedBackgroundHex) : undefined;

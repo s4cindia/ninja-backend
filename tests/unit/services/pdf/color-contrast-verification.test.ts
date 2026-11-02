@@ -167,6 +167,32 @@ describe('verifyContrastInRegion', () => {
     expect(result!.passes).toBe(false); // but it's the wrong surface, so the ratio is wrong too
   });
 
+  it('regression: extraExcludeRects fixes the exact contamination the previous test shows happens without it -- an earlier color-contrast-fix\'s own backplate on this page must not contaminate a later issue\'s verification (confirmed live: 6 real failures on one document, all "did not verify even after escalating to #000000" with suspiciously low measured ratios)', async () => {
+    // Identical fixture to the test immediately above -- a dark rect
+    // directly over the text, standing in for an EARLIER color-contrast-
+    // fix's own successful backplate on this same page/batch.
+    const src = await PDFDocument.create();
+    const page = src.addPage([400, 600]);
+    page.drawRectangle({ x: 95, y: 460, width: 200, height: 10, color: rgb(0.1, 0.1, 0.1) });
+    page.drawText('Low contrast text', { x: 100, y: 450, size: 14, color: rgb(0, 0, 0) });
+    const buffer = Buffer.from(await src.save());
+
+    // Without exclusion: contaminated by the rect, same wrong result as above.
+    const contaminated = await verifyContrastInRegion(buffer, 1, BOUNDING_BOX, 4.5);
+    expect(contaminated!.passes).toBe(false);
+
+    // The rect's own top-left-origin PDF-point footprint (page is 600pt
+    // tall; pdf-lib's drawRectangle y=460 is the BOTTOM-LEFT-origin bottom
+    // edge, so the top-left-origin top edge is 600 - (460 + 10) = 130).
+    const backplateRect = { x: 95, y: 600 - (460 + 10), width: 200, height: 10 };
+    const excluded = await verifyContrastInRegion(buffer, 1, BOUNDING_BOX, 4.5, undefined, [backplateRect]);
+
+    expect(excluded).toBeTruthy();
+    expect(excluded!.uncertain).toBe(false);
+    expect(excluded!.passes).toBe(true);
+    expect(excluded!.ratio).toBeGreaterThan(15); // true black on the real white page background, not the rect
+  });
+
   it('KNOWN LIMITATION: a static fill that also fools detection defeats the hint too, since the hint comes from that same fooled detection', async () => {
     // Found via an independent `codex exec review` pass on this PR: the
     // hint is only as good as `cd.background`, which for a *static* page
