@@ -2272,6 +2272,13 @@ model AiAnalysis {
   /// finding actually changed (new issueFingerprint/suggestionType/value),
   /// since that's a genuinely different attempt at a different thing.
   failedAttempts       Int      @default(0)
+  /// The most recent apply-failure reason text (same string recordApplyFailure
+  /// already logs and pushes into a cycle event's capped applyErrorsJson) --
+  /// gives per-issue failure reasons a durable home outside that 50-entry cap,
+  /// so the Apply Failure Report aggregation can group a job's full set of
+  /// failures by (suggestionType, reason) instead of only the last cycle's
+  /// first 50. Null for rows that have never failed, or predate this column.
+  lastErrorReason      String?  @db.Text
   requiresManualReview Boolean  @default(false)
   /// 'operator' | 'auto-mode' -- who/what set status to 'approved'. Null for
   /// rows never approved (still pending/rejected) or predating this column.

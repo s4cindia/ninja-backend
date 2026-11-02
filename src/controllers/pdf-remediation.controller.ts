@@ -25,6 +25,7 @@ import {
 } from '../services/comparison';
 import { remediationCycleLockService } from '../services/pdf/remediation-cycle-lock.service';
 import { remediationCycleHistoryService } from '../services/pdf/remediation-cycle-history.service';
+import { classifyApplyFailureReason } from '../services/pdf/apply-failure-classification';
 
 const comparisonService = new ComparisonService(prisma);
 
@@ -1611,6 +1612,113 @@ export class PdfRemediationController {
         error: {
           code: 'INTERNAL_SERVER_ERROR',
           message: 'Failed to fetch remediation history',
+          details: null,
+        },
+      });
+    }
+  }
+
+  /**
+   * Groups a job's permanently-failed AiAnalysis suggestions by
+   * (suggestionType, reason), classifying each group so an operator can see
+   * WHY a batch of fixes failed without pulling raw JSON from the
+   * remediation-cycle-history endpoint by hand. Pivots over
+   * AiAnalysis.lastErrorReason directly (not applyErrorsJson), so this
+   * reflects a job's FULL failure history, not just whichever single cycle
+   * event happened to be captured (and capped at 50 entries).
+   * GET /api/v1/pdf/:jobId/remediation/apply-failures
+   */
+  async getApplyFailureReport(req: AuthenticatedRequest, res: Response): Promise<Response> {
+    try {
+      const { jobId } = req.params;
+      const tenantId = req.user?.tenantId;
+
+      if (!tenantId) {
+        return res.status(401).json({
+          success: false,
+          data: {},
+          error: { code: 'UNAUTHORIZED', message: 'Authentication required', details: null },
+        });
+      }
+
+      const job = await prisma.job.findFirst({ where: { id: jobId, tenantId } });
+      if (!job) {
+        return res.status(404).json({
+          success: false,
+          data: {},
+          error: { code: 'JOB_NOT_FOUND', message: 'Job not found or access denied', details: null },
+        });
+      }
+
+      const failures = await prisma.aiAnalysis.findMany({
+        where: { jobId, status: 'failed' },
+        select: { issueId: true, suggestionType: true, lastErrorReason: true },
+      });
+
+      interface FailureGroup {
+        suggestionType: string;
+        reason: string;
+        issueIds: string[];
+      }
+      const groupsByKey = new Map<string, FailureGroup>();
+      for (const failure of failures) {
+        // lastErrorReason is only null for rows that failed before this
+        // column existed -- grouped together rather than dropped, so an
+        // older job's failures still show up in the report (just without a
+        // specific reason to classify).
+        const reason = failure.lastErrorReason ?? 'Unknown error (failed before failure reasons were recorded)';
+        const key = `${failure.suggestionType}\u0000${reason}`;
+        const existing = groupsByKey.get(key);
+        if (existing) {
+          existing.issueIds.push(failure.issueId);
+        } else {
+          groupsByKey.set(key, { suggestionType: failure.suggestionType, reason, issueIds: [failure.issueId] });
+        }
+      }
+
+      // Surfaces the groups most worth an operator's attention first:
+      // genuine unknowns, then probably-stale, then correctly-declined
+      // (lowest priority -- working as intended, nothing to act on).
+      const CATEGORY_PRIORITY: Record<string, number> = {
+        needs_investigation: 0,
+        likely_resolved: 1,
+        correctly_skipped: 2,
+      };
+      const groups = [...groupsByKey.values()]
+        .map((group) => {
+          const classification = classifyApplyFailureReason(group.reason);
+          return {
+            suggestionType: group.suggestionType,
+            reason: group.reason,
+            category: classification.category,
+            categoryLabel: classification.categoryLabel,
+            explanation: classification.explanation,
+            count: group.issueIds.length,
+            issueIds: group.issueIds,
+          };
+        })
+        .sort((a, b) => {
+          const categoryDiff = (CATEGORY_PRIORITY[a.category] ?? 99) - (CATEGORY_PRIORITY[b.category] ?? 99);
+          return categoryDiff !== 0 ? categoryDiff : b.count - a.count;
+        });
+
+      return res.status(200).json({
+        success: true,
+        data: { totalFailed: failures.length, groups },
+        error: { code: null, message: null, details: null },
+      });
+    } catch (error) {
+      logger.error('Failed to fetch apply failure report', {
+        error: error instanceof Error ? error.message : 'Unknown error',
+        jobId: req.params.jobId,
+      });
+
+      return res.status(500).json({
+        success: false,
+        data: {},
+        error: {
+          code: 'INTERNAL_SERVER_ERROR',
+          message: 'Failed to fetch apply failure report',
           details: null,
         },
       });

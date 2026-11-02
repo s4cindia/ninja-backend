@@ -216,4 +216,20 @@ router.get(
   (req, res) => pdfRemediationController.getRemediationHistory(req, res)
 );
 
+/**
+ * GET /api/v1/pdf/:jobId/remediation/apply-failures
+ * Groups the job's permanently-failed AI suggestions by (suggestionType,
+ * reason), classified into an operator-facing category + plain-English
+ * explanation -- the Apply Failure Report.
+ *
+ * @param jobId - PDF audit job ID
+ * @returns { totalFailed, groups: [{ suggestionType, reason, category, categoryLabel, explanation, count, issueIds }] }
+ */
+router.get(
+  '/:jobId/remediation/apply-failures',
+  authenticate,
+  authorizeJobForReview,
+  (req, res) => pdfRemediationController.getApplyFailureReport(req, res)
+);
+
 export default router;
