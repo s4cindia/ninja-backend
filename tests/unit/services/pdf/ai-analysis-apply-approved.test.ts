@@ -951,7 +951,11 @@ describe('aiAnalysisService.applyApprovedSuggestions', () => {
 
       expect(prisma.aiAnalysis.update).toHaveBeenCalledWith({
         where: { jobId_issueId: { jobId: 'job-1', issueId: 'issue-1' } },
-        data: { failedAttempts: 1, updatedAt: expect.any(Date) },
+        data: {
+          failedAttempts: 1,
+          lastErrorReason: 'The PDF structure tree has no Figure elements',
+          updatedAt: expect.any(Date),
+        },
       });
     });
 
@@ -971,11 +975,16 @@ describe('aiAnalysisService.applyApprovedSuggestions', () => {
 
       expect(prisma.aiAnalysis.update).toHaveBeenCalledWith({
         where: { jobId_issueId: { jobId: 'job-1', issueId: 'issue-1' } },
-        data: { failedAttempts: 2, status: 'failed', updatedAt: expect.any(Date) },
+        data: {
+          failedAttempts: 2,
+          lastErrorReason: 'The PDF structure tree has no Figure elements',
+          status: 'failed',
+          updatedAt: expect.any(Date),
+        },
       });
     });
 
-    it('counts a thrown error toward the same retry cap as a modification.success:false result', async () => {
+    it('counts a thrown error toward the same retry cap as a modification.success:false result, and records its message as lastErrorReason', async () => {
       vi.mocked(prisma.aiAnalysis.findMany).mockResolvedValue([
         { issueId: 'issue-1', suggestionType: 'alt-text', value: 'A red apple', failedAttempts: 1 },
       ] as any);
@@ -988,7 +997,12 @@ describe('aiAnalysisService.applyApprovedSuggestions', () => {
 
       expect(prisma.aiAnalysis.update).toHaveBeenCalledWith({
         where: { jobId_issueId: { jobId: 'job-1', issueId: 'issue-1' } },
-        data: { failedAttempts: 2, status: 'failed', updatedAt: expect.any(Date) },
+        data: {
+          failedAttempts: 2,
+          lastErrorReason: 'unexpected crash',
+          status: 'failed',
+          updatedAt: expect.any(Date),
+        },
       });
     });
   });

@@ -3898,14 +3898,14 @@ class AiAnalysisService {
           const reason = modification.error ?? 'Unknown error';
           errors.push({ issueId, suggestionType, reason });
           logger.warn(`[AiAnalysis] applyApprovedSuggestions: failed to apply ${suggestionType} for ${issueId}: ${reason}`);
-          await this.recordApplyFailure(jobId, issueId, analysis.failedAttempts);
+          await this.recordApplyFailure(jobId, issueId, analysis.failedAttempts, reason);
         }
       } catch (err) {
         failed++;
         const reason = err instanceof Error ? err.message : String(err);
         errors.push({ issueId: analysis.issueId, suggestionType, reason });
         logger.warn(`[AiAnalysis] applyApprovedSuggestions: error for ${analysis.issueId}: ${reason}`);
-        await this.recordApplyFailure(jobId, analysis.issueId, analysis.failedAttempts);
+        await this.recordApplyFailure(jobId, analysis.issueId, analysis.failedAttempts, reason);
       }
 
       broadcastApplyProgress();
@@ -4059,13 +4059,20 @@ class AiAnalysisService {
    * ~190 suggestion IDs failed with the identical error message in all 3
    * rounds). Below the cap, status is left untouched (still 'approved'), so
    * it gets one more real attempt next round.
+   *
+   * Also persists `reason` to lastErrorReason -- the same text already
+   * pushed into this cycle event's capped applyErrorsJson (errors.push
+   * above), but given a durable, per-row home so the Apply Failure Report
+   * can aggregate a job's full failure history, not just its most
+   * recent round's first 50.
    */
-  private async recordApplyFailure(jobId: string, issueId: string, currentFailedAttempts: number): Promise<void> {
+  private async recordApplyFailure(jobId: string, issueId: string, currentFailedAttempts: number, reason: string): Promise<void> {
     const failedAttempts = currentFailedAttempts + 1;
     await prisma.aiAnalysis.update({
       where: { jobId_issueId: { jobId, issueId } },
       data: {
         failedAttempts,
+        lastErrorReason: reason,
         ...(failedAttempts >= AiAnalysisService.MAX_APPLY_ATTEMPTS && { status: 'failed' }),
         updatedAt: new Date(),
       },
