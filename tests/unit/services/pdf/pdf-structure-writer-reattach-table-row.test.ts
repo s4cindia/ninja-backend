@@ -310,7 +310,56 @@ describe('PdfStructureWriterService.reattachTableRow', () => {
     expect(results[0].error).toContain('different document-flow parents');
   });
 
-  it('declines the document-flow fallback when the row already has a /P from a previous attempt, rather than trusting or guessing at it', async () => {
+  // Real, confirmed-live scar tissue: the ORIGINAL (pre-#746) version of
+  // this fix set a row's own /P to a document-flow parent without ever
+  // completing the matching /K splice -- a real "half-made link from a
+  // previous partial write" (this method's own doc comment above). Note
+  // this orphan is genuinely NOT in flowParentRef's own /K: if it were, the
+  // method's earlier top-down `reachable` check would already report it
+  // "already attached" before ever reaching this logic at all -- the real
+  // validator that generates this fix's suggestions only ever fires on
+  // rows reachability itself still finds orphaned, matching this shape
+  // exactly, not the fully-spliced one. A /TR's only ever-legitimate /P is
+  // a /Table-family ancestor, so a /P resolving to a NON-table-family type
+  // (like this flow parent's own /S: /Document) is confirmed to be exactly
+  // that legacy signature -- safe to clear and repair, not guess at.
+  it('auto-repairs the known legacy signature in the document-flow fallback: a pre-#746 /P pointing at a document-flow parent (with no matching /K entry -- the orphan is still genuinely unreachable) is cleared, and the row correctly reattached via a new wrapper /Table', async () => {
+    const doc = await PDFDocument.create();
+    const page = doc.addPage([612, 792]);
+    page.node.set(PDFName.of('StructParents'), doc.context.obj(0));
+
+    const leftRef = doc.context.register(doc.context.obj({ Type: PDFName.of('StructElem'), S: PDFName.of('H6'), Pg: page.ref, K: 0 }));
+    const orphan = makeRow(doc, page.ref, 1);
+    const rightRef = doc.context.register(doc.context.obj({ Type: PDFName.of('StructElem'), S: PDFName.of('P'), Pg: page.ref, K: 2 }));
+
+    const flowParentRef = doc.context.register(
+      doc.context.obj({ Type: PDFName.of('StructElem'), S: PDFName.of('Document'), K: [leftRef, rightRef] }),
+    );
+    doc.context.lookup(leftRef, PDFDict).set(PDFName.of('P'), flowParentRef);
+    doc.context.lookup(rightRef, PDFDict).set(PDFName.of('P'), flowParentRef);
+    doc.context.lookup(orphan.trRef, PDFDict).set(PDFName.of('P'), flowParentRef);
+
+    const structTreeRootRef = doc.context.register(doc.context.obj({ Type: PDFName.of('StructTreeRoot'), K: [flowParentRef] }));
+    doc.catalog.set(PDFName.of('StructTreeRoot'), structTreeRootRef);
+    setFlatParentTree(doc, structTreeRootRef, [leftRef, orphan.cellRef, rightRef]);
+
+    const results = pdfStructureWriterService.reattachTableRow(doc, [issueFor('tablerow_p1_mc1')]);
+
+    expect(results[0].success).toBe(true);
+    expect(results[0].after).toContain('new single-row /Table wrapper');
+
+    // removeFromKids on a parent that never actually listed this row is a
+    // harmless no-op -- the flow parent's real kids are untouched apart
+    // from gaining the new wrapper.
+    const wrapperRef = findTableKid(doc, flowParentRef);
+    const kidRefs = kidsOf(doc, flowParentRef).map(k => (k instanceof PDFRef ? k.objectNumber : null));
+    expect(kidRefs).toEqual([leftRef.objectNumber, wrapperRef.objectNumber, rightRef.objectNumber]);
+    expect(kidsOf(doc, wrapperRef)).toEqual([orphan.trRef]);
+    const trDict = doc.context.lookup(orphan.trRef, PDFDict);
+    expect(trDict.get(PDFName.of('P'))?.toString()).toBe(wrapperRef.toString());
+  });
+
+  it('still declines the document-flow fallback when the row\'s existing /P resolves to an unexpected shape the legacy-signature check can\'t confirm (e.g. the dict itself can\'t be resolved), rather than guessing', async () => {
     const doc = await PDFDocument.create();
     const page = doc.addPage([612, 792]);
     page.node.set(PDFName.of('StructParents'), doc.context.obj(0));
@@ -325,12 +374,12 @@ describe('PdfStructureWriterService.reattachTableRow', () => {
     doc.context.lookup(leftRef, PDFDict).set(PDFName.of('P'), flowParentRef);
     doc.context.lookup(rightRef, PDFDict).set(PDFName.of('P'), flowParentRef);
 
-    // Even a /P that DOES match the determined flow parent (e.g. a leftover
-    // link from this fix's own earlier, since-corrected bare-/TR-in-flow
-    // design) is never trusted here -- a /TR's only ever-valid /P is a
-    // /Table-family ancestor, so any pre-existing /P is either a genuine
-    // first attempt (shouldn't exist yet) or a known-bad shape.
-    doc.context.lookup(orphan.trRef, PDFDict).set(PDFName.of('P'), flowParentRef);
+    // Points at a real, registered dict with no /S at all -- the type
+    // check can't positively confirm the legacy non-table-family
+    // signature (existingParentType comes back undefined). Must still
+    // decline rather than treat "can't tell" as "safe to repair".
+    const typelessRef = doc.context.register(doc.context.obj({ Pg: page.ref }));
+    doc.context.lookup(orphan.trRef, PDFDict).set(PDFName.of('P'), typelessRef);
 
     const structTreeRootRef = doc.context.register(doc.context.obj({ Type: PDFName.of('StructTreeRoot'), K: [flowParentRef] }));
     doc.catalog.set(PDFName.of('StructTreeRoot'), structTreeRootRef);
@@ -381,15 +430,38 @@ describe('PdfStructureWriterService.reattachTableRow', () => {
     expect(results[0].error).toContain('not have ascending MCIDs');
   });
 
-  it('declines when the row already has a /P that does not match its own natural reattachment point', async () => {
+  it('declines when the row already has a /P naming a DIFFERENT real /Table-family element, rather than guessing whether moving it is correct', async () => {
     const { doc, orphanTrRef } = await buildDoc({ siblingMcids: [0, 1], orphanMcid: 3 });
-    const wrongParent = doc.context.register(doc.context.obj({ Type: PDFName.of('StructElem'), S: PDFName.of('Document'), K: [] }));
+    // A genuine, different /Table -- not the legacy bug's signature (that's
+    // always a NON-table-family type, see TABLE_FAMILY_TYPES' own doc
+    // comment) -- so this must still decline: moving a row between two
+    // real tables is a real structural judgment call, not an auto-repair.
+    const wrongParent = doc.context.register(doc.context.obj({ Type: PDFName.of('StructElem'), S: PDFName.of('Table'), K: [] }));
     doc.context.lookup(orphanTrRef, PDFDict).set(PDFName.of('P'), wrongParent);
 
     const results = pdfStructureWriterService.reattachTableRow(doc, [issueFor('tablerow_p1_mc3')]);
 
     expect(results[0].success).toBe(false);
     expect(results[0].error).toContain('does not match this row\'s own natural reattachment point');
+  });
+
+  it('auto-repairs the known legacy signature in the normal table-found path too: a pre-#746 /P pointing at a document-flow (non-table-family) parent is cleared and the row is reattached into its real table', async () => {
+    const { doc, tableRef, orphanTrRef } = await buildDoc({ siblingMcids: [0, 1], orphanMcid: 3 });
+    // The "half-made link" shape this branch's own doc comment describes --
+    // a stale /P with no corresponding /K back-reference anywhere (unlike
+    // the document-flow fallback's fuller legacy shape), confirmed by its
+    // own /S being NON-table-family.
+    const staleParent = doc.context.register(doc.context.obj({ Type: PDFName.of('StructElem'), S: PDFName.of('Document'), K: [] }));
+    doc.context.lookup(orphanTrRef, PDFDict).set(PDFName.of('P'), staleParent);
+
+    const results = pdfStructureWriterService.reattachTableRow(doc, [issueFor('tablerow_p1_mc3')]);
+
+    expect(results[0].success).toBe(true);
+    const kids = kidsOf(doc, tableRef);
+    const idx = kids.findIndex(k => k instanceof PDFRef && k.objectNumber === orphanTrRef.objectNumber);
+    expect(idx).toBe(2); // after the two rows with mcid 0, 1
+    const trDict = doc.context.lookup(orphanTrRef, PDFDict);
+    expect(trDict.get(PDFName.of('P'))?.toString()).toBe(tableRef.toString());
   });
 
   it('fails cleanly when the element id does not match the expected format', async () => {

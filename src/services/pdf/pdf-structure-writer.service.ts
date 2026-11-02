@@ -5661,6 +5661,19 @@ export class PdfStructureWriterService {
   reattachTableRow(doc: PDFDocument, issues: AuditIssue[]): FixResult[] {
     const results: FixResult[] = [];
 
+    // A /TR can only ever legitimately have one of these as its /P (PDF/UA
+    // requires every /TR to sit inside a /Table or THead/TBody/TFoot
+    // ancestor, never bare in document flow -- see both "declining rather
+    // than guessing" bail-outs below). Used to recognize the ONE specific,
+    // now-identified legacy shape safe to auto-repair: the original, pre-
+    // #746 version of this fix spliced orphaned rows straight into a
+    // document-flow parent's own /K (a real PAC-caught bug, fixed going
+    // forward by #746, but never cleaned up on documents that already had
+    // the bad /P written). A /P that resolves to one of THESE types instead
+    // is some other, genuinely different /Table-family element -- not this
+    // bug's signature -- and still correctly declines.
+    const TABLE_FAMILY_TYPES = new Set(['Table', 'THead', 'TBody', 'TFoot']);
+
     const structRoot = this.getStructTreeRoot(doc);
     if (!structRoot) {
       return issues.map(issue => ({ issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error: 'No /StructTreeRoot found' }));
@@ -5846,17 +5859,23 @@ export class PdfStructureWriterService {
           // positional /Table path below, an orphan's own pre-existing /P
           // is never trustworthy here: it's either unset (a genuine first
           // attempt) or a leftover bare-document-flow link from before this
-          // fix existed (exactly the invalid shape being corrected). Decline
-          // rather than guess at either, matching every other reattach*
-          // method's "unexpected existing /P" bail-out in this file -- a
-          // leftover bad link needs the document re-run through audit from
-          // scratch, not a patch here, since the audit's own disconnection
-          // check (reachability-only, same blind spot this fix's own doc
-          // comment above describes) would never have re-flagged it.
+          // fix existed (exactly the invalid shape being corrected). A /P
+          // whose own /S resolves to a NON-table-family type is confirmed
+          // to be exactly that legacy signature -- see TABLE_FAMILY_TYPES'
+          // own doc comment above -- so it's safe to clear (removeFromKids
+          // from its stale parent) and proceed below as if unset, rather
+          // than leaving the document permanently stuck. Anything else
+          // (unresolvable, or a genuine /Table-family /P) still declines,
+          // matching every other reattach* method's "unexpected existing
+          // /P" bail-out in this file.
           const existingFlowP = trDict?.get(PDFName.of('P'));
           if (existingFlowP instanceof PDFRef) {
-            results.push({ issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error: 'Row already has a /P from a previous attempt -- declining rather than guessing whether it\'s safe to replace' });
-            continue;
+            const existingParentType = doc.context.lookup(existingFlowP, PDFDict)?.get(PDFName.of('S'))?.toString().replace(/^\//, '');
+            if (!existingParentType || TABLE_FAMILY_TYPES.has(existingParentType)) {
+              results.push({ issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error: 'Row already has a /P from a previous attempt -- declining rather than guessing whether it\'s safe to replace' });
+              continue;
+            }
+            this.removeFromKids(doc, existingFlowP, trRef);
           }
 
           const pageRef = doc.getPages()[pageNumber - 1]?.ref;
@@ -5919,11 +5938,21 @@ export class PdfStructureWriterService {
         // trust it when it already names this SAME determined table,
         // otherwise decline rather than silently overwrite an unexpected
         // existing value, same convention as every other reattach* method
-        // in this file.
+        // in this file. One exception: a /P whose own /S is NOT
+        // table-family is the same confirmed legacy signature as the
+        // document-flow fallback above (see TABLE_FAMILY_TYPES' own doc
+        // comment) -- safe to clear and proceed. A /P naming some OTHER
+        // real /Table-family element still declines: moving a row between
+        // two genuinely different tables is a real structural judgment
+        // call this method should not make on its own.
         const existingP = trDict?.get(PDFName.of('P'));
         if (existingP instanceof PDFRef && existingP.objectNumber !== tableRef.objectNumber) {
-          results.push({ issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error: 'Row already has a /P, but it does not match this row\'s own natural reattachment point -- declining rather than guessing' });
-          continue;
+          const existingParentType = doc.context.lookup(existingP, PDFDict)?.get(PDFName.of('S'))?.toString().replace(/^\//, '');
+          if (!existingParentType || TABLE_FAMILY_TYPES.has(existingParentType)) {
+            results.push({ issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error: 'Row already has a /P, but it does not match this row\'s own natural reattachment point -- declining rather than guessing' });
+            continue;
+          }
+          this.removeFromKids(doc, existingP, trRef);
         }
 
         let afterRef: PDFRef | null = null;
