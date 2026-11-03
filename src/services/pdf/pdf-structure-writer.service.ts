@@ -5512,6 +5512,19 @@ export class PdfStructureWriterService {
           results.push({ issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error: `Natural reattachment point is /${containerType}, not /TR -- declining rather than guessing` });
           continue;
         }
+        // Same check the "already linked" branch above already applies
+        // before declaring success (:5491) -- this fresh-write branch was
+        // missing it, letting it commit a cell<->/TR mutual link that LOOKS
+        // internally consistent while the /TR itself is an orphaned island
+        // never reachable from /StructTreeRoot. Confirmed live: exactly this
+        // shape produced 5 real "Cell's /P and that parent's own /K
+        // reference each other, but the parent itself is not reachable"
+        // failures on Farrar, reported by the OTHER branch -- this one
+        // never caught its own version of the same defect before writing.
+        if (!this.isReachableFromRoot(doc, finalContainerRef)) {
+          results.push({ issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error: 'Natural reattachment point (/TR) is itself not reachable from the structure tree root -- declining rather than reporting a false success' });
+          continue;
+        }
         const containerK = containerDict?.get(PDFName.of('K'));
         if (!(containerK instanceof PDFArray)) {
           results.push({ issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error: 'Container (/TR) /K is not an array' });

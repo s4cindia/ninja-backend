@@ -206,6 +206,33 @@ describe('PdfStructureWriterService.reattachTableCell', () => {
     expect(results[0].error).toContain('not reachable from the structure tree root');
   });
 
+  // Real-world incident, confirmed live on Farrar_2E_Comp_188910.pdf: the
+  // "already linked" branch above (see the idempotency-short-circuit test)
+  // already guards against an unreachable parent before declaring success
+  // -- this FRESH-WRITE branch (a disconnected cell with no /P of its own
+  // yet) had no such guard, letting it commit a mutual cell<->/TR link and
+  // report success even when the /TR itself is an orphaned island never
+  // linked back to /StructTreeRoot. 5 real cells hit exactly this shape.
+  it('declines a fresh reattachment when the row\'s own natural container (/TR) is itself not reachable from the structure tree root, rather than writing a false success', async () => {
+    const { doc, trRef, cellRefs } = await buildDoc({ connected: false, cellMcid: 1, numColumns: 3 });
+
+    // Sever the /TR's path to the root -- StructTreeRoot's own /K no longer
+    // reaches the /Document that owns this /TR (the /TR's own /K -> cells
+    // link stays intact; only the ancestor chain above it is cut).
+    const structRoot = doc.context.lookup(doc.catalog.get(PDFName.of('StructTreeRoot')), PDFDict);
+    structRoot.set(PDFName.of('K'), doc.context.obj([]));
+
+    const results = pdfStructureWriterService.reattachTableCell(doc, [issueFor('tablecell_p1_mc1')]);
+
+    expect(results[0].success).toBe(false);
+    expect(results[0].error).toContain('not reachable from the structure tree root');
+    // Must decline BEFORE writing, not after -- a real regression this
+    // guard specifically prevents (committing the link, then reporting
+    // failure, would leave the bad mutation live anyway).
+    expect(doc.context.lookup(cellRefs[1], PDFDict).get(PDFName.of('P'))).toBeUndefined();
+    expect(kidsOf(doc, trRef)).toHaveLength(2); // unchanged -- the other two connected columns only
+  });
+
   it('declines when the row\'s existing cells\' own MCIDs are not in ascending order, rather than trusting a positional match blindly', async () => {
     const doc = await PDFDocument.create();
     const page = doc.addPage([612, 792]);
