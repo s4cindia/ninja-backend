@@ -9,6 +9,20 @@ name: Deploy Backend to Staging
   # AXES4_QUOTA_*), since nothing about those changes the committed source.
   workflow_dispatch: {}
 
+# Two commits pushed close together each call `aws ecs update-service`;
+# the second call supersedes the first's in-flight deployment, and the
+# Deploy to Amazon ECS action polling the FIRST deployment's id then finds
+# it "not found after stabilization" -- reported as a circuit-breaker
+# rollback, but actually just a newer deploy superseding a stale tracking
+# id. Confirmed: 3 real occurrences (PR #751, #752, #754, each merged
+# within seconds of a sibling PR) all hit this identical failure, while
+# whichever run happened to finish LAST each time (by commit order or
+# not) succeeded. cancel-in-progress: false queues overlapping pushes to
+# run serially in trigger order instead of racing each other's deploy.
+concurrency:
+  group: deploy-backend-staging
+  cancel-in-progress: false
+
 env:
   AWS_REGION: ap-south-1
   ECR_REPOSITORY: ninja-backend
