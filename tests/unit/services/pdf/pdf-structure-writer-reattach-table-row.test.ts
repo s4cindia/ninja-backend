@@ -391,6 +391,96 @@ describe('PdfStructureWriterService.reattachTableRow', () => {
     expect(results[0].error).toContain('Row already has a /P from a previous attempt');
   });
 
+  // Real, confirmed-live shape (PR #754's fast-follow, closed with real
+  // recon data from Farrar_2E_Comp_188910.pdf, 2026-11-04): the row's own
+  // /P already correctly names a REAL /Table-family element -- not a stale
+  // legacy signature, a genuine table -- but that table itself has NO /P
+  // at all, never linked into the document flow by anything. Before this
+  // fix, this looked identical to "an untrustworthy previous attempt" and
+  // declined; now it's recognized and repaired: the table gets reattached
+  // via the same left/right-neighbor technique the document-flow fallback
+  // above uses, anchored at the ROW's own (page, MCID) position, and the
+  // row is spliced into the now-reachable table's own /K (completing the
+  // other half of the broken splice).
+  it('reattaches a real but unreachable /Table-family parent the row\'s own /P already (correctly) names, instead of declining or creating a duplicate wrapper', async () => {
+    const doc = await PDFDocument.create();
+    const page = doc.addPage([612, 792]);
+    page.node.set(PDFName.of('StructParents'), doc.context.obj(0));
+
+    const leftRef = doc.context.register(doc.context.obj({ Type: PDFName.of('StructElem'), S: PDFName.of('H6'), Pg: page.ref, K: 0 }));
+    const orphan = makeRow(doc, page.ref, 1);
+    const rightRef = doc.context.register(doc.context.obj({ Type: PDFName.of('StructElem'), S: PDFName.of('P'), Pg: page.ref, K: 2 }));
+
+    const flowParentRef = doc.context.register(
+      doc.context.obj({ Type: PDFName.of('StructElem'), S: PDFName.of('Document'), K: [leftRef, rightRef] }),
+    );
+    doc.context.lookup(leftRef, PDFDict).set(PDFName.of('P'), flowParentRef);
+    doc.context.lookup(rightRef, PDFDict).set(PDFName.of('P'), flowParentRef);
+
+    // The real orphaned table: genuinely built, no /P at all, and the
+    // orphan row's own /P already (correctly) names it. /K is OMITTED
+    // entirely, not set to an empty array -- the confirmed real shape on
+    // Farrar (a never-linked table was never given a /K at all, not
+    // emptied) -- an earlier draft of this test used K: [] and missed a
+    // real bug this one exercise (spliceRowIntoTableIfMissing silently
+    // bailing out when /K is absent rather than creating one).
+    const orphanedTableRef = doc.context.register(doc.context.obj({ Type: PDFName.of('StructElem'), S: PDFName.of('Table') }));
+    doc.context.lookup(orphan.trRef, PDFDict).set(PDFName.of('P'), orphanedTableRef);
+
+    const structTreeRootRef = doc.context.register(doc.context.obj({ Type: PDFName.of('StructTreeRoot'), K: [flowParentRef] }));
+    doc.catalog.set(PDFName.of('StructTreeRoot'), structTreeRootRef);
+    setFlatParentTree(doc, structTreeRootRef, [leftRef, orphan.cellRef, rightRef]);
+
+    const results = pdfStructureWriterService.reattachTableRow(doc, [issueFor('tablerow_p1_mc1')]);
+
+    expect(results[0].success).toBe(true);
+    expect(results[0].after).toContain('reattached the orphaned /Table ancestor');
+
+    // The REAL table (not a new wrapper) landed between its confirmed
+    // neighbors, and the row is now correctly listed inside IT.
+    const kidRefs = kidsOf(doc, flowParentRef).map((k) => (k instanceof PDFRef ? k.objectNumber : null));
+    expect(kidRefs).toEqual([leftRef.objectNumber, orphanedTableRef.objectNumber, rightRef.objectNumber]);
+    expect(kidsOf(doc, orphanedTableRef)).toEqual([orphan.trRef]);
+    expect(doc.context.lookup(orphanedTableRef, PDFDict).get(PDFName.of('P'))?.toString()).toBe(flowParentRef.toString());
+    // The row's own /P is untouched -- it was already correct.
+    expect(doc.context.lookup(orphan.trRef, PDFDict).get(PDFName.of('P'))?.toString()).toBe(orphanedTableRef.toString());
+  });
+
+  it('still declines when the real /Table-family parent has a /P of its own that is ALSO unreachable (a deeper break, out of scope for this targeted repair)', async () => {
+    const doc = await PDFDocument.create();
+    const page = doc.addPage([612, 792]);
+    page.node.set(PDFName.of('StructParents'), doc.context.obj(0));
+
+    const leftRef = doc.context.register(doc.context.obj({ Type: PDFName.of('StructElem'), S: PDFName.of('H6'), Pg: page.ref, K: 0 }));
+    const orphan = makeRow(doc, page.ref, 1);
+    const rightRef = doc.context.register(doc.context.obj({ Type: PDFName.of('StructElem'), S: PDFName.of('P'), Pg: page.ref, K: 2 }));
+
+    const flowParentRef = doc.context.register(
+      doc.context.obj({ Type: PDFName.of('StructElem'), S: PDFName.of('Document'), K: [leftRef, rightRef] }),
+    );
+    doc.context.lookup(leftRef, PDFDict).set(PDFName.of('P'), flowParentRef);
+    doc.context.lookup(rightRef, PDFDict).set(PDFName.of('P'), flowParentRef);
+
+    // The table has its OWN /P, but that /P doesn't resolve to anything
+    // reachable either -- a second, deeper break this targeted repair
+    // correctly refuses to guess its way through.
+    const unresolvedGrandparent = doc.context.register(doc.context.obj({ Type: PDFName.of('StructElem'), S: PDFName.of('Document') }));
+    const orphanedTableRef = doc.context.register(doc.context.obj({ Type: PDFName.of('StructElem'), S: PDFName.of('Table'), K: [], P: unresolvedGrandparent }));
+    doc.context.lookup(orphan.trRef, PDFDict).set(PDFName.of('P'), orphanedTableRef);
+
+    const structTreeRootRef = doc.context.register(doc.context.obj({ Type: PDFName.of('StructTreeRoot'), K: [flowParentRef] }));
+    doc.catalog.set(PDFName.of('StructTreeRoot'), structTreeRootRef);
+    setFlatParentTree(doc, structTreeRootRef, [leftRef, orphan.cellRef, rightRef]);
+
+    const results = pdfStructureWriterService.reattachTableRow(doc, [issueFor('tablerow_p1_mc1')]);
+
+    expect(results[0].success).toBe(false);
+    expect(results[0].error).toContain('Row already has a /P from a previous attempt');
+    // Nothing was mutated by the failed repair attempt.
+    expect(kidsOf(doc, orphanedTableRef)).toEqual([]);
+    expect(kidsOf(doc, flowParentRef).map((k) => (k instanceof PDFRef ? k.objectNumber : null))).toEqual([leftRef.objectNumber, rightRef.objectNumber]);
+  });
+
   it('declines when more than one reachable /Table has content on the orphan\'s page, rather than guessing which one', async () => {
     const doc = await PDFDocument.create();
     const page = doc.addPage([612, 792]);
