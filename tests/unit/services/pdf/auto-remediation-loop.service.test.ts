@@ -1013,6 +1013,19 @@ describe('ComparisonTrialAutoRemediationDriver', () => {
 
       expect(await new ComparisonTrialAutoRemediationDriver('trial-1').getRoundState()).toBeNull();
     });
+
+    it('recovers from a transient null read instead of treating it as genuinely gone -- real incident, 2026-11-04, same signature as the 2026-10-17 one above but this time the row reappeared seconds later', async () => {
+      let call = 0;
+      vi.mocked(prisma.comparisonTrial.findUnique).mockImplementation(() => {
+        call++;
+        return Promise.resolve(call === 1 ? null : (makeTrial({ autoMaxRounds: 7 }) as any));
+      });
+
+      const state = await new ComparisonTrialAutoRemediationDriver('trial-1').getRoundState();
+
+      expect(state).toEqual(expect.objectContaining({ autoMaxRounds: 7 }));
+      expect(prisma.comparisonTrial.findUnique).toHaveBeenCalledTimes(2);
+    });
   });
 
   it('recordRoundProgress writes rounds/cost exactly as startAutoLoop used to', async () => {
@@ -1197,6 +1210,19 @@ describe('JobAutoRemediationDriver', () => {
       vi.mocked(prisma.pdfAutoRemediationRun.findUnique).mockResolvedValue(null as any);
 
       expect(await new JobAutoRemediationDriver('run-1').getRoundState()).toBeNull();
+    });
+
+    it('recovers from a transient null read instead of treating it as genuinely gone -- real incident, 2026-11-04 (Farrar Run 3): the job-native driver hits the exact same getRoundState() null-read gap the trial-native one does', async () => {
+      let call = 0;
+      vi.mocked(prisma.pdfAutoRemediationRun.findUnique).mockImplementation(() => {
+        call++;
+        return Promise.resolve(call === 1 ? null : (makeRun({ autoMaxRounds: 7 }) as any));
+      });
+
+      const state = await new JobAutoRemediationDriver('run-1').getRoundState();
+
+      expect(state).toEqual(expect.objectContaining({ autoMaxRounds: 7 }));
+      expect(prisma.pdfAutoRemediationRun.findUnique).toHaveBeenCalledTimes(2);
     });
   });
 
