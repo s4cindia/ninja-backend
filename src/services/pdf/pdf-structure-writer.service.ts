@@ -5576,6 +5576,35 @@ export class PdfStructureWriterService {
           if (alreadyLinked) {
             if (this.isReachableFromRoot(doc, existingP)) {
               results.push({ issueId: issue.id, success: true, before: 'already attached', after: `already attached under ${existingP.toString()}` });
+              continue;
+            }
+            // The cell<->row link is already correct; the row's OWN /P may
+            // name a real /Table that's itself just unreachable -- a
+            // confirmed real shape on Farrar (PR #754's fast-follow, now
+            // closed with real recon data -- see
+            // reattachOrphanedTableAncestor's own doc comment). A /TR
+            // carries no MCID of its own (same reason rowPageAndMcid exists
+            // at all -- see its own doc comment), so the repair's anchor
+            // position is derived from the row's own TD/TH children, not
+            // from any direct ParentTree entry for the /TR itself.
+            const trDict = doc.context.lookup(existingP, PDFDict);
+            const pageByRef = new Map<string, number>();
+            doc.getPages().forEach((p, i) => pageByRef.set(p.ref.toString(), i + 1));
+            const rowLocation = trDict ? this.rowPageAndMcid(doc, trDict.get(PDFName.of('K')), pageByRef) : null;
+            const tableRef = trDict?.get(PDFName.of('P'));
+            const repaired = rowLocation && tableRef instanceof PDFRef
+              ? this.reattachOrphanedTableAncestor(doc, tableRef, rowLocation.page, rowLocation.mcid)
+              : false;
+            if (repaired && tableRef instanceof PDFRef) {
+              this.spliceRowIntoTableIfMissing(doc, tableRef, existingP);
+            }
+            if (repaired && this.isReachableFromRoot(doc, existingP)) {
+              results.push({
+                issueId: issue.id,
+                success: true,
+                before: 'disconnected (containing /Table was itself unreachable)',
+                after: `cell/row link was already correct; reattached the orphaned /Table ancestor (${(tableRef as PDFRef).toString()}) into the document flow`,
+              });
             } else {
               results.push({ issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error: 'Cell\'s /P and that parent\'s own /K reference each other, but the parent itself is not reachable from the structure tree root -- not actually fixed' });
             }
@@ -5672,6 +5701,154 @@ export class PdfStructureWriterService {
     }
 
     return results;
+  }
+
+  /**
+   * Reattaches an existing, fully-built /Table-family element that is
+   * itself unreachable from /StructTreeRoot -- NOT creating a new wrapper,
+   * splicing the real one back in. Confirmed real shape on
+   * Farrar_2E_Comp_188910.pdf (PR #754's own fast-follow, now completed
+   * with real recon data): 5 /Table elements with NO /P at all (never
+   * linked to anything), each correctly pointed at BY their own /TR (whose
+   * own /P already names the table), but never listed back in the table's
+   * own /K -- a broken one-way splice on top of a genuinely orphaned
+   * table, not two unrelated problems. Both reattachTableCell's
+   * "already linked" branch and reattachTableRow's own "existing /P"
+   * decline hit this identical shape and, before this method existed,
+   * could only decline -- correctly conservative given what each could see
+   * in isolation, but now recognized as a safe, specific case to repair.
+   *
+   * Anchors the reattachment point using the SAME left/right tagged-
+   * neighbor technique every other top-level reattach* method in this file
+   * uses (retagPlacedPdfAsFigure, reattachTableRow's own wrapper-creation
+   * fallback), anchored at the table's own row's (page, MCID) position --
+   * the caller's responsibility to supply, since a /Table has no MCID of
+   * its own to derive one from.
+   *
+   * Declines (returns false) rather than guessing whenever: the ref isn't
+   * a real /Table-family element, it already has a /P (a different,
+   * deeper break this targeted repair doesn't attempt), no safe single
+   * neighbor-anchor can be found, or the left/right neighbors disagree --
+   * same "decline rather than guess" discipline as every sibling method.
+   */
+  private reattachOrphanedTableAncestor(
+    doc: PDFDocument,
+    tableRef: PDFRef,
+    anchorPageNumber: number,
+    anchorMcid: number,
+  ): boolean {
+    if (this.isReachableFromRoot(doc, tableRef)) return true;
+
+    const tableDict = doc.context.lookup(tableRef, PDFDict);
+    const tableType = tableDict?.get(PDFName.of('S'))?.toString().replace(/^\//, '');
+    if (!tableDict || !tableType || !['Table', 'THead', 'TBody', 'TFoot'].includes(tableType)) return false;
+
+    // A non-empty /P that still isn't reachable is a DIFFERENT, deeper
+    // break (e.g. an orphaned THead/TBody wrapper one level further up) --
+    // out of scope for this targeted repair; decline rather than guess at
+    // an unknown-depth chain.
+    if (tableDict.get(PDFName.of('P')) !== undefined) return false;
+
+    const pageArr = this.resolveParentTreePageArray(doc, anchorPageNumber);
+    const pageArrRaw = pageArr?.asArray() ?? [];
+    const neighborParent = (entry: unknown): PDFRef | null => {
+      if (!(entry instanceof PDFRef)) return null;
+      const dict = doc.context.lookup(entry, PDFDict);
+      const p = dict?.get(PDFName.of('P'));
+      return p instanceof PDFRef ? p : null;
+    };
+    const leftEntry = anchorMcid > 0 ? pageArrRaw[anchorMcid - 1] : undefined;
+    const rightEntry = anchorMcid + 1 < pageArrRaw.length ? pageArrRaw[anchorMcid + 1] : undefined;
+    const leftParent = neighborParent(leftEntry);
+    const rightParent = neighborParent(rightEntry);
+
+    if (leftParent && rightParent && leftParent.objectNumber !== rightParent.objectNumber) return false;
+
+    let flowParent: PDFRef | null = null;
+    let anchorRef: PDFRef | null = null;
+    let anchorBefore = false;
+    if (rightParent) {
+      flowParent = rightParent; anchorRef = rightEntry as PDFRef; anchorBefore = true;
+    } else if (leftParent) {
+      flowParent = leftParent; anchorRef = leftEntry as PDFRef; anchorBefore = false;
+    }
+    if (!flowParent || !anchorRef) return false;
+
+    const flowParentK = doc.context.lookup(flowParent, PDFDict)?.get(PDFName.of('K'));
+    if (!(flowParentK instanceof PDFArray)) return false;
+
+    if (anchorBefore) {
+      this.insertIntoKidsBefore(doc, flowParent, anchorRef, tableRef);
+    } else {
+      this.insertIntoKidsAfter(doc, flowParent, anchorRef, tableRef);
+    }
+    tableDict.set(PDFName.of('P'), flowParent);
+    return true;
+  }
+
+  /**
+   * Ensures `trRef` is listed in `tableRef`'s own /K, in correct row order
+   * among existing siblings on the same page -- the other half of the
+   * broken-splice shape reattachOrphanedTableAncestor's own doc comment
+   * describes (the /TR's own /P already names the table; the table's own
+   * /K just never listed the /TR back). Reuses rowPageAndMcid for
+   * positional ordering, same technique reattachTableRow's own candidates-
+   * length-1 success path uses one level up. Builds its own page-ref map
+   * rather than taking one from the caller, since both current callers
+   * (reattachTableCell, reattachTableRow) don't otherwise need one.
+   *
+   * Falls back to a plain append (still correct membership-wise, just not
+   * guaranteed perfectly ordered) when the row's own position can't be
+   * determined or existing siblings aren't cleanly ordered -- never
+   * declines outright, since appending a real row to a real table's /K is
+   * always safe, just not always optimally placed.
+   */
+  private spliceRowIntoTableIfMissing(doc: PDFDocument, tableRef: PDFRef, trRef: PDFRef): void {
+    const tableDict = doc.context.lookup(tableRef, PDFDict);
+    if (!tableDict) return;
+    const tableKRaw = tableDict.get(PDFName.of('K'));
+    const resolvedK = tableKRaw instanceof PDFRef ? doc.context.lookup(tableKRaw) : tableKRaw;
+
+    // Confirmed real shape on Farrar: a genuinely never-linked /Table's own
+    // /K is MISSING entirely (tableDict.get('K') is undefined), not even
+    // an empty array -- it was never given one in the first place, not
+    // emptied. Create a fresh one rather than bailing out.
+    if (resolvedK === undefined) {
+      tableDict.set(PDFName.of('K'), doc.context.obj([trRef]));
+      return;
+    }
+    if (!(resolvedK instanceof PDFArray)) return; // a single bare child or other unexpected shape -- decline rather than guess how to merge it
+    const tableK = resolvedK;
+    const existing = tableK.asArray();
+    if (existing.some((item) => item instanceof PDFRef && item.objectNumber === trRef.objectNumber)) return;
+
+    const pageByRef = new Map<string, number>();
+    doc.getPages().forEach((p, i) => pageByRef.set(p.ref.toString(), i + 1));
+
+    const trDict = doc.context.lookup(trRef, PDFDict);
+    const located = trDict ? this.rowPageAndMcid(doc, trDict.get(PDFName.of('K')), pageByRef) : null;
+    if (!located) { tableK.push(trRef); return; }
+
+    const siblingMcids: Array<{ ref: PDFRef; mcid: number }> = [];
+    for (const ref of existing) {
+      if (!(ref instanceof PDFRef)) continue;
+      const sDict = doc.context.lookup(ref, PDFDict);
+      if (sDict?.get(PDFName.of('S'))?.toString().replace(/^\//, '') !== 'TR') continue;
+      const sLocated = this.rowPageAndMcid(doc, sDict.get(PDFName.of('K')), pageByRef);
+      if (sLocated && sLocated.page === located.page) siblingMcids.push({ ref, mcid: sLocated.mcid });
+    }
+    const isAscending = siblingMcids.every((s, i) => i === 0 || s.mcid > siblingMcids[i - 1].mcid);
+    if (!isAscending) { tableK.push(trRef); return; }
+
+    let afterRef: PDFRef | null = null;
+    for (const s of siblingMcids) {
+      if (s.mcid < located.mcid) afterRef = s.ref; else break;
+    }
+    if (afterRef) {
+      this.insertIntoKidsAfter(doc, tableRef, afterRef, trRef);
+    } else {
+      tableK.insert(0, trRef);
+    }
   }
 
   /**
@@ -5970,7 +6147,29 @@ export class PdfStructureWriterService {
           const existingFlowP = trDict?.get(PDFName.of('P'));
           if (existingFlowP instanceof PDFRef) {
             const existingParentType = doc.context.lookup(existingFlowP, PDFDict)?.get(PDFName.of('S'))?.toString().replace(/^\//, '');
-            if (!existingParentType || TABLE_FAMILY_TYPES.has(existingParentType)) {
+            if (existingParentType && TABLE_FAMILY_TYPES.has(existingParentType)) {
+              // A real /Table-family parent that just isn't reachable yet --
+              // the same confirmed shape reattachOrphanedTableAncestor's own
+              // doc comment describes, now recognized and repaired instead
+              // of declined (PR #754's fast-follow, closed with real recon
+              // data from this exact document).
+              const repaired = this.reattachOrphanedTableAncestor(doc, existingFlowP, pageNumber, rowMcid);
+              if (repaired) {
+                this.spliceRowIntoTableIfMissing(doc, existingFlowP, trRef);
+                if (this.isReachableFromRoot(doc, existingFlowP)) {
+                  results.push({
+                    issueId: issue.id,
+                    success: true,
+                    before: 'disconnected (containing /Table was itself unreachable)',
+                    after: `row's existing /P was already correct; reattached the orphaned /Table ancestor (${existingFlowP.toString()}) into the document flow`,
+                  });
+                  continue;
+                }
+              }
+              results.push({ issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error: 'Row already has a /P from a previous attempt -- declining rather than guessing whether it\'s safe to replace' });
+              continue;
+            }
+            if (!existingParentType) {
               results.push({ issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error: 'Row already has a /P from a previous attempt -- declining rather than guessing whether it\'s safe to replace' });
               continue;
             }

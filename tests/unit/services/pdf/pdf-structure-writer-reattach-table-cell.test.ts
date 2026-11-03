@@ -206,6 +206,64 @@ describe('PdfStructureWriterService.reattachTableCell', () => {
     expect(results[0].error).toContain('not reachable from the structure tree root');
   });
 
+  // Real, confirmed-live shape (PR #754's fast-follow, closed with real
+  // recon data from Farrar_2E_Comp_188910.pdf, 2026-11-04): the cell<->row
+  // link is already correct (alreadyLinked=true), but the row's own /P
+  // names a REAL /Table-family element that itself has NO /P at all --
+  // never linked into the document flow. A /TR carries no MCID of its own
+  // (same reason rowPageAndMcid exists -- its own doc comment), so this
+  // fixture deliberately gives the /TR no direct ParentTree entry at all,
+  // only via its single TD child's own mcid -- the real shape, not a
+  // simplified stand-in.
+  it('reattaches a real but unreachable /Table-family ancestor two levels up, anchored at the row\'s own position (derived from its TD child, since a /TR has no MCID of its own)', async () => {
+    const doc = await PDFDocument.create();
+    const page = doc.addPage([612, 792]);
+    page.node.set(PDFName.of('StructParents'), doc.context.obj(0));
+
+    const cellRef = doc.context.register(doc.context.obj({ S: PDFName.of('TD'), Pg: page.ref, K: 1 }));
+    const trRef = doc.context.register(doc.context.obj({ S: PDFName.of('TR'), K: [cellRef] }));
+    doc.context.lookup(cellRef, PDFDict).set(PDFName.of('P'), trRef);
+
+    // /K is OMITTED entirely, not set to an empty array -- the confirmed
+    // real shape on Farrar (a never-linked table was never given a /K at
+    // all, not emptied) -- an earlier draft of this test used K: [] and
+    // missed a real bug this one exercises (spliceRowIntoTableIfMissing
+    // silently bailing out when /K is absent rather than creating one).
+    const orphanedTableRef = doc.context.register(doc.context.obj({ S: PDFName.of('Table') }));
+    doc.context.lookup(trRef, PDFDict).set(PDFName.of('P'), orphanedTableRef);
+
+    // Left/right neighbor content around the CELL's own mcid (1) -- the
+    // row's derived anchor position, since its only child sits there.
+    const leftRef = doc.context.register(doc.context.obj({ Type: PDFName.of('StructElem'), S: PDFName.of('H6'), Pg: page.ref, K: 0 }));
+    const rightRef = doc.context.register(doc.context.obj({ Type: PDFName.of('StructElem'), S: PDFName.of('P'), Pg: page.ref, K: 2 }));
+    const flowParentRef = doc.context.register(
+      doc.context.obj({ Type: PDFName.of('StructElem'), S: PDFName.of('Document'), K: [leftRef, rightRef] }),
+    );
+    doc.context.lookup(leftRef, PDFDict).set(PDFName.of('P'), flowParentRef);
+    doc.context.lookup(rightRef, PDFDict).set(PDFName.of('P'), flowParentRef);
+
+    const structTreeRootRef = doc.context.register(doc.context.obj({ Type: PDFName.of('StructTreeRoot'), K: [flowParentRef] }));
+    doc.catalog.set(PDFName.of('StructTreeRoot'), structTreeRootRef);
+    const pageArr = doc.context.obj([leftRef, cellRef, rightRef]); // index 1 = the cell's own mcid
+    const parentTree = doc.context.obj({ Nums: [0, pageArr] });
+    doc.context.lookup(structTreeRootRef, PDFDict).set(PDFName.of('ParentTree'), parentTree);
+
+    const results = pdfStructureWriterService.reattachTableCell(doc, [issueFor('tablecell_p1_mc1')]);
+
+    expect(results[0].success).toBe(true);
+    expect(results[0].after).toContain('reattached the orphaned /Table ancestor');
+
+    // The REAL table (not a new wrapper, not the /TR directly) landed
+    // between its confirmed neighbors.
+    const flowKids = kidsOf(doc, flowParentRef).map((k) => (k instanceof PDFRef ? k.objectNumber : null));
+    expect(flowKids).toEqual([leftRef.objectNumber, orphanedTableRef.objectNumber, rightRef.objectNumber]);
+    // The row is now correctly listed inside the now-reachable table.
+    expect(kidsOf(doc, orphanedTableRef)).toEqual([trRef]);
+    // The cell<->row link, already correct, is untouched.
+    expect(doc.context.lookup(cellRef, PDFDict).get(PDFName.of('P'))?.toString()).toBe(trRef.toString());
+    expect(doc.context.lookup(trRef, PDFDict).get(PDFName.of('P'))?.toString()).toBe(orphanedTableRef.toString());
+  });
+
   // Real-world incident, confirmed live on Farrar_2E_Comp_188910.pdf: the
   // "already linked" branch above (see the idempotency-short-circuit test)
   // already guards against an unreachable parent before declaring success
