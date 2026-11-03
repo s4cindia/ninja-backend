@@ -20,6 +20,15 @@ name: Deploy Backend Worker to Staging
   # copy of this -- see that file's comment.
   workflow_dispatch: {}
 
+# Same overlapping-deploy race as deploy-backend-staging.yml's own
+# concurrency guard exists to prevent (see that file's comment) -- a
+# distinct group since this is a genuinely separate ECS service
+# (ninja-backend-worker-task-service-bccfcjg7), not because this one has
+# independently reproduced the failure yet.
+concurrency:
+  group: deploy-backend-worker-staging
+  cancel-in-progress: false
+
 env:
   AWS_REGION: ap-south-1
   ECR_REPOSITORY: ninja-backend
