@@ -999,10 +999,17 @@ export class PdfModifierService {
       // MCID-exact first: for a detector-tagged tree (Seam C), the image's XObject
       // is bound to a specific MCID and the Figure's /K references that MCID — so we
       // can hit the exact Figure instead of guessing by page position. Falls back to
-      // positional matching for trees without that binding (e.g. Adobe-tagged).
+      // an exact OBJR match (the direct-object-reference tagging form some
+      // authoring tools use instead -- e.g. Adobe InDesign's /PlacedPDF
+      // retagging, PR #748/#749) before falling through further to
+      // positional matching below. Same two-path sequence as
+      // resolveFigureForImage (:882-883) -- this was a separate, incomplete
+      // copy of that same lookup, missing the OBJR fallback entirely and
+      // falling straight to a positional guess for any OBJR-tagged Figure.
       const xObjectName = imageId.match(/^img_p\d+_\d+_(.+)$/)?.[1];
       const exact = xObjectName
-        ? this.findFigureByImageMcid(doc, figuresOnPage, targetPage, xObjectName)
+        ? this.findFigureByImageMcid(doc, figuresOnPage, targetPage, xObjectName) ??
+          this.findFigureByObjr(doc, figuresOnPage, targetPage, xObjectName)
         : null;
 
       // Exact MCID match, or the exact page+index match -- no cross-page
