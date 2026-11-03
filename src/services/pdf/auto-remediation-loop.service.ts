@@ -39,6 +39,32 @@ const ALWAYS_MANUAL_SUGGESTION_TYPE = 'alt-text-decorative';
 
 const AUTO_MODE_ACTOR = 'auto-mode';
 
+/**
+ * Retries a possibly-transient null read up to 2 extra times (300ms, then
+ * 600ms backoff) before accepting it as genuinely absent. Built for
+ * getRoundState's own real incident: the driver's row has come back null
+ * on a routine poll moments after an earlier read of the exact same row
+ * succeeded (getConfig(), at loop startup) -- confirmed twice live
+ * (2026-10-17, 2026-11-04), root cause still unconfirmed (a genuine
+ * delete? a Neon serverless read-after-write/connection-pooling gap?).
+ * Both incidents show the SAME signature: the loop stops with
+ * stopReason: 'error' and no corresponding Remediation History entry
+ * (this branch only ever logged to CloudWatch, never to that table),
+ * after one or more rounds had already completed cleanly moments before.
+ * A short retry costs nothing when the row really is gone (same null
+ * result, just delayed ~900ms) and very likely recovers the loop when
+ * it's transient -- a plain, self-contained retry rather than a shared
+ * utility, since this is (so far) the only caller.
+ */
+async function retryNullableRead<T>(read: () => Promise<T | null>): Promise<T | null> {
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const result = await read();
+    if (result) return result;
+    if (attempt < 2) await new Promise((resolve) => setTimeout(resolve, 300 * (attempt + 1)));
+  }
+  return null;
+}
+
 /** How many consecutive crash-recoveries (reconcileIfOrphaned/
  *  reconcileIfOrphanedJobRun finding a genuinely dead run) within
  *  CRASH_RECOVERY_LOOKBACK_MS get an automatic resume from maybeAutoResume
@@ -227,7 +253,9 @@ export class ComparisonTrialAutoRemediationDriver implements AutoRemediationDriv
   }
 
   async getRoundState(): Promise<AutoRemediationRoundState | null> {
-    const current = await prisma.comparisonTrial.findUnique({ where: { id: this.trialId } });
+    const current = await retryNullableRead(() =>
+      prisma.comparisonTrial.findUnique({ where: { id: this.trialId } })
+    );
     if (!current) return null;
     return {
       autoStopRequested: current.autoStopRequested,
@@ -295,7 +323,9 @@ export class JobAutoRemediationDriver implements AutoRemediationDriver {
   }
 
   async getRoundState(): Promise<AutoRemediationRoundState | null> {
-    const current = await prisma.pdfAutoRemediationRun.findUnique({ where: { id: this.runId } });
+    const current = await retryNullableRead(() =>
+      prisma.pdfAutoRemediationRun.findUnique({ where: { id: this.runId } })
+    );
     if (!current) return null;
     return {
       autoStopRequested: current.autoStopRequested,
