@@ -189,6 +189,85 @@ describe('retagPlacedPdfAsFigure', () => {
     expect(result.error).toContain('different document-flow parents');
   });
 
+  // Geometry-based disambiguator: when left/right neighbors genuinely
+  // resolve to different flow parents, real on-page distance to the span's
+  // own drawn geometry can still resolve the tie instead of declining
+  // outright -- see disambiguatePlacedPdfSpanByGeometry's own doc comment.
+  // PLACED_ART draws a path from (0,0) to (10,10) (device space, no CTM) --
+  // its own centroid sits around (5,5).
+  describe('geometry-based disambiguation of an otherwise-ambiguous parent tie', () => {
+    async function buildAmbiguousParentsDoc(leftTm: string, rightTm: string): Promise<{
+      doc: PDFDocument;
+      parentA: PDFRef; // owns leftRef
+      parentB: PDFRef; // owns rightRef
+    }> {
+      const doc = await PDFDocument.create();
+      const page = doc.addPage([612, 792]);
+      page.node.set(PDFName.of('StructParents'), doc.context.obj(0));
+      const content = `/P <</MCID 0 >>BDC\n${leftTm}(Before)Tj\nEMC\n${PLACED_ART}/P <</MCID 1 >>BDC\n${rightTm}(After)Tj\nEMC\n`;
+      writePageContent(doc, 1, content);
+
+      const leftRef = doc.context.register(doc.context.obj({ Type: PDFName.of('StructElem'), S: PDFName.of('P'), Pg: page.ref, K: 0 }));
+      const rightRef = doc.context.register(doc.context.obj({ Type: PDFName.of('StructElem'), S: PDFName.of('P'), Pg: page.ref, K: 1 }));
+      const parentA = doc.context.register(doc.context.obj({ Type: PDFName.of('StructElem'), S: PDFName.of('Document'), K: [leftRef] }));
+      const parentB = doc.context.register(doc.context.obj({ Type: PDFName.of('StructElem'), S: PDFName.of('Document'), K: [rightRef] }));
+      doc.context.lookup(leftRef, PDFDict).set(PDFName.of('P'), parentA);
+      doc.context.lookup(rightRef, PDFDict).set(PDFName.of('P'), parentB);
+
+      const structTreeRootRef = doc.context.register(doc.context.obj({ Type: PDFName.of('StructTreeRoot'), K: [parentA, parentB] }));
+      doc.catalog.set(PDFName.of('StructTreeRoot'), structTreeRootRef);
+      setFlatParentTree(doc, structTreeRootRef, [leftRef, rightRef]);
+
+      return { doc, parentA, parentB };
+    }
+
+    it('picks the RIGHT parent when the right neighbor sits decisively closer to the span than the left one', async () => {
+      const { doc, parentA, parentB } = await buildAmbiguousParentsDoc(
+        '1 0 0 1 500 500 Tm\n', // far from the span's ~(5,5) centroid
+        '1 0 0 1 12 12 Tm\n',   // close to it
+      );
+
+      const result = pdfStructureWriterService.retagPlacedPdfAsFigure(doc, issueForPage(1));
+
+      expect(result.success).toBe(true);
+      const kidsB = kidsOf(doc, parentB).filter((k): k is PDFRef => k instanceof PDFRef);
+      expect(kidsB.map((k) => doc.context.lookup(k, PDFDict).get(PDFName.of('S'))?.toString())).toEqual(['/Figure', '/P']);
+      // parentA (the far side) is untouched.
+      expect(kidsOf(doc, parentA)).toHaveLength(1);
+    });
+
+    it('picks the LEFT parent when the left neighbor sits decisively closer to the span than the right one', async () => {
+      const { doc, parentA, parentB } = await buildAmbiguousParentsDoc(
+        '1 0 0 1 12 12 Tm\n',   // close to the span's ~(5,5) centroid
+        '1 0 0 1 500 500 Tm\n', // far from it
+      );
+
+      const result = pdfStructureWriterService.retagPlacedPdfAsFigure(doc, issueForPage(1));
+
+      expect(result.success).toBe(true);
+      const kidsA = kidsOf(doc, parentA).filter((k): k is PDFRef => k instanceof PDFRef);
+      expect(kidsA.map((k) => doc.context.lookup(k, PDFDict).get(PDFName.of('S'))?.toString())).toEqual(['/P', '/Figure']);
+      // parentB (the far side) is untouched.
+      expect(kidsOf(doc, parentB)).toHaveLength(1);
+    });
+
+    it('still declines when both neighbors are roughly equidistant from the span, rather than flipping a coin', async () => {
+      // Both ~14pt from the span's (5,5) centroid -- clearly too close a
+      // call to trust (fails the decisive-margin check), unlike the
+      // existing "declines when ambiguous" test above (which has no Tm at
+      // all, so both anchors coincidentally sit at the same (0,0) point).
+      const { doc } = await buildAmbiguousParentsDoc(
+        '1 0 0 1 15 15 Tm\n',
+        '1 0 0 1 -5 -5 Tm\n',
+      );
+
+      const result = pdfStructureWriterService.retagPlacedPdfAsFigure(doc, issueForPage(1));
+
+      expect(result.success).toBe(false);
+      expect(result.error).toContain('different document-flow parents');
+    });
+  });
+
   it('declines cleanly, with no mutation at all, when the page has no /ParentTree entry', async () => {
     const doc = await PDFDocument.create();
     const page = doc.addPage([612, 792]);

@@ -30,7 +30,8 @@ import {
 import { AuditIssue } from '../audit/base-audit.service';
 import { logger } from '../../lib/logger';
 import { pageContentMcids, orderedPageContentMcids, decodePageContent, writePageContent } from './pdf-content-stream-io';
-import { locateMcidBoundingBoxes } from './mcid-bounding-box';
+import { locateMcidBoundingBoxes, locateByteRangeBoundingBox, type DeviceBoundingBox } from './mcid-bounding-box';
+import { buildFormXObjectResolver } from './validators/pdf-figure-structtree.validator';
 import {
   tagUntaggedPaintedPaths,
   splitArtifactAroundTaggedContent,
@@ -4016,6 +4017,79 @@ export class PdfStructureWriterService {
   }
 
   /**
+   * Attempts to break a genuine left/right-parent tie for one /PlacedPDF
+   * span using real on-page geometry, instead of declining outright --
+   * the one-line gap this method closes is explicitly flagged in
+   * retagPlacedPdfAsFigure's own decline message ("ambiguous, declining
+   * rather than guessing"): content-stream TAG ORDER alone can't tell
+   * which side is really nearer when both neighbors genuinely resolve to
+   * different flow parents (e.g. a real /Sect boundary).
+   *
+   * The span itself is, by definition, not yet wrapped in its own MCID
+   * (that's the whole reason it needs retagging) -- locateByteRangeBoundingBox
+   * exists for exactly this (see its own doc comment), keyed by the span's
+   * CONTENT byte range (contentStart..closeOpStart — between the BDC and
+   * EMC, excluding those operators themselves), not its outer tag range.
+   * The two candidates DO already have real MCIDs, so their own boxes come
+   * from the existing, already-proven locateMcidBoundingBoxes.
+   *
+   * Returns null (preserving today's conservative decline) whenever either
+   * box can't be located at all, or the two candidate distances aren't
+   * clearly decisive -- deliberately asymmetric margins (a relative AND an
+   * absolute floor) so a near-tie still declines rather than flipping on
+   * measurement noise. NOT yet validated against a real ambiguous
+   * /PlacedPDF case: the 5 known live failures on Farrar all have this
+   * decline for a reason unrelated to a close geometric call (no sample
+   * with genuinely close-but-decisive on-page distances has been available
+   * to calibrate the margin below against) -- this is a reasoned starting
+   * point, not an empirically-tuned one. Revisit the margin once a real
+   * document exercises this path.
+   */
+  private disambiguatePlacedPdfSpanByGeometry(
+    doc: PDFDocument,
+    pageNumber: number,
+    content: string,
+    spanContentRange: { start: number; end: number },
+    leftMcid: number,
+    rightMcid: number,
+  ): 'left' | 'right' | null {
+    try {
+      const resolveFormXObject = buildFormXObjectResolver(doc, pageNumber);
+      const spanBox = locateByteRangeBoundingBox(content, spanContentRange, { resolveFormXObject });
+      if (!spanBox) return null;
+
+      const neighborBoxes = locateMcidBoundingBoxes(content, new Set([leftMcid, rightMcid]), {
+        allowSinglePointBoxes: true,
+        resolveFormXObject,
+      });
+      const leftBox = neighborBoxes.get(leftMcid);
+      const rightBox = neighborBoxes.get(rightMcid);
+      if (!leftBox || !rightBox) return null;
+
+      const center = (b: DeviceBoundingBox): { x: number; y: number } => ({ x: (b.minX + b.maxX) / 2, y: (b.minY + b.maxY) / 2 });
+      const dist = (p: { x: number; y: number }, q: { x: number; y: number }): number => Math.hypot(p.x - q.x, p.y - q.y);
+      const spanCenter = center(spanBox);
+      const leftDist = dist(spanCenter, center(leftBox));
+      const rightDist = dist(spanCenter, center(rightBox));
+
+      const closer: 'left' | 'right' = leftDist <= rightDist ? 'left' : 'right';
+      const closerDist = Math.min(leftDist, rightDist);
+      const fartherDist = Math.max(leftDist, rightDist);
+      // Decisive only when the closer side is BOTH meaningfully nearer in
+      // absolute terms (>=10pt -- well above typical single-line-height
+      // measurement noise) AND meaningfully nearer in relative terms
+      // (<=70% of the farther distance) -- requiring both, not either,
+      // keeps a case where the two are merely a few points apart (likely
+      // noise, not a real positional preference) from flipping a decline
+      // into a guess.
+      const decisive = (fartherDist - closerDist) >= 10 && closerDist <= fartherDist * 0.7;
+      return decisive ? closer : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
    * PLACEDPDF-NOT-TAGGED fix: retags every top-level `/PlacedPDF <properties>
    * BDC … EMC` span (see pdf-artifact-tagger.ts's findPlacedPdfSpans for the
    * full forensic trail — Adobe InDesign's own non-standard tag for placed
@@ -4112,14 +4186,26 @@ export class PdfStructureWriterService {
       const leftParent = resolveParentOf(leftEntry);
       const rightParent = resolveParentOf(rightEntry);
 
+      let geometryPick: 'left' | 'right' | null = null;
       if (leftParent && rightParent && leftParent.objectNumber !== rightParent.objectNumber) {
-        return { issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error: 'Span\'s left/right tagged neighbors resolve to different document-flow parents -- ambiguous, declining rather than guessing' };
+        geometryPick = this.disambiguatePlacedPdfSpanByGeometry(
+          doc, pageNumber, originalContent,
+          { start: span.contentStart, end: span.closeOpStart },
+          leftCandidate!.mcid, rightCandidate!.mcid,
+        );
+        if (!geometryPick) {
+          return { issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error: 'Span\'s left/right tagged neighbors resolve to different document-flow parents -- ambiguous, declining rather than guessing' };
+        }
       }
 
       let flowParent: PDFRef | null = null;
       let anchorRef: PDFRef | null = null;
       let anchorBefore = false;
-      if (rightParent && rightEntry) {
+      if (geometryPick === 'left') {
+        flowParent = leftParent; anchorRef = leftEntry; anchorBefore = false;
+      } else if (geometryPick === 'right') {
+        flowParent = rightParent; anchorRef = rightEntry; anchorBefore = true;
+      } else if (rightParent && rightEntry) {
         flowParent = rightParent; anchorRef = rightEntry; anchorBefore = true;
       } else if (leftParent && leftEntry) {
         flowParent = leftParent; anchorRef = leftEntry; anchorBefore = false;

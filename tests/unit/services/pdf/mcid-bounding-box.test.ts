@@ -6,7 +6,7 @@
  * converging under Auto Mode (see this module's own header comment).
  */
 import { describe, it, expect } from 'vitest';
-import { locateMcidBoundingBoxes } from '../../../../src/services/pdf/mcid-bounding-box';
+import { locateMcidBoundingBoxes, locateByteRangeBoundingBox } from '../../../../src/services/pdf/mcid-bounding-box';
 
 describe('locateMcidBoundingBoxes', () => {
   it('computes a bbox from a leader line (m/l/S) plus a text run, translated by the active CTM', () => {
@@ -221,5 +221,74 @@ describe('locateMcidBoundingBoxes', () => {
 
       expect(box).toBeUndefined();
     });
+  });
+});
+
+/**
+ * Regression coverage for locateByteRangeBoundingBox -- the same CTM/Tm
+ * tracking as locateMcidBoundingBoxes above, gated by token POSITION
+ * instead of marked-content identity. Built for a /PlacedPDF span, which
+ * is by definition not yet wrapped in its own MCID -- see that function's
+ * own doc comment.
+ */
+describe('locateByteRangeBoundingBox', () => {
+  it('computes a bbox from path geometry whose own token falls within the range, translated by the active CTM', () => {
+    const content = 'q 1 0 0 1 100 500 cm 0 0 m 70 0 l S Q';
+    const range = { start: 0, end: content.length };
+
+    const box = locateByteRangeBoundingBox(content, range);
+
+    expect(box).toEqual({ minX: 100, minY: 500, maxX: 170, maxY: 500 });
+  });
+
+  it('excludes geometry whose own token sits OUTSIDE the given byte range', () => {
+    const content =
+      '0 0 m 10 0 l S ' + // range target: a short line at the origin
+      '500 500 m 600 600 l S'; // well outside the range -- must not contaminate the box
+    const range = { start: 0, end: content.indexOf('500 500') };
+
+    const box = locateByteRangeBoundingBox(content, range);
+
+    expect(box).toEqual({ minX: 0, minY: 0, maxX: 10, maxY: 0 });
+  });
+
+  it('tracks CTM continuously from BEFORE the range (q/cm outside it still applies to geometry inside it)', () => {
+    const content = 'q 1 0 0 1 100 200 cm ' + '0 0 m 10 0 l S' + ' Q';
+    // Range covers only the path op itself, not the preceding `cm` that
+    // established the CTM it must still be transformed by.
+    const range = { start: content.indexOf('0 0 m'), end: content.indexOf(' Q') };
+
+    const box = locateByteRangeBoundingBox(content, range);
+
+    expect(box).toEqual({ minX: 100, minY: 200, maxX: 110, maxY: 200 });
+  });
+
+  it('returns null when nothing in the range produces any geometry at all', () => {
+    const content = '0 0 m 10 0 l S ' + '(no geometry here, just text with no Tm/Td)';
+    const range = { start: content.indexOf('(no geometry'), end: content.length };
+
+    const box = locateByteRangeBoundingBox(content, range);
+
+    expect(box).toBeNull();
+  });
+
+  it('uses resolveFormXObject\'s real /BBox (transformed by CTM and the form\'s own /Matrix) instead of the unit-square fallback for a Do within range', () => {
+    const content = 'q 1 0 0 1 60 400 cm /Fm1 Do Q';
+    const range = { start: 0, end: content.length };
+
+    const box = locateByteRangeBoundingBox(content, range, {
+      resolveFormXObject: (name) => (name === '/Fm1' ? { bbox: [0, 0, 200, 100], matrix: [1, 0, 0, 1, 0, 0] } : null),
+    });
+
+    expect(box).toEqual({ minX: 60, minY: 400, maxX: 260, maxY: 500 });
+  });
+
+  it('falls back to the unit-square approximation for a Do when no resolver is supplied, same as locateMcidBoundingBoxes', () => {
+    const content = 'q 500 0 0 300 60 400 cm /Im0 Do Q';
+    const range = { start: 0, end: content.length };
+
+    const box = locateByteRangeBoundingBox(content, range);
+
+    expect(box).toEqual({ minX: 60, minY: 400, maxX: 560, maxY: 700 });
   });
 });
