@@ -357,3 +357,164 @@ export function locateMcidBoundingBoxes(
 
   return results;
 }
+
+/**
+ * Computes a device-space bounding box for whatever content a given BYTE
+ * RANGE of the page's content stream actually draws -- same CTM/Tm
+ * tracking and geometry sources as locateMcidBoundingBoxes above (see that
+ * function's own header for the full list and the real bugs each one
+ * closed: full affine CTM composition, Form XObject /BBox vs. unit-square,
+ * BI inline-image skipping), but gated by token POSITION instead of
+ * marked-content identity.
+ *
+ * Built for retagPlacedPdfAsFigure's own geometry-based disambiguator: an
+ * Adobe InDesign /PlacedPDF span is, by definition, not yet wrapped in its
+ * own MCID-bound marked content -- that is the whole reason it needs
+ * retagging -- so locateMcidBoundingBoxes has nothing to key on for it.
+ *
+ * Deliberately a SEPARATE pass over the token stream, not a shared refactor
+ * of locateMcidBoundingBoxes' own walk: that function's activation logic
+ * (BDC/EMC nesting, lastClosedDict pairing) is tightly coupled to MCID
+ * identity in a way a byte-range target doesn't need at all, and this
+ * file's CTM/Form-XObject/BI handling has a real history of subtle bugs
+ * (PR #583) -- splitting it apart to share a generic core risked a NEW one
+ * for what is, right now, a single caller. If a second byte-range-based
+ * caller shows up, revisit sharing a core walker between the two; until
+ * then, mirror any future fix to the geometry math below into the other
+ * function too (and vice versa).
+ *
+ * `range` bounds are [start, end) compared against each token's own start
+ * offset from the SAME tokenizer this module always uses -- pass a span's
+ * own `contentStart`/`closeOpStart` (findPlacedPdfSpans), not its outer
+ * `tagStart`/`closeOpEnd` (which include the BDC/EMC operators themselves,
+ * drawing no geometry of their own).
+ *
+ * Returns null when no geometry-producing operator's own token falls
+ * within the range at all (an empty or malformed span) -- same "nothing
+ * found" contract as locateMcidBoundingBoxes' per-MCID omission.
+ */
+export function locateByteRangeBoundingBox(
+  content: string,
+  range: { start: number; end: number },
+  options?: { resolveFormXObject?: (name: string) => FormXObjectInfo | null },
+): DeviceBoundingBox | null {
+  const resolveFormXObject = options?.resolveFormXObject;
+  const tokens = tokenize(content);
+
+  type Ctm = { a: number; b: number; c: number; d: number; e: number; f: number };
+  let ctm: Ctm = { a: 1, b: 0, c: 0, d: 1, e: 0, f: 0 };
+  const ctmStack: Ctm[] = [];
+
+  let tmE = 0;
+  let tmF = 0;
+
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  let inRange = false;
+  const include = (x: number, y: number): void => {
+    if (!inRange) return;
+    const X = ctm.a * x + ctm.c * y + ctm.e;
+    const Y = ctm.b * x + ctm.d * y + ctm.f;
+    if (X < minX) minX = X;
+    if (X > maxX) maxX = X;
+    if (Y < minY) minY = Y;
+    if (Y > maxY) maxY = Y;
+  };
+
+  const operands: Token[] = [];
+
+  for (let k = 0; k < tokens.length; k++) {
+    const tk = tokens[k];
+    if (tk.t !== 'op') { operands.push(tk); continue; }
+    // CTM/Tm state (below) is tracked continuously regardless of range --
+    // only whether a geometry op's OWN include() calls count toward the
+    // box is gated, same "never reset at a boundary" discipline as
+    // locateMcidBoundingBoxes' own activeMcid gating.
+    inRange = tk.start >= range.start && tk.start < range.end;
+    const op = tk.v;
+
+    switch (op) {
+      case 'q': ctmStack.push({ ...ctm }); break;
+      case 'Q': { const p = ctmStack.pop(); if (p) ctm = p; break; }
+      case 'cm': {
+        const a = num(operands[operands.length - 6]);
+        const b = num(operands[operands.length - 5]);
+        const c = num(operands[operands.length - 4]);
+        const d = num(operands[operands.length - 3]);
+        const e = num(operands[operands.length - 2]);
+        const f = num(operands[operands.length - 1]);
+        ctm = {
+          a: a * ctm.a + b * ctm.c,
+          b: a * ctm.b + b * ctm.d,
+          c: c * ctm.a + d * ctm.c,
+          d: c * ctm.b + d * ctm.d,
+          e: e * ctm.a + f * ctm.c + ctm.e,
+          f: e * ctm.b + f * ctm.d + ctm.f,
+        };
+        break;
+      }
+
+      case 'm': case 'l':
+        include(num(operands[operands.length - 2]), num(operands[operands.length - 1]));
+        break;
+      case 'c':
+        include(num(operands[operands.length - 6]), num(operands[operands.length - 5]));
+        include(num(operands[operands.length - 4]), num(operands[operands.length - 3]));
+        include(num(operands[operands.length - 2]), num(operands[operands.length - 1]));
+        break;
+      case 'v': case 'y':
+        include(num(operands[operands.length - 4]), num(operands[operands.length - 3]));
+        include(num(operands[operands.length - 2]), num(operands[operands.length - 1]));
+        break;
+      case 're': {
+        const x = num(operands[operands.length - 4]);
+        const y = num(operands[operands.length - 3]);
+        const w = num(operands[operands.length - 2]);
+        const h = num(operands[operands.length - 1]);
+        include(x, y); include(x + w, y); include(x, y + h); include(x + w, y + h);
+        break;
+      }
+
+      case 'Do': {
+        const nameTok = operands[operands.length - 1];
+        const name = nameTok && nameTok.t === 'name' ? nameTok.v : undefined;
+        const form = name && resolveFormXObject ? resolveFormXObject(name) : null;
+        if (form) {
+          const [llx, lly, urx, ury] = form.bbox;
+          const [fa, fb, fc, fd, fe, ff] = form.matrix;
+          for (const [x, y] of [[llx, lly], [urx, lly], [llx, ury], [urx, ury]] as const) {
+            include(fa * x + fc * y + fe, fb * x + fd * y + ff);
+          }
+        } else {
+          include(0, 0); include(1, 0); include(0, 1); include(1, 1);
+        }
+        break;
+      }
+      case 'BI': {
+        include(0, 0); include(1, 0); include(0, 1); include(1, 1);
+        const idm = /\bID\b/.exec(content.slice(tk.end));
+        const from = idm ? tk.end + idm.index + 2 : tk.end;
+        const eim = /\sEI\b/.exec(content.slice(from));
+        const eiEnd = eim ? from + eim.index + eim[0].length : content.length;
+        while (k + 1 < tokens.length && tokens[k + 1].start < eiEnd) k++;
+        break;
+      }
+
+      case 'Td': case 'TD':
+        tmE += num(operands[operands.length - 2]);
+        tmF += num(operands[operands.length - 1]);
+        break;
+      case 'Tm':
+        tmE = num(operands[operands.length - 2]);
+        tmF = num(operands[operands.length - 1]);
+        break;
+      case 'BT': tmE = 0; tmF = 0; break;
+      case 'Tj': case "'": case '"': case 'TJ': include(tmE, tmF); break;
+
+      default: break;
+    }
+    operands.length = 0;
+  }
+
+  if (minX > maxX || minY > maxY) return null;
+  return { minX, minY, maxX, maxY };
+}
