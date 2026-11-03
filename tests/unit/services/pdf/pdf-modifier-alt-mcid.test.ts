@@ -59,6 +59,75 @@ describe('setAltText — MCID-exact figure targeting', () => {
   });
 
   /**
+   * Real-world regression: Adobe InDesign's /PlacedPDF retagging (PR #748/
+   * #749) produces Figures tagged via a direct /OBJR reference, not an
+   * MCID binding -- resolveFigureForImage already tries findFigureByObjr
+   * as a fallback (added after CodeRabbit caught an MCID-only version as a
+   * real regression), but setAltText's own, separate copy of this same
+   * lookup never got that fallback added, falling straight through to a
+   * positional guess for any OBJR-only Figure. Two Figures, neither MCID-
+   * bound, so a wrong (or lucky) positional guess is visible either way.
+   */
+  it('resolves a Figure tagged via direct /OBJR (no MCID binding) instead of falling through to a positional guess', async () => {
+    const src = await PDFDocument.create();
+    const srcPage = src.addPage([400, 600]);
+    const imgA = await src.embedPng(PNG);
+    const imgB = await src.embedPng(PNG);
+    srcPage.drawImage(imgA, { x: 50, y: 400, width: 100, height: 100 });
+    srcPage.drawImage(imgB, { x: 250, y: 400, width: 100, height: 100 });
+    const doc = await PDFDocument.load(await src.save());
+
+    // Read the XObject names straight from /Resources /XObject -- no need
+    // to parse the content stream at all (and with two images, pdf-lib may
+    // split /Contents across multiple streams, which decodeContent's
+    // single-stream helper above doesn't handle). Same /Resources lookup
+    // resolveXObjectRef itself uses -- an XObject entry is always stored
+    // indirectly by pdf-lib in practice.
+    const page = doc.getPage(0);
+    const resourcesRaw = page.node.get(PDFName.of('Resources'));
+    const resources = (resourcesRaw instanceof PDFRef ? doc.context.lookup(resourcesRaw) : resourcesRaw) as PDFDict;
+    const xObjectsRaw = resources.get(PDFName.of('XObject'));
+    const xObjects = (xObjectsRaw instanceof PDFRef ? doc.context.lookup(xObjectsRaw) : xObjectsRaw) as PDFDict;
+    const xobjNames = xObjects.keys().map((k) => k.decodeText());
+    expect(xobjNames.length).toBe(2);
+    const [xobjA, xobjB] = xobjNames;
+    const xobjARef = xObjects.get(PDFName.of(xobjA)) as PDFRef;
+    const xobjBRef = xObjects.get(PDFName.of(xobjB)) as PDFRef;
+    expect(xobjARef).toBeInstanceOf(PDFRef);
+    expect(xobjBRef).toBeInstanceOf(PDFRef);
+
+    // Two Figures, each tagged via /OBJR only -- no BDC/MCID anywhere in
+    // the content stream for either image.
+    const makeObjrFigure = (xref: PDFRef) =>
+      doc.context.obj({
+        S: PDFName.of('Figure'),
+        Pg: page.ref,
+        K: doc.context.obj({ Type: PDFName.of('OBJR'), Pg: page.ref, Obj: xref }),
+      });
+    const figARef = doc.context.register(makeObjrFigure(xobjARef));
+    const figBRef = doc.context.register(makeObjrFigure(xobjBRef));
+    // Deliberately reversed tree order relative to the target index below
+    // -- figuresOnPage[1] (the OLD positional fallback) now resolves to
+    // figA, the WRONG figure, so this can't pass by index coincidence the
+    // way the first draft of this test accidentally did (confirmed: it
+    // passed even with the OBJR fallback removed, in tree order [A, B]).
+    const docNode = doc.context.obj({ S: PDFName.of('Document'), K: [figBRef, figARef] });
+    const docRef = doc.context.register(docNode);
+    const structTreeRootRef = doc.context.register(doc.context.obj({ Type: PDFName.of('StructTreeRoot'), K: [docRef] }));
+    doc.catalog.set(PDFName.of('StructTreeRoot'), structTreeRootRef);
+
+    const res = await pdfModifierService.setAltText(doc, `img_p1_1_${xobjB}`, 'The second image, OBJR-tagged');
+    expect(res.success).toBe(true);
+
+    const altOf = (d: PDFDict): string => {
+      const a = d.get(PDFName.of('Alt'));
+      return a instanceof PDFString ? a.decodeText() : 'None';
+    };
+    expect(altOf(doc.context.lookup(figBRef, PDFDict))).toBe('The second image, OBJR-tagged');
+    expect(altOf(doc.context.lookup(figARef, PDFDict))).toBe('None'); // untouched -- proves this wasn't a lucky positional-guess hit
+  });
+
+  /**
    * Regression for the same class of bug fixed in setTableSummary: found
    * while investigating a real 805-page trial document where some tagged
    * elements have no /Pg anywhere in their own subtree (confirmed genuinely
