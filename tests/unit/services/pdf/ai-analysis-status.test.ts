@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { resolveSuggestionStatus, buildIssueFingerprint } from '../../../../src/services/pdf/ai-analysis.service';
+import { resolveSuggestionStatus, buildIssueFingerprint, resolveCarriedFailedAttempts } from '../../../../src/services/pdf/ai-analysis.service';
 
 const FP = 'MATTERHORN-13-001:img_p150_0_Im0';
 
@@ -106,6 +106,45 @@ describe('resolveSuggestionStatus', () => {
     const suggestion = { suggestionType: 'alt-text', value: 'A green pear' };
 
     expect(resolveSuggestionStatus(existing, suggestion, FP, 'apply-to-pdf')).toBe('pending');
+  });
+});
+
+// Real, live-confirmed incident, 2026-11-05 (Farrar_2E_Comp_188910.pdf):
+// 18-20 suggestions failed to apply EVERY single Auto Mode round, never
+// shrinking, across 10+ rounds -- MAX_APPLY_ATTEMPTS (2) never actually
+// engaged for any of them, because issue.id regenerates every round (a
+// per-audit sequential counter, not a stable identity) and the upsert's
+// `create` branch silently reset failedAttempts to 0 every time it fired.
+describe('resolveCarriedFailedAttempts', () => {
+  it('carries the fingerprint-matched OLD row\'s failedAttempts forward when this round\'s issue.id has changed (the real bug)', () => {
+    // The exact shape analyzeJob hits every round once issue ids start
+    // churning: `existing` was found via the fingerprint fallback (a
+    // DIFFERENT physical row than the one this round's upsert `where`
+    // targets), already carrying 1 real failed attempt from last round.
+    const existing = { failedAttempts: 1 };
+    expect(resolveCarriedFailedAttempts(existing, false)).toBe(1);
+  });
+
+  it('starts a genuinely new row (no existing match at all) at 0', () => {
+    expect(resolveCarriedFailedAttempts(null, false)).toBe(0);
+  });
+
+  it('resets to 0 when the finding genuinely changed out from under a previously-failed row', () => {
+    const existing = { failedAttempts: 2 }; // already at the cap, under the OLD finding
+    expect(resolveCarriedFailedAttempts(existing, true)).toBe(0);
+  });
+
+  it('keeps counting across repeated real failures once the carry-forward is in place (reaches the cap)', () => {
+    // Simulates 3 consecutive rounds of the same real failure, each under a
+    // DIFFERENT issue.id (the actual production shape) -- confirms the
+    // count genuinely climbs to and past MAX_APPLY_ATTEMPTS instead of
+    // forever resetting to 1.
+    let row: { failedAttempts: number } | null = null;
+    for (let round = 0; round < 3; round++) {
+      const carried = resolveCarriedFailedAttempts(row, false);
+      row = { failedAttempts: carried + 1 }; // what recordApplyFailure does after this round's own failure
+    }
+    expect(row!.failedAttempts).toBe(3);
   });
 });
 
