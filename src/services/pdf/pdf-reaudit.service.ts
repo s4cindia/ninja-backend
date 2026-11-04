@@ -331,6 +331,24 @@ class PdfReauditService {
       `${resolved.length} resolved, ${remaining.length} remaining, ${regressions.length} regressions`
     );
 
+    // Diagnostic only (no behavior change): identifies WHICH issues flip
+    // between resolved/regression round over round -- added to investigate
+    // a real incident where resolved/regression counts strictly alternated
+    // (3/1, 1/3, 3/1, ...) for 10 straight rounds with zero net change in
+    // open issue count, confirmed 2026-11-04 on a live Farrar Auto Mode run.
+    if (regressions.length > 0) {
+      logger.info(
+        `[PdfReaudit] Regressions this round: ` +
+        regressions.map((i) => `${i.code}@p${i.pageNumber ?? '?'}${i.location ? `:${i.location}` : ''}`).join(', ')
+      );
+    }
+    if (resolved.length > 0) {
+      logger.info(
+        `[PdfReaudit] Resolved this round: ` +
+        resolved.map((i) => `${i.code}@p${i.pageNumber ?? '?'}${i.location ? `:${i.location}` : ''}`).join(', ')
+      );
+    }
+
     return { resolved, remaining, regressions };
   }
 
