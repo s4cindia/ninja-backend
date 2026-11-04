@@ -311,4 +311,45 @@ describe('PdfStructureWriterService.markTableAsArtifact', () => {
     const tdDict = doc.context.lookup(tdRef) as PDFDict;
     expect(tdDict.get(PDFName.of('P'))).toEqual(trRef);
   });
+
+  // Real incident on Farrar_2E_Comp_188910.pdf, live, 2026-11-04: without
+  // clearing the removed table's direct TR child's own /P, that TR is left
+  // pointing at a real-but-now-unreachable /Table -- exactly the shape
+  // reattachOrphanedTableAncestor (pdf-structure-writer.service.ts's
+  // reattachTableCell/reattachTableRow orphan-repair path) exists to
+  // detect and splice back into the tree. Confirmed live: the two fixers
+  // deleted and resurrected the same page-15 table every other Auto Mode
+  // round, forever, each one undoing the other's "fix" with zero net
+  // progress. The direct TR child's /P must be cleared so that repair path
+  // never finds a dangling pointer to "fix" for a deliberately-removed
+  // table again.
+  it('clears the removed table\'s own TR child\'s /P so a later orphan-repair pass cannot resurrect it', async () => {
+    const doc = await PDFDocument.create();
+    doc.addPage([400, 600]);
+    const [pageRef] = doc.getPages().map(p => p.ref);
+    const tableRef = buildTrivialTable(doc, pageRef);
+
+    const documentRef = doc.context.register(doc.context.obj({ S: PDFName.of('Document'), K: [tableRef] }));
+    setParent(doc, tableRef, documentRef);
+    const structTreeRootRef = doc.context.register(
+      doc.context.obj({ Type: PDFName.of('StructTreeRoot'), K: [documentRef] })
+    );
+    doc.catalog.set(PDFName.of('StructTreeRoot'), structTreeRootRef);
+
+    // buildTrivialTable never sets the TR's own /P back at its table parent
+    // (it only builds the downward /K chain) -- set it explicitly here to
+    // match the real shape a genuine /TR carries, so this test actually
+    // exercises the transition instead of trivially passing on an already-
+    // undefined value.
+    const tableDictBefore = doc.context.lookup(tableRef) as PDFDict;
+    const trRef = (tableDictBefore.get(PDFName.of('K')) as PDFArray).get(0) as PDFRef;
+    setParent(doc, trRef, tableRef);
+    expect((doc.context.lookup(trRef) as PDFDict).get(PDFName.of('P'))).toEqual(tableRef);
+
+    const results = pdfStructureWriterService.markTableAsArtifact(doc, [issueFor('table_p1_0')]);
+    expect(results[0].success).toBe(true);
+
+    const trDict = doc.context.lookup(trRef) as PDFDict;
+    expect(trDict.get(PDFName.of('P'))).toBeUndefined();
+  });
 });
