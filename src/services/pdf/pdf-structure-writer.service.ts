@@ -616,6 +616,37 @@ export class PdfStructureWriterService {
     }
   }
 
+  /**
+   * True if ANY descendant of `node` carries a real MCID (a bare integer,
+   * an MCR dict's /MCID, or any entry inside a /K array holding either) --
+   * i.e. genuine painted content exists somewhere under this subtree, not
+   * just an empty structural shell. Used by markTableAsArtifact to verify
+   * its own documented safety assumption (every confirmed-decorative target
+   * has a /K-less TD) before trusting it -- see that method's own doc
+   * comment for the real incident this guards against.
+   */
+  private tableSubtreeHasRealContent(doc: PDFDocument, node: PDFDict, seen = new Set<string>()): boolean {
+    const kRaw = node.get(PDFName.of('K'));
+    const k = kRaw instanceof PDFRef ? doc.context.lookup(kRaw) : kRaw;
+    if (k === undefined) return false;
+    if (k instanceof PDFNumber) return true;
+    const entries = k instanceof PDFArray ? Array.from({ length: k.size() }, (_, i) => k.get(i)) : [k];
+    for (const entry of entries) {
+      const resolved = entry instanceof PDFRef ? doc.context.lookup(entry) : entry;
+      if (resolved instanceof PDFNumber) return true;
+      if (resolved instanceof PDFDict) {
+        if (resolved.get(PDFName.of('MCID')) !== undefined) return true;
+        if (entry instanceof PDFRef) {
+          const key = entry.toString();
+          if (seen.has(key)) continue;
+          seen.add(key);
+        }
+        if (this.tableSubtreeHasRealContent(doc, resolved, seen)) return true;
+      }
+    }
+    return false;
+  }
+
   // ══════════════════════════════════════════════════════════════════════════
   // SECTION 4 — Scope Attribute (Required for TH elements)
   // ══════════════════════════════════════════════════════════════════════════
@@ -3276,6 +3307,30 @@ export class PdfStructureWriterService {
             issueId: issue.id, success: false,
             before: 'unknown', after: 'unknown',
             error: `No Table element found matching "${issue.element}"`,
+          });
+          continue;
+        }
+
+        // This method's own safety assumption (see its doc comment) is that
+        // every confirmed-decorative target has a /K-less TD -- no MCID, no
+        // painted content at all. Verify that directly rather than trusting
+        // the AI/heuristic classification blindly: a real, live Farrar case
+        // (table_p15_0, 2026-11-04) broke that assumption -- its TD carries
+        // a real MCID (painted content) -- and deleting it anyway produced
+        // an infinite cycle, NOT the clean one-time removal PR #761 assumed
+        // would follow once the dangling /P gap was patched: every
+        // downstream repair fixer (reattachTableRow's own document-flow
+        // fallback especially) correctly keeps trying to give that real
+        // content a container back, re-triggering this fix on the rebuilt
+        // wrapper next round, forever. Declining here, rather than guessing
+        // the AI classification is right, matches this file's established
+        // philosophy everywhere else -- surfaces as a visible, actionable
+        // "needs investigation" failure instead of a silent infinite thrash.
+        if (this.tableSubtreeHasRealContent(doc, target.dict)) {
+          results.push({
+            issueId: issue.id, success: false,
+            before: 'unknown', after: 'unknown',
+            error: 'Table has a descendant cell with real painted content (a genuine MCID) -- not the always-empty decorative box this fix is safe for; declining rather than deleting real content',
           });
           continue;
         }
