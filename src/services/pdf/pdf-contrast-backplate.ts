@@ -219,3 +219,76 @@ export function spliceBackplate(
 
   return content.slice(0, enclosing.btStart) + snippet + content.slice(enclosing.btStart);
 }
+
+// Matches spliceBackplate's own snippet shape, anchored to end exactly at
+// the search window's end (i.e. immediately touching whatever position is
+// sliced up to -- btStart, before this call's own insertion). Captures the
+// fill color (the backplate's own rg, not the restore rg after it) and the
+// rect's own x/y/width/height.
+const PRECEDING_BACKPLATE_RE =
+  /(?:[-\d.]+\s+0\s+0\s+[-\d.]+\s+[-\d.]+\s+[-\d.]+\s+cm\s*\n)?([\d.]+)\s+([\d.]+)\s+([\d.]+)\s+rg\s*\n([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)\s+re\s*\nf\s*\n[\d.]+\s+[\d.]+\s+[\d.]+\s+rg\s*\n(?:[-\d.]+\s+0\s+0\s+[-\d.]+\s+[-\d.]+\s+[-\d.]+\s+cm\s*\n)?$/;
+
+// Only search the last ~400 chars before btStart -- comfortably more than
+// one snippet ever needs (its longest numbers are a handful of digits
+// each), so a false match pulled from unrelated, much-earlier content is
+// not a realistic risk.
+const PRECEDING_BACKPLATE_SEARCH_WINDOW = 400;
+
+export interface PrecedingBackplate {
+  color: [number, number, number];
+  rect: BackplateRect;
+}
+
+/**
+ * Detects a backplate THIS function already spliced immediately before
+ * `btStart` on a PRIOR call (an earlier Auto Mode round, typically --
+ * content persists round to round since each one builds on the previous
+ * round's own successful writes) and returns its fill color and rect, or
+ * null if none is found.
+ *
+ * Deliberately returns the rect too, not just the color: when several
+ * DIFFERENT runs share one enclosing BT (a single BT...ET block can contain
+ * multiple Tj/TJ operations with inline color changes between them), each
+ * one's own backplate is correctly inserted at the SAME btStart -- so
+ * finding *a* backplate there does not by itself mean THIS run was already
+ * fixed, only that *some* run sharing this BT was. Callers must compare the
+ * returned rect against their own freshly-computed one (same x/y to within
+ * a point or two) before treating it as "this exact run, already handled."
+ *
+ * Real incident, 2026-11-04 (Farrar_2E_Comp_188910.pdf, page 118): without
+ * this check, every round that re-flags an already-backplated run as still
+ * failing inserts ANOTHER backplate rect for it on top of the prior one,
+ * rather than recognizing one is already there. Each round's rect is a
+ * SLIGHTLY different size (computeBackplateRect depends on this round's own
+ * freshly-measured glyph box, which drifts by a point or so run to run), so
+ * they don't perfectly re-cover each other -- a fractionally smaller new
+ * rect leaves a 1pt sliver of an EARLIER, differently-colored rect exposed
+ * right at the edge. That sliver is the likely cause of a real COLOR-
+ * CONTRAST issue oscillating resolved/regressed every single round instead
+ * of ever converging: which color wins the sampled probe point depends on
+ * exactly how this round's rect happens to land relative to the last one's,
+ * not on whether the location is actually fixed.
+ */
+export function findPrecedingBackplate(content: string, btStart: number): PrecedingBackplate | null {
+  const window = content.slice(Math.max(0, btStart - PRECEDING_BACKPLATE_SEARCH_WINDOW), btStart);
+  const m = PRECEDING_BACKPLATE_RE.exec(window);
+  if (!m) return null;
+  return {
+    color: [parseFloat(m[1]), parseFloat(m[2]), parseFloat(m[3])],
+    rect: { x: parseFloat(m[4]), y: parseFloat(m[5]), width: parseFloat(m[6]), height: parseFloat(m[7]) },
+  };
+}
+
+// How close two rects' x/y must be (in PDF points) to count as "the same
+// run's backplate, redrawn" rather than "a different, nearby run's own
+// backplate that happens to share this BT." Generous enough to absorb the
+// point-or-so glyph-measurement drift real rounds show (see
+// findPrecedingBackplate's own doc comment), tight enough that two
+// genuinely different lines (normally a full line-height, ~13pt, apart on
+// this corpus) are never conflated.
+const SAME_RUN_POSITION_TOLERANCE_PT = 4;
+
+/** True if `a` and `b` are close enough to be the same run's own backplate, redrawn. */
+export function isSameBackplatePosition(a: BackplateRect, b: BackplateRect): boolean {
+  return Math.abs(a.x - b.x) <= SAME_RUN_POSITION_TOLERANCE_PT && Math.abs(a.y - b.y) <= SAME_RUN_POSITION_TOLERANCE_PT;
+}
