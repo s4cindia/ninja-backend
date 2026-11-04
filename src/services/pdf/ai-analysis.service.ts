@@ -405,6 +405,34 @@ export function resolveSuggestionStatus(
 
   return unchanged ? existing.status : defaultStatus;
 }
+
+/**
+ * How many failed apply attempts to carry into this round's upsert.
+ *
+ * Real, live-confirmed incident, 2026-11-05 (Farrar_2E_Comp_188910.pdf):
+ * 18-20 suggestions failed to apply EVERY single Auto Mode round, never
+ * shrinking, across 10+ rounds -- MAX_APPLY_ATTEMPTS (2) never actually
+ * engaged for any of them. Root cause: issue.id is a per-audit sequential
+ * counter, not a stable identity (see buildIssueFingerprint's own doc
+ * comment) -- when it regenerates every round, the upsert's own `where`
+ * (keyed on the CURRENT issue.id) always misses, so Prisma always took
+ * the `create` branch, which never carried over the fingerprint-matched
+ * OLD row's own failedAttempts, silently resetting every genuinely-
+ * failing suggestion back to 0 attempts every single round -- incremented
+ * to 1 by that round's own apply failure, then wiped again next round by
+ * the next id's own fresh `create`, never reaching the cap.
+ *
+ * Exported for direct unit testing alongside resolveSuggestionStatus,
+ * which this always pairs with: `resetFailedAttempts` must be the exact
+ * same "the finding genuinely changed out from under a previously
+ * 'failed' row" condition that call site already computes.
+ */
+export function resolveCarriedFailedAttempts(
+  existing: { failedAttempts: number } | null,
+  resetFailedAttempts: boolean
+): number {
+  return resetFailedAttempts ? 0 : (existing?.failedAttempts ?? 0);
+}
 // TABLE_LIKELY_FORMULA_CODE is a heuristic redirect (see its own doc comment
 // in pdf-table.validator.ts) — routed through the same AI-drafting path as
 // a genuine formula finding, but analyzeFormulaActualText forces it to stay
@@ -1084,6 +1112,7 @@ class AiAnalysisService {
           // 'failed') -- give it a clean slate of attempts rather than
           // carrying over a count earned against a now-stale finding.
           const resetFailedAttempts = existing?.status === 'failed' && status !== 'failed';
+          const carriedFailedAttempts = resolveCarriedFailedAttempts(existing, resetFailedAttempts);
 
           await prisma.aiAnalysis.upsert({
             where: { jobId_issueId: { jobId, issueId: issue.id } },
@@ -1100,6 +1129,7 @@ class AiAnalysisService {
               status,
               requiresManualReview: suggestion.requiresManualReview ?? false,
               issueFingerprint,
+              failedAttempts: carriedFailedAttempts,
               updatedAt: new Date(),
             },
             update: {
@@ -1113,7 +1143,7 @@ class AiAnalysisService {
               status,
               requiresManualReview: suggestion.requiresManualReview ?? false,
               issueFingerprint,
-              ...(resetFailedAttempts && { failedAttempts: 0 }),
+              failedAttempts: carriedFailedAttempts,
               updatedAt: new Date(),
             },
           });
