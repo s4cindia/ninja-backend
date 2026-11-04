@@ -1,5 +1,10 @@
 import { describe, it, expect } from 'vitest';
-import { computeBackplateRect, spliceBackplate } from '../../../../src/services/pdf/pdf-contrast-backplate';
+import {
+  computeBackplateRect,
+  spliceBackplate,
+  findPrecedingBackplate,
+  isSameBackplatePosition,
+} from '../../../../src/services/pdf/pdf-contrast-backplate';
 import { RENDER_SCALE } from '../../../../src/services/pdf/color-contrast-verification';
 
 describe('computeBackplateRect', () => {
@@ -145,5 +150,77 @@ describe('spliceBackplate', () => {
     const btStart = content.indexOf('BT');
     const result = spliceBackplate(content, { btStart, ctm: { a: 1, d: 1, e: 0, f: 0 } }, rect, [1, 0, 0]);
     expect(result!.startsWith('PAGE_HEADER_CONTENT\n')).toBe(true);
+  });
+});
+
+// Real, live-confirmed incident, 2026-11-04 (Farrar_2E_Comp_188910.pdf,
+// page 118): a COLOR-CONTRAST issue oscillated resolved/regressed every
+// single Auto Mode round instead of ever converging. Root cause: every
+// round that re-flagged the run inserted ANOTHER backplate rect on top of
+// the one already there from an earlier round, each a slightly different
+// size (fresh glyph-measurement drift round to round), leaving unclobbered
+// slivers of earlier-painted colors exposed at the edges. findPrecedingBackplate
+// + isSameBackplatePosition exist so pdf-contrast-writer.service.ts can
+// detect this before stacking another one.
+describe('findPrecedingBackplate', () => {
+  const rect = { x: 72, y: 605, width: 161, height: 19 };
+
+  it('detects a backplate spliceBackplate itself just inserted, immediately before the (now-shifted) BT', () => {
+    const content = 'BEFORE\nBT\n<41> Tj\nET\nAFTER';
+    const btStart = content.indexOf('BT');
+    const spliced = spliceBackplate(content, { btStart, ctm: { a: 1, d: 1, e: 0, f: 0 } }, rect, [0, 0, 0]);
+    expect(spliced).toBeTruthy();
+
+    // A fresh round re-parses the content from scratch, so btStart must be
+    // recomputed against the NEW (shifted-forward) content -- exactly what
+    // locateEnclosingTextObject would do on the next real call.
+    const newBtStart = spliced!.indexOf('BT');
+    const existing = findPrecedingBackplate(spliced!, newBtStart);
+
+    expect(existing).not.toBeNull();
+    expect(existing!.color).toEqual([0, 0, 0]);
+    expect(existing!.rect.x).toBeCloseTo(72);
+    expect(existing!.rect.y).toBeCloseTo(605);
+    expect(existing!.rect.width).toBeCloseTo(161);
+    expect(existing!.rect.height).toBeCloseTo(19);
+  });
+
+  it('returns null when nothing precedes the BT at all', () => {
+    const content = 'BT\n<41> Tj\nET';
+    expect(findPrecedingBackplate(content, content.indexOf('BT'))).toBeNull();
+  });
+
+  it('returns null for ordinary page content that is not a backplate snippet (e.g. a table border fill)', () => {
+    // A real, unrelated rect-fill (a table cell border) sitting right
+    // before a BT must not be mistaken for a backplate -- it lacks the
+    // second (restore) rg the real snippet always has.
+    const content = '0 0 0 rg\n10 20 100 50 re\nf\nBT\n<41> Tj\nET';
+    expect(findPrecedingBackplate(content, content.indexOf('BT'))).toBeNull();
+  });
+
+  it('detects a non-identity-CTM backplate (cm-wrapped) immediately before the shifted BT', () => {
+    const content = 'BT\n<41> Tj\nET';
+    const spliced = spliceBackplate(content, { btStart: 0, ctm: { a: 2, d: 4, e: 10, f: 20 } }, rect, [1, 1, 1]);
+    expect(spliced).toBeTruthy();
+    const newBtStart = spliced!.indexOf('BT');
+    const existing = findPrecedingBackplate(spliced!, newBtStart);
+    expect(existing).not.toBeNull();
+    expect(existing!.color).toEqual([1, 1, 1]);
+  });
+});
+
+describe('isSameBackplatePosition', () => {
+  it('treats the same run redrawn with a point or two of glyph-measurement drift as the same position', () => {
+    const a = { x: 72, y: 605, width: 161, height: 19 };
+    const b = { x: 71.2, y: 605.9, width: 162.1, height: 18.8 }; // real drift observed live
+    expect(isSameBackplatePosition(a, b)).toBe(true);
+  });
+
+  it('does not conflate two different, nearby lines sharing one enclosing BT', () => {
+    // Real corpus line-height is ~13pt apart -- a different run's own
+    // backplate must never be treated as "this run, already fixed."
+    const a = { x: 72, y: 605, width: 161, height: 19 };
+    const b = { x: 72, y: 618, width: 162, height: 19 };
+    expect(isSameBackplatePosition(a, b)).toBe(false);
   });
 });

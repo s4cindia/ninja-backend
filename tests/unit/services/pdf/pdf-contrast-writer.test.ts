@@ -562,6 +562,64 @@ describe('PdfContrastWriterService.fixColorContrast', () => {
     expect(snippet).not.toContain('Q');
   });
 
+  // Real, live-confirmed incident, 2026-11-04 (Farrar_2E_Comp_188910.pdf,
+  // page 118): a COLOR-CONTRAST issue oscillated resolved/regressed every
+  // single Auto Mode round, never converging. Root cause: fixColorContrast
+  // had no idempotency check -- every round that re-flagged the SAME run
+  // (the re-audit and a fresh AI analysis are both run from scratch each
+  // round, with no memory of a prior round's own backplate) inserted
+  // ANOTHER backplate rect on top of the one already there from an earlier
+  // round. This is the full round-trip: apply once (producing a real
+  // backplate), then apply again on the SAME now-already-fixed run, and
+  // confirm the second call recognizes the existing backplate instead of
+  // stacking a new one.
+  it('does not stack a second backplate when the same run is re-processed in a later round (idempotent)', async () => {
+    const mockVerify = vi.mocked(verifyContrastInRegion);
+    const mockVerifyBackplate = vi.mocked(verifyBackplateContrast);
+    mockVerify.mockClear();
+    mockVerifyBackplate.mockClear();
+    // Round 1: both recolor tiers fail, backplate succeeds.
+    mockVerify
+      .mockResolvedValueOnce({ ratio: 3.0, passes: false, foreground: '#888888', background: '#ffffff', uncertain: true, variance: 0.05 })
+      .mockResolvedValueOnce({ ratio: 6.0, passes: false, foreground: '#000000', background: '#ffffff', uncertain: true, variance: 0.05 });
+    mockVerifyBackplate.mockResolvedValueOnce({ ratio: 18.0, passes: true, foreground: '#000000', background: '#ffffff', uncertain: false, variance: 0 });
+
+    const doc = await realPdfWithText(60, 450, 14, { bold: false });
+    const originalReport = await pdfAuditService.runAuditFromBuffer(
+      Buffer.from(await doc.save()), 'writer-test-backplate-idempotent', 'test.pdf', 'custom', ['contrast']
+    );
+    const issue = originalReport.issues.find(i => i.code === 'COLOR-CONTRAST')!;
+
+    const round1 = await pdfContrastWriterService.fixColorContrast(doc, issue);
+    expect(round1.success).toBe(true);
+    const contentAfterRound1 = decodePageContent(doc, 1)!;
+    const backplateCountAfterRound1 = contentAfterRound1.split(' re\nf\n').length - 1;
+    expect(backplateCountAfterRound1).toBe(1);
+
+    // Round 2: a fresh AI-analysis cycle re-flags the SAME run (same
+    // boundingBox/contrastData -- exactly what a fresh, from-scratch
+    // re-audit of an unrelated-regression-triggered re-detection would
+    // hand back for a run that never actually changed). Both recolor tiers
+    // fail the same way again (the original text's own color ops are
+    // untouched by a backplate fix), so this must still reach the backplate
+    // tier -- but this time it should recognize the existing one.
+    mockVerify
+      .mockResolvedValueOnce({ ratio: 3.0, passes: false, foreground: '#888888', background: '#ffffff', uncertain: true, variance: 0.05 })
+      .mockResolvedValueOnce({ ratio: 6.0, passes: false, foreground: '#000000', background: '#ffffff', uncertain: true, variance: 0.05 });
+    mockVerifyBackplate.mockResolvedValueOnce({ ratio: 18.0, passes: true, foreground: '#000000', background: '#ffffff', uncertain: false, variance: 0 });
+
+    const round2 = await pdfContrastWriterService.fixColorContrast(doc, { ...issue, id: 'contrast-1-round2' });
+
+    expect(round2.success).toBe(true);
+    expect(round2.after).toContain('already backplated');
+    // The existing backplate was re-verified, not blindly trusted.
+    expect(mockVerifyBackplate).toHaveBeenCalledTimes(2);
+
+    const contentAfterRound2 = decodePageContent(doc, 1)!;
+    const backplateCountAfterRound2 = contentAfterRound2.split(' re\nf\n').length - 1;
+    expect(backplateCountAfterRound2).toBe(1); // still exactly one -- not stacked to two
+  });
+
   // Real-world incident, confirmed live on Math_Weir_PDF.pdf: several
   // stuck backplate cases turned out to be white text on a gray table
   // cell (a real, decent-contrast design, e.g. a row-header label) that

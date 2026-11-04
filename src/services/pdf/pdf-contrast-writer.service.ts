@@ -64,7 +64,7 @@ import { decodePageContent, writePageContent } from './pdf-content-stream-io';
 import { locateTextRun, locateTextRunsForPage, locateEnclosingTextObject, findPrecedingColor, findSiblingRuns, deviceComponentsToRgb, type TextRunMatch, type PageContrastTarget, type DeviceColorKind } from './contrast-content-stream';
 import { computeCompliantColor } from './color-contrast-correction';
 import { verifyContrastInRegion, verifyBackplateContrast } from './color-contrast-verification';
-import { computeBackplateRect, spliceBackplate } from './pdf-contrast-backplate';
+import { computeBackplateRect, spliceBackplate, findPrecedingBackplate, isSameBackplatePosition } from './pdf-contrast-backplate';
 import { BUSY_VARIANCE_THRESHOLD } from './validators/pdf-contrast.validator';
 import { decodeStreamBytes } from './image-extractor.service';
 import { evaluatePostScriptFunction } from './postscript-function-evaluator';
@@ -935,6 +935,44 @@ export class PdfContrastWriterService {
       // without restoreColorOverride falls through to originalRgb below,
       // same as a run with no internal op at all: both correctly mean
       // "nothing of this run's own overrides the ambient color").
+      const rect = computeBackplateRect(boundingBox);
+
+      // An earlier round (or an earlier fix in this same batch) may have
+      // already backplated this exact run -- verify it in place rather than
+      // stacking another rect on top. Position-matched against THIS run's
+      // own rect, not just "some backplate precedes the same BT": several
+      // DIFFERENT runs can legitimately share one enclosing BT, each with
+      // its own correctly-separate backplate -- see findPrecedingBackplate's
+      // own doc comment for the real incident (duplicate rects piling up on
+      // one page, every round, for the SAME run) this guards against.
+      if (enclosing) {
+        const existing = findPrecedingBackplate(content, enclosing.btStart);
+        if (existing && isSameBackplatePosition(existing.rect, rect)) {
+          const existingColorHex = unitRgbToHex(existing.color);
+          const existingBuffer = await this.extractSinglePageBuffer(doc, pageNumber);
+          const existingVerification = existingBuffer
+            ? await verifyBackplateContrast(existingBuffer, 1, boundingBox, cd.requiredRatio, existingColorHex)
+            : null;
+          if (existingVerification && existingVerification.passes && !existingVerification.uncertain) {
+            return {
+              issueId,
+              success: true,
+              before,
+              after: `already backplated ${existingColorHex} in an earlier round (re-verified ${existingVerification.ratio}:1)`,
+            };
+          }
+          return {
+            issueId,
+            success: false,
+            before,
+            after: 'unknown',
+            error: `A backplate (${existingColorHex}) was already applied here in an earlier round but this location still ` +
+              `${existingVerification ? `measures ${existingVerification.ratio}:1 (required ${cd.requiredRatio}:1)` : 'cannot be confidently measured'} -- ` +
+              'declining to stack another backplate rect on top of it; needs manual investigation',
+          };
+        }
+      }
+
       const trueTextRgb =
         match.restoreColorOverride ??
         (match.internalFillColorOp
@@ -944,7 +982,6 @@ export class PdfContrastWriterService {
         return { issueId, success: false, before, after: 'unknown', error: 'Could not determine the text run\'s true color for backplate contrast' };
       }
       const backplateColorHex = computeCompliantColor(cd.background, unitRgbToHex(trueTextRgb), EXTREME_TARGET_RATIO).color;
-      const rect = computeBackplateRect(boundingBox);
       const spliced = enclosing
         ? spliceBackplate(content, enclosing, rect, hexToUnitRgb(backplateColorHex), (csName, nums) => resolveSourceColor(doc, pageNumber, csName, nums))
         : null;
