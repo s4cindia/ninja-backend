@@ -239,46 +239,6 @@ export interface PrecedingBackplate {
   rect: BackplateRect;
 }
 
-/**
- * Detects a backplate THIS function already spliced immediately before
- * `btStart` on a PRIOR call (an earlier Auto Mode round, typically --
- * content persists round to round since each one builds on the previous
- * round's own successful writes) and returns its fill color and rect, or
- * null if none is found.
- *
- * Deliberately returns the rect too, not just the color: when several
- * DIFFERENT runs share one enclosing BT (a single BT...ET block can contain
- * multiple Tj/TJ operations with inline color changes between them), each
- * one's own backplate is correctly inserted at the SAME btStart -- so
- * finding *a* backplate there does not by itself mean THIS run was already
- * fixed, only that *some* run sharing this BT was. Callers must compare the
- * returned rect against their own freshly-computed one (same x/y to within
- * a point or two) before treating it as "this exact run, already handled."
- *
- * Real incident, 2026-11-04 (Farrar_2E_Comp_188910.pdf, page 118): without
- * this check, every round that re-flags an already-backplated run as still
- * failing inserts ANOTHER backplate rect for it on top of the prior one,
- * rather than recognizing one is already there. Each round's rect is a
- * SLIGHTLY different size (computeBackplateRect depends on this round's own
- * freshly-measured glyph box, which drifts by a point or so run to run), so
- * they don't perfectly re-cover each other -- a fractionally smaller new
- * rect leaves a 1pt sliver of an EARLIER, differently-colored rect exposed
- * right at the edge. That sliver is the likely cause of a real COLOR-
- * CONTRAST issue oscillating resolved/regressed every single round instead
- * of ever converging: which color wins the sampled probe point depends on
- * exactly how this round's rect happens to land relative to the last one's,
- * not on whether the location is actually fixed.
- */
-export function findPrecedingBackplate(content: string, btStart: number): PrecedingBackplate | null {
-  const window = content.slice(Math.max(0, btStart - PRECEDING_BACKPLATE_SEARCH_WINDOW), btStart);
-  const m = PRECEDING_BACKPLATE_RE.exec(window);
-  if (!m) return null;
-  return {
-    color: [parseFloat(m[1]), parseFloat(m[2]), parseFloat(m[3])],
-    rect: { x: parseFloat(m[4]), y: parseFloat(m[5]), width: parseFloat(m[6]), height: parseFloat(m[7]) },
-  };
-}
-
 // How close two rects' x/y must be (in PDF points) to count as "the same
 // run's backplate, redrawn" rather than "a different, nearby run's own
 // backplate that happens to share this BT." Generous enough to absorb the
@@ -291,4 +251,77 @@ const SAME_RUN_POSITION_TOLERANCE_PT = 4;
 /** True if `a` and `b` are close enough to be the same run's own backplate, redrawn. */
 export function isSameBackplatePosition(a: BackplateRect, b: BackplateRect): boolean {
   return Math.abs(a.x - b.x) <= SAME_RUN_POSITION_TOLERANCE_PT && Math.abs(a.y - b.y) <= SAME_RUN_POSITION_TOLERANCE_PT;
+}
+
+// How many stacked blocks to walk backward through looking for THIS run's
+// own entry before giving up -- see findPrecedingBackplate's own doc
+// comment for why a stack, not just the outermost entry, must be searched.
+// Confirmed real on Farrar_2E_Comp_188910.pdf (2026-11-05): a page with 3
+// sibling runs sharing one BT accumulated 165 backplates total, one single
+// position stacked 77 times, after ~45 unconverged Auto Mode rounds. A
+// small, fixed sibling-group size (3 here) only ever needs to look back a
+// few entries to find its own most recent one; this cap is generously
+// larger than any real sibling-group size observed, while still bounding
+// the walk's cost against a page that has already accumulated a pathological
+// stack before this fix ships (searching all 165 one at a time would be
+// wasteful, not incorrect -- the cap trades a theoretical, very rare "stop
+// finding mine, stack another" miss on an enormous pre-existing pile for
+// guaranteed-bounded work on every call).
+const MAX_BACKPLATE_STACK_DEPTH = 30;
+
+/**
+ * Detects a backplate THIS function already spliced immediately before
+ * `btStart` on a PRIOR call, whose rect position matches `targetRect` --
+ * i.e. the SAME run's own backplate, redrawn -- and returns its fill color
+ * and rect, or null if none is found within the stack searched.
+ *
+ * When several DIFFERENT runs share one enclosing BT (a single BT...ET
+ * block can contain multiple Tj/TJ operations with inline color changes
+ * between them), each one's own backplate is inserted at the exact SAME
+ * btStart -- so a round-robin of N sibling runs builds a STACK of N
+ * backplates immediately before that shared BT, each round adding N more.
+ * Checking only the single most-recently-inserted entry (this function's
+ * original behavior) almost never finds THIS run's own: by the time its
+ * next turn comes around, 1 to N-1 siblings have already pushed their own
+ * fresh entries in front of it. The position check then correctly says
+ * "not mine" every time -- not because the check is wrong, but because it
+ * was only ever looking at the top of the stack, never searching into it.
+ * This function instead walks backward through up to MAX_BACKPLATE_STACK_
+ * DEPTH contiguous entries, returning the first (nearest) one whose
+ * position actually matches `targetRect`.
+ *
+ * Real incident, 2026-11-04/05 (Farrar_2E_Comp_188910.pdf, page 118): a
+ * caption with 3 short lines (3 sibling COLOR-CONTRAST issues sharing one
+ * enclosing BT) never converged across ~45 Auto Mode rounds -- each run's
+ * own idempotency check kept finding a SIBLING's backplate immediately in
+ * front of the shared BT, never its own, so all 3 kept re-stacking forever.
+ * 165 backplates accumulated on that one page alone before this was caught,
+ * one position stacked 77 times. Each round's rect is also a SLIGHTLY
+ * different size (computeBackplateRect depends on this round's own
+ * freshly-measured glyph box, which drifts by a point or so run to run), so
+ * they don't perfectly re-cover each other -- a fractionally smaller new
+ * rect leaves a 1pt sliver of an EARLIER, differently-colored rect exposed
+ * right at the edge, which is the likely cause of a real COLOR-CONTRAST
+ * issue oscillating resolved/regressed every round for a SINGLE-sibling
+ * case too (the original, narrower incident this function was first built
+ * for), not just the stacking volume itself.
+ */
+export function findPrecedingBackplate(content: string, btStart: number, targetRect: BackplateRect): PrecedingBackplate | null {
+  let cursor = btStart;
+  for (let i = 0; i < MAX_BACKPLATE_STACK_DEPTH; i++) {
+    const windowStart = Math.max(0, cursor - PRECEDING_BACKPLATE_SEARCH_WINDOW);
+    const window = content.slice(windowStart, cursor);
+    const m = PRECEDING_BACKPLATE_RE.exec(window);
+    if (!m) return null;
+
+    const rect: BackplateRect = { x: parseFloat(m[4]), y: parseFloat(m[5]), width: parseFloat(m[6]), height: parseFloat(m[7]) };
+    if (isSameBackplatePosition(rect, targetRect)) {
+      return { color: [parseFloat(m[1]), parseFloat(m[2]), parseFloat(m[3])], rect };
+    }
+
+    // Not this run's own -- step the cursor back to where this (someone
+    // else's) block started and keep searching the stack for an older entry.
+    cursor = windowStart + m.index;
+  }
+  return null;
 }

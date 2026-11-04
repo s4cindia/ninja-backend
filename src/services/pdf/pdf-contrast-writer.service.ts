@@ -64,7 +64,7 @@ import { decodePageContent, writePageContent } from './pdf-content-stream-io';
 import { locateTextRun, locateTextRunsForPage, locateEnclosingTextObject, findPrecedingColor, findSiblingRuns, deviceComponentsToRgb, type TextRunMatch, type PageContrastTarget, type DeviceColorKind } from './contrast-content-stream';
 import { computeCompliantColor } from './color-contrast-correction';
 import { verifyContrastInRegion, verifyBackplateContrast } from './color-contrast-verification';
-import { computeBackplateRect, spliceBackplate, findPrecedingBackplate, isSameBackplatePosition } from './pdf-contrast-backplate';
+import { computeBackplateRect, spliceBackplate, findPrecedingBackplate } from './pdf-contrast-backplate';
 import { BUSY_VARIANCE_THRESHOLD } from './validators/pdf-contrast.validator';
 import { decodeStreamBytes } from './image-extractor.service';
 import { evaluatePostScriptFunction } from './postscript-function-evaluator';
@@ -946,8 +946,8 @@ export class PdfContrastWriterService {
       // own doc comment for the real incident (duplicate rects piling up on
       // one page, every round, for the SAME run) this guards against.
       if (enclosing) {
-        const existing = findPrecedingBackplate(content, enclosing.btStart);
-        if (existing && isSameBackplatePosition(existing.rect, rect)) {
+        const existing = findPrecedingBackplate(content, enclosing.btStart, rect);
+        if (existing) {
           const existingColorHex = unitRgbToHex(existing.color);
           const existingBuffer = await this.extractSinglePageBuffer(doc, pageNumber);
           const existingVerification = existingBuffer

@@ -175,7 +175,7 @@ describe('findPrecedingBackplate', () => {
     // recomputed against the NEW (shifted-forward) content -- exactly what
     // locateEnclosingTextObject would do on the next real call.
     const newBtStart = spliced!.indexOf('BT');
-    const existing = findPrecedingBackplate(spliced!, newBtStart);
+    const existing = findPrecedingBackplate(spliced!, newBtStart, rect);
 
     expect(existing).not.toBeNull();
     expect(existing!.color).toEqual([0, 0, 0]);
@@ -187,7 +187,7 @@ describe('findPrecedingBackplate', () => {
 
   it('returns null when nothing precedes the BT at all', () => {
     const content = 'BT\n<41> Tj\nET';
-    expect(findPrecedingBackplate(content, content.indexOf('BT'))).toBeNull();
+    expect(findPrecedingBackplate(content, content.indexOf('BT'), rect)).toBeNull();
   });
 
   it('returns null for ordinary page content that is not a backplate snippet (e.g. a table border fill)', () => {
@@ -195,7 +195,7 @@ describe('findPrecedingBackplate', () => {
     // before a BT must not be mistaken for a backplate -- it lacks the
     // second (restore) rg the real snippet always has.
     const content = '0 0 0 rg\n10 20 100 50 re\nf\nBT\n<41> Tj\nET';
-    expect(findPrecedingBackplate(content, content.indexOf('BT'))).toBeNull();
+    expect(findPrecedingBackplate(content, content.indexOf('BT'), rect)).toBeNull();
   });
 
   it('detects a non-identity-CTM backplate (cm-wrapped) immediately before the shifted BT', () => {
@@ -203,9 +203,58 @@ describe('findPrecedingBackplate', () => {
     const spliced = spliceBackplate(content, { btStart: 0, ctm: { a: 2, d: 4, e: 10, f: 20 } }, rect, [1, 1, 1]);
     expect(spliced).toBeTruthy();
     const newBtStart = spliced!.indexOf('BT');
-    const existing = findPrecedingBackplate(spliced!, newBtStart);
+    const existing = findPrecedingBackplate(spliced!, newBtStart, rect);
     expect(existing).not.toBeNull();
     expect(existing!.color).toEqual([1, 1, 1]);
+  });
+
+  // Real, live-confirmed incident, 2026-11-05 (same document, same page
+  // 118): a caption with 3 short lines -- 3 sibling COLOR-CONTRAST issues
+  // all sharing ONE enclosing BT -- never converged across ~45 Auto Mode
+  // rounds. Each sibling's own backplate is correctly inserted at the SAME
+  // shared btStart, so a round-robin of 3 builds a STACK immediately in
+  // front of it; checking only the single most-recently-inserted entry
+  // (this function's original behavior) found a SIBLING's backplate every
+  // time, never this run's own, so all 3 kept re-stacking forever -- 165
+  // backplates accumulated on that one page, one position 77 times.
+  it('walks back through a stack of sibling backplates sharing one BT to find THIS run\'s own, even when other siblings were spliced more recently', () => {
+    const rectA = { x: 72, y: 605, width: 161, height: 19 };
+    const rectB = { x: 72, y: 618, width: 162, height: 19 };
+    const rectC = { x: 72, y: 657, width: 161, height: 19 };
+    const ctm = { a: 1, d: 1, e: 0, f: 0 };
+
+    let content = 'BEFORE\nBT\n<41> Tj\nET\nAFTER';
+    let btStart = content.indexOf('BT');
+
+    // Round 1: siblings A, B, C each splice their own backplate at the one
+    // shared btStart, in that order (A ends up buried deepest, C nearest).
+    for (const [rect_, color] of [[rectA, [0, 0, 0]], [rectB, [1, 1, 1]], [rectC, [1, 1, 1]]] as const) {
+      content = spliceBackplate(content, { btStart, ctm }, rect_, color)!;
+      btStart = content.indexOf('BT');
+    }
+    // Round 2: same round-robin again, burying round 1's entries deeper.
+    for (const [rect_, color] of [[rectA, [0, 0, 0]], [rectB, [1, 1, 1]], [rectC, [1, 1, 1]]] as const) {
+      content = spliceBackplate(content, { btStart, ctm }, rect_, color)!;
+      btStart = content.indexOf('BT');
+    }
+
+    // Sibling A's own entry is now the OLDEST, most-deeply-buried thing in
+    // the stack (5 other entries -- B, C, A, B, C from round 1 plus round
+    // 2's B and C -- were spliced after it) -- yet it must still be found.
+    const existingA = findPrecedingBackplate(content, btStart, rectA);
+    expect(existingA).not.toBeNull();
+    expect(existingA!.color).toEqual([0, 0, 0]);
+    expect(existingA!.rect.x).toBeCloseTo(72);
+    expect(existingA!.rect.y).toBeCloseTo(605);
+
+    // B and C are each found too (nearer the top, but still correctly
+    // disambiguated from one another and from A).
+    expect(findPrecedingBackplate(content, btStart, rectB)!.rect.y).toBeCloseTo(618);
+    expect(findPrecedingBackplate(content, btStart, rectC)!.rect.y).toBeCloseTo(657);
+
+    // A genuinely different, unrelated position (no sibling here at all)
+    // still correctly finds nothing, even with a deep stack to search through.
+    expect(findPrecedingBackplate(content, btStart, { x: 72, y: 900, width: 161, height: 19 })).toBeNull();
   });
 });
 
