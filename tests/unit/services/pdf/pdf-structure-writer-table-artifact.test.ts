@@ -22,10 +22,17 @@
  * region that ever needed an Artifact tag of its own; removing the element
  * is both simpler and the only variant actually proven to satisfy a real
  * external validator. See markTableAsArtifact's own doc comment.
+ *
+ * That "/K-less TD" invariant is now VERIFIED, not assumed (real incident,
+ * 2026-11-04): a live Farrar table (table_p15_0) broke it -- its TD carried
+ * a real MCID -- and deleting it anyway produced an infinite delete/
+ * resurrect cycle with reattachTableRow's own document-flow fallback,
+ * every other Auto Mode round, forever. markTableAsArtifact now declines
+ * rather than deletes when a target's subtree has any real content.
  */
 
 import { describe, it, expect } from 'vitest';
-import { PDFDocument, PDFName, PDFRef, PDFDict, PDFArray } from 'pdf-lib';
+import { PDFDocument, PDFName, PDFRef, PDFDict, PDFArray, PDFNumber } from 'pdf-lib';
 import { pdfStructureWriterService } from '../../../../src/services/pdf/pdf-structure-writer.service';
 import type { AuditIssue } from '../../../../src/services/audit/base-audit.service';
 
@@ -351,5 +358,42 @@ describe('PdfStructureWriterService.markTableAsArtifact', () => {
 
     const trDict = doc.context.lookup(trRef) as PDFDict;
     expect(trDict.get(PDFName.of('P'))).toBeUndefined();
+  });
+
+  // Real incident on Farrar_2E_Comp_188910.pdf, live, 2026-11-04: table_p15_0's
+  // TD carries a real MCID -- genuine painted content -- breaking this
+  // method's own documented "/K-less TD" safety assumption. Deleting it
+  // anyway produced an infinite delete/resurrect cycle with
+  // reattachTableRow's document-flow fallback (every TABLE-ROW-DISCONNECTED
+  // re-audit on the orphaned, content-bearing row rebuilds it a wrapper,
+  // which gets re-flagged as MATTERHORN-15-005 and deleted again, forever).
+  it('declines rather than deletes when the table has a descendant cell with a real MCID (painted content)', async () => {
+    const doc = await PDFDocument.create();
+    doc.addPage([400, 600]);
+    const [pageRef] = doc.getPages().map(p => p.ref);
+
+    // Same shape as buildTrivialTable, but the TD carries a real MCID --
+    // the one invariant the "always safe to delete" assumption depends on.
+    const tdRef = doc.context.register(doc.context.obj({ S: PDFName.of('TD'), Pg: pageRef, K: PDFNumber.of(1) }));
+    const trRef = doc.context.register(doc.context.obj({ S: PDFName.of('TR'), K: [tdRef] }));
+    const tableRef = doc.context.register(doc.context.obj({ S: PDFName.of('Table'), K: [trRef] }));
+
+    const documentRef = doc.context.register(doc.context.obj({ S: PDFName.of('Document'), K: [tableRef] }));
+    setParent(doc, tableRef, documentRef);
+    setParent(doc, trRef, tableRef);
+    const structTreeRootRef = doc.context.register(
+      doc.context.obj({ Type: PDFName.of('StructTreeRoot'), K: [documentRef] })
+    );
+    doc.catalog.set(PDFName.of('StructTreeRoot'), structTreeRootRef);
+
+    const results = pdfStructureWriterService.markTableAsArtifact(doc, [issueFor('table_p1_0')]);
+
+    expect(results[0].success).toBe(false);
+    expect(results[0].error).toMatch(/real painted content/);
+    // The table must be left completely untouched, still reachable.
+    expect(isChildOf(doc, documentRef, tableRef)).toBe(true);
+    expect(tagOf(doc, tableRef)).toBe('/Table');
+    const trDict = doc.context.lookup(trRef) as PDFDict;
+    expect(trDict.get(PDFName.of('P'))).toEqual(tableRef);
   });
 });
