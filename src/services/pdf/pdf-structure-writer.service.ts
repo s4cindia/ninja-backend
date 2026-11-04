@@ -3224,7 +3224,17 @@ export class PdfStructureWriterService {
    * target element's own TR/TD children (if a future case ever has any)
    * become unreachable along with it, via the same "descendants remain in
    * the PDF context but are unreachable, not literally removed from the
-   * file" semantics deleteElement already documents.
+   * file" semantics deleteElement already documents -- but their own /P
+   * is explicitly cleared first (detachDirectChildrenParentPointers, same
+   * call buildTableFromLayout's rollback path already makes), NOT left
+   * pointing at the now-removed table. A real, live incident on Farrar
+   * (2026-11-04) found that skipping this step recreates the exact
+   * "/TR's /P names a real but unreachable /Table" shape
+   * reattachOrphanedTableAncestor exists to repair -- which then
+   * faithfully reattaches the table this method just correctly removed,
+   * which gets re-flagged as MATTERHORN-15-005 and deleted again next
+   * round, forever: two fixers with opposite ground truth about the same
+   * table, each undoing the other every single Auto Mode round.
    *
    * @param issues - MATTERHORN-15-005 AuditIssues for a confirmed-decorative
    *   trivial-struct-match table (see ai-analysis.service.ts's dispatch gate)
@@ -3270,6 +3280,17 @@ export class PdfStructureWriterService {
           continue;
         }
 
+        // Clear any TR/TD children's own /P BEFORE deleteElement drops this
+        // table's /K -- same call buildTableFromLayout's rollback path
+        // already makes for the identical "retag to Artifact" shape (see
+        // detachDirectChildrenParentPointers's own doc comment). Without
+        // this, a row still pointing at this now-unreachable table via /P
+        // is exactly the shape reattachOrphanedTableAncestor looks for and
+        // will faithfully splice back into the tree -- confirmed live on
+        // Farrar: markTableAsArtifact and reattachTableRow's orphan-repair
+        // path were deleting and resurrecting the same page-15 table every
+        // other Auto Mode round forever, each one undoing the other.
+        this.detachDirectChildrenParentPointers(doc, target.dict.get(PDFName.of('K')));
         this.deleteElement(doc, target.ref);
 
         results.push({
