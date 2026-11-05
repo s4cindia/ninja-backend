@@ -43,14 +43,21 @@ function setFlatParentTree(doc: PDFDocument, structTreeRootRef: PDFRef, entries:
   doc.context.lookup(structTreeRootRef, PDFDict).set(PDFName.of('ParentTree'), parentTree);
 }
 
-/** Builds a one-page document whose entire page is one /P <</MCID 0>> span (the real shape). */
-async function buildDoc(content: string): Promise<{ doc: PDFDocument; pRef: PDFRef; structTreeRootRef: PDFRef }> {
+/**
+ * Builds a one-page document whose entire page is one `<tag> <</MCID 0>>`
+ * span (the real shape). `structElementTag` (default 'P') is the struct
+ * element's own /S -- separate from whatever tag name literally appears in
+ * `content`'s own BDC, so a caller can build the real renameElement-drift
+ * shape (content stream still says the original tag, struct element's /S
+ * already corrected) on purpose.
+ */
+async function buildDoc(content: string, structElementTag = 'P'): Promise<{ doc: PDFDocument; pRef: PDFRef; structTreeRootRef: PDFRef }> {
   const doc = await PDFDocument.create();
   const page = doc.addPage([612, 792]);
   page.node.set(PDFName.of('StructParents'), doc.context.obj(0));
   writePageContent(doc, 1, content);
 
-  const pRef = doc.context.register(doc.context.obj({ Type: PDFName.of('StructElem'), S: PDFName.of('P'), Pg: page.ref, K: 0 }));
+  const pRef = doc.context.register(doc.context.obj({ Type: PDFName.of('StructElem'), S: PDFName.of(structElementTag), Pg: page.ref, K: 0 }));
   const structTreeRootRef = doc.context.register(doc.context.obj({ Type: PDFName.of('StructTreeRoot'), K: [pRef] }));
   doc.catalog.set(PDFName.of('StructTreeRoot'), structTreeRootRef);
   setFlatParentTree(doc, structTreeRootRef, [pRef]);
@@ -137,6 +144,36 @@ describe('fixLinkMissingAnnotation', () => {
       }
     }
     expect(foundAnnotEntry?.toString()).toBe(linkRef.toString());
+  });
+
+  // Real, live-confirmed shape from Curiel_187961_CSHP.pdf (page 14: content
+  // stream /H6, struct element /S /H3; page 32, x5: content stream /H6,
+  // struct element /S /H5) -- renameElement (used by fixHeadingHierarchy/
+  // fixMultipleH1 to correct a heading-level-skip gap) only ever updates
+  // the struct dict's own /S, never the content stream's own BDC tag-name
+  // literal, so a heading that's been renamed legitimately disagrees with
+  // its own content-stream tag with no actual inconsistency at all --
+  // nothing else in this codebase ever reads that tag-name operand for
+  // role determination, only the struct element's own /S is authoritative.
+  // A prior version of this fixer declined on this exact, harmless
+  // disagreement (34/209 of Curiel's own real cases) -- regression test
+  // for the fix.
+  it('still applies when the enclosing struct element\'s own /S disagrees with the content stream\'s own (cosmetic) BDC tag name', async () => {
+    const content = `/H6 <</MCID 0>> BDC BT\n[(Some heading text before)]TJ\n0 -1.5 Td\n[(${URL})]TJ\n0 -1.5 Td\n[(More heading text after)]TJ\nET EMC`;
+    const { doc, pRef } = await buildDoc(content, 'H3');
+
+    const result = pdfStructureWriterService.fixLinkMissingAnnotation(doc, issueFor(1, URL));
+    expect(result.success).toBe(true);
+
+    // Reopened remainder keeps the content stream's OWN tag name (/H6) --
+    // this fix doesn't need (and shouldn't attempt) to reconcile the two,
+    // only to stop treating their disagreement as a blocking problem.
+    const fixedContent = decodePageContent(doc, 1)!;
+    expect(fixedContent).toContain('EMC /H6 <</MCID 2>> BDC ');
+
+    // The struct element's own /S is untouched by this fix either way.
+    const pDict = doc.context.lookup(pRef, PDFDict);
+    expect(pDict.get(PDFName.of('S'))?.toString()).toBe('/H3');
   });
 
   it('declines when the URL cannot be located as a clean operator run on the page', async () => {

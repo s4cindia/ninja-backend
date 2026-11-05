@@ -6565,13 +6565,24 @@ export class PdfStructureWriterService {
     if (!(enclosingDict instanceof PDFDict)) {
       return fail('Enclosing struct element ref does not resolve to a dictionary');
     }
-    const enclosingTagRaw = enclosingDict.get(PDFName.of('S'));
-    if (enclosingTagRaw?.toString() !== `/${splice.enclosingTag}`) {
-      return fail(
-        `Enclosing struct element's own /S ("${enclosingTagRaw?.toString()}") no longer matches what the splice ` +
-        `was built against ("/${splice.enclosingTag}") -- declining rather than guessing`
-      );
-    }
+    // Deliberately NOT cross-checking the enclosing struct element's own /S
+    // against splice.enclosingTag (the content-stream's own cosmetic BDC
+    // tag-name literal) -- tried first, then removed as a real false-
+    // positive source, confirmed live on 34/209 of Curiel_187961_CSHP.pdf's
+    // own real cases. renameElement (used by fixHeadingHierarchy/
+    // fixMultipleH1 to correct a heading-level gap) only ever updates the
+    // struct dict's own /S -- it never touches the content stream's BDC tag
+    // name, so a heading that's been renamed (e.g. struct /S now /H3, BDC
+    // literal still /H6) legitimately disagrees with no actual inconsistency
+    // at all: nothing else in this codebase (grepped every validator) ever
+    // reads a content-stream tag-name operand for role determination --
+    // only a struct element's own /S is spec-authoritative (PDF32000's tag
+    // name operand has no defined accessibility semantics beyond marked-
+    // content scoping). The /K check right below is the real safety gate:
+    // it confirms the struct element pageArr[enclosingMcid] resolves to is,
+    // by construction, the UNIQUE element whose own /K still points back at
+    // exactly this MCID -- that's sufficient to prove it's the right
+    // element to splice into, independent of what its /S happens to say.
     const originalK = enclosingDict.get(PDFName.of('K'));
     if (!(originalK instanceof PDFNumber) || originalK.asNumber() !== enclosingMcid) {
       return fail(
