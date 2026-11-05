@@ -57,6 +57,7 @@ import { MIN_APPLY_CONFIDENCE, resolveSourceColor } from './pdf-contrast-writer.
 import { verifyStillNoDetectableInk } from './color-contrast-verification';
 import { tokenize } from '../zone-extractor/seam-c/content-stream';
 import type { ParsedPDF } from './pdf-parser.service';
+import { findUrlOperatorRun, buildLinkCompletenessSplice } from './pdf-link-completeness-writer';
 
 // ─── Public Types ─────────────────────────────────────────────────────────────
 
@@ -6386,6 +6387,275 @@ export class PdfStructureWriterService {
       return visit(k);
     };
     return visit(structRoot.get(PDFName.of('K')));
+  }
+
+  /**
+   * Escapes a literal PDF string's special characters per PDF32000-1:2008
+   * SS7.3.4.2 -- same exact escaping, and same reason, as pdf-modifier.
+   * service.ts's own escapePdfString (not imported from there: that one is
+   * private to its own file, and duplicating 2 lines is cheaper than
+   * exporting a single-purpose helper across an otherwise-unrelated file
+   * boundary -- same tradeoff pdf-link-completeness-writer.ts's own
+   * decodePdfStringLiteral already made, in the opposite direction).
+   * pdf-lib's own PDFString.of(...) does NOT escape parens/backslashes
+   * itself; this fixer's new /Link annotation is the first place in THIS
+   * file that writes free text (a URL, extracted from the document's own
+   * prose, not fully trusted) into a PDFString.
+   */
+  private escapeLinkPdfString(text: string): string {
+    return text.replace(/\\/g, '\\\\').replace(/\(/g, '\\(').replace(/\)/g, '\\)');
+  }
+
+  /**
+   * Allocates the next free STANDALONE-object /StructParent key and
+   * appends [key, structElementRef] to /StructTreeRoot's own top-level
+   * /ParentTree /Nums array -- a SEPARATE PDF mechanism from a page's own
+   * MCID-indexed ParentTree array (extendParentTree's own doc comment
+   * explains the distinction in full; confirmed via zone-extractor/seam-c/
+   * struct-tree-builder.ts's real usage, the only other place in this
+   * codebase that assigns a standalone object's /StructParent). Needed
+   * because a brand-new annotation (unlike every existing fix in this
+   * file, which only ever adds page-content MCIDs) needs its OWN key in
+   * this separate space.
+   *
+   * Reuses resolveParentTreeNumsArray's own /ParentTree /Nums resolution
+   * (document-wide in its first half, despite that method's pageNumber
+   * parameter -- the returned pageKey is simply unused here; still throws
+   * on a hierarchical /Kids tree, same as every other caller).
+   *
+   * The key is computed as max(existing /ParentTreeNextKey, 1 + the
+   * highest key anywhere in /Nums) -- self-healing against a stale or
+   * missing counter rather than trusting it blindly, since this is the
+   * first place in this codebase that both READS and WRITES this specific
+   * counter for a brand-new standalone key (extendParentTree only ever
+   * reads it, and only ever raises it defensively). Validates the computed
+   * key isn't already present before mutating anything -- should never
+   * actually fire given the computation above, but costs nothing and
+   * matches this file's established paranoia.
+   */
+  private appendAnnotationParentTreeEntry(doc: PDFDocument, pageNumber: number, structElementRef: PDFRef): number {
+    const { numsArr } = this.resolveParentTreeNumsArray(doc, pageNumber);
+    const structRoot = this.getStructTreeRoot(doc)!;
+    const raw = numsArr.asArray();
+
+    let highestKey = -1;
+    for (let i = 0; i < raw.length; i += 2) {
+      const keyObj = raw[i] instanceof PDFRef ? doc.context.lookup(raw[i] as PDFRef) : raw[i];
+      if (keyObj instanceof PDFNumber && keyObj.asNumber() > highestKey) highestKey = keyObj.asNumber();
+    }
+    const nextKeyRaw = structRoot.get(PDFName.of('ParentTreeNextKey'));
+    const nextKeyResolved = nextKeyRaw instanceof PDFRef ? doc.context.lookup(nextKeyRaw) : nextKeyRaw;
+    const counterKey = nextKeyResolved instanceof PDFNumber ? nextKeyResolved.asNumber() : 0;
+    const key = Math.max(counterKey, highestKey + 1);
+
+    for (let i = 0; i < raw.length; i += 2) {
+      const keyObj = raw[i] instanceof PDFRef ? doc.context.lookup(raw[i] as PDFRef) : raw[i];
+      if (keyObj instanceof PDFNumber && keyObj.asNumber() === key) {
+        throw new Error(`appendAnnotationParentTreeEntry: ParentTree already has an entry at key ${key} -- computed key was not actually free`);
+      }
+    }
+
+    let insertPos = raw.length;
+    for (let i = 0; i < raw.length; i += 2) {
+      const keyObj = raw[i] instanceof PDFRef ? doc.context.lookup(raw[i] as PDFRef) : raw[i];
+      if (keyObj instanceof PDFNumber && keyObj.asNumber() > key) { insertPos = i; break; }
+    }
+    numsArr.insert(insertPos, structElementRef);
+    numsArr.insert(insertPos, PDFNumber.of(key));
+    structRoot.set(PDFName.of('ParentTreeNextKey'), PDFNumber.of(key + 1));
+
+    return key;
+  }
+
+  /**
+   * LINK-MISSING-ANNOTATION fix (Matterhorn 28-011), Slice 3 -- wires
+   * slices 1-2's pure content-stream splice (pdf-link-completeness-
+   * writer.ts's findUrlOperatorRun/buildLinkCompletenessSplice) into a real
+   * PDFDocument: creates the /Link annotation PAC/veraPDF actually look
+   * for, a matching /Link structure element carrying both the URL's own
+   * text (via its fresh MCID) and an OBJR back to the annotation, splices
+   * that new element into the enclosing paragraph's own /K (replacing its
+   * single bare MCID with [original, new /Link, remainder] -- see
+   * buildLinkCompletenessSplice's own doc comment for why a remainder MCID
+   * is needed at all), and extends BOTH ParentTree mechanisms this needs:
+   * the page's own MCID-indexed array (for linkMcid and, if present, the
+   * remainder's fresh MCID) via the existing extendParentTree, and the
+   * document-wide standalone-object key space (for the annotation's own
+   * /StructParent) via the new appendAnnotationParentTreeEntry above.
+   *
+   * Scoped to real, measured data: a full sweep of
+   * Curiel_187961_CSHP.pdf's own 209 real LINK-MISSING-ANNOTATION issues
+   * found the URL arrives as a clean, findUrlOperatorRun-locatable run in
+   * 135/209 (64.6%) of cases; this method declines the other two real
+   * buckets (a URL sharing its own text-show operand with substantial
+   * surrounding prose, or a handful of genuinely unexplained misses)
+   * rather than guess -- see pdf-link-completeness-writer.ts's own header
+   * comment for the full breakdown. Also declines when the enclosing
+   * content has no MCID of its own (a bare /Artifact) -- no natural
+   * struct-tree parent to attach the new /Link under, the same
+   * "ambiguous, no natural parent" shape this file already declines
+   * elsewhere (reattachTableCell, retagPlacedPdfAsFigure) rather than
+   * invent one; not hit by any of the 135 real clean matches above (every
+   * one sits inside a real, MCID-bound /P).
+   *
+   * Rollback on any failure restores the page's original content bytes,
+   * /Annots, and the enclosing element's /K, and clears every newly
+   * registered object's /K and /P (deleteElement) -- same discipline as
+   * fixArtifactSwallowsContent. One accepted, documented residual: if
+   * extendParentTree or appendAnnotationParentTreeEntry (the unconditional
+   * last two statements, after everything else has already succeeded)
+   * throws, the OTHER of the two may have already committed its own
+   * insertion with nothing to explicitly undo it -- left as-is rather than
+   * hand-rolling an undo for a tree insert at a known position, since any
+   * leftover entry would point at content this rollback already deletes
+   * (an inert, never-looked-up trailing slot, not a corruption) and this
+   * matches every other fix method in this file, each of which treats its
+   * own single extendParentTree call as the true last, no-further-rollback
+   * statement in its own try block.
+   */
+  fixLinkMissingAnnotation(doc: PDFDocument, issue: AuditIssue): FixResult {
+    const fail = (error: string): FixResult => ({ issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error });
+
+    if (!issue.pageNumber) return fail('Issue has no pageNumber');
+    if (!issue.linkCompletenessData?.url) return fail('Issue has no linkCompletenessData.url');
+    if (!issue.boundingBox) return fail('Issue has no boundingBox -- cannot place a Link annotation without one');
+    const pageNumber = issue.pageNumber;
+    const url = issue.linkCompletenessData.url;
+    const bbox = issue.boundingBox;
+
+    let originalContent: string | null;
+    try {
+      originalContent = decodePageContent(doc, pageNumber);
+    } catch (err) {
+      return fail(`Could not decode page ${pageNumber}: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    if (!originalContent) return fail(`Page ${pageNumber} has no content stream`);
+
+    const run = findUrlOperatorRun(originalContent, 0, originalContent.length, url);
+    if (!run) {
+      return fail(
+        'Could not locate this URL as a clean run of text-show operators on this page -- either already fixed, ' +
+        'or this is one of the real cases where the URL shares its own operand with surrounding prose (needs a ' +
+        'harder, font-encoding-aware mid-string split this fixer does not attempt -- see pdf-link-completeness-writer.ts)'
+      );
+    }
+
+    const existingMcids = pageContentMcids(doc, pageNumber) ?? new Set<number>();
+    const nextMcid = existingMcids.size > 0 ? Math.max(...existingMcids) + 1 : 0;
+
+    const splice = buildLinkCompletenessSplice(originalContent, run, nextMcid);
+    if (!splice) {
+      return fail('Could not build a content-stream splice for this match -- no enclosing tag, or the match crosses its own enclosing tag\'s close');
+    }
+    if (splice.enclosingMcid === null) {
+      return fail(
+        'Enclosing content is an untagged /Artifact span (no MCID of its own) -- no natural structure-tree parent ' +
+        'to attach the new /Link under; declining rather than guessing'
+      );
+    }
+    const enclosingMcid = splice.enclosingMcid;
+
+    const pageArr = this.resolveParentTreePageArray(doc, pageNumber);
+    if (!pageArr) return fail(`No /ParentTree entry found for page ${pageNumber}`);
+    const enclosingRef = pageArr.asArray()[enclosingMcid];
+    if (!(enclosingRef instanceof PDFRef)) {
+      return fail(`Page ${pageNumber}'s /ParentTree has no struct element at MCID ${enclosingMcid}`);
+    }
+    const enclosingDict = doc.context.lookup(enclosingRef);
+    if (!(enclosingDict instanceof PDFDict)) {
+      return fail('Enclosing struct element ref does not resolve to a dictionary');
+    }
+    const enclosingTagRaw = enclosingDict.get(PDFName.of('S'));
+    if (enclosingTagRaw?.toString() !== `/${splice.enclosingTag}`) {
+      return fail(
+        `Enclosing struct element's own /S ("${enclosingTagRaw?.toString()}") no longer matches what the splice ` +
+        `was built against ("/${splice.enclosingTag}") -- declining rather than guessing`
+      );
+    }
+    const originalK = enclosingDict.get(PDFName.of('K'));
+    if (!(originalK instanceof PDFNumber) || originalK.asNumber() !== enclosingMcid) {
+      return fail(
+        `Enclosing struct element's own /K is no longer the single bare MCID ${enclosingMcid} the splice was ` +
+        'built against -- declining rather than guessing at how to merge with whatever else is there now'
+      );
+    }
+
+    const page = doc.getPage(pageNumber - 1);
+    const pageRef = page.ref;
+    const originalAnnotsRaw = page.node.get(PDFName.of('Annots'));
+    const existingAnnots = originalAnnotsRaw instanceof PDFRef ? doc.context.lookup(originalAnnotsRaw) : originalAnnotsRaw;
+    const existingAnnotRefs = existingAnnots instanceof PDFArray ? existingAnnots.asArray() : [];
+
+    const rect = [
+      bbox.x,
+      bbox.pageHeight - bbox.y - bbox.height,
+      bbox.x + bbox.width,
+      bbox.pageHeight - bbox.y,
+    ];
+
+    const createdRefs: PDFRef[] = [];
+    try {
+      const annotDict = doc.context.obj({
+        Type: PDFName.of('Annot'),
+        Subtype: PDFName.of('Link'),
+        Rect: rect,
+        Border: [0, 0, 0],
+        A: { S: PDFName.of('URI'), URI: PDFString.of(this.escapeLinkPdfString(url)) },
+      }) as PDFDict;
+      const annotRef = doc.context.register(annotDict);
+      createdRefs.push(annotRef);
+
+      const objrDict = doc.context.obj({ Type: PDFName.of('OBJR'), Obj: annotRef, Pg: pageRef }) as PDFDict;
+      const objrRef = doc.context.register(objrDict);
+      createdRefs.push(objrRef);
+
+      const linkElemDict = doc.context.obj({
+        Type: PDFName.of('StructElem'),
+        S: PDFName.of('Link'),
+        P: enclosingRef,
+        Pg: pageRef,
+        K: [PDFNumber.of(splice.linkMcid), objrRef],
+      }) as PDFDict;
+      const linkRef = doc.context.register(linkElemDict);
+      createdRefs.push(linkRef);
+
+      page.node.set(PDFName.of('Annots'), doc.context.obj([...existingAnnotRefs, annotRef]));
+
+      let newContent = originalContent;
+      for (const edit of [...splice.edits].sort((a, b) => b.offset - a.offset)) {
+        newContent = newContent.slice(0, edit.offset) + edit.text + newContent.slice(edit.offset);
+      }
+      writePageContent(doc, pageNumber, newContent);
+
+      const newK: PDFObject[] = [PDFNumber.of(enclosingMcid), linkRef];
+      if (splice.remainderMcid !== null) newK.push(PDFNumber.of(splice.remainderMcid));
+      enclosingDict.set(PDFName.of('K'), doc.context.obj(newK));
+
+      if (!this.isReachableFromRoot(doc, enclosingRef)) {
+        throw new Error('Enclosing struct element is no longer reachable from the structure tree root after splicing -- not committing');
+      }
+
+      const parentTreeEntries: Array<{ mcid: number; structElementRef: PDFRef }> = [{ mcid: splice.linkMcid, structElementRef: linkRef }];
+      if (splice.remainderMcid !== null) parentTreeEntries.push({ mcid: splice.remainderMcid, structElementRef: enclosingRef });
+      this.extendParentTree(doc, pageNumber, parentTreeEntries);
+
+      const structParentKey = this.appendAnnotationParentTreeEntry(doc, pageNumber, linkRef);
+      annotDict.set(PDFName.of('StructParent'), PDFNumber.of(structParentKey));
+    } catch (err) {
+      writePageContent(doc, pageNumber, originalContent);
+      if (originalAnnotsRaw !== undefined) page.node.set(PDFName.of('Annots'), originalAnnotsRaw);
+      else page.node.delete(PDFName.of('Annots'));
+      enclosingDict.set(PDFName.of('K'), originalK);
+      for (const ref of createdRefs) this.deleteElement(doc, ref);
+      return fail(err instanceof Error ? err.message : String(err));
+    }
+
+    return {
+      issueId: issue.id,
+      success: true,
+      before: 'URL-shaped text with no Link annotation',
+      after: `Created a /Link annotation + structure element for "${url.slice(0, 80)}"`,
+    };
   }
 }
 

@@ -81,6 +81,15 @@ export interface AuditIssue {
     requiredRatio: number;
     isLargeText: boolean;
   };
+  /**
+   * The full, untruncated URL text — populated only by PdfLinkCompletenessValidator
+   * for LINK-MISSING-ANNOTATION issues. `message`/`context` both truncate the URL
+   * (80/120 chars) for display; a fixer that needs to relocate the URL's own exact
+   * text in the content stream needs the real, complete string, not a display copy.
+   */
+  linkCompletenessData?: {
+    url: string;
+  };
 }
 
 /**

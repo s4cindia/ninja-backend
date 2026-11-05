@@ -34,6 +34,10 @@ describe('PdfLinkCompletenessValidator', () => {
     expect(issues[0].context).toContain('https://cwrp.ca/policy-legislation');
     expect(issues[0].matterhornCheckpoint).toBe('28-011');
     expect(issues[0].category).toBe('links');
+    // The full, untruncated URL -- context/message both truncate for display
+    // (80/120 chars); a fixer relocating this text in the content stream
+    // needs the exact, complete string.
+    expect(issues[0].linkCompletenessData?.url).toBe('https://cwrp.ca/policy-legislation');
   });
 
   it('flags a plain-text www.-prefixed URL (no explicit scheme)', async () => {
