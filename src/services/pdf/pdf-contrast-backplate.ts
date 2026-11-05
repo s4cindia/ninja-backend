@@ -18,9 +18,11 @@
  * contrast-content-stream.ts, which this module's spliceBackplate consumes.
  */
 
+import { PDFDocument } from 'pdf-lib';
 import type { EnclosingTextObject } from './contrast-content-stream';
 import { findPrecedingColor } from './contrast-content-stream';
 import { RENDER_SCALE } from './color-contrast-verification';
+import { decodePageContent, writePageContent } from './pdf-content-stream-io';
 
 export interface BackplateRect {
   /** Bottom-left-origin PDF points — the `re` operator's own convention. */
@@ -228,6 +230,12 @@ export function spliceBackplate(
 const PRECEDING_BACKPLATE_RE =
   /(?:[-\d.]+\s+0\s+0\s+[-\d.]+\s+[-\d.]+\s+[-\d.]+\s+cm\s*\n)?([\d.]+)\s+([\d.]+)\s+([\d.]+)\s+rg\s*\n([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)\s+re\s*\nf\s*\n[\d.]+\s+[\d.]+\s+[\d.]+\s+rg\s*\n(?:[-\d.]+\s+0\s+0\s+[-\d.]+\s+[-\d.]+\s+[-\d.]+\s+cm\s*\n)?$/;
 
+// Same block shape as PRECEDING_BACKPLATE_RE (built from its own source, to
+// stay in sync), minus the trailing `$` anchor -- finds every backplate
+// block anywhere in a page's content rather than only one ending at a
+// specific cursor. Used by dedupeStackedBackplates to walk a whole page.
+const BACKPLATE_BLOCK_SOURCE = PRECEDING_BACKPLATE_RE.source.slice(0, -1);
+
 // Only search the last ~400 chars before btStart -- comfortably more than
 // one snippet ever needs (its longest numbers are a handful of digits
 // each), so a false match pulled from unrelated, much-earlier content is
@@ -324,4 +332,109 @@ export function findPrecedingBackplate(content: string, btStart: number, targetR
     cursor = windowStart + m.index;
   }
   return null;
+}
+
+export interface BackplateDedupeResult {
+  content: string;
+  removedCount: number;
+  keptCount: number;
+}
+
+/**
+ * Collapses runs of stacked, same-position backplates (see
+ * findPrecedingBackplate's own doc comment for how they accumulate on a
+ * document that predates that fix) down to one entry per position -- the
+ * one closest to its enclosing BT. That entry is both the most recently
+ * spliced AND the one actually visible: content-stream operators paint in
+ * order, so a later `re f` renders on top of an earlier one at the same
+ * spot.
+ *
+ * Safe to discard the rest outright, not just visually redundant: every
+ * stacked entry's own trailing restore `rg` already resolves to the same
+ * true pre-backplate ambient color, because each splice's findPrecedingColor
+ * call (see spliceBackplate) finds the immediately-preceding block's own
+ * restore op, not its fill -- so the chain of restores is uniform all the
+ * way back to the original ambient, regardless of which entry in the stack
+ * is kept. Dropping every entry but the last reproduces exactly what the
+ * content stream would look like if only that one splice had ever happened.
+ *
+ * One-time cleanup, not part of the normal fix-application path -- PR #765
+ * stops *new* stacking going forward but doesn't retroactively touch a
+ * document that already accumulated a pile before that fix shipped (real,
+ * live case: Farrar_2E_Comp_188910.pdf page 118, 165 backplates, one
+ * position stacked 77 times). Pure function over a raw content string, so
+ * it's directly testable; cleanupStackedBackplates below is the page-
+ * iterating wrapper that actually applies it to a PDFDocument.
+ */
+export function dedupeStackedBackplates(content: string): BackplateDedupeResult {
+  const re = new RegExp(BACKPLATE_BLOCK_SOURCE, 'g');
+  const matches: Array<{ start: number; end: number; rect: BackplateRect }> = [];
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(content))) {
+    matches.push({
+      start: m.index,
+      end: m.index + m[0].length,
+      rect: { x: parseFloat(m[4]), y: parseFloat(m[5]), width: parseFloat(m[6]), height: parseFloat(m[7]) },
+    });
+  }
+  if (matches.length === 0) return { content, removedCount: 0, keptCount: 0 };
+
+  // Group matches by position, comparing each new match against the
+  // group's most-recently-added member (not its first) so gradual
+  // round-to-round glyph-measurement drift doesn't silently split one run's
+  // long stack into several groups -- same reasoning as findPrecedingBackplate
+  // walking the stack instead of only checking one fixed reference point.
+  const groups: Array<{ x: number; y: number; members: typeof matches }> = [];
+  for (const match of matches) {
+    const group = groups.find(
+      (g) => Math.abs(g.x - match.rect.x) <= SAME_RUN_POSITION_TOLERANCE_PT && Math.abs(g.y - match.rect.y) <= SAME_RUN_POSITION_TOLERANCE_PT
+    );
+    if (group) {
+      group.members.push(match);
+      group.x = match.rect.x;
+      group.y = match.rect.y;
+    } else {
+      groups.push({ x: match.rect.x, y: match.rect.y, members: [match] });
+    }
+  }
+
+  const toRemove = new Set<number>(); // keyed by each stale match's own `start` offset
+  for (const group of groups) {
+    for (const stale of group.members.slice(0, -1)) {
+      toRemove.add(stale.start);
+    }
+  }
+  if (toRemove.size === 0) return { content, removedCount: 0, keptCount: matches.length };
+
+  let out = '';
+  let cursor = 0;
+  for (const match of matches) {
+    out += content.slice(cursor, match.start);
+    if (!toRemove.has(match.start)) out += content.slice(match.start, match.end);
+    cursor = match.end;
+  }
+  out += content.slice(cursor);
+
+  return { content: out, removedCount: toRemove.size, keptCount: matches.length - toRemove.size };
+}
+
+/**
+ * Runs dedupeStackedBackplates across every page of `doc`, rewriting only
+ * the pages that actually had stacked duplicates. One-time maintenance
+ * operation for a document that hit the pre-#765 sibling-stacking bug
+ * before it shipped -- see that function's own doc comment. Returns only
+ * the pages that changed, with how many duplicate backplates each lost.
+ */
+export function cleanupStackedBackplates(doc: PDFDocument): Array<{ page: number; removedCount: number }> {
+  const changed: Array<{ page: number; removedCount: number }> = [];
+  for (let page = 1; page <= doc.getPageCount(); page++) {
+    const content = decodePageContent(doc, page);
+    if (!content) continue;
+    const result = dedupeStackedBackplates(content);
+    if (result.removedCount > 0) {
+      writePageContent(doc, page, result.content);
+      changed.push({ page, removedCount: result.removedCount });
+    }
+  }
+  return changed;
 }

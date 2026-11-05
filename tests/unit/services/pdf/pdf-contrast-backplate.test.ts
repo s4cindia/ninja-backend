@@ -1,11 +1,15 @@
 import { describe, it, expect } from 'vitest';
+import { PDFDocument } from 'pdf-lib';
 import {
   computeBackplateRect,
   spliceBackplate,
   findPrecedingBackplate,
   isSameBackplatePosition,
+  dedupeStackedBackplates,
+  cleanupStackedBackplates,
 } from '../../../../src/services/pdf/pdf-contrast-backplate';
 import { RENDER_SCALE } from '../../../../src/services/pdf/color-contrast-verification';
+import { decodePageContent, writePageContent } from '../../../../src/services/pdf/pdf-content-stream-io';
 
 describe('computeBackplateRect', () => {
   it('converts a baseline-anchored, top-left-origin boundingBox to a bottom-left-origin re rect, padded for tier-0 probe coverage and descenders', () => {
@@ -255,6 +259,125 @@ describe('findPrecedingBackplate', () => {
     // A genuinely different, unrelated position (no sibling here at all)
     // still correctly finds nothing, even with a deep stack to search through.
     expect(findPrecedingBackplate(content, btStart, { x: 72, y: 900, width: 161, height: 19 })).toBeNull();
+  });
+});
+
+// Real, live-confirmed incident, 2026-11-05 (Farrar_2E_Comp_188910.pdf,
+// page 118): PR #765 stopped NEW stacking but a document that hit the bug
+// before that fix shipped still carries the pile it already accumulated --
+// 165 backplates on that one page, one position stacked 77 times. A
+// one-time cleanup pass is needed to collapse the existing pile, since the
+// normal fix-application path never revisits already-painted pages.
+describe('dedupeStackedBackplates', () => {
+  const rectA = { x: 72, y: 605, width: 161, height: 19 };
+  const rectB = { x: 72, y: 618, width: 162, height: 19 };
+  const rectC = { x: 72, y: 657, width: 161, height: 19 };
+  const ctm = { a: 1, d: 1, e: 0, f: 0 };
+
+  function buildStackedContent(): string {
+    let content = 'BEFORE\nBT\n<41> Tj\nET\nAFTER';
+    let btStart = content.indexOf('BT');
+    // Round 1: A, B, C each splice at the one shared btStart.
+    for (const [rect, color] of [[rectA, [0.5, 0.5, 0.5]], [rectB, [1, 1, 1]], [rectC, [1, 1, 1]]] as const) {
+      content = spliceBackplate(content, { btStart, ctm }, rect, color)!;
+      btStart = content.indexOf('BT');
+    }
+    // Round 2: same round-robin, A's color now escalated to pure black --
+    // this is the one that should survive cleanup for position A.
+    for (const [rect, color] of [[rectA, [0, 0, 0]], [rectB, [1, 1, 1]], [rectC, [1, 1, 1]]] as const) {
+      content = spliceBackplate(content, { btStart, ctm }, rect, color)!;
+      btStart = content.indexOf('BT');
+    }
+    return content;
+  }
+
+  it('collapses a 3-sibling, 2-round stack (6 entries) down to one entry per position, keeping the most recent color', () => {
+    const content = buildStackedContent();
+    const result = dedupeStackedBackplates(content);
+
+    expect(result.removedCount).toBe(3);
+    expect(result.keptCount).toBe(3);
+
+    const btStart = result.content.indexOf('BT');
+    const survivorA = findPrecedingBackplate(result.content, btStart, rectA);
+    const survivorB = findPrecedingBackplate(result.content, btStart, rectB);
+    const survivorC = findPrecedingBackplate(result.content, btStart, rectC);
+
+    // A's surviving entry is round 2's (pure black), not round 1's (grey).
+    expect(survivorA!.color).toEqual([0, 0, 0]);
+    expect(survivorB!.color).toEqual([1, 1, 1]);
+    expect(survivorC!.color).toEqual([1, 1, 1]);
+
+    // Nothing else in the stack is left to find behind the survivors.
+    expect(dedupeStackedBackplates(result.content).removedCount).toBe(0);
+  });
+
+  it('preserves the surrounding page content exactly, only touching the stacked region', () => {
+    const content = buildStackedContent();
+    const result = dedupeStackedBackplates(content);
+    expect(result.content.startsWith('BEFORE\n')).toBe(true);
+    expect(result.content.endsWith('BT\n<41> Tj\nET\nAFTER')).toBe(true);
+  });
+
+  it('is a no-op on content with no stacking at all (single backplate, or none)', () => {
+    const content = 'BEFORE\nBT\n<41> Tj\nET\nAFTER';
+    const spliced = spliceBackplate(content, { btStart: content.indexOf('BT'), ctm }, rectA, [0, 0, 0])!;
+
+    const singleResult = dedupeStackedBackplates(spliced);
+    expect(singleResult.removedCount).toBe(0);
+    expect(singleResult.keptCount).toBe(1);
+    expect(singleResult.content).toBe(spliced);
+
+    const emptyResult = dedupeStackedBackplates(content);
+    expect(emptyResult.removedCount).toBe(0);
+    expect(emptyResult.keptCount).toBe(0);
+    expect(emptyResult.content).toBe(content);
+  });
+
+  it('does not mistake an ordinary, unrelated rect fill (e.g. a table border) for a backplate', () => {
+    const content = '0 0 0 rg\n10 20 100 50 re\nf\nBT\n<41> Tj\nET';
+    const result = dedupeStackedBackplates(content);
+    expect(result.removedCount).toBe(0);
+    expect(result.keptCount).toBe(0);
+    expect(result.content).toBe(content);
+  });
+});
+
+describe('cleanupStackedBackplates', () => {
+  it('rewrites only the pages that had stacked duplicates, leaving clean pages untouched', async () => {
+    const src = await PDFDocument.create();
+    src.addPage([500, 700]); // page 1: will get a stacked mess
+    src.addPage([500, 700]); // page 2: a single, already-clean backplate
+    src.addPage([500, 700]); // page 3: no backplate at all
+    const doc = await PDFDocument.load(await src.save());
+
+    const ctm = { a: 1, d: 1, e: 0, f: 0 };
+    const rect = { x: 72, y: 605, width: 161, height: 19 };
+    let page1Content = 'BT\n<41> Tj\nET';
+    let btStart = page1Content.indexOf('BT');
+    for (const color of [[0.5, 0.5, 0.5], [0, 0, 0]] as const) {
+      page1Content = spliceBackplate(page1Content, { btStart, ctm }, rect, color)!;
+      btStart = page1Content.indexOf('BT');
+    }
+    writePageContent(doc, 1, page1Content);
+
+    const page2Content = spliceBackplate('BT\n<41> Tj\nET', { btStart: 0, ctm }, rect, [0, 0, 0])!;
+    writePageContent(doc, 2, page2Content);
+
+    writePageContent(doc, 3, 'BT\n<41> Tj\nET');
+
+    const changed = cleanupStackedBackplates(doc);
+
+    expect(changed).toEqual([{ page: 1, removedCount: 1 }]);
+
+    const cleanedPage1 = decodePageContent(doc, 1)!;
+    expect(dedupeStackedBackplates(cleanedPage1).removedCount).toBe(0);
+    expect(findPrecedingBackplate(cleanedPage1, cleanedPage1.indexOf('BT'), rect)!.color).toEqual([0, 0, 0]);
+
+    // Page 2 (already clean) and page 3 (no backplate) are byte-identical
+    // to what was written.
+    expect(decodePageContent(doc, 2)).toBe(page2Content);
+    expect(decodePageContent(doc, 3)).toBe('BT\n<41> Tj\nET');
   });
 });
 
