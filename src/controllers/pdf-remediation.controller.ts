@@ -9,6 +9,8 @@ import { AuthenticatedRequest } from '../types/authenticated-request';
 import { logger } from '../lib/logger';
 import prisma from '../lib/prisma';
 import { Prisma } from '@prisma/client';
+import type { Job } from '@prisma/client';
+import { s3Service } from '../services/s3.service';
 import { pdfRemediationService } from '../services/pdf/pdf-remediation.service';
 import { pdfAutoRemediationService } from '../services/pdf/pdf-auto-remediation.service';
 import { pdfModifierService } from '../services/pdf/pdf-modifier.service';
@@ -1208,161 +1210,12 @@ export class PdfRemediationController {
         });
       }
 
-      // Acquire the remediation-cycle lock before starting the (potentially
-      // multi-minute) re-audit -- prevents this upload-based verification
-      // from interleaving with an in-flight apply-fixes/re-audit/AI-analysis
-      // cycle on the same job, which previously produced job.output writes
-      // with no ordering guarantee.
-      const lock = await remediationCycleLockService.acquireLock(
-        jobId,
-        req.user!.id,
-        'reaudit_pdf_upload'
-      );
-      if (!lock.acquired) {
-        return res.status(409).json({
-          success: false,
-          data: {},
-          error: {
-            code: 'REMEDIATION_CYCLE_IN_PROGRESS',
-            message: 'Another remediation cycle is already in progress for this job.',
-            details: { lockedAt: lock.lockedAt, lockedBy: lock.lockedBy, source: lock.source },
-          },
-        });
-      }
-      const cycleNumber = lock.cycleNumber!;
-      const cycleStartedAt = new Date();
-      const heartbeat = remediationCycleLockService.startHeartbeat(jobId, cycleNumber);
-
-      try {
-        // Run re-audit and comparison
-        logger.info(`[Re-Audit] Starting for job ${jobId}`, {
-          fileName: req.file.originalname,
-          fileSize: buffer.length,
-        });
-
-        const comparisonResult = await pdfReauditService.reauditAndCompare(
-          jobId,
-          buffer,
-          req.file.originalname
-        );
-
-        // Only a genuinely successful re-audit gets to overwrite the canonical
-        // file and report verification complete. reauditAndCompare can resolve
-        // with success: false (e.g. a magic-valid but otherwise malformed PDF)
-        // instead of throwing -- treating that as a completed verification
-        // would both discard the previous good remediated file and falsely
-        // tell the checklist the fix landed, with misleading zero-valued
-        // metrics to back it up.
-        let remediatedPath: string | undefined;
-        if (comparisonResult.success) {
-          // Save under the job's own canonical filename, not the upload's --
-          // reauditCurrentFile and AI re-analysis look the file up later by
-          // the job's original fileName (falling back to 'document.pdf'), so
-          // storing it under whatever the operator happened to name their
-          // local copy (e.g. "manually-fixed.pdf") would make it unreachable
-          // to every downstream consumer.
-          const jobInput = job.input as { fileName?: string } | null;
-          const canonicalFileName = jobInput?.fileName || 'document.pdf';
-          remediatedPath = await fileStorageService.saveRemediatedFile(jobId, canonicalFileName, buffer);
-        }
-
-        // Re-fetch immediately before writing rather than reusing the
-        // pre-audit `job` snapshot: reauditAndCompare's own mid-flight
-        // progress writes (postRemediationProgress) land on the live row
-        // while this call is awaited, and spreading the stale snapshot here
-        // would silently discard them.
-        const latestJob = await prisma.job.findUnique({ where: { id: jobId } });
-        const latestOutput = (latestJob?.output as Record<string, unknown> | null) ?? {};
-
-        // Update job output with comparison data
-        // Type assertion needed because Prisma's InputJsonValue is strict,
-        // but the data is valid JSON that Prisma will serialize correctly
-        await prisma.job.update({
-          where: { id: jobId },
-          data: {
-            output: {
-              ...latestOutput,
-              // The fresh audit (score, matterhornSummary, issues) must replace the
-              // stale prior one — otherwise the results page keeps showing whatever
-              // was there before this re-audit, regardless of what actually changed.
-              ...(comparisonResult.success && comparisonResult.reauditReport ? { auditReport: comparisonResult.reauditReport } : {}),
-              reauditComparison: comparisonResult,
-              lastReauditAt: new Date().toISOString(),
-              // Same shape as applyAll's automatic post-remediation re-audit
-              // (pdf-ai-analysis.controller.ts) -- the guided-remediation
-              // checklist's re-audit steps key off these fields regardless of
-              // whether the re-audit was triggered automatically or, as here,
-              // by uploading a manually-fixed PDF. Only written on success --
-              // see the comment above remediatedPath for why a failed
-              // verification must not claim completion.
-              ...(comparisonResult.success ? {
-                remediatedFileUrl: remediatedPath,
-                postRemediationStatus: 'complete',
-                postRemediationAudit: {
-                  runAt: new Date().toISOString(),
-                  resolved: comparisonResult.metrics.resolvedCount,
-                  remaining: comparisonResult.metrics.remainingCount,
-                  regressions: comparisonResult.metrics.regressionCount,
-                  resolutionRate: comparisonResult.metrics.resolutionRate,
-                },
-              } : {}),
-            } as unknown as Prisma.InputJsonObject,
-            updatedAt: new Date(),
-          },
-        });
-
-        await remediationCycleHistoryService.logEvent({
-          jobId,
-          cycleNumber,
-          action: 'reaudit',
-          source: 'reaudit_pdf_upload',
-          status: comparisonResult.success ? 'completed' : 'failed',
-          resolvedCount: comparisonResult.metrics.resolvedCount,
-          remainingCount: comparisonResult.metrics.remainingCount,
-          regressionCount: comparisonResult.metrics.regressionCount,
-          resolutionRate: comparisonResult.metrics.resolutionRate,
-          errorMessage: comparisonResult.success ? undefined : comparisonResult.error,
-          triggeredBy: req.user!.id,
-          startedAt: cycleStartedAt,
-        });
-
-        logger.info(`[Re-Audit] Completed for job ${jobId}`, {
-          resolvedCount: comparisonResult.metrics.resolvedCount,
-          remainingCount: comparisonResult.metrics.remainingCount,
-          regressionCount: comparisonResult.metrics.regressionCount,
-          resolutionRate: comparisonResult.metrics.resolutionRate,
-        });
-
-        return res.status(200).json({
-          success: true,
-          data: comparisonResult,
-          error: {
-            code: null,
-            message: null,
-            details: null,
-          },
-        });
-      } catch (err) {
-        // reauditAndCompare, file storage, or the job.output write can throw
-        // outright (not just resolve with success: false) -- without this,
-        // that path skips logEvent entirely and the history log silently
-        // omits an exceptional failure even though it's presented as a log
-        // of every completed-or-failed action.
-        await remediationCycleHistoryService.logEvent({
-          jobId,
-          cycleNumber,
-          action: 'reaudit',
-          source: 'reaudit_pdf_upload',
-          status: 'failed',
-          errorMessage: err instanceof Error ? err.message : String(err),
-          triggeredBy: req.user!.id,
-          startedAt: cycleStartedAt,
-        });
-        throw err;
-      } finally {
-        remediationCycleLockService.stopHeartbeat(heartbeat);
-        await remediationCycleLockService.releaseLock(jobId, cycleNumber);
-      }
+      // Awaited explicitly (not `return this.runReauditCycle(...)`) so a
+      // rejection from inside it is still caught by this method's own
+      // try/catch below, matching this function's pre-refactor behavior --
+      // an un-awaited returned promise's rejection would instead propagate
+      // past this try block entirely, bypassing the clean 500 response.
+      return await this.runReauditCycle(req, res, jobId, job, buffer, req.file.originalname);
     } catch (error) {
       logger.error('Failed to re-audit PDF', {
         error: error instanceof Error ? error.message : 'Unknown error',
@@ -1378,6 +1231,312 @@ export class PdfRemediationController {
           details: null,
         },
       });
+    }
+  }
+
+  /**
+   * POST /api/v1/pdf/:jobId/remediation/re-audit-from-file
+   *
+   * Same verification as reauditPdf, for a file already uploaded through
+   * the generic presigned-S3 flow (POST /files/presign -> PUT directly to
+   * S3 -> POST /files/:fileId/confirm) instead of a direct multipart body
+   * to this service.
+   *
+   * reauditPdf's own direct-multipart upload shares this backend's
+   * CloudFront distribution, which has AWSManagedRulesCommonRuleSet
+   * actively enforced (not just counted) -- the same WAF this codebase's
+   * main PDF upload was already migrated off of for exactly this reason
+   * (see CLAUDE.md's "WAF Blocking File Uploads"). This route alone had
+   * never been moved onto the presigned-S3 pattern. Confirmed live,
+   * 2026-11-05: an operator's "Upload Fixed PDF" attempt with a 15MB PDF
+   * produced a browser-side "Network Error" and left zero trace in this
+   * service's own logs across two separate attempts -- the request never
+   * reached the Express app at all, consistent with an edge-level block.
+   */
+  async reauditFromFile(req: AuthenticatedRequest, res: Response): Promise<Response> {
+    try {
+      const { jobId } = req.params;
+      const { fileId } = req.body as { fileId?: string };
+      const tenantId = req.user?.tenantId;
+
+      if (!tenantId) {
+        return res.status(401).json({
+          success: false,
+          data: {},
+          error: { code: 'UNAUTHORIZED', message: 'Authentication required', details: null },
+        });
+      }
+
+      if (!fileId) {
+        return res.status(400).json({
+          success: false,
+          data: {},
+          error: { code: 'INVALID_REQUEST', message: 'fileId is required', details: null },
+        });
+      }
+
+      const job = await prisma.job.findFirst({ where: { id: jobId, tenantId } });
+      if (!job) {
+        return res.status(404).json({
+          success: false,
+          data: {},
+          error: { code: 'JOB_NOT_FOUND', message: 'Job not found or access denied', details: null },
+        });
+      }
+
+      if (job.type !== 'PDF_ACCESSIBILITY') {
+        return res.status(400).json({
+          success: false,
+          data: {},
+          error: { code: 'INVALID_JOB_TYPE', message: 'Job is not a PDF accessibility audit', details: null },
+        });
+      }
+
+      // Scoped to this tenant (not just any fileId) -- the presigned-upload
+      // flow already scopes file creation to req.user's own tenant, but
+      // nothing stops an operator from passing an arbitrary fileId here.
+      const file = await prisma.file.findFirst({ where: { id: fileId, tenantId } });
+      if (!file || file.status !== 'UPLOADED' || !file.storagePath) {
+        return res.status(400).json({
+          success: false,
+          data: {},
+          error: {
+            code: 'INVALID_FILE',
+            message: 'File not found, or its upload was never confirmed (POST /files/:fileId/confirm)',
+            details: null,
+          },
+        });
+      }
+
+      const MAX_FILE_SIZE = 100 * 1024 * 1024; // 100MB, matching reauditPdf's own cap
+      if (file.size > MAX_FILE_SIZE) {
+        return res.status(413).json({
+          success: false,
+          data: {},
+          error: {
+            code: 'FILE_TOO_LARGE',
+            message: 'File exceeds 100MB limit',
+            details: { maxSize: MAX_FILE_SIZE, actualSize: file.size },
+          },
+        });
+      }
+
+      const buffer = await s3Service.getFileBuffer(file.storagePath);
+      const magicBytes = buffer.slice(0, 5).toString('ascii');
+
+      logger.info(`[Re-Audit] File validation (from presigned upload)`, {
+        fileName: file.originalName,
+        fileSize: buffer.length,
+        mimeType: file.mimeType,
+        magicBytes,
+      });
+
+      if (!magicBytes.startsWith('%PDF-')) {
+        logger.error(`[Re-Audit] Invalid PDF magic bytes`, {
+          expected: '%PDF-',
+          received: magicBytes,
+        });
+
+        return res.status(400).json({
+          success: false,
+          data: {},
+          error: {
+            code: 'INVALID_PDF',
+            message: 'Invalid PDF file: file does not contain PDF magic bytes',
+            details: null,
+          },
+        });
+      }
+
+      // See reauditPdf's own comment on why this must be awaited, not
+      // returned bare.
+      return await this.runReauditCycle(req, res, jobId, job, buffer, file.originalName);
+    } catch (error) {
+      logger.error('Failed to re-audit PDF from file', {
+        error: error instanceof Error ? error.message : 'Unknown error',
+        jobId: req.params.jobId,
+      });
+
+      return res.status(500).json({
+        success: false,
+        data: {},
+        error: {
+          code: 'INTERNAL_SERVER_ERROR',
+          message: 'Failed to re-audit PDF',
+          details: null,
+        },
+      });
+    }
+  }
+
+  /**
+   * Shared by reauditPdf and reauditFromFile once each has its own
+   * trusted `buffer` + `originalFileName` in hand (multipart vs. fetched
+   * from S3 after a presigned upload) -- everything downstream of "we have
+   * real PDF bytes to verify" is identical regardless of how they arrived.
+   */
+  private async runReauditCycle(
+    req: AuthenticatedRequest,
+    res: Response,
+    jobId: string,
+    job: Job,
+    buffer: Buffer,
+    originalFileName: string
+  ): Promise<Response> {
+    // Acquire the remediation-cycle lock before starting the (potentially
+    // multi-minute) re-audit -- prevents this upload-based verification
+    // from interleaving with an in-flight apply-fixes/re-audit/AI-analysis
+    // cycle on the same job, which previously produced job.output writes
+    // with no ordering guarantee.
+    const lock = await remediationCycleLockService.acquireLock(
+      jobId,
+      req.user!.id,
+      'reaudit_pdf_upload'
+    );
+    if (!lock.acquired) {
+      return res.status(409).json({
+        success: false,
+        data: {},
+        error: {
+          code: 'REMEDIATION_CYCLE_IN_PROGRESS',
+          message: 'Another remediation cycle is already in progress for this job.',
+          details: { lockedAt: lock.lockedAt, lockedBy: lock.lockedBy, source: lock.source },
+        },
+      });
+    }
+    const cycleNumber = lock.cycleNumber!;
+    const cycleStartedAt = new Date();
+    const heartbeat = remediationCycleLockService.startHeartbeat(jobId, cycleNumber);
+
+    try {
+      // Run re-audit and comparison
+      logger.info(`[Re-Audit] Starting for job ${jobId}`, {
+        fileName: originalFileName,
+        fileSize: buffer.length,
+      });
+
+      const comparisonResult = await pdfReauditService.reauditAndCompare(
+        jobId,
+        buffer,
+        originalFileName
+      );
+
+      // Only a genuinely successful re-audit gets to overwrite the canonical
+      // file and report verification complete. reauditAndCompare can resolve
+      // with success: false (e.g. a magic-valid but otherwise malformed PDF)
+      // instead of throwing -- treating that as a completed verification
+      // would both discard the previous good remediated file and falsely
+      // tell the checklist the fix landed, with misleading zero-valued
+      // metrics to back it up.
+      let remediatedPath: string | undefined;
+      if (comparisonResult.success) {
+        // Save under the job's own canonical filename, not the upload's --
+        // reauditCurrentFile and AI re-analysis look the file up later by
+        // the job's original fileName (falling back to 'document.pdf'), so
+        // storing it under whatever the operator happened to name their
+        // local copy (e.g. "manually-fixed.pdf") would make it unreachable
+        // to every downstream consumer.
+        const jobInput = job.input as { fileName?: string } | null;
+        const canonicalFileName = jobInput?.fileName || 'document.pdf';
+        remediatedPath = await fileStorageService.saveRemediatedFile(jobId, canonicalFileName, buffer);
+      }
+
+      // Re-fetch immediately before writing rather than reusing the
+      // pre-audit `job` snapshot: reauditAndCompare's own mid-flight
+      // progress writes (postRemediationProgress) land on the live row
+      // while this call is awaited, and spreading the stale snapshot here
+      // would silently discard them.
+      const latestJob = await prisma.job.findUnique({ where: { id: jobId } });
+      const latestOutput = (latestJob?.output as Record<string, unknown> | null) ?? {};
+
+      // Update job output with comparison data
+      // Type assertion needed because Prisma's InputJsonValue is strict,
+      // but the data is valid JSON that Prisma will serialize correctly
+      await prisma.job.update({
+        where: { id: jobId },
+        data: {
+          output: {
+            ...latestOutput,
+            // The fresh audit (score, matterhornSummary, issues) must replace the
+            // stale prior one — otherwise the results page keeps showing whatever
+            // was there before this re-audit, regardless of what actually changed.
+            ...(comparisonResult.success && comparisonResult.reauditReport ? { auditReport: comparisonResult.reauditReport } : {}),
+            reauditComparison: comparisonResult,
+            lastReauditAt: new Date().toISOString(),
+            // Same shape as applyAll's automatic post-remediation re-audit
+            // (pdf-ai-analysis.controller.ts) -- the guided-remediation
+            // checklist's re-audit steps key off these fields regardless of
+            // whether the re-audit was triggered automatically or, as here,
+            // by uploading a manually-fixed PDF. Only written on success --
+            // see the comment above remediatedPath for why a failed
+            // verification must not claim completion.
+            ...(comparisonResult.success ? {
+              remediatedFileUrl: remediatedPath,
+              postRemediationStatus: 'complete',
+              postRemediationAudit: {
+                runAt: new Date().toISOString(),
+                resolved: comparisonResult.metrics.resolvedCount,
+                remaining: comparisonResult.metrics.remainingCount,
+                regressions: comparisonResult.metrics.regressionCount,
+                resolutionRate: comparisonResult.metrics.resolutionRate,
+              },
+            } : {}),
+          } as unknown as Prisma.InputJsonObject,
+          updatedAt: new Date(),
+        },
+      });
+
+      await remediationCycleHistoryService.logEvent({
+        jobId,
+        cycleNumber,
+        action: 'reaudit',
+        source: 'reaudit_pdf_upload',
+        status: comparisonResult.success ? 'completed' : 'failed',
+        resolvedCount: comparisonResult.metrics.resolvedCount,
+        remainingCount: comparisonResult.metrics.remainingCount,
+        regressionCount: comparisonResult.metrics.regressionCount,
+        resolutionRate: comparisonResult.metrics.resolutionRate,
+        errorMessage: comparisonResult.success ? undefined : comparisonResult.error,
+        triggeredBy: req.user!.id,
+        startedAt: cycleStartedAt,
+      });
+
+      logger.info(`[Re-Audit] Completed for job ${jobId}`, {
+        resolvedCount: comparisonResult.metrics.resolvedCount,
+        remainingCount: comparisonResult.metrics.remainingCount,
+        regressionCount: comparisonResult.metrics.regressionCount,
+        resolutionRate: comparisonResult.metrics.resolutionRate,
+      });
+
+      return res.status(200).json({
+        success: true,
+        data: comparisonResult,
+        error: {
+          code: null,
+          message: null,
+          details: null,
+        },
+      });
+    } catch (err) {
+      // reauditAndCompare, file storage, or the job.output write can throw
+      // outright (not just resolve with success: false) -- without this,
+      // that path skips logEvent entirely and the history log silently
+      // omits an exceptional failure even though it's presented as a log
+      // of every completed-or-failed action.
+      await remediationCycleHistoryService.logEvent({
+        jobId,
+        cycleNumber,
+        action: 'reaudit',
+        source: 'reaudit_pdf_upload',
+        status: 'failed',
+        errorMessage: err instanceof Error ? err.message : String(err),
+        triggeredBy: req.user!.id,
+        startedAt: cycleStartedAt,
+      });
+      throw err;
+    } finally {
+      remediationCycleLockService.stopHeartbeat(heartbeat);
+      await remediationCycleLockService.releaseLock(jobId, cycleNumber);
     }
   }
 

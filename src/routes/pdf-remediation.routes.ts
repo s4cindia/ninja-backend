@@ -17,6 +17,7 @@ import {
   previewFixSchema,
   quickFixRequestSchema,
   reauditRequestSchema,
+  reauditFromFileRequestSchema,
 } from '../schemas/pdf-remediation.schemas';
 import type { AuthenticatedRequest } from '../types/authenticated-request';
 
@@ -183,6 +184,26 @@ router.post(
   validate(reauditRequestSchema),
   upload.single('file'),
   (req, res) => pdfRemediationController.reauditPdf(req as AuthenticatedRequestWithFile, res)
+);
+
+/**
+ * POST /api/v1/pdf/:jobId/remediation/re-audit-from-file
+ * Same verification as re-audit above, for a file already uploaded via the
+ * generic presigned-S3 flow (POST /files/presign -> PUT to S3 -> POST
+ * /files/:fileId/confirm). Exists because this service's CloudFront
+ * distribution has AWSManagedRulesCommonRuleSet actively enforced, which
+ * blocks the direct multipart upload the route above uses once the body
+ * gets large -- see that route's own controller doc comment.
+ *
+ * @body fileId - File ID from the presigned-upload confirm step
+ * @returns Comparison of before/after results, with the fresh audit report persisted
+ */
+router.post(
+  '/:jobId/remediation/re-audit-from-file',
+  authenticate,
+  authorizeJob,
+  validate(reauditFromFileRequestSchema),
+  (req, res) => pdfRemediationController.reauditFromFile(req as AuthenticatedRequest, res)
 );
 
 /**

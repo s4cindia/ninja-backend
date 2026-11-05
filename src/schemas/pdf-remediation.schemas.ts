@@ -130,6 +130,21 @@ export const reauditRequestSchema = {
 };
 
 /**
+ * Schema for the presigned-upload variant of re-audit (no multipart body
+ * through this service -- the file already landed in S3 via the generic
+ * POST /files/presign -> PUT -> POST /files/:fileId/confirm flow).
+ * POST /api/v1/pdf/:jobId/remediation/re-audit-from-file
+ */
+export const reauditFromFileRequestSchema = {
+  params: z.object({
+    jobId: z.string().min(1, 'Job ID is required'),
+  }),
+  body: z.object({
+    fileId: z.string().min(1, 'fileId is required'),
+  }),
+};
+
+/**
  * Type exports for use in controllers
  */
 export type TaskStatus = z.infer<typeof taskStatusSchema>;
