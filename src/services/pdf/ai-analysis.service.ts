@@ -294,6 +294,15 @@ const TABLE_HEADER_SCOPE_CODES = new Set(['TABLE-HEADER-MISSING-SCOPE']);
 // validatePlacedPdfContent and pdf-structure-writer.service.ts's
 // retagPlacedPdfAsFigure for the full detection/fix trail.
 const PLACEDPDF_NOT_TAGGED_CODES = new Set(['PLACEDPDF-NOT-TAGGED']);
+// pdf-link-completeness.validator.ts: URL-shaped PLAIN TEXT with no
+// underlying Link annotation at all -- distinct from LINK_CODES above,
+// which only judges the TEXT QUALITY of links that already exist.
+// Deterministic, no AI judgment needed (the validator already extracted
+// and validated the URL); see pdf-link-completeness-writer.ts's own header
+// comment for the real, measured scope this fix actually covers (a
+// minority of real cases -- most of the rest are safely declined for
+// well-understood reasons, not silently skipped).
+const LINK_MISSING_ANNOTATION_CODES = new Set(['LINK-MISSING-ANNOTATION']);
 
 // Document-level codes always produce the same result for the whole document,
 // so the suggestion cache below keys them by code alone.
@@ -324,7 +333,23 @@ const DOC_LEVEL_CODES = new Set([
  */
 export function buildSuggestionCacheKey(issue: Pick<AuditIssue, 'code' | 'element' | 'pageNumber' | 'id'>): string {
   if (DOC_LEVEL_CODES.has(issue.code)) return issue.code;
-  if (CONTRAST_CODES.has(issue.code) || LINK_CODES.has(issue.code) || FORM_CODES.has(issue.code)) {
+  if (
+    CONTRAST_CODES.has(issue.code) ||
+    LINK_CODES.has(issue.code) ||
+    FORM_CODES.has(issue.code) ||
+    LINK_MISSING_ANNOTATION_CODES.has(issue.code)
+  ) {
+    // LINK_MISSING_ANNOTATION_CODES: same collision shape as contrast/
+    // link/form-field above -- real data confirms a single page can carry
+    // several independent LINK-MISSING-ANNOTATION issues (page 85 has 3,
+    // page 102 has 6, on the real Curiel_187961_CSHP.pdf), with no stable
+    // `element` id to key on. Today's suggestion object happens to be
+    // identical regardless of which issue it's for (no AI call, nothing
+    // issue-specific embedded), so a shared page-level key would be
+    // harmless right now -- but keying per-issue here costs nothing and
+    // avoids silently reintroducing this exact bug class the moment the
+    // suggestion ever becomes issue-specific (e.g. embedding the URL text
+    // into `guidance`).
     return `${issue.code}:${issue.id}`;
   }
   return `${issue.code}:${issue.element ?? issue.pageNumber ?? ''}`;
@@ -1751,6 +1776,28 @@ class AiAnalysisService {
         guidance: 'This page has placed vector artwork (Adobe InDesign\'s own tag) that was never connected to the structure tree -- it will be retagged as a real /Figure structure element and wired into the document flow.',
         confidence: 1.0,
         rationale: 'Deterministic fix -- the tag\'s own properties reference resolves to document metadata, never an /MCID, so this content was never reachable from the structure tree regardless of what it depicts; no judgment call needed to retag it, only to later decide its alt text (left to the normal missing-alt-text pipeline)',
+        model: 'rule-based',
+        applyMode: 'apply-to-pdf',
+      };
+    }
+
+    if (LINK_MISSING_ANNOTATION_CODES.has(code)) {
+      // Deterministic, but genuinely declines (not "applies") most real
+      // cases -- fixLinkMissingAnnotation itself is the actual gate (no
+      // enclosing MCID, URL shares an operand with other prose, enclosing
+      // struct element's /S or /K no longer matches what was analyzed,
+      // etc.), same as every other apply-to-pdf fixer in this file that
+      // can discover at apply-time it can't safely proceed. Returning the
+      // suggestion unconditionally here (rather than pre-checking and
+      // returning null) keeps this issue visible to the user as "will be
+      // attempted" rather than silently reclassifying it as guidance-only
+      // before the real writer has even tried.
+      if (!issue.linkCompletenessData?.url) return null;
+      return {
+        suggestionType: 'link-missing-annotation-fix',
+        guidance: 'This text reads as a hyperlink but has no underlying Link annotation -- a real Link annotation and matching structure element will be created for it.',
+        confidence: 1.0,
+        rationale: 'Deterministic fix -- the validator already extracted and validated the URL text; no AI judgment needed to create the annotation and structure element, only to locate the URL\'s own exact bytes in the content stream (handled by findUrlOperatorRun, which declines rather than guesses when the URL shares its own text-show operand with other prose)',
         model: 'rule-based',
         applyMode: 'apply-to-pdf',
       };
@@ -3655,7 +3702,7 @@ class AiAnalysisService {
     // failures in a single round), never once reaching the real writer
     // calls (fixArtifactSwallowsContentComplex / retagPlacedPdfAsFigure)
     // below despite both being fully implemented, tested, and merged.
-    const STRUCTURE_WRITER_TYPES = new Set(['heading-fix', 'list-fix', 'table-header-fix', 'table-header-fix-column', 'table-header-scope-fix', 'table-artifact-fix', 'table-from-layout-fix', 'bookmark-generate', 'heading-multiple-h1-fix', 'pdfua-identifier', 'color-contrast-fix', 'alt-text-decorative', 'untagged-content-fix', 'invisible-text-artifact-fix', 'figure-caption-reattach-fix', 'inline-figure-reattach-fix', 'tagged-content-artifact-split-fix', 'table-cell-reattach-fix', 'table-row-reattach-fix', 'font-tounicode-synthesis-fix', 'font-tounicode-extend-fix', 'artifact-unwrap-complex-fix', 'placedpdf-retag-fix']);
+    const STRUCTURE_WRITER_TYPES = new Set(['heading-fix', 'list-fix', 'table-header-fix', 'table-header-fix-column', 'table-header-scope-fix', 'table-artifact-fix', 'table-from-layout-fix', 'bookmark-generate', 'heading-multiple-h1-fix', 'pdfua-identifier', 'color-contrast-fix', 'alt-text-decorative', 'untagged-content-fix', 'invisible-text-artifact-fix', 'figure-caption-reattach-fix', 'inline-figure-reattach-fix', 'tagged-content-artifact-split-fix', 'table-cell-reattach-fix', 'table-row-reattach-fix', 'font-tounicode-synthesis-fix', 'font-tounicode-extend-fix', 'artifact-unwrap-complex-fix', 'placedpdf-retag-fix', 'link-missing-annotation-fix']);
 
     let applied = 0;
     let failed = 0;
@@ -3831,6 +3878,17 @@ class AiAnalysisService {
           const r = pdfStructureWriterService.fixArtifactSwallowsContentComplex(doc, originalIssue);
           modification = { success: r.success, description: r.after, error: r.error };
           // Same content-stream-rewrite reasoning as artifact-unwrap-fix above.
+          if (r.success && originalIssue.pageNumber !== undefined) {
+            pagesRewrittenSincePreResolve.add(originalIssue.pageNumber);
+          }
+        } else if (suggestionType === 'link-missing-annotation-fix') {
+          const r = pdfStructureWriterService.fixLinkMissingAnnotation(doc, originalIssue);
+          modification = { success: r.success, description: r.after, error: r.error };
+          // Rewrites the page's own content stream (splices in a /Link
+          // span + reattaches the remainder under a fresh MCID) and adds
+          // a real annotation -- same pagesRewrittenSincePreResolve
+          // tracking as artifact-unwrap-fix/tagged-content-artifact-
+          // split-fix above, for the same reason.
           if (r.success && originalIssue.pageNumber !== undefined) {
             pagesRewrittenSincePreResolve.add(originalIssue.pageNumber);
           }

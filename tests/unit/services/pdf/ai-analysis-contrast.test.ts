@@ -316,4 +316,14 @@ describe('buildSuggestionCacheKey', () => {
     const b: AuditIssue = { ...BASE_ISSUE, id: 'form-b', code: 'FORM-FIELD-NO-LABEL', pageNumber: 5 };
     expect(buildSuggestionCacheKey(a)).not.toBe(buildSuggestionCacheKey(b));
   });
+
+  // Same collision shape, pre-emptively avoided: real data (Curiel_187961_
+  // CSHP.pdf) confirms a single page routinely carries several independent
+  // LINK-MISSING-ANNOTATION issues (page 85 has 3, page 102 has 6), with no
+  // stable `element` id to key on.
+  it('gives two distinct LINK-MISSING-ANNOTATION issues on the same page distinct keys', () => {
+    const a: AuditIssue = { ...BASE_ISSUE, id: 'link-missing-a', code: 'LINK-MISSING-ANNOTATION', pageNumber: 85 };
+    const b: AuditIssue = { ...BASE_ISSUE, id: 'link-missing-b', code: 'LINK-MISSING-ANNOTATION', pageNumber: 85 };
+    expect(buildSuggestionCacheKey(a)).not.toBe(buildSuggestionCacheKey(b));
+  });
 });

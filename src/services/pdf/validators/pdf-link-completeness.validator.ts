@@ -200,6 +200,7 @@ class PdfLinkCompletenessValidator {
       suggestion:
         'Convert this text into a real hyperlink: add a Link annotation with a URI action pointing to the address, and wrap it in a matching Link structure element.',
       context: `URL-shaped text: "${span.url.substring(0, 120)}"`,
+      linkCompletenessData: { url: span.url },
       pageNumber,
       boundingBox: {
         x: span.box.x,

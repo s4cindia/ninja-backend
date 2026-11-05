@@ -763,6 +763,35 @@ describe('aiAnalysisService.applyApprovedSuggestions', () => {
   });
 
   /**
+   * Same real bug class as the artifact-unwrap-complex-fix/placedpdf-retag-fix
+   * regression above (both missing from STRUCTURE_WRITER_TYPES when first
+   * added) -- link-missing-annotation-fix ALSO dispatches with no `value`
+   * (deterministic, rule-based, apply-to-pdf -- see its own dispatchIssue
+   * branch), so it needed the same registration. Added proactively here
+   * rather than discovered live.
+   */
+  it('dispatches a link-missing-annotation-fix suggestion (no value, rule-based) to fixLinkMissingAnnotation', async () => {
+    vi.mocked(prisma.aiAnalysis.findMany).mockResolvedValue([
+      { issueId: 'link-missing-1', suggestionType: 'link-missing-annotation-fix' },
+    ] as any);
+    vi.mocked(fileStorageService.getRemediatedFile).mockResolvedValue(Buffer.from('pdf'));
+    vi.mocked(pdfModifierService.loadPDF).mockResolvedValue({} as any);
+    vi.mocked(pdfModifierService.savePDF).mockResolvedValue(Buffer.from('modified-pdf'));
+    vi.mocked(fileStorageService.saveRemediatedFile).mockResolvedValue('s3://remediated/doc.pdf');
+
+    const { pdfStructureWriterService } = await import('../../../../src/services/pdf/pdf-structure-writer.service');
+    vi.mocked(pdfStructureWriterService.fixLinkMissingAnnotation).mockReturnValue(
+      { issueId: 'link-missing-1', success: true, before: 'URL-shaped text with no Link annotation', after: 'Created a /Link annotation + structure element' },
+    );
+
+    const result = await aiAnalysisService.applyApprovedSuggestions('job-1', 1, 'user-1', 'apply_all');
+
+    expect(pdfStructureWriterService.fixLinkMissingAnnotation).toHaveBeenCalled();
+    expect(result.applied).toBe(1);
+    expect(result.failed).toBe(0);
+  });
+
+  /**
    * Regression: a suggestion's issueId is a per-audit sequential counter
    * that gets reassigned whenever a re-audit replaces the audit report --
    * a suggestion approved against an older audit pass can carry an issueId
