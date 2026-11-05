@@ -94,9 +94,39 @@ const TEXT_SHOW_OPS = new Set(['Tj', 'TJ', "'", '"']);
  * genuinely exists on the page; the decode of it was just wrong). See
  * decodeTextShowOperands's own GlyphTextResolver parameter for the fix.
  */
-function decodePdfStringLiteral(raw: string): string {
+/**
+ * One decoded PDF byte, plus the exact span within the literal's own RAW
+ * SOURCE TEXT (the full `(...)` or `<...>` token as it appears in the
+ * content stream, delimiters included -- same string `decodePdfStringLiteral`
+ * itself takes) that produced it. Built for the same-operand URL splitter's
+ * own real need: given a target position in the literal's DECODED text,
+ * find the exact byte offset in the ORIGINAL content stream to cut at --
+ * not possible from decoded text alone once a byte can expand to more than
+ * one character (a ligature; see decodeTextShowOperands's own
+ * GlyphTextResolver). Checkpoint-only for now: built and unit-tested in
+ * isolation, not yet wired into any splitting logic.
+ */
+export interface DecodedByte {
+  /** This byte's own raw value (0-255). */
+  byte: number;
+  /** Offset where this byte's own escape sequence (or lone character, or hex-digit pair) begins within the literal's raw source text. */
+  sourceStart: number;
+  /** Offset right after that same escape sequence/character/hex pair. */
+  sourceEnd: number;
+}
+
+/**
+ * Same decoding rules as decodePdfStringLiteral (this function now backs
+ * it directly -- see that function's own doc comment for the full PDF-
+ * syntax rationale), but keeps each output byte's own source-text span
+ * instead of discarding it. A PDF string-literal escape never produces
+ * more than one byte, EXCEPT a line continuation (`\` followed directly by
+ * a newline or CR), which produces none at all -- correctly skipped here,
+ * same as the original.
+ */
+export function decodePdfStringLiteralBytes(raw: string): DecodedByte[] {
+  const out: DecodedByte[] = [];
   if (raw.startsWith('(')) {
-    let out = '';
     for (let i = 1; i < raw.length - 1; i++) {
       const ch = raw[i];
       if (ch === '\\') {
@@ -106,26 +136,43 @@ function decodePdfStringLiteral(raw: string): string {
           let oct = next;
           let j = i + 2;
           for (let k = 0; k < 2 && octal.test(raw[j] ?? ''); k++, j++) oct += raw[j];
-          out += String.fromCharCode(parseInt(oct, 8) & 0xff);
+          out.push({ byte: parseInt(oct, 8) & 0xff, sourceStart: i, sourceEnd: j });
           i = j - 1;
-        } else if (next === 'n') { out += '\n'; i++; }
-        else if (next === 'r') { out += '\r'; i++; }
-        else if (next === 't') { out += '\t'; i++; }
-        else if (next === '\n' || next === '\r') { i++; } // line continuation, no char
-        else { out += next; i++; }
+        } else if (next === 'n') { out.push({ byte: 0x0a, sourceStart: i, sourceEnd: i + 2 }); i++; }
+        else if (next === 'r') { out.push({ byte: 0x0d, sourceStart: i, sourceEnd: i + 2 }); i++; }
+        else if (next === 't') { out.push({ byte: 0x09, sourceStart: i, sourceEnd: i + 2 }); i++; }
+        else if (next === '\n' || next === '\r') { i++; } // line continuation, no byte at all
+        else { out.push({ byte: next.charCodeAt(0) & 0xff, sourceStart: i, sourceEnd: i + 2 }); i++; }
       } else {
-        out += ch;
+        out.push({ byte: ch.charCodeAt(0) & 0xff, sourceStart: i, sourceEnd: i + 1 });
       }
     }
     return out;
   }
   if (raw.startsWith('<')) {
-    const hex = raw.slice(1, -1).replace(/\s+/g, '');
-    let out = '';
-    for (let i = 0; i < hex.length - 1; i += 2) out += String.fromCharCode(parseInt(hex.slice(i, i + 2), 16));
+    // Collect hex-digit positions individually (not a stripped copy) so a
+    // pair's own sourceStart/sourceEnd stay correct in the ORIGINAL text
+    // even when whitespace sits between or around digits -- legal PDF hex-
+    // string syntax, confirmed by decodePdfStringLiteral's own pre-existing
+    // whitespace-stripping (now reproduced here per-digit instead of via a
+    // single stripped copy, which would have discarded this mapping).
+    const digitPositions: number[] = [];
+    for (let i = 1; i < raw.length - 1; i++) {
+      if (/[0-9a-fA-F]/.test(raw[i])) digitPositions.push(i);
+    }
+    for (let k = 0; k + 1 < digitPositions.length; k += 2) {
+      const hi = digitPositions[k];
+      const lo = digitPositions[k + 1];
+      const byte = parseInt(raw[hi] + raw[lo], 16);
+      out.push({ byte, sourceStart: hi, sourceEnd: lo + 1 });
+    }
     return out;
   }
-  return raw;
+  return out;
+}
+
+function decodePdfStringLiteral(raw: string): string {
+  return decodePdfStringLiteralBytes(raw).map((b) => String.fromCharCode(b.byte)).join('');
 }
 
 /**
@@ -165,6 +212,73 @@ function decodeTextShowOperands(operands: Token[], fontTag: string | null, resol
     .map((o) => decodePdfStringLiteral(o.v))
     .join('');
   return applyGlyphResolver(rawBytes, fontTag, resolveGlyphText);
+}
+
+/**
+ * One character of a literal's FINAL decoded text, plus which raw byte
+ * (an index into the same DecodedByte[] the literal's own
+ * decodePdfStringLiteralBytes produced) is responsible for it. A single
+ * byte can produce MULTIPLE consecutive ResolvedChar entries sharing the
+ * same byteIndex -- exactly a multi-character ligature (e.g. a byte
+ * resolving to "fi" produces two entries, both byteIndex N). That shared-
+ * byteIndex run is the whole reason findSafeCutPoint below exists: a
+ * target position landing strictly INSIDE one of these runs has no valid
+ * byte offset to cut at.
+ */
+export interface ResolvedChar {
+  char: string;
+  byteIndex: number;
+}
+
+/**
+ * Resolves a literal's own raw bytes (from decodePdfStringLiteralBytes) to
+ * its final decoded characters, same per-byte resolution
+ * decodeTextShowOperands/applyGlyphResolver already use (a GlyphTextResolver
+ * hit can expand to more than one character; a miss, or no resolver/font at
+ * all, falls back to that byte's own Latin-1 character) -- but keeping each
+ * resulting character's own origin byte instead of just concatenating text.
+ */
+export function resolveBytesToChars(bytes: DecodedByte[], fontTag: string | null, resolveGlyphText?: GlyphTextResolver): ResolvedChar[] {
+  const out: ResolvedChar[] = [];
+  bytes.forEach((b, byteIndex) => {
+    const resolved = fontTag && resolveGlyphText ? resolveGlyphText(fontTag, b.byte) : null;
+    const text = resolved ?? String.fromCharCode(b.byte);
+    for (const ch of text) out.push({ char: ch, byteIndex });
+  });
+  return out;
+}
+
+/**
+ * The same-operand URL splitter's own real core need: given a literal's
+ * own raw bytes and resolved characters (both for the SAME literal, same
+ * order), find the exact offset within that literal's RAW SOURCE TEXT
+ * (decodePdfStringLiteralBytes's own sourceStart/sourceEnd convention --
+ * still relative to the literal's own token text, NOT yet an absolute
+ * content-stream offset; the caller adds the token's own start) where a
+ * cut immediately BEFORE decoded-character position `decodedIndex` would
+ * land -- i.e. slicing the literal's raw source at this offset reproduces
+ * exactly the first `decodedIndex` decoded characters on one side and
+ * exactly the rest on the other, with no byte left ambiguously split
+ * between them.
+ *
+ * Returns null when `decodedIndex` falls strictly inside one byte's own
+ * multi-character resolution (a ligature) -- there is no source offset
+ * that could split "fi" into "f" and "i" at the byte level; callers must
+ * decline rather than guess which half of the ligature glyph to keep, same
+ * "decline rather than guess" convention as findUrlOperatorRun's own
+ * MAX_LEFTOVER_CHARS cap.
+ *
+ * `decodedIndex` may equal 0 (cut before everything) or
+ * `resolvedChars.length` (cut after everything) -- both always safe,
+ * landing on the literal's own outer source bounds.
+ */
+export function findSafeCutPoint(bytes: DecodedByte[], resolvedChars: ResolvedChar[], decodedIndex: number): number | null {
+  if (decodedIndex <= 0) return bytes[0]?.sourceStart ?? null;
+  if (decodedIndex >= resolvedChars.length) return bytes[bytes.length - 1]?.sourceEnd ?? null;
+  const before = resolvedChars[decodedIndex - 1];
+  const at = resolvedChars[decodedIndex];
+  if (before.byteIndex === at.byteIndex) return null; // mid-ligature -- unsafe, decline
+  return bytes[at.byteIndex].sourceStart;
 }
 
 export interface UrlOperatorRun {
