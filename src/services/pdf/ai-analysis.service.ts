@@ -1604,19 +1604,8 @@ class AiAnalysisService {
     }
 
     if (LINK_CODES.has(code)) {
-      // Temporary diagnostic, 2026-11-05: Curiel_187961_CSHP.pdf's 209
-      // LINK_CODES issues are all skipped in ~17s total (far too fast for
-      // even one real Gemini call, let alone up to 209) regardless of
-      // linkTextMode -- narrows to one of these two early returns, but
-      // which one hasn't been confirmed live yet. Remove once confirmed.
-      if (config.linkTextMode === 'disabled') {
-        logger.info(`[AiAnalysis] Skipping link-text for ${issue.id}: linkTextMode is disabled`);
-        return null;
-      }
-      if (!page) {
-        logger.warn(`[AiAnalysis] Skipping link-text for ${issue.id}: no page object for pageNumber=${issue.pageNumber} (parsed.pages.length=${parsed.pages.length})`);
-        return null;
-      }
+      if (config.linkTextMode === 'disabled') return null;
+      if (!page) return null;
       return this.analyzeLinkText(issue, page, config.linkTextMode);
     }
 
