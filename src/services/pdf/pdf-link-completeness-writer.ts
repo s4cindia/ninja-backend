@@ -35,8 +35,17 @@
  *     avoid -- and is tracked as a separate, harder follow-on, not part of
  *     this module's job.
  *   - 11/209 (5.3%): not found at all even with no leftover cap and a
- *     20-operator window -- a genuinely different, not yet understood
- *     shape (not investigated further here).
+ *     20-operator window -- UPDATE (2026-11-06): root-caused, not a
+ *     genuinely different shape after all. Every one of these 11 URLs
+ *     contains a typographic ligature (fi, fl, ff, Th) that this
+ *     document's own embedded Type1 subset fonts encode as a custom
+ *     single-byte glyph code (standard PDF subsetting) -- decodeTextShowOperands's
+ *     own GlyphTextResolver parameter now resolves these correctly via
+ *     each font's real /ToUnicode CMap. Confirmed this closes 7/11 of
+ *     these cases outright; the other 4 have a SECOND, independent
+ *     problem on top (the same MAX_LEFTOVER_CHARS-exceeding shape as the
+ *     30.1% bucket above) -- genuinely needs the same-operand splitter
+ *     follow-on too, not a gap in the ligature fix itself.
  *
  * The three shapes below are real (still live-confirmed), but are examples
  * of the 64.6% CLEAN bucket specifically, not a representative sample of
@@ -64,15 +73,26 @@ const TEXT_SHOW_OPS = new Set(['Tj', 'TJ', "'", '"']);
 
 /**
  * Minimal PDF string-literal decoder: `(escaped text)` or `<hex>` to a JS
- * string. Deliberately local, not shared with pdf-artifact-tagger.ts's own
- * copy -- that one lives in a module about a different concern (artifact
- * spans), and duplicating ~15 lines here is cheaper than coupling the two.
- * Does NOT apply a font's own ToUnicode mapping -- correct for the simple/
- * WinAnsi-encoded body text this targets (citation URLs are plain ASCII),
- * not a general-purpose PDF text extractor. findUrlOperatorRun's own
- * confidence gate (the matched text must actually contain the validator's
- * own reported URL) catches a wrong decode by simply failing to match,
- * never by silently producing a wrong splice.
+ * string of RAW BYTES (each char code 0-255 is one PDF byte, NOT yet a
+ * final Unicode character) -- resolving octal escapes and hex nibbles is
+ * this function's whole job; mapping a byte to real text is a SEPARATE,
+ * font-dependent step (see decodeTextShowOperands's own GlyphTextResolver
+ * parameter below). Deliberately local, not shared with pdf-artifact-
+ * tagger.ts's own copy -- that one lives in a module about a different
+ * concern (artifact spans), and duplicating ~15 lines here is cheaper than
+ * coupling the two.
+ *
+ * CORRECTION (2026-11-06): an earlier version of this comment claimed
+ * treating each raw byte as its own Latin-1 character was "correct for the
+ * simple/WinAnsi-encoded body text this targets" -- wrong, confirmed live:
+ * Curiel_187961_CSHP.pdf's own embedded Type1 fonts encode typographic
+ * ligatures (fi, fl, ff, Th) as custom single-byte glyph codes (standard
+ * PDF subsetting), which a raw-byte-as-Latin-1 assumption decodes as a
+ * control character instead of the real 2-letter text -- confirmed as the
+ * exact cause of 11/209 of Curiel's own real LINK-MISSING-ANNOTATION
+ * issues being "not found at all" rather than correctly located (the URL
+ * genuinely exists on the page; the decode of it was just wrong). See
+ * decodeTextShowOperands's own GlyphTextResolver parameter for the fix.
  */
 function decodePdfStringLiteral(raw: string): string {
   if (raw.startsWith('(')) {
@@ -108,16 +128,43 @@ function decodePdfStringLiteral(raw: string): string {
   return raw;
 }
 
-function decodeTextShowOperands(operands: Token[]): string {
+/**
+ * Resolves a single PDF byte code (0-255), under a given font's own
+ * resource-dictionary tag name (the same name a `Tf` operator references,
+ * e.g. "/T1_2"), to its real decoded text -- one or more characters, since
+ * a single glyph code can represent a multi-character ligature (e.g. "fi").
+ * Returns null when the font has no usable /ToUnicode CMap, or the code
+ * isn't covered by it -- callers fall back to the raw byte's own Latin-1
+ * interpretation in that case (today's existing behavior, unchanged for
+ * any font that doesn't need this). Built by pdf-structure-writer.
+ * service.ts's own buildGlyphTextResolver (which needs a real PDFDocument
+ * to resolve Resources/Font/ToUnicode -- this module stays pdf-lib-free by
+ * design, same as mcid-bounding-box.ts's own resolveFormXObject convention,
+ * so the caller owns the actual lookup and hands in only this function).
+ */
+export type GlyphTextResolver = (fontTag: string, byteCode: number) => string | null;
+
+function applyGlyphResolver(rawBytes: string, fontTag: string | null, resolveGlyphText?: GlyphTextResolver): string {
+  if (!resolveGlyphText || !fontTag) return rawBytes;
+  let out = '';
+  for (let i = 0; i < rawBytes.length; i++) {
+    const resolved = resolveGlyphText(fontTag, rawBytes.charCodeAt(i));
+    out += resolved ?? rawBytes[i];
+  }
+  return out;
+}
+
+function decodeTextShowOperands(operands: Token[], fontTag: string | null, resolveGlyphText?: GlyphTextResolver): string {
   // tokenize() types a parenthesized literal 's' and a hex string '<...>'
   // 'h' -- both are valid PDF string operands to Tj/TJ/'/", and
   // decodePdfStringLiteral already branches on the leading delimiter to
   // decode either; the filter must accept both or hex-encoded operands
   // (common for a CID/Type0 font) silently vanish instead of decoding.
-  return operands
+  const rawBytes = operands
     .filter((o) => o.t === 's' || o.t === 'h')
     .map((o) => decodePdfStringLiteral(o.v))
     .join('');
+  return applyGlyphResolver(rawBytes, fontTag, resolveGlyphText);
 }
 
 export interface UrlOperatorRun {
@@ -168,11 +215,31 @@ const MAX_RUN_OPERATORS = 5;
 // validator's own doc comment already commits to for line-wrapped URLs.
 const LINE_BREAK_OPS = new Set(['Td', 'TD', 'T*', 'Tm', 'BT', 'ET']);
 
+// Tracks the most recently seen `Tf` operand (the font's own resource-
+// dictionary tag name, e.g. "/T1_2") so each text-show operator's own
+// decode can be resolved under the RIGHT font -- a document routinely
+// switches fonts mid-paragraph (e.g. Regular vs Italic for an inline
+// citation), and the two can use entirely different byte-code assignments
+// for the same ligature (confirmed live: Curiel_187961_CSHP.pdf's own
+// ACaslonPro-Regular and ACaslonPro-Italic subsets assign DIFFERENT byte
+// codes to the same "ff" ligature -- each subsetted font gets its own
+// independent encoding, so there is no fixed, reusable code->text table;
+// resolution must always go through the SPECIFIC font active at that
+// exact position). Deliberately NOT reset on a line break (BT/ET
+// included) -- a font selection persists until the next real `Tf`, same
+// as real PDF semantics; only known, accepted gap: if `rangeStart` is not
+// 0, a `Tf` that appeared BEFORE rangeStart is invisible to this scan, so
+// `currentFontTag` starts null even if a font really is active -- harmless
+// today since this function's only real caller always passes the whole
+// page (rangeStart=0), so there's nothing before rangeStart to miss.
+const FONT_SELECT_OP = 'Tf';
+
 export function findUrlOperatorRun(
   content: string,
   rangeStart: number,
   rangeEnd: number,
-  targetUrl: string
+  targetUrl: string,
+  resolveGlyphText?: GlyphTextResolver
 ): UrlOperatorRun | null {
   if (!targetUrl) return null;
   const tokens = tokenize(content.slice(rangeStart, rangeEnd));
@@ -181,15 +248,18 @@ export function findUrlOperatorRun(
   const ops: Op[] = [];
   const operands: Token[] = [];
   let sawLineBreakSinceLastShow = false;
+  let currentFontTag: string | null = null;
   for (const tk of tokens) {
     if (tk.t !== 'op') { operands.push(tk); continue; }
     if (TEXT_SHOW_OPS.has(tk.v)) {
-      const text = decodeTextShowOperands(operands);
+      const text = decodeTextShowOperands(operands, currentFontTag, resolveGlyphText);
       const opStart = operands.length ? operands[0].start : tk.start;
       ops.push({ start: rangeStart + opStart, end: rangeStart + tk.end, text, precededByLineBreak: sawLineBreakSinceLastShow });
       sawLineBreakSinceLastShow = false;
     } else if (LINE_BREAK_OPS.has(tk.v)) {
       sawLineBreakSinceLastShow = true;
+    } else if (tk.v === FONT_SELECT_OP) {
+      currentFontTag = operands[0]?.t === 'name' ? operands[0].v : currentFontTag;
     }
     operands.length = 0;
   }
@@ -327,7 +397,12 @@ function hasRealContentBetween(content: string, start: number, end: number): boo
   const operands: Token[] = [];
   for (const tk of tokens) {
     if (tk.t !== 'op') { operands.push(tk); continue; }
-    if (TEXT_SHOW_OPS.has(tk.v) && decodeTextShowOperands(operands).trim().length > 0) return true;
+    // No font/resolver needed here -- a mis-decoded ligature byte still
+    // decodes to a non-whitespace character either way (a control code,
+    // not a space), so this function's TRUE/FALSE outcome never actually
+    // depends on getting the exact right text, only on "is there SOME
+    // real text here at all."
+    if (TEXT_SHOW_OPS.has(tk.v) && decodeTextShowOperands(operands, null).trim().length > 0) return true;
     operands.length = 0;
   }
   return false;

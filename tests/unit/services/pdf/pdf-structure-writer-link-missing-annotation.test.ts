@@ -229,4 +229,32 @@ describe('fixLinkMissingAnnotation', () => {
     expect((restoredK as PDFNumber).asNumber()).toBe(0);
     expect(decodePageContent(doc, 1)).toBe(PAGE_CONTENT);
   });
+
+  // Real, live-confirmed root cause of 11/209 of Curiel_187961_CSHP.pdf's
+  // own real LINK-MISSING-ANNOTATION issues: the URL genuinely exists on
+  // the page, but the document's embedded Type1 subset font encodes the
+  // typographic ligature "fi" as a custom single-byte glyph code (standard
+  // PDF subsetting) -- without reading that font's own /ToUnicode CMap, a
+  // raw-byte decode produces a control character instead of "fi", so the
+  // URL never matches. End-to-end: a real font dict with a real /ToUnicode
+  // CMap (bfchar <01> -> <0066 0069>, i.e. "fi"), and the URL's own byte
+  // \x01 standing in for the real document's own ligature code.
+  it('finds and fixes a URL containing a font-specific ligature byte, by reading that font\'s own /ToUnicode CMap', async () => {
+    const ligatureUrl = 'https://example.com/defiles';
+    const content = `/P <</MCID 0>> BDC BT\n/T1_0 1 Tf\n[(Some citation text before)]TJ\n0 -1.5 Td\n[(https://example.com/de\x01les)]TJ\n0 -1.5 Td\n[(More citation text after)]TJ\nET EMC`;
+    const { doc } = await buildDoc(content);
+
+    const page = doc.getPage(0);
+    const cmapText = '/CIDInit /ProcSet findresource begin\n12 dict begin\nbegincmap\n1 beginbfchar\n<01> <00660069>\nendbfchar\nendcmap\nend\nend';
+    const toUnicodeRef = doc.context.register(doc.context.stream(cmapText));
+    const fontRef = doc.context.register(doc.context.obj({ Type: PDFName.of('Font'), Subtype: PDFName.of('Type1'), BaseFont: PDFName.of('ABCDEF+Test'), ToUnicode: toUnicodeRef }));
+    page.node.set(PDFName.of('Resources'), doc.context.obj({ Font: { T1_0: fontRef } }));
+
+    const result = pdfStructureWriterService.fixLinkMissingAnnotation(doc, issueFor(1, ligatureUrl));
+    expect(result.success).toBe(true);
+
+    const fixedContent = decodePageContent(doc, 1)!;
+    expect(fixedContent).toContain('EMC /Link <</MCID 1>> BDC ');
+    expect(fixedContent).toContain('(https://example.com/de\x01les)'); // original bytes untouched, still the raw ligature code
+  });
 });

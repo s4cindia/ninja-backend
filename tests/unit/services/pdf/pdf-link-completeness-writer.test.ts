@@ -91,6 +91,59 @@ describe('findUrlOperatorRun', () => {
     expect(run).not.toBeNull();
     expect(run!.matchedText).toBe('www.hex.ca');
   });
+
+  // Real, live-confirmed root cause of 11/209 of Curiel_187961_CSHP.pdf's
+  // own real LINK-MISSING-ANNOTATION issues being "not found at all": the
+  // URL genuinely exists on the page, but the document's own embedded
+  // Type1 subset font encodes the typographic ligature "fi" as a custom
+  // single-byte glyph code (\x01 here, standing in for the real document's
+  // own code) -- without font context, a raw-byte decode produces a
+  // control character instead of "fi", so the target URL string (which
+  // spells "files" normally) never matches.
+  it('resolves a byte-coded ligature via the font-specific GlyphTextResolver when one is supplied', () => {
+    const content = `/T1_0 1 Tf\n(https://example.com/de\x01les/path)Tj\n`;
+    const url = 'https://example.com/defiles/path';
+    const resolveGlyphText = (fontTag: string, byteCode: number): string | null =>
+      fontTag === '/T1_0' && byteCode === 0x01 ? 'fi' : null;
+
+    const withoutResolver = findUrlOperatorRun(content, 0, content.length, url);
+    expect(withoutResolver).toBeNull(); // same as today's existing behavior when no resolver is given
+
+    const withResolver = findUrlOperatorRun(content, 0, content.length, url, resolveGlyphText);
+    expect(withResolver).not.toBeNull();
+    expect(withResolver!.matchedText).toBe(url);
+  });
+
+  it('a GlyphTextResolver that returns null for a code falls back to that byte\'s own Latin-1 character, unchanged', () => {
+    const content = `/T1_0 1 Tf\n(www.plain-ascii.ca)Tj\n`;
+    const resolveGlyphText = (): string | null => null; // never resolves anything
+    const run = findUrlOperatorRun(content, 0, content.length, 'www.plain-ascii.ca', resolveGlyphText);
+    expect(run).not.toBeNull();
+    expect(run!.matchedText).toBe('www.plain-ascii.ca');
+  });
+
+  it('resolves the SAME byte code differently under two different fonts (no fixed, reusable code table)', () => {
+    // Real, live-confirmed shape: Curiel_187961_CSHP.pdf's own ACaslonPro-
+    // Regular and ACaslonPro-Italic subsets assign DIFFERENT byte codes to
+    // the same "ff" ligature -- each subsetted font gets its own
+    // independent encoding. Modeled as two independent documents (not two
+    // runs in one, which could otherwise merge into one candidate run --
+    // a separate, pre-existing concern this test isn't about) -- the SAME
+    // byte \x01 means "fi" under one font and "fl" under another.
+    const resolveGlyphText = (fontTag: string, byteCode: number): string | null => {
+      if (byteCode !== 0x01) return null;
+      if (fontTag === '/Regular') return 'fi';
+      if (fontTag === '/Italic') return 'fl';
+      return null;
+    };
+    const contentA = `/Regular 1 Tf\n(https://example.com/de\x01le)Tj\n`;
+    const runA = findUrlOperatorRun(contentA, 0, contentA.length, 'https://example.com/defile', resolveGlyphText);
+    expect(runA?.matchedText).toBe('https://example.com/defile');
+
+    const contentB = `/Italic 1 Tf\n(https://example.com/de\x01le)Tj\n`;
+    const runB = findUrlOperatorRun(contentB, 0, contentB.length, 'https://example.com/deflle', resolveGlyphText);
+    expect(runB?.matchedText).toBe('https://example.com/deflle');
+  });
 });
 
 // Real, live-confirmed shape from Curiel_187961_CSHP.pdf's REMEDIATED copy
