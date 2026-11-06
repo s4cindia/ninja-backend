@@ -426,6 +426,70 @@ describe('fixLinkMissingAnnotation', () => {
       expect(result.error).toContain('2 time(s)');
     });
 
+    /**
+     * Real root cause behind Karsaklian_189165_9781606497623's one
+     * remaining "correctly skipped" failure after PR #777: MCID 1844's own
+     * paragraph (an Adobe InDesign /Story -> /TX export) carries it as an
+     * MCR (Marked Content Reference) dict -- <</Type /MCR /Pg ref /MCID
+     * n>>, PDF32000 14.7.4.4 -- not a bare number. That's an equally valid
+     * PDF shape, but the array-membership check only recognized bare
+     * numbers, so it reported "0 time(s)" for an MCID that was genuinely
+     * there, just spelled differently -- declining a case that was never
+     * actually ambiguous.
+     */
+    it('finds the target MCID when /K is an array containing it as an MCR (Marked Content Reference) dict, not a bare number', async () => {
+      const { doc, pRef } = await buildDoc(PAGE_CONTENT);
+      const pDict = doc.context.lookup(pRef, PDFDict);
+      const page = doc.getPage(0);
+      // Same real shape as Karsaklian_189165: siblings before/after as bare
+      // numbers, the target itself as an MCR dict with its own explicit /Pg.
+      // The trailing sibling uses a placeholder (999) deliberately far from
+      // any MCID this fixer would itself allocate, so it can't be mistaken
+      // for the new splice's own fresh remainder MCID below.
+      pDict.set(PDFName.of('K'), doc.context.obj([
+        PDFNumber.of(-1),
+        doc.context.obj({ Type: PDFName.of('MCR'), Pg: page.ref, MCID: PDFNumber.of(0) }),
+        PDFNumber.of(999),
+      ]));
+
+      const result = pdfStructureWriterService.fixLinkMissingAnnotation(doc, issueFor(1, URL));
+      expect(result.success).toBe(true);
+
+      // Spliced in immediately after the MCR entry's own position (index 1),
+      // not before it and not at the array's end -- the original leading
+      // sibling and trailing sibling are both untouched.
+      const finalK = kidsOf(doc, pRef);
+      expect((finalK[0] as PDFNumber).asNumber()).toBe(-1);
+      expect(finalK[1]).toBeInstanceOf(PDFDict);
+      expect((finalK[1] as PDFDict).get(PDFName.of('Type'))?.toString()).toBe('/MCR');
+      expect(finalK[2]).toBeInstanceOf(PDFRef); // the new Link struct element
+      expect((finalK[finalK.length - 1] as PDFNumber).asNumber()).toBe(999); // original trailing sibling, untouched
+    });
+
+    it('also finds the target MCID when the MCR dict itself is stored as an indirect reference', async () => {
+      const { doc, pRef } = await buildDoc(PAGE_CONTENT);
+      const pDict = doc.context.lookup(pRef, PDFDict);
+      const page = doc.getPage(0);
+      const mcrRef = doc.context.register(doc.context.obj({ Type: PDFName.of('MCR'), Pg: page.ref, MCID: PDFNumber.of(0) }));
+      pDict.set(PDFName.of('K'), doc.context.obj([mcrRef]));
+
+      const result = pdfStructureWriterService.fixLinkMissingAnnotation(doc, issueFor(1, URL));
+      expect(result.success).toBe(true);
+    });
+
+    it('still declines when an MCR dict is present but for a DIFFERENT MCID -- doesn\'t false-positive-match on the dict shape alone', async () => {
+      const { doc, pRef } = await buildDoc(PAGE_CONTENT);
+      const pDict = doc.context.lookup(pRef, PDFDict);
+      const page = doc.getPage(0);
+      pDict.set(PDFName.of('K'), doc.context.obj([
+        doc.context.obj({ Type: PDFName.of('MCR'), Pg: page.ref, MCID: PDFNumber.of(99) }),
+      ]));
+
+      const result = pdfStructureWriterService.fixLinkMissingAnnotation(doc, issueFor(1, URL));
+      expect(result.success).toBe(false);
+      expect(result.error).toContain('0 time(s)');
+    });
+
     it('rolls back to the original, untouched /K array when a later step fails on an already-widened paragraph', async () => {
       const { doc, pRef, structTreeRootRef } = await buildDoc(twoUrlContent);
       registerSimpleFont(doc);

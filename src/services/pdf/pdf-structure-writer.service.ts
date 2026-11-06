@@ -6950,7 +6950,8 @@ export class PdfStructureWriterService {
     // only the first URL per paragraph could ever be fixed -- every other
     // URL in the same paragraph declined here once the first fix widened
     // /K to an array. The invariant that actually matters is unchanged
-    // either way: enclosingMcid must be the UNIQUE bare-number entry
+    // either way: enclosingMcid must be the UNIQUE entry (a bare number,
+    // OR the equally-valid MCR-dict form -- see the array branch below)
     // marking exactly where this content sits in the element's own
     // reading order -- whether /K is still that scalar itself, or (an
     // earlier fix on this same paragraph already ran) one entry inside an
@@ -6967,12 +6968,31 @@ export class PdfStructureWriterService {
     } else if (originalK instanceof PDFArray) {
       const kArr = originalK.asArray();
       const matchingIndices = kArr.reduce<number[]>((acc, item, i) => {
-        if (item instanceof PDFNumber && item.asNumber() === enclosingMcid) acc.push(i);
+        const resolved = item instanceof PDFRef ? doc.context.lookup(item) : item;
+        if (resolved instanceof PDFNumber && resolved.asNumber() === enclosingMcid) {
+          acc.push(i);
+        } else if (resolved instanceof PDFDict) {
+          // An MCR (Marked Content Reference) dict -- <</Type /MCR /Pg ref
+          // /MCID n>>, PDF32000 14.7.4.4 -- carries the same MCID a bare
+          // number would, just in the explicit form some authoring tools
+          // (confirmed real: Adobe InDesign's own /Story -> /TX export,
+          // Karsaklian_189165's real MCID 1844) use for content whose own
+          // page can differ from the struct element's default /Pg.
+          // Matching on /MCID alone, no extra /Pg cross-check, mirrors
+          // this file's own established structElemHasMcid -- the page
+          // this MCID lives on was already pinned by resolveParentTreePageArray
+          // resolving `enclosingRef` out of THIS SPECIFIC page's own
+          // /ParentTree entry, before this /K check ever runs, so the
+          // MCID value alone is already page-disambiguated.
+          const mcidRaw = resolved.get(PDFName.of('MCID'));
+          const mcidResolved = mcidRaw instanceof PDFRef ? doc.context.lookup(mcidRaw) : mcidRaw;
+          if (mcidResolved instanceof PDFNumber && mcidResolved.asNumber() === enclosingMcid) acc.push(i);
+        }
         return acc;
       }, []);
       if (matchingIndices.length !== 1) {
         return fail(
-          `Enclosing struct element's own /K is an array containing bare MCID ${enclosingMcid} ` +
+          `Enclosing struct element's own /K is an array containing MCID ${enclosingMcid} ` +
           `${matchingIndices.length} time(s) (expected exactly 1) -- declining rather than guessing where to splice`
         );
       }
