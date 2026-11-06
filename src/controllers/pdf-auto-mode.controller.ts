@@ -32,6 +32,7 @@ import { AppError } from '../utils/app-error';
 import {
   autoRemediationLoopService,
   resolveColorContrastMode,
+  resolveAltTextMode,
   ComparisonTrialAutoRemediationDriver,
   JobAutoRemediationDriver,
 } from '../services/pdf/auto-remediation-loop.service';
@@ -147,11 +148,13 @@ export class PdfAutoModeController {
           ...(body.autoMaxRounds !== undefined && { autoMaxRounds: body.autoMaxRounds }),
           ...(body.autoCostLimitUsd !== undefined && { autoCostLimitUsd: body.autoCostLimitUsd }),
           ...(body.autoColorContrastMode !== undefined && { autoColorContrastMode: body.autoColorContrastMode }),
+          ...(body.autoAltTextMode !== undefined && { autoAltTextMode: body.autoAltTextMode }),
         },
         update: {
           ...(body.autoMaxRounds !== undefined && { autoMaxRounds: body.autoMaxRounds }),
           ...(body.autoCostLimitUsd !== undefined && { autoCostLimitUsd: body.autoCostLimitUsd }),
           ...(body.autoColorContrastMode !== undefined && { autoColorContrastMode: body.autoColorContrastMode }),
+          ...(body.autoAltTextMode !== undefined && { autoAltTextMode: body.autoAltTextMode }),
         },
       });
 
@@ -198,6 +201,10 @@ export class PdfAutoModeController {
             // stored value (only reachable via direct DB tampering) reports as
             // null rather than an unrecognized string.
             autoColorContrastMode: resolveColorContrastMode(trial.autoColorContrastMode) ?? null,
+            // ComparisonTrial has no autoAltTextMode column -- always
+            // inherits the tenant/default altTextMode (see
+            // ComparisonTrialAutoRemediationDriver.getRoundState).
+            autoAltTextMode: null,
           },
         });
         return;
@@ -222,6 +229,7 @@ export class PdfAutoModeController {
             autoCostSpentUsd: 0,
             autoCostLimitUsd: 2.0,
             autoColorContrastMode: null,
+            autoAltTextMode: null,
           },
         });
         return;
@@ -244,6 +252,7 @@ export class PdfAutoModeController {
           autoCostSpentUsd: run.autoCostSpentUsd,
           autoCostLimitUsd: run.autoCostLimitUsd,
           autoColorContrastMode: resolveColorContrastMode(run.autoColorContrastMode) ?? null,
+          autoAltTextMode: resolveAltTextMode(run.autoAltTextMode) ?? null,
         },
       });
     } catch (error) {

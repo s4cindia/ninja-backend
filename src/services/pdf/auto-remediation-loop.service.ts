@@ -97,6 +97,20 @@ export function resolveColorContrastMode(raw: string | null): ColorContrastMode 
   return VALID_COLOR_CONTRAST_MODES.has(raw) ? (raw as ColorContrastMode) : undefined;
 }
 
+export type AltTextMode = 'apply-to-pdf' | 'guidance-only';
+const VALID_ALT_TEXT_MODES: ReadonlySet<string> = new Set(['apply-to-pdf', 'guidance-only']);
+
+/** Same inherit semantics as resolveColorContrastMode above, for
+ * PdfAutoRemediationRun.autoAltTextMode -- the per-job override for "this
+ * client supplies their own alt text." Only PdfAutoRemediationRun has this
+ * column (see its own schema doc comment); ComparisonTrialAutoRemediationDriver
+ * always reports this field as null, so a trial always inherits the
+ * tenant/default altTextMode. */
+export function resolveAltTextMode(raw: string | null): AltTextMode | undefined {
+  if (raw === null) return undefined;
+  return VALID_ALT_TEXT_MODES.has(raw) ? (raw as AltTextMode) : undefined;
+}
+
 /** A round that applies nothing still counts toward the round/cost ceilings
  * (analyzeJob still runs, still spends tokens) without making any progress --
  * e.g. every approved suggestion this round hit an unhandled suggestionType
@@ -189,6 +203,7 @@ export interface AutoRemediationRoundState {
   autoMaxRounds: number;
   autoCostLimitUsd: number;
   autoColorContrastMode: string | null;
+  autoAltTextMode: string | null;
 }
 
 export interface AutoRemediationDriver {
@@ -262,6 +277,10 @@ export class ComparisonTrialAutoRemediationDriver implements AutoRemediationDriv
       autoMaxRounds: current.autoMaxRounds,
       autoCostLimitUsd: current.autoCostLimitUsd,
       autoColorContrastMode: current.autoColorContrastMode,
+      // ComparisonTrial has no autoAltTextMode column -- the admin
+      // research-trial flow always inherits the tenant/default altTextMode;
+      // only PdfAutoRemediationRun (below) supports this per-job override.
+      autoAltTextMode: null,
     };
   }
 
@@ -332,6 +351,7 @@ export class JobAutoRemediationDriver implements AutoRemediationDriver {
       autoMaxRounds: current.autoMaxRounds,
       autoCostLimitUsd: current.autoCostLimitUsd,
       autoColorContrastMode: current.autoColorContrastMode,
+      autoAltTextMode: current.autoAltTextMode,
     };
   }
 
@@ -918,6 +938,7 @@ class AutoRemediationLoopService {
           cycleNumber,
           tenantId,
           resolveColorContrastMode(state.autoColorContrastMode),
+          resolveAltTextMode(state.autoAltTextMode),
         );
 
         // A fresh analysis pass (against whatever the *previous* round's
@@ -1092,12 +1113,16 @@ class AutoRemediationLoopService {
     cycleNumber: number,
     tenantId: string,
     colorContrastModeOverride: ColorContrastMode | undefined,
+    altTextModeOverride: AltTextMode | undefined,
   ): Promise<{ actionableFound: number; applied: number; resolvedCount: number }> {
     const roundStartedAt = new Date();
     const analysis = await aiAnalysisService.analyzeJob(
       jobId,
       tenantId,
-      colorContrastModeOverride !== undefined ? { colorContrastMode: colorContrastModeOverride } : undefined,
+      {
+        ...(colorContrastModeOverride !== undefined && { colorContrastMode: colorContrastModeOverride }),
+        ...(altTextModeOverride !== undefined && { altTextMode: altTextModeOverride }),
+      },
     );
     // This round's AI spend (Operational Reports Group 2 -- see
     // OPERATIONAL_REPORTS_DESIGN.md's costUsd field). analyzeJob just wrote
@@ -1159,6 +1184,29 @@ class AutoRemediationLoopService {
           suggestionType: 'color-contrast-fix',
           status: { in: ['pending', 'approved'] },
         },
+      });
+    }
+
+    // Same stale-row reconciliation as colorContrastMode above, for
+    // altTextMode -- a prior round (or a manual pass) run while the
+    // effective mode was 'apply-to-pdf' can leave pending/approved alt-text
+    // rows sitting at applyMode 'apply-to-pdf' even after the mode flips to
+    // 'guidance-only' (e.g. an operator setting a per-job "client supplies
+    // their own alt text" override mid-run). altTextMode has no 'disabled'
+    // state, so there's only one branch here, unlike colorContrastMode's
+    // two. alt-text-decorative is deliberately excluded -- marking an image
+    // decorative always needs a person, regardless of altTextMode, same as
+    // the comment on ALT_TEXT_MISSING_CODES' dispatch already establishes.
+    const effectiveAltTextMode = analysis.altTextMode;
+    if (effectiveAltTextMode === 'guidance-only') {
+      await prisma.aiAnalysis.updateMany({
+        where: {
+          jobId,
+          suggestionType: { in: ['alt-text', 'alt-text-glyph', 'alt-text-formula-transcript', 'alt-text-improvement'] },
+          applyMode: 'apply-to-pdf',
+          status: { in: ['pending', 'approved'] },
+        },
+        data: { applyMode: 'guidance-only' },
       });
     }
 

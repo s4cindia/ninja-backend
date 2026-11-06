@@ -126,6 +126,7 @@ function mockReauditSuccess() {
 }
 
 type ColorContrastMode = 'guidance-only' | 'disabled' | 'apply-to-pdf';
+type AltTextMode = 'apply-to-pdf' | 'guidance-only';
 
 /** A round that finds `actionableCount` suggestions, applies all of them
  * successfully, and re-audits cleanly. `colorContrastMode` is analyzeJob's
@@ -155,8 +156,8 @@ function mockProductiveRound(actionableCount: number, costUsd = 0, colorContrast
 /** A round whose fresh analysis finds nothing actionable at all -- the
  * genuine convergence signal; apply/reaudit are never reached. See
  * mockProductiveRound's doc comment for what `colorContrastMode` means. */
-function mockEmptyRound(colorContrastMode?: ColorContrastMode) {
-  vi.mocked(aiAnalysisService.analyzeJob).mockResolvedValueOnce({ analyzed: 0, skipped: 0, colorContrastMode } as any);
+function mockEmptyRound(colorContrastMode?: ColorContrastMode, altTextMode?: AltTextMode) {
+  vi.mocked(aiAnalysisService.analyzeJob).mockResolvedValueOnce({ analyzed: 0, skipped: 0, colorContrastMode, altTextMode } as any);
   vi.mocked(prisma.aiAnalysis.count).mockResolvedValueOnce(0);
 }
 
@@ -424,7 +425,7 @@ describe('autoRemediationLoopService.startAutoLoop', () => {
 
     await autoRemediationLoopService.startAutoLoop(new ComparisonTrialAutoRemediationDriver('trial-1'));
 
-    expect(aiAnalysisService.analyzeJob).toHaveBeenCalledWith('job-1', 'tenant-1', undefined);
+    expect(aiAnalysisService.analyzeJob).toHaveBeenCalledWith('job-1', 'tenant-1', {});
   });
 
   it('treats an unrecognized stored autoColorContrastMode the same as null -- no override passed', async () => {
@@ -437,7 +438,7 @@ describe('autoRemediationLoopService.startAutoLoop', () => {
 
     await autoRemediationLoopService.startAutoLoop(new ComparisonTrialAutoRemediationDriver('trial-1'));
 
-    expect(aiAnalysisService.analyzeJob).toHaveBeenCalledWith('job-1', 'tenant-1', undefined);
+    expect(aiAnalysisService.analyzeJob).toHaveBeenCalledWith('job-1', 'tenant-1', {});
   });
 
   it('downgrades a stale pending/approved color-contrast-fix row when analyzeJob resolves guidance-only (Codex finding)', async () => {
@@ -526,7 +527,7 @@ describe('autoRemediationLoopService.startAutoLoop', () => {
 
     await autoRemediationLoopService.startAutoLoop(new ComparisonTrialAutoRemediationDriver('trial-1'));
 
-    expect(aiAnalysisService.analyzeJob).toHaveBeenCalledWith('job-1', 'tenant-1', undefined);
+    expect(aiAnalysisService.analyzeJob).toHaveBeenCalledWith('job-1', 'tenant-1', {});
     expect(prisma.aiAnalysis.deleteMany).toHaveBeenCalledWith({
       where: {
         jobId: 'job-1',
@@ -534,6 +535,45 @@ describe('autoRemediationLoopService.startAutoLoop', () => {
         status: { in: ['pending', 'approved'] },
       },
     });
+  });
+
+  it('downgrades stale pending/approved alt-text suggestion rows when analyzeJob resolves altTextMode guidance-only', async () => {
+    // Same stale-row hazard as the color-contrast tests above, mirrored for
+    // altTextMode: a prior round (or a per-job "client supplies their own
+    // alt text" override) left an alt-text row at applyMode 'apply-to-pdf';
+    // once the effective mode is 'guidance-only', that row must be
+    // downgraded rather than silently surviving to the next apply.
+    vi.mocked(prisma.comparisonTrial.findUnique).mockResolvedValue(makeTrial() as any);
+    mockLockAcquired();
+    mockJobFound();
+    mockEmptyRound(undefined, 'guidance-only');
+
+    await autoRemediationLoopService.startAutoLoop(new ComparisonTrialAutoRemediationDriver('trial-1'));
+
+    expect(prisma.aiAnalysis.updateMany).toHaveBeenCalledWith({
+      where: {
+        jobId: 'job-1',
+        suggestionType: { in: ['alt-text', 'alt-text-glyph', 'alt-text-formula-transcript', 'alt-text-improvement'] },
+        applyMode: 'apply-to-pdf',
+        status: { in: ['pending', 'approved'] },
+      },
+      data: { applyMode: 'guidance-only' },
+    });
+  });
+
+  it('does not touch alt-text rows at all when analyzeJob resolves altTextMode apply-to-pdf', async () => {
+    vi.mocked(prisma.comparisonTrial.findUnique).mockResolvedValue(makeTrial() as any);
+    mockLockAcquired();
+    mockJobFound();
+    mockEmptyRound(undefined, 'apply-to-pdf');
+
+    await autoRemediationLoopService.startAutoLoop(new ComparisonTrialAutoRemediationDriver('trial-1'));
+
+    expect(prisma.aiAnalysis.updateMany).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ suggestionType: expect.objectContaining({ in: expect.arrayContaining(['alt-text']) }) }),
+      })
+    );
   });
 
   it('excludes alt-text-decorative from both the actionable-count query and the auto-approve update', async () => {
@@ -1005,6 +1045,7 @@ describe('ComparisonTrialAutoRemediationDriver', () => {
         autoMaxRounds: 5,
         autoCostLimitUsd: 1.5,
         autoColorContrastMode: 'apply-to-pdf',
+        autoAltTextMode: null,
       });
     });
 
@@ -1193,7 +1234,16 @@ describe('JobAutoRemediationDriver', () => {
   describe('getRoundState', () => {
     it('returns the per-round control values from the current run row', async () => {
       vi.mocked(prisma.pdfAutoRemediationRun.findUnique).mockResolvedValue(
-        makeRun({ autoStopRequested: true, autoMaxRounds: 5, autoCostLimitUsd: 1.5, autoColorContrastMode: 'apply-to-pdf' }) as any
+        makeRun({
+          autoStopRequested: true,
+          autoMaxRounds: 5,
+          autoCostLimitUsd: 1.5,
+          autoColorContrastMode: 'apply-to-pdf',
+          // Only PdfAutoRemediationRun has this column -- real passthrough,
+          // not just the no-column-set default null ComparisonTrial always
+          // reports (see that driver's own getRoundState test above).
+          autoAltTextMode: 'guidance-only',
+        }) as any
       );
 
       const state = await new JobAutoRemediationDriver('run-1').getRoundState();
@@ -1203,6 +1253,7 @@ describe('JobAutoRemediationDriver', () => {
         autoMaxRounds: 5,
         autoCostLimitUsd: 1.5,
         autoColorContrastMode: 'apply-to-pdf',
+        autoAltTextMode: 'guidance-only',
       });
     });
 

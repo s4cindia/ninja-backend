@@ -983,6 +983,17 @@ model PdfAutoRemediationRun {
   /// tenant's own aiRemediation.colorContrastMode setting -- same semantics
   /// as ComparisonTrial.autoColorContrastMode above.
   autoColorContrastMode String?
+  /// 'apply-to-pdf' | 'guidance-only', or null to inherit the tenant's own
+  /// aiRemediation.altTextMode setting -- the per-job override a client's
+  /// own "we supply our own alt text" instruction needs, without flipping
+  /// the tenant-wide default for every other job. Deliberately NOT added to
+  /// ComparisonTrial -- that path is the admin research-trial flow, not the
+  /// operator-facing per-client job this override exists for; a trial always
+  /// inherits the tenant/default altTextMode (see
+  /// ComparisonTrialAutoRemediationDriver.getRoundState in
+  /// auto-remediation-loop.service.ts, which reports this field as null,
+  /// never read from ComparisonTrial itself).
+  autoAltTextMode String?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
