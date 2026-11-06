@@ -189,22 +189,112 @@ describe('PdfStructureWriterService.extendParentTree', () => {
   });
 
   /**
-   * Regression for a real CodeRabbit/Codex finding on PR #551: a number-tree
-   * node has EITHER /Kids (a hierarchical intermediate/root node) OR /Nums
-   * (a leaf with real key-value pairs), never both. Blindly adding an empty
-   * /Nums beside an existing /Kids would (a) never find a real page mapping
-   * living under /Kids, and (b) produce an invalid node carrying both keys.
+   * A number-tree node has EITHER /Kids (a hierarchical intermediate/root
+   * node) OR /Nums (a leaf with real key-value pairs), never both -- when
+   * /Kids is present, the real page mapping lives under whichever leaf's
+   * /Limits covers the page's key, not at the root. Originally a hard
+   * decline (PR #551, "real, separate work"); extended to walk /Kids once
+   * this hit 11 real permanently-failed link-missing-annotation-fix
+   * suggestions on a real document (Karsaklian_189165).
    */
-  it('throws rather than adding a root /Nums beside an existing hierarchical /Kids tree', async () => {
+  it('walks a single-level /Kids tree to the one leaf whose /Limits covers the page key, and appends into its /Nums', async () => {
     const { doc, page } = await setup();
-    setStructParents(page, 0);
-    const kidRef = doc.context.register(doc.context.obj({ Nums: doc.context.obj([]) }));
+    setStructParents(page, 5);
+    const elem0 = buildStructElem(doc);
+    const leafNums = doc.context.obj([PDFNumber.of(5), doc.context.obj([elem0])]);
+    const leafRef = doc.context.register(doc.context.obj({ Nums: leafNums, Limits: doc.context.obj([PDFNumber.of(0), PDFNumber.of(9)]) }));
     attachStructTreeRoot(doc, {
-      ParentTree: doc.context.register(doc.context.obj({ Kids: doc.context.obj([kidRef]) })),
+      ParentTree: doc.context.register(doc.context.obj({ Kids: doc.context.obj([leafRef]) })),
+    });
+
+    const elem1 = buildStructElem(doc);
+    pdfStructureWriterService.extendParentTree(doc, 1, [{ mcid: 1, structElementRef: elem1 }]);
+
+    const leafDict = doc.context.lookup(leafRef) as PDFDict;
+    const flat = numsFlat(doc, leafDict);
+    expect(flat).toHaveLength(2); // still one page entry, inside the leaf
+    const valueArr = flat[1] as PDFArray;
+    expect(valueArr.asArray()).toEqual([elem0, elem1]);
+  });
+
+  it('picks the correct leaf out of several siblings by /Limits, matching the real multi-leaf shape confirmed on Karsaklian_189165 (5 leaves, 178 entries)', async () => {
+    const { doc, page } = await setup();
+    setStructParents(page, 40); // falls in leaf B's [32,63] range, not leaf A's [0,31]
+    const leafAElem = buildStructElem(doc);
+    const leafARef = doc.context.register(doc.context.obj({
+      Nums: doc.context.obj([PDFNumber.of(0), doc.context.obj([leafAElem])]),
+      Limits: doc.context.obj([PDFNumber.of(0), PDFNumber.of(31)]),
+    }));
+    const leafBElem = buildStructElem(doc);
+    const leafBNums = doc.context.obj([PDFNumber.of(40), doc.context.obj([leafBElem])]);
+    const leafBRef = doc.context.register(doc.context.obj({
+      Nums: leafBNums,
+      Limits: doc.context.obj([PDFNumber.of(32), PDFNumber.of(63)]),
+    }));
+    attachStructTreeRoot(doc, {
+      ParentTree: doc.context.register(doc.context.obj({ Kids: doc.context.obj([leafARef, leafBRef]) })),
+    });
+
+    const newElem = buildStructElem(doc);
+    pdfStructureWriterService.extendParentTree(doc, 1, [{ mcid: 1, structElementRef: newElem }]);
+
+    // Leaf A (the wrong leaf) must be untouched.
+    const leafADict = doc.context.lookup(leafARef) as PDFDict;
+    expect(numsFlat(doc, leafADict)).toHaveLength(2);
+
+    const leafBDict = doc.context.lookup(leafBRef) as PDFDict;
+    const flatB = numsFlat(doc, leafBDict);
+    const valueArr = flatB[1] as PDFArray;
+    expect(valueArr.asArray()).toEqual([leafBElem, newElem]);
+  });
+
+  it('walks a 2-level-deep /Kids chain (an intermediate node whose own children are the real leaves), confirming the walk is genuinely recursive, not a single-level special case', async () => {
+    const { doc, page } = await setup();
+    setStructParents(page, 10);
+    const leafElem = buildStructElem(doc);
+    const leafNums = doc.context.obj([PDFNumber.of(10), doc.context.obj([leafElem])]);
+    const leafRef = doc.context.register(doc.context.obj({ Nums: leafNums, Limits: doc.context.obj([PDFNumber.of(10), PDFNumber.of(19)]) }));
+    const intermediateRef = doc.context.register(doc.context.obj({
+      Kids: doc.context.obj([leafRef]),
+      Limits: doc.context.obj([PDFNumber.of(0), PDFNumber.of(19)]),
+    }));
+    attachStructTreeRoot(doc, {
+      ParentTree: doc.context.register(doc.context.obj({ Kids: doc.context.obj([intermediateRef]) })),
+    });
+
+    const newElem = buildStructElem(doc);
+    pdfStructureWriterService.extendParentTree(doc, 1, [{ mcid: 1, structElementRef: newElem }]);
+
+    const leafDict = doc.context.lookup(leafRef) as PDFDict;
+    const valueArr = numsFlat(doc, leafDict)[1] as PDFArray;
+    expect(valueArr.asArray()).toEqual([leafElem, newElem]);
+  });
+
+  it('throws rather than guessing when no /Kids leaf\'s /Limits covers the page key -- no slot exists anywhere in the tree for it yet', async () => {
+    const { doc, page } = await setup();
+    setStructParents(page, 999); // outside every leaf's range below
+    const leafRef = doc.context.register(doc.context.obj({
+      Nums: doc.context.obj([]),
+      Limits: doc.context.obj([PDFNumber.of(0), PDFNumber.of(31)]),
+    }));
+    attachStructTreeRoot(doc, {
+      ParentTree: doc.context.register(doc.context.obj({ Kids: doc.context.obj([leafRef]) })),
     });
 
     const elemRef = buildStructElem(doc);
-    expect(() => pdfStructureWriterService.extendParentTree(doc, 1, [{ mcid: 0, structElementRef: elemRef }])).toThrow(/hierarchical/);
+    expect(() => pdfStructureWriterService.extendParentTree(doc, 1, [{ mcid: 0, structElementRef: elemRef }])).toThrow(/no .* leaf node's \/Limits covers page key 999/);
+  });
+
+  it('throws when a /Kids child node has neither /Nums nor /Kids of its own (malformed tree)', async () => {
+    const { doc, page } = await setup();
+    setStructParents(page, 5);
+    const malformedKidRef = doc.context.register(doc.context.obj({ Limits: doc.context.obj([PDFNumber.of(0), PDFNumber.of(31)]) }));
+    attachStructTreeRoot(doc, {
+      ParentTree: doc.context.register(doc.context.obj({ Kids: doc.context.obj([malformedKidRef]) })),
+    });
+
+    const elemRef = buildStructElem(doc);
+    expect(() => pdfStructureWriterService.extendParentTree(doc, 1, [{ mcid: 0, structElementRef: elemRef }])).toThrow(/neither \/Nums nor \/Kids/);
   });
 
   /**

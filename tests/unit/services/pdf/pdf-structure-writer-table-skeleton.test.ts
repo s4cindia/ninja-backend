@@ -555,12 +555,17 @@ describe('PdfStructureWriterService.buildTableFromLayout', () => {
    * Regression for CodeRabbit's pushback on PR #552 (comment 4011591766):
    * the first round of preflighting covered findTargetTable/parent
    * resolution but not the page's /ParentTree shape, so a document using a
-   * hierarchical /Kids number tree (unsupported, extendParentTree's own
-   * documented rejection) still surfaced its failure only AFTER real MCIDs
-   * and struct elements already existed with nowhere to wire them. This
-   * confirms the shape is now caught before any content-stream mutation.
+   * hierarchical /Kids number tree still surfaced its failure only AFTER
+   * real MCIDs and struct elements already existed with nowhere to wire
+   * them. This confirms the shape is still caught before any content-
+   * stream mutation -- now via findParentTreeLeafNums declining because
+   * this kid node carries no /Limits at all (so it can never be chosen as
+   * the target leaf), not because hierarchical trees are categorically
+   * unsupported (they're walked successfully when a leaf's /Limits does
+   * cover the page's key -- see pdf-structure-writer-parenttree-extender's
+   * own coverage).
    */
-  it('preflights the /ParentTree shape and leaves the content stream untouched when it uses an unsupported hierarchical /Kids number tree', async () => {
+  it('preflights the /ParentTree shape and leaves the content stream untouched when no /Kids leaf has /Limits covering the page key', async () => {
     const { doc } = await buildDocWithTrivialBoxAndSiblings([{ text: 'X', x: 50, y: 500 }]);
     const before = decodePageContent(doc, 1);
 
@@ -575,7 +580,7 @@ describe('PdfStructureWriterService.buildTableFromLayout', () => {
     const results = pdfStructureWriterService.buildTableFromLayout(doc, [{ issue: issueFor('table_p1_0'), table }]);
 
     expect(results[0].success).toBe(false);
-    expect(results[0].error).toMatch(/hierarchical.*Kids/i);
+    expect(results[0].error).toMatch(/no .* leaf node's \/Limits covers page key/i);
 
     const after = decodePageContent(doc, 1);
     expect(after).toBe(before);

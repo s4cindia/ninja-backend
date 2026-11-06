@@ -435,4 +435,69 @@ describe('PdfStructureWriterService.buildFigureFromImage', () => {
       fs.unlinkSync(tmpPath);
     }
   }, 30_000);
+
+  /**
+   * Regression for a real failure cluster on a real document
+   * (Karsaklian_189165_9781606497623): an alt-text-decorative suggestion
+   * permanently failed to apply with the misleading error "No Figure
+   * element at page 74, index 2" -- misleading because the true cause was
+   * never in setAltText at all. ensureFigureForImages's own doc comment
+   * says a buildFigureFromImage failure "is not surfaced here -- setAltText's
+   * own existing 'No Figure element' error reports it naturally
+   * per-suggestion afterward", and that's exactly what happened:
+   * buildFigureFromImage's /ParentTree preflight (resolveParentTreeNumsArray)
+   * threw on the document's real hierarchical /Kids tree, silently failing
+   * the build, so setAltText's later lookup found nothing to target and
+   * reported its own generic, unrelated-looking error. Fixed as a direct
+   * consequence of resolveParentTreeNumsArray/findParentTreeLeafNums now
+   * walking /Kids instead of declining -- confirmed live against the real
+   * PDF (see the investigation script's "REAL end-to-end buildFigureFromImage
+   * call" output: this exact image now succeeds, building MCID 2542) --
+   * this test locks that same fix in as a synthetic regression.
+   */
+  it('builds a Figure even when the page\'s /ParentTree is a hierarchical /Kids tree (not just a flat root /Nums)', async () => {
+    const { doc, parsedPdf, xObjectName, tmpPath } = await buildDocWithTaggedTextAndUntaggedImage();
+    try {
+      const imageId = `img_p1_0_${xObjectName}`;
+      const root = doc.context.lookup(doc.catalog.get(PDFName.of('StructTreeRoot'))) as PDFDict;
+
+      const page = doc.getPages()[0];
+      const structParentsRaw = page.node.get(PDFName.of('StructParents'));
+      const pageKey = structParentsRaw instanceof PDFNumber ? structParentsRaw.asNumber() : 0;
+
+      // Re-wrap the existing flat /Nums into an equivalent single-leaf
+      // hierarchical tree -- same real shape confirmed on Karsaklian_189165
+      // (several /Limits-bounded leaves under a /Kids root), just with one
+      // leaf instead of five, since this fixture only has one tagged page.
+      const existingParentTreeRef = root.get(PDFName.of('ParentTree')) as PDFRef;
+      const existingParentTreeDict = doc.context.lookup(existingParentTreeRef) as PDFDict;
+      const existingNums = existingParentTreeDict.get(PDFName.of('Nums'));
+      const leafRef = doc.context.register(doc.context.obj({
+        Nums: existingNums,
+        Limits: doc.context.obj([PDFNumber.of(pageKey), PDFNumber.of(pageKey)]),
+      }));
+      const hierarchicalParentTreeRef = doc.context.register(doc.context.obj({
+        Kids: doc.context.obj([leafRef]),
+      }));
+      root.set(PDFName.of('ParentTree'), hierarchicalParentTreeRef);
+
+      const results = await pdfStructureWriterService.buildFigureFromImage(doc, parsedPdf, [
+        { imageId, pageNumber: 1, position: { x: 50, y: 100, width: 100, height: 80 } },
+      ]);
+      expect(results[0].success).toBe(true);
+
+      // The new entry must land inside the LEAF's /Nums, not a new root /Nums.
+      const leafDict = doc.context.lookup(leafRef) as PDFDict;
+      const leafNums = leafDict.get(PDFName.of('Nums')) as PDFArray;
+      const flat = leafNums.asArray();
+      expect((flat[0] as PDFNumber).asNumber()).toBe(pageKey);
+      const valueArr = flat[1] as PDFArray;
+      expect(valueArr.asArray().length).toBeGreaterThan(0);
+      const newFigureRef = valueArr.asArray()[valueArr.asArray().length - 1] as PDFRef;
+      expect(tagOf(doc.context.lookup(newFigureRef))).toBe('Figure');
+    } finally {
+      await pdfParserService.close(parsedPdf);
+      fs.unlinkSync(tmpPath);
+    }
+  }, 30_000);
 });

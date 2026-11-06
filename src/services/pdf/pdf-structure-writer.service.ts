@@ -2534,14 +2534,26 @@ export class PdfStructureWriterService {
    * nothing, and never touches it when extending an ALREADY-existing
    * page's array (that path introduces no new top-level key).
    *
-   * Rejects (throws on) two /ParentTree shapes rather than handling them,
-   * both intentionally out of scope until live validation (Slice 2d)
-   * actually hits one: a page's existing /ParentTree value being something
-   * OTHER than an array (e.g. a lone dict/ref for a page that historically
-   * used exactly one MCID -- promoting it to array form is unverified
-   * guesswork), and a hierarchical /Kids number tree at the /ParentTree
-   * root (this codebase doesn't currently produce or need to read one;
-   * walking /Kids to the correct leaf is real, separate work).
+   * Rejects (throws on) one /ParentTree shape rather than handling it,
+   * intentionally out of scope until live validation (Slice 2d) actually
+   * hits it: a page's existing /ParentTree value being something OTHER
+   * than an array (e.g. a lone dict/ref for a page that historically used
+   * exactly one MCID -- promoting it to array form is unverified
+   * guesswork).
+   *
+   * A hierarchical /Kids number tree (PDF32000 7.9.7 -- real documents with
+   * many pages split one giant /Nums array into several /Limits-bounded
+   * leaves to keep each node small) IS supported: findParentTreeLeafNums
+   * walks /Kids, at any depth, to the leaf whose /Limits covers the page's
+   * key, and extendParentTree's own append/insert logic runs against that
+   * leaf's /Nums exactly as it would against a flat root /Nums. Confirmed
+   * against a real document (Karsaklian_189165): 5 leaves, /Limits
+   * [0,31]/[32,63]/[64,95]/[96,127]/[128,177], 178 entries total -- fixing
+   * 11 permanently-failed link-missing-annotation-fix suggestions that
+   * previously declined outright (PR #551's original "real, separate work"
+   * deferral). Still declines (never guesses) when no leaf's /Limits
+   * covers the requested key -- see findParentTreeLeafNums's own doc
+   * comment for why that residual case isn't attempted.
    */
   /**
    * Resolves (creating if wholly absent) the page's /StructParents key and
@@ -2600,26 +2612,83 @@ export class PdfStructureWriterService {
       // A number-tree node has EITHER /Kids (an intermediate/root node in a
       // multi-level hierarchical tree -- real documents with very many
       // pages use this to avoid one giant flat array) OR /Nums (a leaf
-      // node with actual key-value pairs), never both. Blindly adding an
-      // empty /Nums here when /Kids is already present would (a) never
-      // find any real existing page mapping, since those live under /Kids,
-      // not here, and (b) produce an invalid node carrying both keys.
-      // Walking /Kids to find the correct leaf is real, separate work --
-      // this codebase doesn't currently produce or need to read a
-      // hierarchical tree anywhere (Math_Kim's own /ParentTree is
-      // confirmed flat/Nums-only), so bail rather than guess, matching
-      // this method's other unsupported-shape checks (CodeRabbit/Codex
-      // finding on PR #551, confirmed real).
-      if (parentTreeDict.get(PDFName.of('Kids'))) {
-        throw new Error(
-          'extendParentTree: /StructTreeRoot /ParentTree uses a hierarchical /Kids number tree -- unsupported.'
-        );
+      // node with actual key-value pairs), never both. When /Kids is
+      // present, the real page mapping lives under one of its leaves, not
+      // here -- walk to it rather than blindly adding an empty /Nums
+      // beside /Kids (which would never find the real mapping and would
+      // produce an invalid node carrying both keys).
+      const kidsRaw = parentTreeDict.get(PDFName.of('Kids'));
+      if (kidsRaw) {
+        numsArr = this.findParentTreeLeafNums(doc, parentTreeDict, pageKey);
+      } else {
+        numsArr = doc.context.obj([]) as unknown as PDFArray;
+        parentTreeDict.set(PDFName.of('Nums'), numsArr);
       }
-      numsArr = doc.context.obj([]) as unknown as PDFArray;
-      parentTreeDict.set(PDFName.of('Nums'), numsArr);
     }
 
     return { numsArr, pageKey };
+  }
+
+  /**
+   * Recursively walks a hierarchical /ParentTree number-tree node's /Kids
+   * chain (PDF32000 7.9.7 -- arbitrary depth is legal; a node has /Kids
+   * XOR /Nums, never both) to the leaf whose /Limits range covers pageKey,
+   * returning that leaf's /Nums array for extendParentTree to append/
+   * insert into exactly as it would a flat root /Nums.
+   *
+   * Only ever LOCATES an existing leaf -- never creates one, never
+   * rebalances /Limits, never merges/splits nodes. If no leaf's /Limits
+   * covers pageKey, that page genuinely has no slot anywhere in the tree
+   * yet; deciding which leaf should absorb a brand-new key (and updating
+   * that leaf's own /Limits to cover it) is real tree-maintenance work
+   * this method doesn't attempt -- bail rather than guess, matching this
+   * file's established convention. Not expected to matter in practice for
+   * extendParentTree's own callers: every real case found so far (link-
+   * missing-annotation-fix, table/figure retagging) extends a page that
+   * already has SOME tagged content, so its key already has a leaf.
+   */
+  private findParentTreeLeafNums(doc: PDFDocument, node: PDFDict, pageKey: number): PDFArray {
+    const numsRaw = node.get(PDFName.of('Nums'));
+    if (numsRaw) {
+      const looked = numsRaw instanceof PDFRef ? doc.context.lookup(numsRaw) : numsRaw;
+      if (!(looked instanceof PDFArray)) {
+        throw new Error("extendParentTree: a /ParentTree leaf node's /Nums does not resolve to an array");
+      }
+      return looked;
+    }
+
+    const kidsRaw = node.get(PDFName.of('Kids'));
+    if (!kidsRaw) {
+      throw new Error('extendParentTree: a /ParentTree number-tree node has neither /Nums nor /Kids');
+    }
+    const kidsLooked = kidsRaw instanceof PDFRef ? doc.context.lookup(kidsRaw) : kidsRaw;
+    if (!(kidsLooked instanceof PDFArray)) {
+      throw new Error('extendParentTree: /ParentTree /Kids does not resolve to an array');
+    }
+
+    for (const kidRaw of kidsLooked.asArray()) {
+      const kidDict = kidRaw instanceof PDFRef ? doc.context.lookup(kidRaw) : kidRaw;
+      if (!(kidDict instanceof PDFDict)) continue;
+
+      const limitsRaw = kidDict.get(PDFName.of('Limits'));
+      const limits = limitsRaw instanceof PDFRef ? doc.context.lookup(limitsRaw) : limitsRaw;
+      if (!(limits instanceof PDFArray) || limits.size() !== 2) continue;
+
+      const lo = limits.get(0);
+      const hi = limits.get(1);
+      const loResolved = lo instanceof PDFRef ? doc.context.lookup(lo) : lo;
+      const hiResolved = hi instanceof PDFRef ? doc.context.lookup(hi) : hi;
+      if (!(loResolved instanceof PDFNumber) || !(hiResolved instanceof PDFNumber)) continue;
+
+      if (pageKey >= loResolved.asNumber() && pageKey <= hiResolved.asNumber()) {
+        return this.findParentTreeLeafNums(doc, kidDict, pageKey);
+      }
+    }
+
+    throw new Error(
+      `extendParentTree: no /ParentTree leaf node's /Limits covers page key ${pageKey} -- ` +
+      `cannot determine where a brand-new entry would go (real, separate work).`
+    );
   }
 
   extendParentTree(doc: PDFDocument, pageNumber: number, entries: Array<{ mcid: number; structElementRef: PDFRef }>): void {
@@ -6428,53 +6497,160 @@ export class PdfStructureWriterService {
    * file, which only ever adds page-content MCIDs) needs its OWN key in
    * this separate space.
    *
-   * Reuses resolveParentTreeNumsArray's own /ParentTree /Nums resolution
-   * (document-wide in its first half, despite that method's pageNumber
-   * parameter -- the returned pageKey is simply unused here; still throws
-   * on a hierarchical /Kids tree, same as every other caller).
+   * Calls resolveParentTreeNumsArray purely for its validation side effects
+   * (page has /StructParents, struct tree root exists) -- NOT for its
+   * returned numsArr/pageKey, which (since findParentTreeLeafNums started
+   * walking /Kids) are scoped to whichever ONE leaf covers pageNumber's own
+   * key. That scope is wrong for this method's actual job: a brand-new
+   * STANDALONE /StructParent key lives in a document-wide keyspace shared
+   * across every leaf, unrelated to any one page's own MCID-indexed
+   * entries (see this method's own header doc comment on the two-
+   * mechanisms distinction) -- collectParentTreeLeaves below walks every
+   * leaf, not just one.
    *
    * The key is computed as max(existing /ParentTreeNextKey, 1 + the
-   * highest key anywhere in /Nums) -- self-healing against a stale or
-   * missing counter rather than trusting it blindly, since this is the
-   * first place in this codebase that both READS and WRITES this specific
-   * counter for a brand-new standalone key (extendParentTree only ever
-   * reads it, and only ever raises it defensively). Validates the computed
-   * key isn't already present before mutating anything -- should never
-   * actually fire given the computation above, but costs nothing and
-   * matches this file's established paranoia.
+   * highest key anywhere in ANY leaf's /Nums) -- self-healing against a
+   * stale or missing counter rather than trusting it blindly, since this
+   * is the first place in this codebase that both READS and WRITES this
+   * specific counter for a brand-new standalone key (extendParentTree only
+   * ever reads it, and only ever raises it defensively). Validates the
+   * computed key isn't already present in ANY leaf before mutating
+   * anything -- should never actually fire given the computation above,
+   * but costs nothing and matches this file's established paranoia.
+   *
+   * On a hierarchical tree, the new [key, ref] pair is appended into
+   * whichever leaf currently has the HIGHEST /Limits upper bound -- since
+   * `key` is, by construction, guaranteed to exceed every existing key
+   * anywhere in the tree, it always belongs "after" everything, i.e. in
+   * that trailing leaf, whose own /Limits[1] is widened to `key` first
+   * (a minimal, always-valid local repair -- never overlaps a sibling
+   * leaf's range, since every sibling's own upper bound is, by definition,
+   * lower). Only on the single-leaf (flat, non-hierarchical) shape is this
+   * exactly the original behavior, unchanged. Confirmed as a real,
+   * necessary fix, not a hypothetical: without it, this method silently
+   * wrote a new key into whatever ONE leaf resolveParentTreeNumsArray
+   * happened to resolve for pageNumber, producing a leaf whose own /Nums
+   * violated its own /Limits -- reproduced against a synthetic multi-leaf
+   * tree mirroring Karsaklian_189165's real shape before this fix existed.
    */
   private appendAnnotationParentTreeEntry(doc: PDFDocument, pageNumber: number, structElementRef: PDFRef): number {
-    const { numsArr } = this.resolveParentTreeNumsArray(doc, pageNumber);
+    this.resolveParentTreeNumsArray(doc, pageNumber);
     const structRoot = this.getStructTreeRoot(doc)!;
-    const raw = numsArr.asArray();
+
+    const parentTreeRaw = structRoot.get(PDFName.of('ParentTree'));
+    const parentTreeLooked = parentTreeRaw instanceof PDFRef ? doc.context.lookup(parentTreeRaw) : parentTreeRaw;
+    if (!(parentTreeLooked instanceof PDFDict)) {
+      throw new Error('appendAnnotationParentTreeEntry: /StructTreeRoot /ParentTree does not resolve to a dictionary');
+    }
+    const leaves = this.collectParentTreeLeaves(doc, parentTreeLooked);
+    if (leaves.length === 0) {
+      throw new Error('appendAnnotationParentTreeEntry: /ParentTree has no leaf (/Nums-bearing) node to append into');
+    }
 
     let highestKey = -1;
-    for (let i = 0; i < raw.length; i += 2) {
-      const keyObj = raw[i] instanceof PDFRef ? doc.context.lookup(raw[i] as PDFRef) : raw[i];
-      if (keyObj instanceof PDFNumber && keyObj.asNumber() > highestKey) highestKey = keyObj.asNumber();
+    for (const leaf of leaves) {
+      const leafNumsRaw = leaf.dict.get(PDFName.of('Nums'));
+      const leafNums = leafNumsRaw instanceof PDFRef ? doc.context.lookup(leafNumsRaw) : leafNumsRaw;
+      if (!(leafNums instanceof PDFArray)) continue;
+      const raw = leafNums.asArray();
+      for (let i = 0; i < raw.length; i += 2) {
+        const keyObj = raw[i] instanceof PDFRef ? doc.context.lookup(raw[i] as PDFRef) : raw[i];
+        if (keyObj instanceof PDFNumber && keyObj.asNumber() > highestKey) highestKey = keyObj.asNumber();
+      }
     }
     const nextKeyRaw = structRoot.get(PDFName.of('ParentTreeNextKey'));
     const nextKeyResolved = nextKeyRaw instanceof PDFRef ? doc.context.lookup(nextKeyRaw) : nextKeyRaw;
     const counterKey = nextKeyResolved instanceof PDFNumber ? nextKeyResolved.asNumber() : 0;
     const key = Math.max(counterKey, highestKey + 1);
 
-    for (let i = 0; i < raw.length; i += 2) {
-      const keyObj = raw[i] instanceof PDFRef ? doc.context.lookup(raw[i] as PDFRef) : raw[i];
-      if (keyObj instanceof PDFNumber && keyObj.asNumber() === key) {
-        throw new Error(`appendAnnotationParentTreeEntry: ParentTree already has an entry at key ${key} -- computed key was not actually free`);
+    for (const leaf of leaves) {
+      const leafNumsRaw = leaf.dict.get(PDFName.of('Nums'));
+      const leafNums = leafNumsRaw instanceof PDFRef ? doc.context.lookup(leafNumsRaw) : leafNumsRaw;
+      if (!(leafNums instanceof PDFArray)) continue;
+      const raw = leafNums.asArray();
+      for (let i = 0; i < raw.length; i += 2) {
+        const keyObj = raw[i] instanceof PDFRef ? doc.context.lookup(raw[i] as PDFRef) : raw[i];
+        if (keyObj instanceof PDFNumber && keyObj.asNumber() === key) {
+          throw new Error(`appendAnnotationParentTreeEntry: ParentTree already has an entry at key ${key} -- computed key was not actually free`);
+        }
       }
     }
+
+    // Pick the target leaf: the single leaf when the tree isn't
+    // hierarchical at all, otherwise whichever leaf's /Limits reaches
+    // highest -- the new key, exceeding every existing key, always
+    // belongs there. A hierarchical leaf with no /Limits of its own is a
+    // malformed shape this method declines on rather than guesses at.
+    let targetLeaf = leaves[0];
+    if (leaves.length > 1) {
+      for (const leaf of leaves) {
+        if (!leaf.limits) {
+          throw new Error("appendAnnotationParentTreeEntry: a /ParentTree leaf node has no /Limits -- can't determine ordering among several leaves");
+        }
+        if (!targetLeaf.limits || leaf.limits[1] > targetLeaf.limits[1]) targetLeaf = leaf;
+      }
+    }
+
+    const targetNumsRaw = targetLeaf.dict.get(PDFName.of('Nums'));
+    const targetNums = (targetNumsRaw instanceof PDFRef ? doc.context.lookup(targetNumsRaw) : targetNumsRaw) as PDFArray;
+    const raw = targetNums.asArray();
 
     let insertPos = raw.length;
     for (let i = 0; i < raw.length; i += 2) {
       const keyObj = raw[i] instanceof PDFRef ? doc.context.lookup(raw[i] as PDFRef) : raw[i];
       if (keyObj instanceof PDFNumber && keyObj.asNumber() > key) { insertPos = i; break; }
     }
-    numsArr.insert(insertPos, structElementRef);
-    numsArr.insert(insertPos, PDFNumber.of(key));
+    targetNums.insert(insertPos, structElementRef);
+    targetNums.insert(insertPos, PDFNumber.of(key));
+
+    if (targetLeaf.limits && key > targetLeaf.limits[1]) {
+      targetLeaf.dict.set(PDFName.of('Limits'), doc.context.obj([targetLeaf.limits[0], key]));
+    }
     structRoot.set(PDFName.of('ParentTreeNextKey'), PDFNumber.of(key + 1));
 
     return key;
+  }
+
+  /**
+   * Every leaf (/Nums-bearing) node reachable from a /ParentTree (sub)tree,
+   * in /Kids order, recursing through any depth of intermediate nodes --
+   * the read side appendAnnotationParentTreeEntry needs to compute a
+   * document-wide highest key and pick the trailing leaf, unlike
+   * findParentTreeLeafNums's single-target walk (which stops at the first
+   * /Limits-matching leaf for one specific page key). `limits` is null
+   * when the node carries no /Limits of its own (legal and expected for
+   * the single root leaf of a flat, non-hierarchical tree, which has
+   * nothing to bound against) or when /Limits is present but malformed.
+   */
+  private collectParentTreeLeaves(doc: PDFDocument, node: PDFDict): Array<{ dict: PDFDict; limits: [number, number] | null }> {
+    const readLimits = (): [number, number] | null => {
+      const limitsRaw = node.get(PDFName.of('Limits'));
+      const limits = limitsRaw instanceof PDFRef ? doc.context.lookup(limitsRaw) : limitsRaw;
+      if (!(limits instanceof PDFArray) || limits.size() !== 2) return null;
+      const lo = limits.get(0);
+      const hi = limits.get(1);
+      const loResolved = lo instanceof PDFRef ? doc.context.lookup(lo) : lo;
+      const hiResolved = hi instanceof PDFRef ? doc.context.lookup(hi) : hi;
+      if (!(loResolved instanceof PDFNumber) || !(hiResolved instanceof PDFNumber)) return null;
+      return [loResolved.asNumber(), hiResolved.asNumber()];
+    };
+
+    if (node.get(PDFName.of('Nums'))) {
+      return [{ dict: node, limits: readLimits() }];
+    }
+
+    const kidsRaw = node.get(PDFName.of('Kids'));
+    if (!kidsRaw) return [];
+    const kidsLooked = kidsRaw instanceof PDFRef ? doc.context.lookup(kidsRaw) : kidsRaw;
+    if (!(kidsLooked instanceof PDFArray)) return [];
+
+    const leaves: Array<{ dict: PDFDict; limits: [number, number] | null }> = [];
+    for (const kidRaw of kidsLooked.asArray()) {
+      const kidDict = kidRaw instanceof PDFRef ? doc.context.lookup(kidRaw) : kidRaw;
+      if (!(kidDict instanceof PDFDict)) continue;
+      leaves.push(...this.collectParentTreeLeaves(doc, kidDict));
+    }
+    return leaves;
   }
 
   /**

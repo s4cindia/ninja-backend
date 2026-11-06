@@ -203,22 +203,28 @@ describe('fixLinkMissingAnnotation', () => {
   it('rolls back content, /Annots, and the enclosing /K when a later ParentTree extension fails', async () => {
     // A legitimate, real document shape -- a HIERARCHICAL /Kids ParentTree
     // -- that resolveParentTreePageArray (used EARLY, to find the
-    // enclosing /P) fully supports, but extendParentTree's own
-    // resolveParentTreeNumsArray explicitly declines (same "unsupported
-    // shape, bail rather than guess" convention every other caller in
-    // this file already hits). This gives a REALISTIC late failure, after
-    // /Annots, the content stream, and the enclosing /K have already been
-    // mutated -- exactly the rollback path this test exists to exercise.
+    // enclosing /P) fully supports, and that extendParentTree's own
+    // resolveParentTreeNumsArray/findParentTreeLeafNums now also walks
+    // (fixing 11 real permanently-failed suggestions on Karsaklian_189165).
+    // The leaf's /Limits correctly covers this page's key (so both the
+    // early read and the leaf-find below succeed, reaching real /Annots +
+    // content-stream + /K mutation first) -- the late failure instead
+    // comes from a deliberately STALE page array (3 slots, though the
+    // real content only ever used MCID 0), so extendParentTree's own
+    // contiguity check rejects the commit once the real MCIDs are known.
+    // Keeps this a REALISTIC late failure, after mutation has already
+    // happened -- exactly the rollback path this test exists to exercise.
     const { doc, pRef, structTreeRootRef } = await buildDoc(PAGE_CONTENT);
     const structRoot = doc.context.lookup(structTreeRootRef, PDFDict);
-    const pageArrRef = doc.context.register(doc.context.obj([pRef]));
+    const staleEntryArray = doc.context.obj([pRef, pRef, pRef]);
+    const pageArrRef = doc.context.register(staleEntryArray);
     const leafNodeRef = doc.context.register(doc.context.obj({ Limits: [0, 0], Nums: [0, pageArrRef] }));
     const hierarchicalParentTree = doc.context.obj({ Kids: [leafNodeRef] });
     structRoot.set(PDFName.of('ParentTree'), hierarchicalParentTree);
 
     const result = pdfStructureWriterService.fixLinkMissingAnnotation(doc, issueFor(1, URL));
     expect(result.success).toBe(false);
-    expect(result.error).toContain('hierarchical');
+    expect(result.error).toMatch(/contiguously/);
 
     // Rollback must have restored all three mutated surfaces.
     const page = doc.getPage(0);
@@ -429,22 +435,26 @@ describe('fixLinkMissingAnnotation', () => {
       const afterFirstK = kidsOf(doc, pRef);
       expect(afterFirstK).toHaveLength(3); // [0, link1Ref, remainder1Mcid]
 
-      // Same late-failure trigger as the scalar-/K rollback test above: an
-      // unsupported hierarchical /ParentTree, injected only now (carrying
-      // forward the SAME page array the first fix already extended) so
-      // the first fix above succeeds normally and only the second hits it.
+      // Same late-failure trigger as the scalar-/K rollback test above: a
+      // hierarchical /ParentTree (now wrapping the SAME page array the
+      // first fix already extended, with its own key correctly covered by
+      // the one leaf's /Limits, so the first fix's already-committed state
+      // reads back fine) but with one extra bogus slot appended -- a stale
+      // page array, so the first fix above succeeds normally (ran before
+      // this injection) and only the second hits extendParentTree's own
+      // contiguity decline.
       const structRoot = doc.context.lookup(structTreeRootRef, PDFDict);
       const existingParentTree = doc.context.lookup(structRoot.get(PDFName.of('ParentTree')), PDFDict);
       const existingNums = doc.context.lookup(existingParentTree.get(PDFName.of('Nums')), PDFArray);
       const existingPageArr = doc.context.lookup(existingNums.get(1), PDFArray);
-      const pageArrRef = doc.context.register(doc.context.obj(existingPageArr.asArray()));
+      const pageArrRef = doc.context.register(doc.context.obj([...existingPageArr.asArray(), pRef]));
       const leafNodeRef = doc.context.register(doc.context.obj({ Limits: [0, 0], Nums: [0, pageArrRef] }));
       const hierarchicalParentTree = doc.context.obj({ Kids: [leafNodeRef] });
       structRoot.set(PDFName.of('ParentTree'), hierarchicalParentTree);
 
       const second = pdfStructureWriterService.fixLinkMissingAnnotation(doc, issueFor(1, urlB));
       expect(second.success).toBe(false);
-      expect(second.error).toContain('hierarchical');
+      expect(second.error).toMatch(/contiguously/);
 
       // Rollback must restore the array /K to EXACTLY its pre-second-fix
       // shape -- not lose link1's own already-committed splice from the
@@ -462,5 +472,56 @@ describe('fixLinkMissingAnnotation', () => {
       expect(restoredArr[1].toString()).toBe(afterFirstK[1].toString()); // same link1Ref, untouched
       expect((restoredArr[2] as PDFNumber).asNumber()).toBe((afterFirstK[2] as PDFNumber).asNumber());
     });
+  });
+
+  /**
+   * Regression for a real corruption bug this fix's own hierarchical
+   * /ParentTree support introduced as a side effect: once
+   * resolveParentTreeNumsArray/findParentTreeLeafNums started returning
+   * ONE leaf's /Nums instead of throwing, appendAnnotationParentTreeEntry
+   * (which allocates a brand-new STANDALONE /StructParent key for the
+   * Link annotation itself -- a document-wide keyspace, not a per-page
+   * one) kept treating that single leaf's /Nums as if it were the WHOLE
+   * document's keyspace: it under-counted the true highest existing key
+   * (missed any higher key sitting in a DIFFERENT leaf) and inserted the
+   * new key into the wrong leaf, violating that leaf's own /Limits.
+   * Reproduced directly against a synthetic tree mirroring
+   * Karsaklian_189165's real multi-leaf shape before this was fixed.
+   */
+  it('allocates the new annotation\'s standalone /StructParent key correctly on a MULTI-leaf hierarchical /ParentTree, widening the trailing leaf rather than corrupting the page\'s own leaf', async () => {
+    const { doc, pRef, structTreeRootRef } = await buildDoc(PAGE_CONTENT);
+    const structRoot = doc.context.lookup(structTreeRootRef, PDFDict);
+
+    // Leaf A covers this page's own content key (0). Leaf B is a sibling
+    // leaf covering a HIGHER key range, already holding one unrelated
+    // standalone entry (key 3) -- the real shape that would otherwise be
+    // invisible to a highestKey scan limited to leaf A alone.
+    const pageArrRef = doc.context.register(doc.context.obj([pRef]));
+    const leafARef = doc.context.register(doc.context.obj({ Limits: [0, 0], Nums: [0, pageArrRef] }));
+    const unrelatedRef = doc.context.register(doc.context.obj({ Type: PDFName.of('StructElem'), S: PDFName.of('Link') }));
+    const leafBRef = doc.context.register(doc.context.obj({ Limits: [1, 5], Nums: [3, unrelatedRef] }));
+    structRoot.set(PDFName.of('ParentTree'), doc.context.obj({ Kids: [leafARef, leafBRef] }));
+    structRoot.set(PDFName.of('ParentTreeNextKey'), PDFNumber.of(6));
+
+    const result = pdfStructureWriterService.fixLinkMissingAnnotation(doc, issueFor(1, URL));
+    expect(result.success).toBe(true);
+
+    // Leaf A (the page's own leaf) must be completely untouched.
+    const leafA = doc.context.lookup(leafARef, PDFDict);
+    expect((leafA.get(PDFName.of('Limits')) as PDFArray).asArray().map(n => (n as PDFNumber).asNumber())).toEqual([0, 0]);
+    expect((leafA.get(PDFName.of('Nums')) as PDFArray).asArray()).toHaveLength(2);
+
+    // The new standalone key (6, the counter's value -- correctly ahead of
+    // leaf B's own existing key 3) must land in leaf B, with /Limits
+    // widened to cover it.
+    const leafB = doc.context.lookup(leafBRef, PDFDict);
+    const leafBLimits = (leafB.get(PDFName.of('Limits')) as PDFArray).asArray().map(n => (n as PDFNumber).asNumber());
+    expect(leafBLimits).toEqual([1, 6]);
+    const leafBNums = (leafB.get(PDFName.of('Nums')) as PDFArray).asArray();
+    expect(leafBNums).toHaveLength(4);
+    expect((leafBNums[0] as PDFNumber).asNumber()).toBe(3); // untouched original entry
+    expect((leafBNums[2] as PDFNumber).asNumber()).toBe(6); // new entry, in sorted position
+
+    expect((structRoot.get(PDFName.of('ParentTreeNextKey')) as PDFNumber).asNumber()).toBe(7);
   });
 });
