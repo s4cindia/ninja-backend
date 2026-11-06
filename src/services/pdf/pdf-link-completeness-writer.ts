@@ -601,3 +601,266 @@ export function buildLinkCompletenessSplice(
 
   return { edits, linkMcid, remainderMcid, enclosingTag: enclosing.tag, enclosingMcid: enclosing.mcid };
 }
+
+// ─── Same-operand URL splitter (the 30.1%+5.3% "shares an operand with ───
+// ─── other prose" bucket findUrlOperatorRun declines) ────────────────────
+//
+// findUrlOperatorRun/buildLinkCompletenessSplice above only ever INSERT new
+// text between already-complete operators/array-elements -- never touching
+// an existing literal's own bytes. The real population this section
+// targets needs more: the URL's own text routinely shares a single Tj/TJ
+// string operand with real surrounding prose (a short lead-in phrase like
+// "Retrieved from ", or a trailing fragment), so freeing it means cutting
+// INSIDE that literal's own raw bytes at an exact point. findSafeCutPoint
+// (above) is the checkpoint primitive this builds on: it resolves a target
+// DECODED-text position back to the exact RAW byte offset to cut at, or
+// null when that position falls inside one byte's own multi-character
+// ligature expansion (no valid offset exists there -- decline, don't
+// guess).
+//
+// Real, load-bearing finding this design depends on: every cut this
+// section ever builds is still a PURE INSERTION, never a byte removal --
+// splitting `(xyz)` between 'x' and 'y' is done by inserting `) ... (`
+// (closing the first half's own delimiter, the tag-boundary text, then a
+// fresh opening delimiter for the second half) AT that exact offset; the
+// ORIGINAL single pair of delimiters simply ends up serving the first and
+// last pieces once the inserted text sits between them. For a TJ array,
+// the SAME insertion also has to close the array and its own operator
+// (`)] TJ ... [(`) -- a tag boundary (BDC/EMC) can only ever appear BETWEEN
+// complete top-level operators, never nested inside another operator's own
+// array argument.
+
+/**
+ * One edge of a UrlSubstringRun: where to insert the new tag-boundary text,
+ * and the exact wrapper fragments needed around it. `closeSuffix` goes
+ * immediately BEFORE the tag-boundary text (closing whatever needs closing
+ * at this exact point); `openPrefix` goes immediately after (reopening
+ * whatever needs reopening). Both are '' for a true operator-level
+ * boundary (nothing to close/reopen at all -- the SAME simple case
+ * findUrlOperatorRun's own matches always use).
+ */
+export interface SubstringCutPoint {
+  offset: number;
+  closeSuffix: string;
+  openPrefix: string;
+}
+
+export interface UrlSubstringRun {
+  /** Absolute offset of the URL's own first decoded character -- NOT necessarily an existing token boundary; see leadingCut for what to insert there. */
+  urlStart: number;
+  /** Absolute offset right after the URL's own last decoded character. */
+  urlEnd: number;
+  matchedText: string;
+  leadingCut: SubstringCutPoint;
+  trailingCut: SubstringCutPoint;
+  /** True when there's real (non-whitespace) decoded text remaining in the SAME operator right after the URL's own end -- trailingCut lands mid-operator (not at that operator's own clean end), and what's left there isn't just whitespace. */
+  hasTrailingContentInSameOp: boolean;
+  /** The nearest safe, complete-token boundary at or after urlEnd -- always a valid position to resume a fresh content-stream tokenize from (unlike urlEnd itself, which may sit mid-array). Used to check for real content AFTER the operator containing the URL's own end, without re-tokenizing from a dangling mid-array position. */
+  afterOpBoundary: number;
+}
+
+/**
+ * Same real-URL-shape scan as findUrlOperatorRun (same MAX_RUN_OPERATORS
+ * multi-op merge, same LINE_BREAK_OPS hard stop), but with NO leftover
+ * cap -- findUrlSubstringRun is only ever meant to be tried as a fallback
+ * AFTER findUrlOperatorRun has already declined, so by construction any
+ * leftover found here genuinely lives inside the edge operator's own
+ * operand structure (if the leftover could have been resolved by simply
+ * starting the match window at a LATER operator, findUrlOperatorRun's own
+ * "try every starting index" loop would already have found that clean
+ * match). Declines (returns null) when either edge's own cut point would
+ * require splitting inside a ligature's own multi-character expansion, or
+ * when `isSimpleFont` reports the active font at an edge needing an actual
+ * byte-level split is not a simple (single-byte) font -- both real,
+ * necessary safety gates, not retried with a different window (shifting
+ * the window doesn't change where this SAME real occurrence's own
+ * start/end are, so retrying can never avoid the same unsafe cut).
+ */
+export function findUrlSubstringRun(
+  content: string,
+  rangeStart: number,
+  rangeEnd: number,
+  targetUrl: string,
+  resolveGlyphText?: GlyphTextResolver,
+  isSimpleFont?: (fontTag: string) => boolean
+): UrlSubstringRun | null {
+  if (!targetUrl) return null;
+  const tokens = tokenize(content.slice(rangeStart, rangeEnd));
+
+  interface SubPiece { raw: string; rawStart: number; text: string }
+  interface SubOp {
+    start: number;
+    end: number;
+    opKeyword: string;
+    pieces: SubPiece[];
+    text: string;
+    precededByLineBreak: boolean;
+    fontTag: string | null;
+  }
+  const ops: SubOp[] = [];
+  const operands: Token[] = [];
+  let sawLineBreakSinceLastShow = false;
+  let currentFontTag: string | null = null;
+  for (const tk of tokens) {
+    if (tk.t !== 'op') { operands.push(tk); continue; }
+    if (TEXT_SHOW_OPS.has(tk.v)) {
+      const pieces: SubPiece[] = operands
+        .filter((o) => o.t === 's' || o.t === 'h')
+        .map((o) => ({ raw: o.v, rawStart: rangeStart + o.start, text: applyGlyphResolver(decodePdfStringLiteral(o.v), currentFontTag, resolveGlyphText) }));
+      const text = pieces.map((p) => p.text).join('');
+      const opStart = operands.length ? operands[0].start : tk.start;
+      ops.push({ start: rangeStart + opStart, end: rangeStart + tk.end, opKeyword: tk.v, pieces, text, precededByLineBreak: sawLineBreakSinceLastShow, fontTag: currentFontTag });
+      sawLineBreakSinceLastShow = false;
+    } else if (LINE_BREAK_OPS.has(tk.v)) {
+      sawLineBreakSinceLastShow = true;
+    } else if (tk.v === FONT_SELECT_OP) {
+      currentFontTag = operands[0]?.t === 'name' ? operands[0].v : currentFontTag;
+    }
+    operands.length = 0;
+  }
+
+  const locate = (globalOffset: number, i: number, j: number): { op: SubOp; localOffset: number } | null => {
+    let consumed = 0;
+    for (let k = i; k <= j; k++) {
+      if (globalOffset <= consumed + ops[k].text.length) return { op: ops[k], localOffset: globalOffset - consumed };
+      consumed += ops[k].text.length;
+    }
+    return null;
+  };
+
+  const buildCut = (located: { op: SubOp; localOffset: number }): SubstringCutPoint | null => {
+    const { op, localOffset } = located;
+    const isArray = op.opKeyword === 'TJ';
+    if (localOffset <= 0) return { offset: op.start, closeSuffix: '', openPrefix: '' };
+    if (localOffset >= op.text.length) return { offset: op.end, closeSuffix: '', openPrefix: '' };
+
+    let consumed = 0;
+    for (const piece of op.pieces) {
+      const pieceLen = piece.text.length;
+      if (localOffset <= consumed + pieceLen) {
+        const withinPiece = localOffset - consumed;
+        if (withinPiece === 0) {
+          return { offset: piece.rawStart, closeSuffix: isArray ? '] TJ' : '', openPrefix: isArray ? '[' : '' };
+        }
+        if (withinPiece === pieceLen) {
+          return { offset: piece.rawStart + piece.raw.length, closeSuffix: isArray ? '] TJ' : '', openPrefix: isArray ? '[' : '' };
+        }
+        // Mid-literal: genuinely need to cut inside this piece's own raw bytes.
+        if (op.fontTag === null) return null; // unknown font -- decline rather than guess
+        if (isSimpleFont && !isSimpleFont(op.fontTag)) return null; // CID/Type0 -- out of this module's scope
+        const bytes = decodePdfStringLiteralBytes(piece.raw);
+        const chars = resolveBytesToChars(bytes, op.fontTag, resolveGlyphText);
+        const localSourceOffset = findSafeCutPoint(bytes, chars, withinPiece);
+        if (localSourceOffset === null) return null; // mid-ligature -- decline
+        const isHex = piece.raw.startsWith('<');
+        const closeDelim = isHex ? '>' : ')';
+        const openDelim = isHex ? '<' : '(';
+        return {
+          offset: piece.rawStart + localSourceOffset,
+          closeSuffix: closeDelim + (isArray ? '] TJ' : ' Tj'),
+          openPrefix: (isArray ? '[' : '') + openDelim,
+        };
+      }
+      consumed += pieceLen;
+    }
+    return null;
+  };
+
+  for (let i = 0; i < ops.length; i++) {
+    let concatenated = '';
+    for (let j = i; j < Math.min(ops.length, i + MAX_RUN_OPERATORS); j++) {
+      if (j > i && ops[j].precededByLineBreak) break;
+      concatenated += ops[j].text;
+      const idx = concatenated.indexOf(targetUrl);
+      if (idx === -1) continue;
+
+      const startLocated = locate(idx, i, j);
+      const endLocated = locate(idx + targetUrl.length, i, j);
+      if (!startLocated || !endLocated) break; // shouldn't happen -- defensive
+
+      const leadingCut = buildCut(startLocated);
+      if (!leadingCut) return null;
+      const trailingCut = buildCut(endLocated);
+      if (!trailingCut) return null;
+
+      const hasTrailingContentInSameOp = endLocated.op.text.slice(endLocated.localOffset).trim().length > 0;
+
+      return {
+        urlStart: leadingCut.offset,
+        urlEnd: trailingCut.offset,
+        matchedText: targetUrl,
+        leadingCut,
+        trailingCut,
+        hasTrailingContentInSameOp,
+        afterOpBoundary: endLocated.op.end,
+      };
+    }
+  }
+  return null;
+}
+
+export interface UrlSubstringSplice {
+  /** Same {offset, text} PURE-INSERTION convention as LinkCompletenessSplice's own edits -- apply right-to-left, same as every other multi-edit splice in this codebase. */
+  edits: Array<{ offset: number; text: string }>;
+  linkMcid: number;
+  remainderMcid: number | null;
+  enclosingTag: string;
+  enclosingMcid: number | null;
+}
+
+/**
+ * Builds the content-stream edits that carve a findUrlSubstringRun match
+ * out of whatever real content tag already encloses it -- the SAME
+ * enclosing-tag resolution and remainder-MCID handling buildLinkCompleteness
+ * Splice already uses (reused directly, not duplicated: findEnclosingTagSpan,
+ * hasRealContentBetween), just driven by run.leadingCut/trailingCut's own
+ * wrapper fragments instead of the simple "always an operator boundary"
+ * text those functions' OWN clean-path caller never needed.
+ *
+ * Reuses afterOpBoundary (not urlEnd itself) as the starting point for the
+ * "is there real content after this" check -- urlEnd can sit mid-array,
+ * where a fresh tokenize would see a dangling, unmatched array with no
+ * opening `[` in view; afterOpBoundary is always a complete-token-safe
+ * position to resume scanning from (the containing operator's own clean
+ * end).
+ *
+ * Declines (returns null) under the exact same conditions as
+ * buildLinkCompletenessSplice: no enclosing tag at all, or the match
+ * somehow extends past the enclosing span's own close.
+ */
+export function buildUrlSubstringSplice(
+  content: string,
+  run: UrlSubstringRun,
+  mcidStart: number
+): UrlSubstringSplice | null {
+  const enclosing = findEnclosingTagSpan(content, run.urlStart);
+  if (!enclosing || !enclosing.tag) return null;
+  if (run.urlEnd > enclosing.closeOpStart) return null;
+
+  const linkMcid = mcidStart;
+  const edits: Array<{ offset: number; text: string }> = [
+    {
+      offset: run.leadingCut.offset,
+      text: `${run.leadingCut.closeSuffix} EMC /Link <</MCID ${linkMcid}>> BDC ${run.leadingCut.openPrefix}`,
+    },
+  ];
+
+  let remainderMcid: number | null = null;
+  const hasTrailingContent = run.hasTrailingContentInSameOp || hasRealContentBetween(content, run.afterOpBoundary, enclosing.closeOpStart);
+  if (hasTrailingContent) {
+    if (enclosing.mcid !== null) {
+      remainderMcid = mcidStart + 1;
+      edits.push({
+        offset: run.trailingCut.offset,
+        text: `${run.trailingCut.closeSuffix} EMC /${enclosing.tag} <</MCID ${remainderMcid}>> BDC ${run.trailingCut.openPrefix}`,
+      });
+    } else {
+      edits.push({
+        offset: run.trailingCut.offset,
+        text: `${run.trailingCut.closeSuffix} EMC /${enclosing.tag} BMC ${run.trailingCut.openPrefix}`,
+      });
+    }
+  }
+
+  return { edits, linkMcid, remainderMcid, enclosingTag: enclosing.tag, enclosingMcid: enclosing.mcid };
+}

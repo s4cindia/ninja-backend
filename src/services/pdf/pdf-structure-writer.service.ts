@@ -6588,6 +6588,36 @@ export class PdfStructureWriterService {
   }
 
   /**
+   * Companion to buildGlyphTextResolver, for the same-operand URL
+   * splitter's own font-safety guard (pdf-link-completeness-writer.ts's
+   * findUrlSubstringRun): reports whether a font tag resolves to a simple
+   * (single-byte) font subtype -- the ONLY kind that module's byte-level
+   * cut logic is safe to attempt on. Same SIMPLE_FONT_SUBTYPES set
+   * font-tounicode.service.ts already uses for the identical distinction,
+   * duplicated locally rather than imported -- a 4-string Set, and this
+   * file already duplicates small, self-contained lookups rather than
+   * couple to that file's own class (see e.g. parseToUnicodeCMapValues's
+   * own doc comment). An unresolvable font tag (missing /Resources, no
+   * matching entry, no /Subtype) reports false -- decline rather than
+   * guess, matching every other "can't verify" gate in this same fixer.
+   */
+  private buildSimpleFontChecker(doc: PDFDocument, pageNumber: number): (fontTag: string) => boolean {
+    const SIMPLE_FONT_SUBTYPES = new Set(['/Type1', '/TrueType', '/MMType1', '/Type3']);
+    const page = doc.getPage(pageNumber - 1);
+    const resourcesRaw = page.node.get(PDFName.of('Resources'));
+    const resources = resourcesRaw instanceof PDFRef ? doc.context.lookup(resourcesRaw, PDFDict) : resourcesRaw instanceof PDFDict ? resourcesRaw : null;
+    const fontsRaw = resources?.get(PDFName.of('Font'));
+    const fonts = fontsRaw instanceof PDFRef ? doc.context.lookup(fontsRaw, PDFDict) : fontsRaw instanceof PDFDict ? fontsRaw : null;
+
+    return (fontTag: string): boolean => {
+      const fontRef = fonts?.get(PDFName.of(fontTag.replace(/^\//, '')));
+      const fontDict = fontRef instanceof PDFRef ? doc.context.lookup(fontRef, PDFDict) : fontRef instanceof PDFDict ? fontRef : null;
+      const subtype = fontDict?.get(PDFName.of('Subtype'))?.toString();
+      return subtype !== undefined && SIMPLE_FONT_SUBTYPES.has(subtype);
+    };
+  }
+
+  /**
    * LINK-MISSING-ANNOTATION fix (Matterhorn 28-011), Slice 3 -- wires
    * slices 1-2's pure content-stream splice (pdf-link-completeness-
    * writer.ts's findUrlOperatorRun/buildLinkCompletenessSplice) into a real
