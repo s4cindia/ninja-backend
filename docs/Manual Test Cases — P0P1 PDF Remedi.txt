@@ -1,0 +1,214 @@
+Manual Test Cases — P0/P1 PDF Remediation
+TC-01 — MANUAL_REQUIRED Amber Badge
+Precondition: PDF with figures (equations, circuit diagrams, or complex charts). Run AI analysis.
+
+Steps:
+
+Upload a PDF containing an equation image or circuit diagram
+Navigate to audit results → wait for AI analysis to complete
+Find an ALT-TEXT-MISSING issue for the equation/circuit element
+Expected:
+
+Issue card shows an amber panel with ShieldAlert icon and "Manual Review Required" label
+The guidance text from AI is shown (e.g. "This equation requires a subject matter expert…")
+No Apply button is shown — only the amber badge
+Blue guidance panel (for guidance-only) and purple panel (for apply-to-pdf) do NOT appear for this issue
+Also verify (simple chart):
+
+Upload PDF with a simple 3-bar bar chart
+Same issue type should show a purple apply-to-pdf panel, not amber
+Apply button is visible
+TC-02 — Post-Remediation Validation Strip
+Precondition: Any tagged PDF with AI suggestions that have an Apply button.
+
+Steps:
+
+Upload PDF → run audit → wait for AI analysis
+Open AI analysis panel → click Apply All
+After apply completes, re-fetch the page (or observe the header area)
+Expected — while validating:
+
+The Generate ACR button shows a spinner and "Validating…" text
+Generate ACR button is disabled (clicking does nothing)
+No post-remediation strip is visible yet
+Expected — after validation completes (postRemediationStatus === 'complete'):
+
+Green strip appears in header area: "Post-fix validation complete"
+Strip shows: X resolved · Y remaining (and regressions count if > 0)
+Resolution rate percentage shown on the right (e.g. "73% resolution rate")
+Generate ACR button returns to normal (enabled, "Generate ACR")
+Expected — if validation fails (postRemediationStatus === 'failed'):
+
+Amber strip appears: "Post-fix validation failed — ACR generated from pre-validation state."
+Generate ACR button is re-enabled (user can still generate ACR with warning)
+TC-03 — ACR Button Gate (postRemediationStatus = pending)
+Precondition: A job where Apply All was just clicked but re-audit is still running.
+
+Steps:
+
+Click Apply All on a PDF with several applicable suggestions
+Immediately look at the Generate ACR button
+Expected:
+
+Button shows Loader2 spinner + "Validating…"
+Button has disabled attribute — cannot be clicked
+Tooltip on hover: "Validating fixes — please wait…"
+TC-04 — Adobe Flags Panel
+Precondition: A PDF that has been auto-tagged by Adobe (AutoTag completed successfully with a tagging report).
+
+Steps:
+
+Upload an untagged PDF → wait for AutoTag to complete
+Navigate to audit results page
+Expected (if Adobe flagged elements):
+
+Amber panel appears between the stats strip and the Matterhorn summary
+Text: "N elements flagged by Adobe for manual review"
+Breakdown by type shown (e.g. "3 Figure · 1 Table")
+Expected (if no flags):
+
+Panel is absent entirely
+TC-05 — PDF/UA Identifier Auto-Write
+Precondition: Tagged PDF that lacks pdfuaid:part in XMP metadata.
+
+Steps:
+
+Upload the PDF → run comprehensive scan
+Check audit results for PDFUA-IDENTIFIER-MISSING issue
+Download the remediated PDF after audit completes
+Open remediated PDF in PAC 2024
+Expected:
+
+PDFUA-IDENTIFIER-MISSING issue appears in audit results (severity: serious)
+PAC 2024 Checkpoint 28 passes on the remediated file
+XMP metadata contains pdfuaid:part="1" (inspect with ExifTool or Acrobat properties)
+Negative case:
+
+Upload a PDF that already has pdfuaid:part in XMP → PDFUA-IDENTIFIER-MISSING should NOT appear
+TC-06 — Bookmark Auto-Generation
+Precondition: Tagged PDF with H1–H6 structure elements, >10 pages, and no existing bookmarks.
+
+Steps:
+
+Upload the PDF → run audit
+Check for BOOKMARK-MISSING issue
+Download the remediated PDF
+Open in Adobe Acrobat
+Expected:
+
+BOOKMARK-MISSING issue appears in audit results
+Remediated PDF has a bookmark outline visible in Acrobat's Bookmarks panel
+Bookmark count is logged server-side (check backend logs: [PDF Worker] Auto-generated N bookmarks)
+Bookmarks navigate to correct pages when clicked
+Fallback case (no H1–H6 tags):
+
+If the tagged PDF has no heading structure elements, no bookmarks are generated
+Log shows: Bookmark auto-generate skipped for job X: no H1-H6 structure elements found
+TC-07 — Heading Fix (HEADING-SKIP)
+Precondition: Tagged PDF with heading levels that skip (e.g. H1 → H3 with no H2).
+
+Steps:
+
+Upload PDF → run comprehensive scan
+Find HEADING-SKIP issue in results
+Confirm AI analysis shows a purple "AI Suggestion" panel with an Apply button (not amber, not blue)
+Click Apply
+Download the remediated PDF and open in PAC 2024
+Expected:
+
+AI suggestion has suggestionType: 'heading-fix', applyMode: 'apply-to-pdf', confidence ~95%
+After Apply: issue card shows "Applied" state
+In PAC 2024: Checkpoint 06 passes for the affected heading
+TC-08 — List Rewrap (LIST-IMPROPER-MARKUP)
+Precondition: Tagged PDF where LI elements appear without a parent L element.
+
+Steps:
+
+Upload PDF → run comprehensive scan
+Find LIST-IMPROPER-MARKUP issue
+AI suggestion should show Apply button
+Click Apply
+Validate in PAC 2024
+Expected:
+
+applyMode: 'apply-to-pdf', confidence ~90%
+Applied successfully; PAC 2024 list structure checkpoints pass
+TC-09 — Table Header Fix (TABLE-MISSING-HEADERS)
+Precondition: Tagged PDF with a simple table (≤3 columns, no merged cells, first row is a header row) but no TH elements.
+
+Steps:
+
+Upload PDF → run comprehensive scan
+Find TABLE-MISSING-HEADERS issue
+AI suggestion shows Apply button
+Click Apply
+Download and check in PAC 2024
+Expected:
+
+applyMode: 'apply-to-pdf', confidence ~88%
+After Apply: first-row cells are TH elements with scope="Column"
+PAC 2024 Checkpoint 15 (table headers) passes
+Complex table (negative case):
+
+Table with 4+ columns or merged cells → no Apply button (guidance-only or not generated)
+TC-10 — Language Auto-Wire
+Precondition: PDF with no /Lang set on the catalog.
+
+Steps:
+
+Upload PDF → run audit
+Check for PDF-NO-LANGUAGE issue
+Download the remediated PDF
+Inspect /Lang entry in PDF structure
+Expected:
+
+PDF-NO-LANGUAGE issue detected
+Remediated PDF has /Lang set (e.g. en if no other language signals, or detected language)
+If AutoTag set paragraph-level Lang attributes to fr, the catalog /Lang should be fr — not hardcoded en
+Backend log shows: [PDF Worker] Auto-applied language 'en' for job X: true
+TC-11 — Title Derivation (PDF-NO-TITLE / PDF-DISPLAY-TITLE)
+Precondition: PDF with no document title or a filename-like title (e.g. "document_v2_final.pdf").
+
+Steps:
+
+Upload PDF → run audit
+Check for PDF-NO-TITLE or PDF-DISPLAY-TITLE issue
+Download remediated PDF → open Acrobat → File → Properties → Description
+Expected:
+
+Title is derived: either from first H1 structure element text, or from the filename stem
+DisplayDocTitle is set to true (title bar shows document title, not filename, in Acrobat)
+XMP dc:title is also set (visible in Acrobat's XMP viewer or ExifTool)
+TC-12 — Apply All with Structure Writer Types
+Precondition: PDF with a mix of HEADING-SKIP, LIST-IMPROPER-MARKUP, ALT-TEXT-MISSING (with AI values), and standard issues.
+
+Steps:
+
+Run AI analysis on the PDF
+Click Apply All
+Expected:
+
+Structure writer types (heading-fix, list-fix, table-header-fix) apply without requiring a value field
+Standard types (alt-text, table-summary) apply using their AI-generated value
+Response shows applied count including both structure and value-based fixes
+No 500 errors in browser network tab
+Post-remediation re-audit triggers automatically
+TC-13 — Regression / Edge Cases
+Scenario	Expected
+Upload already-compliant PDF	No PDFUA-IDENTIFIER-MISSING, no BOOKMARK-MISSING, no PDF-NO-LANGUAGE issues
+Apply single heading-fix → re-audit	That specific HEADING-SKIP issue no longer appears
+Apply bookmark-generate via Apply button	BOOKMARK-MISSING issue resolves; bookmarks appear in Acrobat
+PDF with no structure tree	heading-fix, list-fix, table-header-fix suggestions are NOT generated (AI routes to guidance-only)
+Re-open results page after Apply All	postRemediationAudit strip is still visible (persisted in job.output)
+Apply All with 0 applicable suggestions	No crash; applied: 0 returned; no re-audit triggered
+TC-14 — TypeScript / Build Validation
+
+# Backend
+cd ninja-backend
+npm run typecheck   # must pass with 0 errors
+npm run lint        # must pass
+
+# Frontend
+cd ninja-frontend
+npm run typecheck   # must pass with 0 errors
+npm run lint        # must pass (ShieldAlert i
