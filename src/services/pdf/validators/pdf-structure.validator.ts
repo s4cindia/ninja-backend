@@ -14,7 +14,7 @@ import { AuditIssue, IssueSeverity } from '../../audit/base-audit.service';
 import { structureAnalyzerService, DocumentStructure } from '../structure-analyzer.service';
 import { pdfParserService, ParsedPDF } from '../pdf-parser.service';
 import { decodePageContent } from '../pdf-content-stream-io';
-import { findUntaggedPathRuns, type UntaggedPathRun, findTaggedContentInsideArtifact, findOversizedArtifactSpans, findPlacedPdfSpans, findArtifactWrappedActualTextSiblings } from '../pdf-artifact-tagger';
+import { findUntaggedPathRuns, type UntaggedPathRun, findTaggedContentInsideArtifact, findOversizedArtifactSpans, findPlacedPdfSpans, findArtifactWrappedActualTextSiblings, findActualTextRunsMissingMcid } from '../pdf-artifact-tagger';
 import { logger } from '../../../lib/logger';
 
 // validateUntaggedContent's own recurring-decorative-curve refinement (see
@@ -160,6 +160,15 @@ class PDFStructureValidator {
     // related checks above.
     if (structure.isTaggedPDF) {
       issues.push(...this.validateArtifactHidesActualText(parsedPdf));
+    }
+
+    // Validate /Span <</ActualText>> content with no real /MCID -- the
+    // actual fix for the defect validateArtifactHidesActualText targets
+    // (see validateActualTextMissingMcid's own doc comment for why that
+    // earlier check alone wasn't enough) -- tagged PDFs only, same
+    // reasoning as the Artifact-related checks above.
+    if (structure.isTaggedPDF) {
+      issues.push(...this.validateActualTextMissingMcid(parsedPdf));
     }
 
     // Validate /PlacedPDF content -- Adobe InDesign's own non-standard tag
@@ -874,6 +883,65 @@ class PDFStructureValidator {
         wcagCriteria: ['1.3.1'],
         location: `Page ${pageNumber}`,
         suggestion: 'Each letter will be retagged as /Span <</ActualText>>, matching how its own already-tagged siblings in the same word are written.',
+        category: 'structure',
+        pageNumber,
+        matterhornCheckpoint: '01-005',
+        matterhornHow: 'M',
+      }));
+    }
+
+    return issues;
+  }
+
+  /**
+   * Validates for `/Span <</ActualText>>` content with no real `/MCID` --
+   * real text sitting in the content stream with no struct-tree
+   * reachability at all. The ACTUAL fix for the defect
+   * validateArtifactHidesActualText targets: confirmed live on
+   * Karsaklian_189165_9781606497623 AFTER that earlier check's own fix
+   * (PR #780) shipped and deployed -- a fresh PAC run on the remediated
+   * output still reported "Text object not tagged" on the exact same
+   * running-header text, because `/Span <</ActualText>>` with no
+   * `/MCID` is just as invisible to PDF/UA conformance checking as
+   * `/Artifact` is. See findActualTextRunsMissingMcid's own doc comment
+   * for the full defect and why this check (not the earlier one) is
+   * what actually needs to run a real fix.
+   *
+   * Reported one issue per page, aggregating every occurrence on it,
+   * same convention as every other check in this file.
+   */
+  private validateActualTextMissingMcid(parsedPdf: ParsedPDF): AuditIssue[] {
+    const issues: AuditIssue[] = [];
+    let pageCount: number;
+    try {
+      pageCount = parsedPdf.pdfLibDoc.getPageCount();
+    } catch (err) {
+      logger.debug(`[PDFStructureValidator] Could not read page count for ActualText-missing-MCID check: ${err instanceof Error ? err.message : String(err)}`);
+      return issues;
+    }
+
+    for (let pageNumber = 1; pageNumber <= pageCount; pageNumber++) {
+      let content: string | null;
+      try {
+        content = decodePageContent(parsedPdf.pdfLibDoc, pageNumber);
+      } catch (err) {
+        logger.debug(`[PDFStructureValidator] Could not decode page ${pageNumber} for ActualText-missing-MCID check: ${err instanceof Error ? err.message : String(err)}`);
+        continue;
+      }
+      if (!content) continue;
+
+      const runs = findActualTextRunsMissingMcid(content);
+      if (runs.length === 0) continue;
+
+      const totalFragments = runs.reduce((sum, r) => sum + r.mcidInsertPoints.length, 0);
+      issues.push(this.createIssue({
+        source: 'pdf-structure',
+        severity: 'serious',
+        code: 'ACTUALTEXT-MISSING-MCID',
+        message: `${totalFragments} /Span <</ActualText>> fragment(s) in ${runs.length} run(s) on this page have no real /MCID -- invisible to the structure tree even though a screen reader reading the content stream directly would announce them correctly`,
+        wcagCriteria: ['1.3.1'],
+        location: `Page ${pageNumber}`,
+        suggestion: 'Each run will be given a real /MCID per fragment, reachable via /ParentTree from a new /Span structure element.',
         category: 'structure',
         pageNumber,
         matterhornCheckpoint: '01-005',
