@@ -1,0 +1,52 @@
+﻿{
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Sid": "ECRAuth",
+            "Effect": "Allow",
+            "Action": "ecr:GetAuthorizationToken",
+            "Resource": "*"
+        },
+        {
+            "Sid": "ECRPushPull",
+            "Effect": "Allow",
+            "Action": [
+                "ecr:BatchCheckLayerAvailability",
+                "ecr:GetDownloadUrlForLayer",
+                "ecr:BatchGetImage",
+                "ecr:PutImage",
+                "ecr:InitiateLayerUpload",
+                "ecr:UploadLayerPart",
+                "ecr:CompleteLayerUpload"
+            ],
+            "Resource": [
+                "arn:aws:ecr:ap-south-1:223643972423:repository/ninja-backend",
+                "arn:aws:ecr:ap-south-1:223643972423:repository/ace-microservice"
+            ]
+        },
+        {
+            "Sid": "ECSDeploy",
+            "Effect": "Allow",
+            "Action": [
+                "ecs:DescribeTaskDefinition",
+                "ecs:RegisterTaskDefinition",
+                "ecs:DescribeServices",
+                "ecs:UpdateService",
+                "ecs:ListTasks",
+                "ecs:DescribeTasks"
+            ],
+            "Resource": "*"
+        },
+        {
+            "Sid": "PassTaskRolesOnly",
+            "Effect": "Allow",
+            "Action": "iam:PassRole",
+            "Resource": [
+                "arn:aws:iam::223643972423:role/ninja-production-ecs-task-execution-role",
+                "arn:aws:iam::223643972423:role/ninja-production-ecs-task-role",
+                "arn:aws:iam::223643972423:role/ninja-production-ace-task-execution-role",
+                "arn:aws:iam::223643972423:role/ninja-production-ace-task-role"
+            ]
+        }
+    ]
+}
