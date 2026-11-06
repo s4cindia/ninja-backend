@@ -499,6 +499,75 @@ describe('PDFStructureValidator', () => {
     });
   });
 
+  describe('real letters mis-marked /Artifact beside an ActualText sibling (ARTIFACT-HIDES-ACTUALTEXT-SIBLING)', () => {
+    async function validateWithRealPage(content: string): Promise<ParsedPDF['pdfLibDoc']> {
+      const doc = await PDFDocument.create();
+      doc.addPage([612, 792]);
+      writePageContent(doc, 1, content);
+      return doc;
+    }
+
+    // Real shape confirmed live on Karsaklian_189165_9781606497623, page
+    // 12: the running-header word "Description", "D"/"O" mis-marked
+    // /Artifact, "ESCRIPTI"/"N" correctly tagged /Span <</ActualText>>.
+    const DESCRIPTION_SHAPE =
+      '/Artifact BMC \nBT\n(D)Tj\n EMC /Span<</ActualText<0065>>> BDC \n(ESCRIPTI)Tj\n' +
+      'EMC /Artifact BMC  \n(O)Tj\n EMC /Span<</ActualText<006e>>> BDC \n(N)Tj\nEMC\nET\n';
+
+    it('flags a page with the real defect shape', async () => {
+      const pdfLibDoc = await validateWithRealPage(DESCRIPTION_SHAPE);
+      const mockParsedPdf = { ...createMockParsedPdf({ isTagged: true, hasLanguage: true, hasTitle: true }), pdfLibDoc };
+      const mockStructure = createMockStructure({
+        isTaggedPDF: true, hasProperHeadingHierarchy: true, hasDocumentLanguage: true, hasLogicalReadingOrder: true,
+      });
+      vi.mocked(pdfParserService.parse).mockResolvedValue(mockParsedPdf);
+      vi.mocked(pdfParserService.close).mockResolvedValue(undefined);
+      vi.mocked(structureAnalyzerService.analyzeStructure).mockResolvedValue(mockStructure);
+
+      const result = await pdfStructureValidator.validateFromFile('/path/to/test.pdf');
+
+      const issue = result.issues.find(i => i.code === 'ARTIFACT-HIDES-ACTUALTEXT-SIBLING');
+      expect(issue).toBeDefined();
+      expect(issue?.matterhornCheckpoint).toBe('01-005');
+      expect(issue?.matterhornHow).toBe('M');
+      expect(issue?.severity).toBe('serious');
+      expect(issue?.pageNumber).toBe(1);
+      expect(issue?.location).toBe('Page 1');
+      expect(issue?.message).toContain('2 letter(s)');
+    });
+
+    it('does not flag a genuinely standalone decorative /Artifact (e.g. a page number) with no ActualText sibling nearby', async () => {
+      const content = `/Artifact BMC\nBT\n(5)Tj\n(Running Head)Tj\nET\nEMC\n`;
+      const pdfLibDoc = await validateWithRealPage(content);
+      const mockParsedPdf = { ...createMockParsedPdf({ isTagged: true, hasLanguage: true, hasTitle: true }), pdfLibDoc };
+      const mockStructure = createMockStructure({
+        isTaggedPDF: true, hasProperHeadingHierarchy: true, hasDocumentLanguage: true, hasLogicalReadingOrder: true,
+      });
+      vi.mocked(pdfParserService.parse).mockResolvedValue(mockParsedPdf);
+      vi.mocked(pdfParserService.close).mockResolvedValue(undefined);
+      vi.mocked(structureAnalyzerService.analyzeStructure).mockResolvedValue(mockStructure);
+
+      const result = await pdfStructureValidator.validateFromFile('/path/to/test.pdf');
+
+      expect(result.issues.find(i => i.code === 'ARTIFACT-HIDES-ACTUALTEXT-SIBLING')).toBeUndefined();
+    });
+
+    it('does not run this check on an untagged document', async () => {
+      const pdfLibDoc = await validateWithRealPage(DESCRIPTION_SHAPE);
+      const mockParsedPdf = { ...createMockParsedPdf({ isTagged: false, hasLanguage: true, hasTitle: true }), pdfLibDoc };
+      const mockStructure = createMockStructure({
+        isTaggedPDF: false, hasProperHeadingHierarchy: true, hasDocumentLanguage: true, hasLogicalReadingOrder: true,
+      });
+      vi.mocked(pdfParserService.parse).mockResolvedValue(mockParsedPdf);
+      vi.mocked(pdfParserService.close).mockResolvedValue(undefined);
+      vi.mocked(structureAnalyzerService.analyzeStructure).mockResolvedValue(mockStructure);
+
+      const result = await pdfStructureValidator.validateFromFile('/path/to/test.pdf');
+
+      expect(result.issues.find(i => i.code === 'ARTIFACT-HIDES-ACTUALTEXT-SIBLING')).toBeUndefined();
+    });
+  });
+
   describe('/PlacedPDF content unreachable from the structure tree (PLACEDPDF-NOT-TAGGED)', () => {
     async function validateWithRealPage(content: string): Promise<ParsedPDF['pdfLibDoc']> {
       const doc = await PDFDocument.create();

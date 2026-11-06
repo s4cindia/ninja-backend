@@ -14,7 +14,7 @@ import { AuditIssue, IssueSeverity } from '../../audit/base-audit.service';
 import { structureAnalyzerService, DocumentStructure } from '../structure-analyzer.service';
 import { pdfParserService, ParsedPDF } from '../pdf-parser.service';
 import { decodePageContent } from '../pdf-content-stream-io';
-import { findUntaggedPathRuns, type UntaggedPathRun, findTaggedContentInsideArtifact, findOversizedArtifactSpans, findPlacedPdfSpans } from '../pdf-artifact-tagger';
+import { findUntaggedPathRuns, type UntaggedPathRun, findTaggedContentInsideArtifact, findOversizedArtifactSpans, findPlacedPdfSpans, findArtifactWrappedActualTextSiblings } from '../pdf-artifact-tagger';
 import { logger } from '../../../lib/logger';
 
 // validateUntaggedContent's own recurring-decorative-curve refinement (see
@@ -152,6 +152,14 @@ class PDFStructureValidator {
     // only, same reasoning as the two checks above.
     if (structure.isTaggedPDF) {
       issues.push(...this.validateArtifactSwallowsContent(parsedPdf));
+    }
+
+    // Validate real letters mis-marked /Artifact beside an already-tagged
+    // /ActualText sibling (see validateArtifactHidesActualText's own doc
+    // comment) -- tagged PDFs only, same reasoning as the two Artifact-
+    // related checks above.
+    if (structure.isTaggedPDF) {
+      issues.push(...this.validateArtifactHidesActualText(parsedPdf));
     }
 
     // Validate /PlacedPDF content -- Adobe InDesign's own non-standard tag
@@ -807,6 +815,65 @@ class PDFStructureValidator {
         suggestion: hasPathOps
           ? 'Review this page\'s oversized Artifact span(s) manually -- determine where the real content begins and give it its own structure tag.'
           : 'The real content boundary inside this Artifact span will be determined and given its own structure tag.',
+        category: 'structure',
+        pageNumber,
+        matterhornCheckpoint: '01-005',
+        matterhornHow: 'M',
+      }));
+    }
+
+    return issues;
+  }
+
+  /**
+   * Validates for real letters an authoring tool mis-marked `/Artifact`
+   * immediately beside an already-correctly-tagged `/Span <</ActualText>>`
+   * sibling -- see findArtifactWrappedActualTextSiblings's own doc comment
+   * for the full defect (confirmed real on Karsaklian_189165_9781606497623:
+   * Adobe InDesign's export splits a running-header word letter-by-letter,
+   * and the letters whose decorative/swash glyph substitution it couldn't
+   * resolve back to Unicode at export time got `/Artifact` instead of the
+   * `ActualText` fallback its OTHER letters correctly got -- 991
+   * occurrences, 156 pages, closely matching a real PAC UA report's own
+   * 1133 "Text object not tagged" errors on the same document). Reported
+   * one issue per page, aggregating every occurrence on it, same
+   * convention as validateArtifactSwallowsContent above.
+   *
+   * Deterministic and auto-fix-eligible without any AI judgment call --
+   * see ai-analysis.service.ts's own ARTIFACT_HIDES_ACTUALTEXT_SIBLING_CODES
+   * doc comment.
+   */
+  private validateArtifactHidesActualText(parsedPdf: ParsedPDF): AuditIssue[] {
+    const issues: AuditIssue[] = [];
+    let pageCount: number;
+    try {
+      pageCount = parsedPdf.pdfLibDoc.getPageCount();
+    } catch (err) {
+      logger.debug(`[PDFStructureValidator] Could not read page count for Artifact-hides-ActualText check: ${err instanceof Error ? err.message : String(err)}`);
+      return issues;
+    }
+
+    for (let pageNumber = 1; pageNumber <= pageCount; pageNumber++) {
+      let content: string | null;
+      try {
+        content = decodePageContent(parsedPdf.pdfLibDoc, pageNumber);
+      } catch (err) {
+        logger.debug(`[PDFStructureValidator] Could not decode page ${pageNumber} for Artifact-hides-ActualText check: ${err instanceof Error ? err.message : String(err)}`);
+        continue;
+      }
+      if (!content) continue;
+
+      const candidates = findArtifactWrappedActualTextSiblings(content);
+      if (candidates.length === 0) continue;
+
+      issues.push(this.createIssue({
+        source: 'pdf-structure',
+        severity: 'serious',
+        code: 'ARTIFACT-HIDES-ACTUALTEXT-SIBLING',
+        message: `${candidates.length} letter(s) on this page are marked /Artifact (invisible to assistive technology) immediately beside an already-tagged /Span <</ActualText>> sibling spelling the rest of the same word -- real heading/running-header text is being silently dropped from the accessible structure`,
+        wcagCriteria: ['1.3.1'],
+        location: `Page ${pageNumber}`,
+        suggestion: 'Each letter will be retagged as /Span <</ActualText>>, matching how its own already-tagged siblings in the same word are written.',
         category: 'structure',
         pageNumber,
         matterhornCheckpoint: '01-005',
