@@ -13,6 +13,7 @@ import {
   findPlacedPdfSpans,
   buildPlacedPdfRetagEdit,
   findArtifactWrappedActualTextSiblings,
+  findActualTextRunsMissingMcid,
 } from '../../../../src/services/pdf/pdf-artifact-tagger';
 
 describe('findUntaggedPathRuns', () => {
@@ -726,5 +727,71 @@ describe('findArtifactWrappedActualTextSiblings', () => {
 
   it('returns an empty array for a page with no /Artifact spans at all', () => {
     expect(findArtifactWrappedActualTextSiblings('/P <</MCID 0>> BDC \n(hello)Tj\nEMC\n')).toHaveLength(0);
+  });
+});
+
+describe('findActualTextRunsMissingMcid', () => {
+  // Real shape confirmed live on Karsaklian_189165_9781606497623 page 12,
+  // AFTER findArtifactWrappedActualTextSiblings's own fix (PR #780)
+  // retagged "D" and "O" from /Artifact to /Span <</ActualText>> -- the
+  // whole word "Description" is now uniformly 4 ActualText-no-MCID
+  // fragments, no /Artifact left at all.
+  const REAL_DESCRIPTION_SHAPE =
+    '/T1_0 1 Tf\n' +
+    '/Span <</ActualText (D)>> BDC \nBT\n8 0 0 8 87 608.9656 Tm\n(D)Tj\n EMC ' +
+    '/Span<</ActualText<FEFF00650073006300720069007000740069>>> BDC \n(ESCRIPTI)Tj\n' +
+    'EMC /Span <</ActualText (o)>> BDC   \n(O)Tj\n EMC ' +
+    '/Span<</ActualText<FEFF006E>>> BDC \n(N)Tj\nEMC\nET\n';
+
+  it('finds the real Karsaklian_189165 shape as ONE run of 4 fragments', () => {
+    const result = findActualTextRunsMissingMcid(REAL_DESCRIPTION_SHAPE);
+    expect(result).toHaveLength(1);
+    expect(result[0].mcidInsertPoints).toHaveLength(4);
+  });
+
+  it('each insert point sits exactly right after that fragment\'s own "<<"', () => {
+    const result = findActualTextRunsMissingMcid(REAL_DESCRIPTION_SHAPE);
+    const firstInsertAt = result[0].mcidInsertPoints[0];
+    expect(REAL_DESCRIPTION_SHAPE.slice(firstInsertAt, firstInsertAt + 1)).toBe('/'); // right before "/ActualText"
+    expect(REAL_DESCRIPTION_SHAPE.slice(firstInsertAt - 2, firstInsertAt)).toBe('<<');
+  });
+
+  it('does not flag a run shorter than 2 -- a single isolated ActualText-no-MCID span is left alone', () => {
+    const single = '/P <</MCID 0>> BDC \n(before)Tj\nEMC /Span<</ActualText<0041>>> BDC \n(A)Tj\nEMC /P <</MCID 1>> BDC \n(after)Tj\nEMC\n';
+    expect(findActualTextRunsMissingMcid(single)).toHaveLength(0);
+  });
+
+  it('does not flag a /Span <</ActualText>> that already has a real /MCID', () => {
+    const withMcid = '/Span <</MCID 5 /ActualText (D)>> BDC \n(D)Tj\nEMC /Span<</MCID 6 /ActualText<0065>>> BDC \n(e)Tj\nEMC\n';
+    expect(findActualTextRunsMissingMcid(withMcid)).toHaveLength(0);
+  });
+
+  it('does not flag a genuinely self-contained ActualText span that closes its own complete BT...ET pair', () => {
+    const selfContained =
+      '/Span<</ActualText<0041>>> BDC \nBT\n(A)Tj\nET\nEMC ' +
+      '/Span<</ActualText<0042>>> BDC \nBT\n(B)Tj\nET\nEMC\n';
+    expect(findActualTextRunsMissingMcid(selfContained)).toHaveLength(0);
+  });
+
+  it('does not flag an /Artifact span (a different defect, handled by findArtifactWrappedActualTextSiblings instead)', () => {
+    const artifactOnly = '/Artifact BMC \n(X)Tj\nEMC /Artifact BMC \n(Y)Tj\nEMC\n';
+    expect(findActualTextRunsMissingMcid(artifactOnly)).toHaveLength(0);
+  });
+
+  it('does not flag a /Span <</ActualText>> wrapping more than one text-show operator', () => {
+    const twoTj = '/Span<</ActualText<0041>>> BDC \n(X)Tj\n(Y)Tj\nEMC /Span<</ActualText<0042>>> BDC \n(Z)Tj\nEMC\n';
+    expect(findActualTextRunsMissingMcid(twoTj)).toHaveLength(0);
+  });
+
+  it('captures a run of 8 consecutive fragments (the real "Introduction" shape, page 16)', () => {
+    const introduction =
+      Array.from({ length: 8 }, (_, i) => `/Span<</ActualText<00${(65 + i).toString(16)}>>> BDC \n(${String.fromCharCode(65 + i)})Tj\nEMC `).join('');
+    const result = findActualTextRunsMissingMcid(introduction);
+    expect(result).toHaveLength(1);
+    expect(result[0].mcidInsertPoints).toHaveLength(8);
+  });
+
+  it('returns an empty array for a page with no ActualText content at all', () => {
+    expect(findActualTextRunsMissingMcid('/P <</MCID 0>> BDC \n(hello)Tj\nEMC\n')).toHaveLength(0);
   });
 });

@@ -45,6 +45,7 @@ import {
   findPlacedPdfSpans,
   buildPlacedPdfRetagEdit,
   findArtifactWrappedActualTextSiblings,
+  findActualTextRunsMissingMcid,
 } from './pdf-artifact-tagger';
 import {
   matchCellRanges,
@@ -4264,6 +4265,181 @@ export class PdfStructureWriterService {
       success: true,
       before: `${resolved.length} letter(s) on this page hidden as /Artifact beside already-tagged siblings`,
       after: `Retagged ${resolved.length} letter(s) as /Span <</ActualText>> (${resolved.map((r) => r.text).join('')})`,
+    };
+  }
+
+  /**
+   * ACTUALTEXT-MISSING-MCID fix: the real fix findArtifactActualTextSibling
+   * above turned out NOT to be -- confirmed live after that fix shipped
+   * (PR #780) and was deployed, a fresh PAC run on the remediated output
+   * still reported "Text object not tagged" on the exact same running-
+   * header text, because `/Span <</ActualText>>` with no real `/MCID` is
+   * just as invisible to PDF/UA conformance checking as `/Artifact` is --
+   * see findArtifactWrappedActualTextSiblings's own CORRECTION doc
+   * comment for the full story. This gives genuine struct-tree
+   * reachability to every ActualText-no-MCID run findActualTextRunsMissingMcid
+   * finds -- BOTH the letters the earlier fix retagged AND the siblings
+   * that were already `/Span <</ActualText>>` before this session ever
+   * started, since both now look identical: real ActualText content,
+   * no MCID.
+   *
+   * One real struct element PER RUN (per word-fragment-sequence), not one
+   * per letter -- PDF32000 allows a struct element's /K to be an array of
+   * several bare MCIDs on the SAME page, exactly how a normal multi-run
+   * paragraph is already tagged elsewhere in this same document, so this
+   * matches the document's own convention rather than fragmenting one
+   * semantic word into N separate struct elements in the tree.
+   *
+   * Document-flow anchoring mirrors fixArtifactSwallowsContentComplex
+   * exactly: resolves each run's own nearest EXISTING tagged neighbors by
+   * content-stream position, requires left/right agreement, anchors the
+   * new struct element as a sibling via insertIntoKidsBefore/After.
+   * Confirmed live on Karsaklian_189165_9781606497623's own page 12: no
+   * tagged content precedes the running header at all (it's the first
+   * thing on the page), so every run anchors via its right-hand neighbor
+   * (the page's first real body paragraph) -- the left-candidate branch
+   * exists for whichever page shape needs it instead.
+   *
+   * All-or-nothing per page, same rollback convention as
+   * fixArtifactSwallowsContentComplex and buildFigureFromImage before it.
+   */
+  fixActualTextMissingMcid(doc: PDFDocument, issue: AuditIssue): FixResult {
+    const fail = (error: string): FixResult => ({ issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error });
+
+    if (!issue.pageNumber) return fail('Issue has no pageNumber');
+    const pageNumber = issue.pageNumber;
+
+    let originalContent: string | null;
+    try {
+      originalContent = decodePageContent(doc, pageNumber);
+    } catch (err) {
+      return fail(`Could not decode page ${pageNumber}: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    if (!originalContent) return fail(`Page ${pageNumber} has no content stream`);
+
+    const runs = findActualTextRunsMissingMcid(originalContent);
+    if (runs.length === 0) {
+      return fail('No ActualText-tagged content missing a real /MCID found on this page -- already fixed, or the page changed since the audit that found it');
+    }
+
+    const structRoot = this.getStructTreeRoot(doc);
+    if (!structRoot) return fail('No /StructTreeRoot found');
+    const pageArr = this.resolveParentTreePageArray(doc, pageNumber);
+    if (!pageArr) return fail(`No /ParentTree entry found for page ${pageNumber}`);
+    const pageArrRaw = pageArr.asArray();
+    const positionedMcids = orderedPageContentMcids(originalContent);
+
+    const resolveEntry = (mcid: number | undefined): PDFRef | null => {
+      if (mcid === undefined) return null;
+      const entry = pageArrRaw[mcid];
+      return entry instanceof PDFRef ? entry : null;
+    };
+    const resolveParentOf = (entryRef: PDFRef | null): PDFRef | null => {
+      if (!entryRef) return null;
+      const dict = doc.context.lookup(entryRef, PDFDict);
+      const p = dict?.get(PDFName.of('P'));
+      return p instanceof PDFRef ? p : null;
+    };
+
+    const existingMcids = pageContentMcids(doc, pageNumber) ?? new Set<number>();
+    let nextMcid = existingMcids.size > 0 ? Math.max(...existingMcids) + 1 : 0;
+
+    interface PlannedRun {
+      mcids: number[];
+      flowParent: PDFRef;
+      anchorRef: PDFRef;
+      anchorBefore: boolean;
+    }
+
+    const allEdits: Array<{ offset: number; text: string }> = [];
+    const planned: PlannedRun[] = [];
+
+    for (const run of [...runs].sort((a, b) => a.runStart - b.runStart)) {
+      const leftCandidate = [...positionedMcids].reverse().find((p) => p.start < run.runStart);
+      const rightCandidate = positionedMcids.find((p) => p.start > run.runEnd);
+      const leftEntry = resolveEntry(leftCandidate?.mcid);
+      const rightEntry = resolveEntry(rightCandidate?.mcid);
+      const leftParent = resolveParentOf(leftEntry);
+      const rightParent = resolveParentOf(rightEntry);
+
+      if (leftParent && rightParent && leftParent.objectNumber !== rightParent.objectNumber) {
+        return fail('Run\'s left/right tagged neighbors resolve to different document-flow parents -- ambiguous, declining rather than guessing');
+      }
+
+      let flowParent: PDFRef | null = null;
+      let anchorRef: PDFRef | null = null;
+      let anchorBefore = false;
+      if (rightParent && rightEntry) {
+        flowParent = rightParent; anchorRef = rightEntry; anchorBefore = true;
+      } else if (leftParent && leftEntry) {
+        flowParent = leftParent; anchorRef = leftEntry; anchorBefore = false;
+      }
+
+      if (!flowParent || !anchorRef) {
+        return fail('Run has no usable tagged neighbor on this page to anchor its document-flow position to -- declining rather than guessing');
+      }
+
+      const mcids: number[] = [];
+      for (const insertAt of run.mcidInsertPoints) {
+        allEdits.push({ offset: insertAt, text: `/MCID ${nextMcid} ` });
+        mcids.push(nextMcid);
+        nextMcid++;
+      }
+      planned.push({ mcids, flowParent, anchorRef, anchorBefore });
+    }
+
+    allEdits.sort((a, b) => b.offset - a.offset);
+    let newContent = originalContent;
+    for (const e of allEdits) {
+      newContent = newContent.slice(0, e.offset) + e.text + newContent.slice(e.offset);
+    }
+
+    const pageRef = doc.getPages()[pageNumber - 1].ref;
+    const createdRefs: PDFRef[] = [];
+    const parentTreeEntries: Array<{ mcid: number; structElementRef: PDFRef }> = [];
+    const lastInsertedByAnchor = new Map<number, PDFRef>();
+
+    try {
+      for (const p of planned) {
+        const spanObj = doc.context.obj({
+          Type: PDFName.of('StructElem'),
+          S: PDFName.of('Span'),
+          P: p.flowParent,
+          Pg: pageRef,
+          K: doc.context.obj(p.mcids.map((m) => PDFNumber.of(m))),
+        });
+        const spanRef = doc.context.register(spanObj as PDFDict);
+        createdRefs.push(spanRef);
+
+        if (p.anchorBefore) {
+          this.insertIntoKidsBefore(doc, p.flowParent, p.anchorRef, spanRef);
+        } else {
+          const insertAfter = lastInsertedByAnchor.get(p.anchorRef.objectNumber) ?? p.anchorRef;
+          this.insertIntoKidsAfter(doc, p.flowParent, insertAfter, spanRef);
+          lastInsertedByAnchor.set(p.anchorRef.objectNumber, spanRef);
+        }
+
+        for (const mcid of p.mcids) {
+          parentTreeEntries.push({ mcid, structElementRef: spanRef });
+        }
+      }
+
+      writePageContent(doc, pageNumber, newContent);
+      parentTreeEntries.sort((a, b) => a.mcid - b.mcid);
+      this.extendParentTree(doc, pageNumber, parentTreeEntries);
+    } catch (err) {
+      // Same full-rollback reasoning as fixArtifactSwallowsContentComplex above.
+      writePageContent(doc, pageNumber, originalContent);
+      for (const ref of createdRefs) this.deleteElement(doc, ref);
+      return fail(err instanceof Error ? err.message : String(err));
+    }
+
+    const totalFragments = planned.reduce((sum, p) => sum + p.mcids.length, 0);
+    return {
+      issueId: issue.id,
+      success: true,
+      before: `${totalFragments} ActualText-tagged fragment(s) in ${planned.length} run(s) on this page with no real /MCID -- invisible to the structure tree`,
+      after: `Gave ${totalFragments} fragment(s) a real /MCID, reachable via /ParentTree from ${planned.length} new /Span struct element(s)`,
     };
   }
 

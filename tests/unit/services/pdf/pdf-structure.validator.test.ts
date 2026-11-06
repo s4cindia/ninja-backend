@@ -568,6 +568,74 @@ describe('PDFStructureValidator', () => {
     });
   });
 
+  describe('/Span <</ActualText>> content with no real /MCID (ACTUALTEXT-MISSING-MCID)', () => {
+    async function validateWithRealPage(content: string): Promise<ParsedPDF['pdfLibDoc']> {
+      const doc = await PDFDocument.create();
+      doc.addPage([612, 792]);
+      writePageContent(doc, 1, content);
+      return doc;
+    }
+
+    // Real shape confirmed live on page 12 AFTER findArtifactWrappedActualTextSiblings's
+    // own fix (PR #780) already ran: "Description" split into 4 uniformly
+    // ActualText-no-MCID fragments.
+    const DESCRIPTION_SHAPE =
+      '/Span <</ActualText (D)>> BDC \n(D)Tj\n EMC /Span<</ActualText<0065>>> BDC \n(ESCRIPTI)Tj\n' +
+      'EMC /Span <</ActualText (o)>> BDC \n(O)Tj\n EMC /Span<</ActualText<006e>>> BDC \n(N)Tj\nEMC\n';
+
+    it('flags a page with the real defect shape', async () => {
+      const pdfLibDoc = await validateWithRealPage(DESCRIPTION_SHAPE);
+      const mockParsedPdf = { ...createMockParsedPdf({ isTagged: true, hasLanguage: true, hasTitle: true }), pdfLibDoc };
+      const mockStructure = createMockStructure({
+        isTaggedPDF: true, hasProperHeadingHierarchy: true, hasDocumentLanguage: true, hasLogicalReadingOrder: true,
+      });
+      vi.mocked(pdfParserService.parse).mockResolvedValue(mockParsedPdf);
+      vi.mocked(pdfParserService.close).mockResolvedValue(undefined);
+      vi.mocked(structureAnalyzerService.analyzeStructure).mockResolvedValue(mockStructure);
+
+      const result = await pdfStructureValidator.validateFromFile('/path/to/test.pdf');
+
+      const issue = result.issues.find(i => i.code === 'ACTUALTEXT-MISSING-MCID');
+      expect(issue).toBeDefined();
+      expect(issue?.matterhornCheckpoint).toBe('01-005');
+      expect(issue?.matterhornHow).toBe('M');
+      expect(issue?.severity).toBe('serious');
+      expect(issue?.pageNumber).toBe(1);
+      expect(issue?.message).toContain('4 /Span <</ActualText>> fragment(s)');
+    });
+
+    it('does not flag a /Span <</ActualText>> that already has a real /MCID', async () => {
+      const content = '/Span <</MCID 0 /ActualText (D)>> BDC \n(D)Tj\nEMC /Span<</MCID 1 /ActualText<0065>>> BDC \n(e)Tj\nEMC\n';
+      const pdfLibDoc = await validateWithRealPage(content);
+      const mockParsedPdf = { ...createMockParsedPdf({ isTagged: true, hasLanguage: true, hasTitle: true }), pdfLibDoc };
+      const mockStructure = createMockStructure({
+        isTaggedPDF: true, hasProperHeadingHierarchy: true, hasDocumentLanguage: true, hasLogicalReadingOrder: true,
+      });
+      vi.mocked(pdfParserService.parse).mockResolvedValue(mockParsedPdf);
+      vi.mocked(pdfParserService.close).mockResolvedValue(undefined);
+      vi.mocked(structureAnalyzerService.analyzeStructure).mockResolvedValue(mockStructure);
+
+      const result = await pdfStructureValidator.validateFromFile('/path/to/test.pdf');
+
+      expect(result.issues.find(i => i.code === 'ACTUALTEXT-MISSING-MCID')).toBeUndefined();
+    });
+
+    it('does not run this check on an untagged document', async () => {
+      const pdfLibDoc = await validateWithRealPage(DESCRIPTION_SHAPE);
+      const mockParsedPdf = { ...createMockParsedPdf({ isTagged: false, hasLanguage: true, hasTitle: true }), pdfLibDoc };
+      const mockStructure = createMockStructure({
+        isTaggedPDF: false, hasProperHeadingHierarchy: true, hasDocumentLanguage: true, hasLogicalReadingOrder: true,
+      });
+      vi.mocked(pdfParserService.parse).mockResolvedValue(mockParsedPdf);
+      vi.mocked(pdfParserService.close).mockResolvedValue(undefined);
+      vi.mocked(structureAnalyzerService.analyzeStructure).mockResolvedValue(mockStructure);
+
+      const result = await pdfStructureValidator.validateFromFile('/path/to/test.pdf');
+
+      expect(result.issues.find(i => i.code === 'ACTUALTEXT-MISSING-MCID')).toBeUndefined();
+    });
+  });
+
   describe('/PlacedPDF content unreachable from the structure tree (PLACEDPDF-NOT-TAGGED)', () => {
     async function validateWithRealPage(content: string): Promise<ParsedPDF['pdfLibDoc']> {
       const doc = await PDFDocument.create();

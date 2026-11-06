@@ -960,6 +960,25 @@ export interface ArtifactActualTextSibling {
  * but not equal to the raw 1183-/Artifact-wrapped-single-Tj count found
  * without this filter; the gap is plausibly exactly the legitimate
  * standalone cases this adjacency requirement correctly excludes.
+ *
+ * CORRECTION, confirmed live after this fix shipped (PR #780) and was
+ * deployed: retagging these letters as `/Span <</ActualText>>` did NOT
+ * actually close the PAC-reported gap -- a fresh PAC run on the
+ * remediated output showed the "Text object not tagged" count roughly
+ * DOUBLE (1133 -> 2124), and the flagged region was "ESCRIPTI" -- a
+ * sibling this fix never touched, tagged this exact same way since
+ * before this session started. Root cause: `/Span <</ActualText>>`
+ * with no real `/MCID` is JUST AS invisible to PAC's own definition of
+ * "tagged" as `/Artifact` is -- PDF/UA conformance checking requires
+ * genuine struct-tree reachability (a real MCID, reachable via
+ * /ParentTree, owned by a real struct element), which ActualText alone
+ * does not provide. This function's own "ActualText sibling" signal was
+ * never wrong as a defect-adjacency heuristic, but the ORIGINAL premise
+ * that the sibling's OWN tagging was itself correct was never actually
+ * verified -- it wasn't. See findActualTextRunsMissingMcid below for the
+ * real fix: it gives genuine MCID + struct-tree linkage to BOTH the
+ * letters this function finds AND the already-ActualText-tagged siblings
+ * this function's own doc comment assumed (incorrectly) were fine.
  */
 interface TopLevelMarkedContentSpan {
   tagStart: number;
@@ -968,14 +987,25 @@ interface TopLevelMarkedContentSpan {
   closeOpEnd: number;
   tagName: string;
   hasActualText: boolean;
+  hasMcid: boolean;
   textShowCount: number;
   rawBytes: string;
   fontResourceName: string | null;
   /** True if an ET occurred while this span was open -- see findArtifactWrappedActualTextSiblings's own doc comment for why this is the real discriminator between a genuinely self-contained decorative span (a page number, closing its OWN BT/ET pair within its own tag) and a defective word-splitting letter (sharing one long-lived BT across several sibling spans, none of which ever see their own ET). */
   sawOwnET: boolean;
+  /** Byte offset right after this span's own properties dict `<<` (null if it has no dict at all, e.g. a bare /Artifact BMC) -- where findActualTextRunsMissingMcid inserts a fresh "/MCID n " key without disturbing the rest of the dict. */
+  dictOpenEnd: number | null;
 }
 
-export function findArtifactWrappedActualTextSiblings(content: string): ArtifactActualTextSibling[] {
+/**
+ * Shared scan underlying both findArtifactWrappedActualTextSiblings and
+ * findActualTextRunsMissingMcid: every TOP-LEVEL marked-content span
+ * (depth 0), in document order, with enough per-span detail for either
+ * caller's own grouping/filtering to run against. See
+ * findArtifactWrappedActualTextSiblings's own doc comment for why BT/ET
+ * is tracked only for sawOwnET, never as a nesting-depth reset point.
+ */
+function collectTopLevelMarkedContentSpans(content: string): TopLevelMarkedContentSpan[] {
   const tokens = tokenize(content);
   const spans: TopLevelMarkedContentSpan[] = [];
 
@@ -1007,6 +1037,7 @@ export function findArtifactWrappedActualTextSiblings(content: string): Artifact
     if (op === 'BDC' || op === 'BMC') {
       const tagName = operands.length ? operands[0].v : '';
       if (depth === 0) {
+        const dictOpenToken = operands.find((o) => o.t === '<<');
         current = {
           tagStart: operands.length ? operands[0].start : tk.start,
           contentStart: tk.end,
@@ -1014,10 +1045,12 @@ export function findArtifactWrappedActualTextSiblings(content: string): Artifact
           closeOpEnd: -1,
           tagName,
           hasActualText: operands.some((o) => o.t === 'name' && o.v === '/ActualText'),
+          hasMcid: operands.some((o) => o.t === 'name' && o.v === '/MCID'),
           textShowCount: 0,
           rawBytes: '',
           fontResourceName: currentFont,
           sawOwnET: false,
+          dictOpenEnd: dictOpenToken ? dictOpenToken.end : null,
         };
       }
       depth++;
@@ -1058,6 +1091,12 @@ export function findArtifactWrappedActualTextSiblings(content: string): Artifact
     operands.length = 0;
   }
 
+  return spans;
+}
+
+export function findArtifactWrappedActualTextSiblings(content: string): ArtifactActualTextSibling[] {
+  const spans = collectTopLevelMarkedContentSpans(content);
+
   // Adjacency check: a maximal RUN of consecutive candidate /Artifact
   // spans qualifies as a whole when the span immediately BEFORE or AFTER
   // the whole run is /ActualText-tagged -- not just each span's own
@@ -1089,6 +1128,66 @@ export function findArtifactWrappedActualTextSiblings(content: string): Artifact
           fontResourceName: s.fontResourceName,
         });
       }
+    }
+    i = j + 1;
+  }
+  return result;
+}
+
+export interface ActualTextRunMissingMcid {
+  /** Byte offset of the run's first fragment's own tag-name operand -- the real-content-stream-order anchor for finding the nearest tagged neighbor BEFORE this run. */
+  runStart: number;
+  /** Byte offset right after the run's last fragment's own closing EMC -- the anchor for finding the nearest tagged neighbor AFTER this run. */
+  runEnd: number;
+  /** One entry per fragment, in document order: the byte offset right after that fragment's own properties dict "<<" -- insert "/MCID n " there (each fragment gets its own fresh MCID) without disturbing its existing /ActualText entry or anything else in the dict. */
+  mcidInsertPoints: number[];
+}
+
+/**
+ * Finds every maximal run of 2+ consecutive `/Span <</ActualText ...>>`
+ * top-level spans that have NO real `/MCID` of their own -- real content
+ * sitting in the content stream with no struct-tree reachability at all.
+ *
+ * Confirmed live on Karsaklian_189165_9781606497623 AFTER
+ * findArtifactWrappedActualTextSiblings's own fix (PR #780) shipped: a
+ * fresh PAC run on the remediated output still reported this exact same
+ * running-header text as "Text object not tagged" -- see that function's
+ * own CORRECTION doc comment for the full story. `/Span <</ActualText>>`
+ * with no `/MCID` is just as invisible to PDF/UA conformance checking as
+ * `/Artifact` is; only a real MCID, reachable via `/ParentTree`, owned by
+ * a real struct element, counts as "tagged". This function (and
+ * fixActualTextMissingMcid, which uses it) is the actual fix -- it
+ * covers BOTH the letters findArtifactWrappedActualTextSiblings already
+ * retagged AND the siblings that were `/Span <</ActualText>>` from
+ * before this session ever started, since both now look identical: real
+ * ActualText content, no MCID.
+ *
+ * Same sawOwnET/textShowCount===1 discriminators as
+ * findArtifactWrappedActualTextSiblings, for the same reason: a
+ * genuinely self-contained ActualText usage elsewhere, if one exists,
+ * would close its own complete BT/ET pair; every confirmed real instance
+ * of this defect never does, since the whole word shares one long-lived
+ * BT with its siblings. Requires a run length of 2+ -- every confirmed
+ * real instance in this document is a multi-fragment word; a single
+ * isolated ActualText-no-MCID span is left alone rather than assumed to
+ * be the same defect.
+ */
+export function findActualTextRunsMissingMcid(content: string): ActualTextRunMissingMcid[] {
+  const spans = collectTopLevelMarkedContentSpans(content);
+
+  const isCandidateSpan = (s: TopLevelMarkedContentSpan | undefined): boolean =>
+    !!s && s.tagName === '/Span' && s.hasActualText && !s.hasMcid && !s.sawOwnET && s.textShowCount === 1 && s.dictOpenEnd !== null;
+
+  const result: ActualTextRunMissingMcid[] = [];
+  let i = 0;
+  while (i < spans.length) {
+    if (!isCandidateSpan(spans[i])) { i++; continue; }
+    let j = i;
+    while (isCandidateSpan(spans[j + 1])) j++;
+    if (j > i) {
+      const mcidInsertPoints: number[] = [];
+      for (let r = i; r <= j; r++) mcidInsertPoints.push(spans[r].dictOpenEnd as number);
+      result.push({ runStart: spans[i].tagStart, runEnd: spans[j].closeOpEnd, mcidInsertPoints });
     }
     i = j + 1;
   }
