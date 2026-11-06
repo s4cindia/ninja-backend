@@ -153,10 +153,18 @@ tmp/
 /check-*.ts
 /test-*.js
 /debug-*.js
+/debug-*.ts
 /query.js
 /verify-*.js
 /reset-*.js
 /create-test-*.js
+
+# Ad-hoc log dumps pulled down for debugging (e.g. aws logs tail output)
+/backend-logs*.txt
+
+# Python bytecode cache (docling-service, spikes/, training-export-service)
+__pycache__/
+*.pyc
 
 # Development documentation (not for repo)
 docs/replit-prompts/
