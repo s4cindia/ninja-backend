@@ -24,6 +24,7 @@ export const startAutoModeSchema = {
     autoMaxRounds: z.number().int().min(1).max(20).optional(),
     autoCostLimitUsd: z.number().min(0.1).max(10).optional(),
     autoColorContrastMode: z.enum(['guidance-only', 'disabled', 'apply-to-pdf']).optional(),
+    autoAltTextMode: z.enum(['apply-to-pdf', 'guidance-only']).optional(),
   }).strict().optional(),
 };
 

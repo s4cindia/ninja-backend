@@ -185,6 +185,26 @@ describe('PdfAutoModeController', () => {
       expect(res.status).toHaveBeenCalledWith(202);
     });
 
+    it('passes a validated autoAltTextMode body override through to the upsert -- the per-job "client supplies their own alt text" lever', async () => {
+      vi.mocked(prisma.pdfAutoRemediationRun.findUnique).mockResolvedValue(null as any);
+      vi.mocked(prisma.pdfAutoRemediationRun.upsert).mockResolvedValue({ id: 'run-1', jobId: 'job-1' } as any);
+      vi.mocked(autoRemediationLoopService.startAutoLoop).mockResolvedValue(undefined);
+      const res = makeRes();
+
+      await pdfAutoModeController.start(
+        makeReq({ body: { autoAltTextMode: 'guidance-only' } as any }),
+        res,
+        next
+      );
+
+      expect(prisma.pdfAutoRemediationRun.upsert).toHaveBeenCalledWith({
+        where: { jobId: 'job-1' },
+        create: { jobId: 'job-1', autoAltTextMode: 'guidance-only' },
+        update: { autoAltTextMode: 'guidance-only' },
+      });
+      expect(res.status).toHaveBeenCalledWith(202);
+    });
+
     it('rejects with 409 when auto mode is already running for this job', async () => {
       vi.mocked(prisma.pdfAutoRemediationRun.findUnique).mockResolvedValue({ id: 'run-1', jobId: 'job-1', autoStatus: 'running' } as any);
 
@@ -241,6 +261,7 @@ describe('PdfAutoModeController', () => {
           autoCostSpentUsd: 0.42,
           autoCostLimitUsd: 2.0,
           autoColorContrastMode: 'apply-to-pdf',
+          autoAltTextMode: null,
         },
       });
     });
@@ -310,6 +331,7 @@ describe('PdfAutoModeController', () => {
           autoCostSpentUsd: 0,
           autoCostLimitUsd: 2.0,
           autoColorContrastMode: null,
+          autoAltTextMode: null,
         },
       });
     });
@@ -342,6 +364,7 @@ describe('PdfAutoModeController', () => {
           autoCostSpentUsd: 0.1,
           autoCostLimitUsd: 1.5,
           autoColorContrastMode: 'disabled',
+          autoAltTextMode: null,
         },
       });
     });

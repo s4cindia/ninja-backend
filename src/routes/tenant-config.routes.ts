@@ -85,11 +85,14 @@ router.get(
 
 /**
  * PATCH /api/v1/tenant/config/ai-remediation
- * Update AI remediation configuration.
+ * Update AI remediation configuration. ADMIN-ONLY — these modes set the
+ * tenant-wide default every job falls back to (altTextMode, colorContrastMode,
+ * linkTextMode, etc.), the same reason /prh and /axes4 below are admin-gated.
  */
 router.patch(
   '/ai-remediation',
   authenticate,
+  authorize('ADMIN'),
   tenantConfigController.updateAiRemediationConfig.bind(tenantConfigController)
 );
 

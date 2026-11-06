@@ -920,6 +920,10 @@ class AiAnalysisService {
      * explicit sessionOverride) should use this rather than re-deriving it,
      * since re-deriving it outside this method can't see tenant config. */
     colorContrastMode: 'guidance-only' | 'disabled' | 'apply-to-pdf';
+    /** Same rationale as colorContrastMode above, for altTextMode -- also
+     * reflects the untagged-PDF force-downgrade to 'guidance-only' below,
+     * since that mutates `config.altTextMode` before this returns. */
+    altTextMode: 'apply-to-pdf' | 'guidance-only';
   }> {
     logger.info(`[AiAnalysis] Starting analysis for job ${jobId}`);
 
@@ -955,7 +959,7 @@ class AiAnalysisService {
       await prisma.aiAnalysis.deleteMany({ where: { jobId } }).catch((err) => {
         logger.warn(`[AiAnalysis] Failed to prune stale suggestions for job ${jobId} (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
       });
-      return { analyzed: 0, skipped: 0, colorContrastMode: config.colorContrastMode };
+      return { analyzed: 0, skipped: 0, colorContrastMode: config.colorContrastMode, altTextMode: config.altTextMode };
     }
 
     // Load PDF from storage — prefer the remediated (Adobe-tagged) file if available
@@ -1269,6 +1273,7 @@ class AiAnalysisService {
         serviceDegraded: geminiStatus.open,
         serviceError: geminiStatus.reason,
         colorContrastMode: config.colorContrastMode,
+        altTextMode: config.altTextMode,
       };
     } finally {
       if (parsed?.parsedPdf) {
