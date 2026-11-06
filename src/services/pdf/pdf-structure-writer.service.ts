@@ -6768,10 +6768,43 @@ export class PdfStructureWriterService {
     // exactly this MCID -- that's sufficient to prove it's the right
     // element to splice into, independent of what its /S happens to say.
     const originalK = enclosingDict.get(PDFName.of('K'));
-    if (!(originalK instanceof PDFNumber) || originalK.asNumber() !== enclosingMcid) {
+    // Paragraph-ceiling follow-on (2026-11-06): confirmed live on
+    // Curiel_187961_CSHP.pdf that all 209 real issues sit in only 28
+    // unique paragraphs, so requiring /K to STILL be a bare scalar meant
+    // only the first URL per paragraph could ever be fixed -- every other
+    // URL in the same paragraph declined here once the first fix widened
+    // /K to an array. The invariant that actually matters is unchanged
+    // either way: enclosingMcid must be the UNIQUE bare-number entry
+    // marking exactly where this content sits in the element's own
+    // reading order -- whether /K is still that scalar itself, or (an
+    // earlier fix on this same paragraph already ran) one entry inside an
+    // array of several. Either way the new /Link (and remainder, if any)
+    // splice in immediately after that entry's own position.
+    let kidsArrayIndex: number | null = null;
+    if (originalK instanceof PDFNumber) {
+      if (originalK.asNumber() !== enclosingMcid) {
+        return fail(
+          `Enclosing struct element's own /K is the bare MCID ${originalK.asNumber()}, not the ${enclosingMcid} ` +
+          'the splice was built against -- declining rather than guessing at how to merge with whatever else is there now'
+        );
+      }
+    } else if (originalK instanceof PDFArray) {
+      const kArr = originalK.asArray();
+      const matchingIndices = kArr.reduce<number[]>((acc, item, i) => {
+        if (item instanceof PDFNumber && item.asNumber() === enclosingMcid) acc.push(i);
+        return acc;
+      }, []);
+      if (matchingIndices.length !== 1) {
+        return fail(
+          `Enclosing struct element's own /K is an array containing bare MCID ${enclosingMcid} ` +
+          `${matchingIndices.length} time(s) (expected exactly 1) -- declining rather than guessing where to splice`
+        );
+      }
+      kidsArrayIndex = matchingIndices[0];
+    } else {
       return fail(
-        `Enclosing struct element's own /K is no longer the single bare MCID ${enclosingMcid} the splice was ` +
-        'built against -- declining rather than guessing at how to merge with whatever else is there now'
+        'Enclosing struct element\'s own /K is neither a bare MCID nor an array containing one -- declining ' +
+        'rather than guessing'
       );
     }
 
@@ -6822,9 +6855,25 @@ export class PdfStructureWriterService {
       }
       writePageContent(doc, pageNumber, newContent);
 
-      const newK: PDFObject[] = [PDFNumber.of(enclosingMcid), linkRef];
-      if (splice.remainderMcid !== null) newK.push(PDFNumber.of(splice.remainderMcid));
-      enclosingDict.set(PDFName.of('K'), doc.context.obj(newK));
+      const newEntries: PDFObject[] = [linkRef];
+      if (splice.remainderMcid !== null) newEntries.push(PDFNumber.of(splice.remainderMcid));
+      if (kidsArrayIndex !== null) {
+        // /K was already an array (a prior fix on this same paragraph) --
+        // splice the new entries in right after the existing enclosingMcid
+        // entry, preserving reading order, WITHOUT mutating the array
+        // object `originalK` itself holds -- so the catch block's plain
+        // `enclosingDict.set(..., originalK)` below is still a correct,
+        // untouched rollback.
+        const existingArr = (originalK as PDFArray).asArray();
+        const updatedArr = [
+          ...existingArr.slice(0, kidsArrayIndex + 1),
+          ...newEntries,
+          ...existingArr.slice(kidsArrayIndex + 1),
+        ];
+        enclosingDict.set(PDFName.of('K'), doc.context.obj(updatedArr));
+      } else {
+        enclosingDict.set(PDFName.of('K'), doc.context.obj([PDFNumber.of(enclosingMcid), ...newEntries]));
+      }
 
       if (!this.isReachableFromRoot(doc, enclosingRef)) {
         throw new Error('Enclosing struct element is no longer reachable from the structure tree root after splicing -- not committing');

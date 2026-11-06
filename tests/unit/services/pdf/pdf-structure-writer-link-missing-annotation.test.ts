@@ -315,4 +315,152 @@ describe('fixLinkMissingAnnotation', () => {
     expect(result.success).toBe(false);
     expect(result.error).toContain('Could not locate this URL');
   });
+
+  // Paragraph-ceiling follow-on (2026-11-06): real, live-confirmed finding
+  // on Curiel_187961_CSHP.pdf -- all 209 real LINK-MISSING-ANNOTATION issues
+  // sit in only 28 unique (page, enclosing-MCID) paragraphs (several
+  // citation URLs routinely share ONE /P). Before this fix, only the FIRST
+  // URL per paragraph could ever be spliced: fixing it widens /K from a
+  // bare scalar to an array, so every OTHER URL sharing that paragraph hit
+  // the (then-unconditional) "/K is no longer the single bare MCID" decline
+  // -- even though its own content-stream location was already 100%
+  // correct. These tests simulate that exact real shape: TWO URLs in one
+  // paragraph, fixed via two SEQUENTIAL calls on the same document.
+  describe('paragraph ceiling: a second URL sharing the same already-widened /K', () => {
+    const urlA = 'https://example.com/first-citation';
+    const urlB = 'https://example.com/second-citation';
+    // Each URL shares its own literal with a short lead-in phrase ("First
+    // citation: " / "Second citation: ") -- same mid-literal shape as the
+    // "falls back to the same-operand splitter" test above, so both fixes
+    // below go through the splitter, which needs a resolvable simple font
+    // at the cut point (registered on the page below, same pattern).
+    const twoUrlContent = `/P <</MCID 0>> BDC BT\n/T1_0 1 Tf\n[(First citation: ${urlA})]TJ\n0 -1.5 Td\n[(Second citation: ${urlB})]TJ\n0 -1.5 Td\n[(Trailing prose)]TJ\nET EMC`;
+
+    function registerSimpleFont(doc: PDFDocument): void {
+      const page0 = doc.getPage(0);
+      const simpleFontRef = doc.context.register(doc.context.obj({ Type: PDFName.of('Font'), Subtype: PDFName.of('Type1'), BaseFont: PDFName.of('ABCDEF+Test') }));
+      page0.node.set(PDFName.of('Resources'), doc.context.obj({ Font: { T1_0: simpleFontRef } }));
+    }
+
+    it('fixes a second URL in the same paragraph after the first fix already widened /K to an array', async () => {
+      const { doc, pRef } = await buildDoc(twoUrlContent);
+      registerSimpleFont(doc);
+
+      const first = pdfStructureWriterService.fixLinkMissingAnnotation(doc, issueFor(1, urlA));
+      expect(first.success).toBe(true);
+
+      // Confirm the real precondition this test exists to exercise: /P's
+      // own /K is now an array (NOT still a bare scalar) before the second
+      // fix even runs.
+      const afterFirstK = kidsOf(doc, pRef);
+      expect(afterFirstK.length).toBeGreaterThan(1);
+
+      const second = pdfStructureWriterService.fixLinkMissingAnnotation(doc, issueFor(1, urlB));
+      expect(second.success).toBe(true);
+      expect(second.after).toContain(urlB);
+
+      // Final /K: [0, link1Ref, remainder1Mcid, link2Ref, remainder2Mcid?]
+      // -- both Links spliced in, each immediately after its own
+      // enclosingMcid entry, reading order preserved throughout.
+      const finalK = kidsOf(doc, pRef);
+      expect((finalK[0] as PDFNumber).asNumber()).toBe(0);
+      const link1Ref = finalK[1] as PDFRef;
+      expect(link1Ref).toBeInstanceOf(PDFRef);
+      const link1Dict = doc.context.lookup(link1Ref, PDFDict);
+      expect(link1Dict.get(PDFName.of('S'))?.toString()).toBe('/Link');
+
+      const remainder1Mcid = (finalK[2] as PDFNumber).asNumber();
+      const link2Ref = finalK[3] as PDFRef;
+      expect(link2Ref).toBeInstanceOf(PDFRef);
+      expect(link2Ref.toString()).not.toBe(link1Ref.toString());
+      const link2Dict = doc.context.lookup(link2Ref, PDFDict);
+      expect(link2Dict.get(PDFName.of('S'))?.toString()).toBe('/Link');
+      // Both Link struct elements share the SAME /P (the one, shared
+      // paragraph) as their parent -- not two different containers.
+      expect(link2Dict.get(PDFName.of('P'))?.toString()).toBe(pRef.toString());
+
+      expect(finalK).toHaveLength(5);
+      const remainder2Mcid = (finalK[4] as PDFNumber).asNumber();
+      expect(remainder2Mcid).not.toBe(remainder1Mcid);
+
+      // Both annotations real and present.
+      const page = doc.getPage(0);
+      const annots = doc.context.lookup(page.node.get(PDFName.of('Annots')), PDFArray);
+      expect(annots.size()).toBe(2);
+
+      // Both URLs' own text actually present, each inside its own fresh
+      // /Link-tagged span.
+      const fixedContent = decodePageContent(doc, 1)!;
+      expect(fixedContent).toContain(`(${urlA})`);
+      expect(fixedContent).toContain(`(${urlB})`);
+    });
+
+    it('declines (does not guess) when /K is an array but the target MCID is not in it at all', async () => {
+      const { doc, pRef } = await buildDoc(PAGE_CONTENT);
+      const pDict = doc.context.lookup(pRef, PDFDict);
+      // A /K array that doesn't contain MCID 0 anywhere -- an unrelated
+      // shape this fixer has never produced itself, so the right behavior
+      // is still to decline, not to guess a splice position.
+      pDict.set(PDFName.of('K'), doc.context.obj([PDFNumber.of(7), PDFNumber.of(8)]));
+
+      const result = pdfStructureWriterService.fixLinkMissingAnnotation(doc, issueFor(1, URL));
+      expect(result.success).toBe(false);
+      expect(result.error).toContain('0 time(s)');
+    });
+
+    it('declines (does not guess) when /K is an array containing the target MCID more than once', async () => {
+      const { doc, pRef } = await buildDoc(PAGE_CONTENT);
+      const pDict = doc.context.lookup(pRef, PDFDict);
+      // Pathological, should-never-happen shape -- confirm the fixer still
+      // declines rather than picking one of the two ambiguous positions.
+      pDict.set(PDFName.of('K'), doc.context.obj([PDFNumber.of(0), PDFNumber.of(0)]));
+
+      const result = pdfStructureWriterService.fixLinkMissingAnnotation(doc, issueFor(1, URL));
+      expect(result.success).toBe(false);
+      expect(result.error).toContain('2 time(s)');
+    });
+
+    it('rolls back to the original, untouched /K array when a later step fails on an already-widened paragraph', async () => {
+      const { doc, pRef, structTreeRootRef } = await buildDoc(twoUrlContent);
+      registerSimpleFont(doc);
+
+      const first = pdfStructureWriterService.fixLinkMissingAnnotation(doc, issueFor(1, urlA));
+      expect(first.success).toBe(true);
+      const afterFirstK = kidsOf(doc, pRef);
+      expect(afterFirstK).toHaveLength(3); // [0, link1Ref, remainder1Mcid]
+
+      // Same late-failure trigger as the scalar-/K rollback test above: an
+      // unsupported hierarchical /ParentTree, injected only now (carrying
+      // forward the SAME page array the first fix already extended) so
+      // the first fix above succeeds normally and only the second hits it.
+      const structRoot = doc.context.lookup(structTreeRootRef, PDFDict);
+      const existingParentTree = doc.context.lookup(structRoot.get(PDFName.of('ParentTree')), PDFDict);
+      const existingNums = doc.context.lookup(existingParentTree.get(PDFName.of('Nums')), PDFArray);
+      const existingPageArr = doc.context.lookup(existingNums.get(1), PDFArray);
+      const pageArrRef = doc.context.register(doc.context.obj(existingPageArr.asArray()));
+      const leafNodeRef = doc.context.register(doc.context.obj({ Limits: [0, 0], Nums: [0, pageArrRef] }));
+      const hierarchicalParentTree = doc.context.obj({ Kids: [leafNodeRef] });
+      structRoot.set(PDFName.of('ParentTree'), hierarchicalParentTree);
+
+      const second = pdfStructureWriterService.fixLinkMissingAnnotation(doc, issueFor(1, urlB));
+      expect(second.success).toBe(false);
+      expect(second.error).toContain('hierarchical');
+
+      // Rollback must restore the array /K to EXACTLY its pre-second-fix
+      // shape -- not lose link1's own already-committed splice from the
+      // first fix, and not leave a half-applied second splice behind
+      // either. This is the real hazard the no-in-place-mutation design
+      // (building a brand new array rather than calling k.insert()
+      // in-place) exists to avoid.
+      const pDict = doc.context.lookup(pRef, PDFDict);
+      const restoredK = pDict.get(PDFName.of('K'));
+      expect(restoredK).toBeInstanceOf(PDFArray);
+      const restoredArr = (restoredK as PDFArray).asArray();
+      expect(restoredArr).toHaveLength(3);
+      expect((restoredArr[0] as PDFNumber).asNumber()).toBe(0);
+      expect(restoredArr[1]).toBeInstanceOf(PDFRef);
+      expect(restoredArr[1].toString()).toBe(afterFirstK[1].toString()); // same link1Ref, untouched
+      expect((restoredArr[2] as PDFNumber).asNumber()).toBe((afterFirstK[2] as PDFNumber).asNumber());
+    });
+  });
 });
