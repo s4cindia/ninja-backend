@@ -44,6 +44,7 @@ import {
   buildArtifactSplitEdits,
   findPlacedPdfSpans,
   buildPlacedPdfRetagEdit,
+  findArtifactWrappedActualTextSiblings,
 } from './pdf-artifact-tagger';
 import {
   matchCellRanges,
@@ -4169,6 +4170,100 @@ export class PdfStructureWriterService {
       success: true,
       before: `${spans.length} complex oversized /Artifact span(s) swallowing real content alongside decorative drawing`,
       after: `${totalSegments} real text segment(s) split out into their own /Span structure tag(s); the decorative drawing stays Artifact-wrapped`,
+    };
+  }
+
+  /**
+   * ARTIFACT-HIDES-ACTUALTEXT-SIBLING fix: retags each real-content letter
+   * InDesign's own export mis-marked as /Artifact -- confirmed real on
+   * Karsaklian_189165_9781606497623 (991 occurrences, 156 pages; see
+   * findArtifactWrappedActualTextSiblings's own doc comment for the full
+   * defect and its discriminating signal). Pure content-stream
+   * reclassification: /Span <</ActualText>> is marked-content-level-only
+   * accessibility text (confirmed real: this document's own correctly-
+   * tagged sibling letters carry no /MCID at all alongside their own
+   * /ActualText), so unlike every other fixer in this file, this one
+   * never touches the structure tree, /ParentTree, or any struct element
+   * -- the entire fix is replacing each candidate's own opening
+   * "/Artifact <props>BDC"/"/Artifact BMC" with
+   * "/Span <</ActualText (resolved text)>> BDC", letter for letter,
+   * matching exactly how the document's own correctly-tagged siblings are
+   * already written.
+   *
+   * Resolves each candidate's real text via the SAME font-aware
+   * /ToUnicode-CMap reader this file already built for the LINK-MISSING-
+   * ANNOTATION ligature decoder (buildGlyphTextResolver) -- confirmed
+   * real and necessary, not hypothetical: a direct check against this
+   * exact document found /ToUnicode already resolves every checked case
+   * correctly. The decorative/swash glyph substitution InDesign applied
+   * never actually lost the real character; it just wasn't exported with
+   * an ActualText fallback the way the OTHER letters in the same word
+   * were.
+   *
+   * Deliberately does NOT fall back to a byte's own raw Latin-1
+   * interpretation on a /ToUnicode miss, unlike decodeTextShowOperands's
+   * own established convention elsewhere in this codebase -- that
+   * convention assumes ordinary text, where a byte code usually already
+   * roughly IS its ASCII character and a CMap miss is the rare exception
+   * (a ligature). Every candidate this method sees, by construction, uses
+   * a decorative/swash glyph substitution -- its raw byte code has no
+   * reason to resemble the real letter at all, so a miss here means
+   * genuinely declining, not guessing, is the only safe choice.
+   *
+   * All-or-nothing per page: every candidate is resolved BEFORE any
+   * content-stream mutation, so a single unresolvable byte declines the
+   * whole page's fix with nothing to actually roll back -- the page is
+   * simply never touched.
+   */
+  fixArtifactActualTextSibling(doc: PDFDocument, issue: AuditIssue): FixResult {
+    const fail = (error: string): FixResult => ({ issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error });
+
+    if (!issue.pageNumber) return fail('Issue has no pageNumber');
+    const pageNumber = issue.pageNumber;
+
+    let originalContent: string | null;
+    try {
+      originalContent = decodePageContent(doc, pageNumber);
+    } catch (err) {
+      return fail(`Could not decode page ${pageNumber}: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    if (!originalContent) return fail(`Page ${pageNumber} has no content stream`);
+
+    const candidates = findArtifactWrappedActualTextSiblings(originalContent);
+    if (candidates.length === 0) {
+      return fail('No Artifact-wrapped letter beside an already-tagged ActualText sibling found on this page -- already fixed, or the page changed since the audit that found it');
+    }
+
+    const resolveGlyphText = this.buildGlyphTextResolver(doc, pageNumber);
+
+    const resolved: Array<{ tagStart: number; tagEnd: number; text: string }> = [];
+    for (const c of candidates) {
+      if (!c.fontResourceName) {
+        return fail(`Could not determine the active font for an Artifact-wrapped letter at byte offset ${c.tagStart} -- declining rather than guessing`);
+      }
+      let text = '';
+      for (let i = 0; i < c.rawBytes.length; i++) {
+        const glyph = resolveGlyphText(c.fontResourceName, c.rawBytes.charCodeAt(i));
+        if (glyph === null) {
+          return fail(`Font ${c.fontResourceName}'s own /ToUnicode CMap has no entry for byte ${c.rawBytes.charCodeAt(i)} at offset ${c.tagStart} -- declining rather than guessing the real letter`);
+        }
+        text += glyph;
+      }
+      resolved.push({ tagStart: c.tagStart, tagEnd: c.contentStart, text });
+    }
+
+    let newContent = originalContent;
+    for (const r of [...resolved].sort((a, b) => b.tagStart - a.tagStart)) {
+      const replacement = `/Span <</ActualText (${this.escapeLinkPdfString(r.text)})>> BDC `;
+      newContent = newContent.slice(0, r.tagStart) + replacement + newContent.slice(r.tagEnd);
+    }
+    writePageContent(doc, pageNumber, newContent);
+
+    return {
+      issueId: issue.id,
+      success: true,
+      before: `${resolved.length} letter(s) on this page hidden as /Artifact beside already-tagged siblings`,
+      after: `Retagged ${resolved.length} letter(s) as /Span <</ActualText>> (${resolved.map((r) => r.text).join('')})`,
     };
   }
 

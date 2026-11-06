@@ -285,6 +285,16 @@ const TABLE_ROW_DISCONNECTED_CODES = new Set(['TABLE-ROW-DISCONNECTED']);
 // content.
 const ARTIFACT_SWALLOWS_CONTENT_CODES = new Set(['ARTIFACT-SWALLOWS-CONTENT']);
 const ARTIFACT_SWALLOWS_CONTENT_COMPLEX_CODES = new Set(['ARTIFACT-SWALLOWS-CONTENT-COMPLEX']);
+// A letter an authoring tool mis-marked /Artifact beside an already-tagged
+// /Span <</ActualText>> sibling spelling the rest of the same word -- see
+// pdf-structure.validator.ts's own validateArtifactHidesActualText and
+// pdf-artifact-tagger.ts's own findArtifactWrappedActualTextSiblings for
+// the full defect. Deterministic: the real letter is read directly from
+// the active font's own /ToUnicode CMap (confirmed real on
+// Karsaklian_189165_9781606497623 -- every checked occurrence resolves
+// correctly), no AI judgment call needed, same tier as artifact-unwrap-
+// complex-fix below.
+const ARTIFACT_HIDES_ACTUALTEXT_SIBLING_CODES = new Set(['ARTIFACT-HIDES-ACTUALTEXT-SIBLING']);
 const UNTAGGED_CONTENT_COMPLEX_CODES = new Set(['UNTAGGED-CONTENT-COMPLEX']);
 const TABLE_HEADER_SCOPE_CODES = new Set(['TABLE-HEADER-MISSING-SCOPE']);
 // Adobe InDesign's own non-standard "placed vector art" tag -- never
@@ -1772,6 +1782,17 @@ class AiAnalysisService {
         model: 'rule-based',
         applyMode: 'guidance-only',
         requiresManualReview: true,
+      };
+    }
+
+    if (ARTIFACT_HIDES_ACTUALTEXT_SIBLING_CODES.has(code)) {
+      return {
+        suggestionType: 'artifact-actualtext-fix',
+        guidance: 'This page has letter(s) marked /Artifact (invisible to assistive technology) immediately beside an already-tagged /Span <</ActualText>> sibling spelling the rest of the same word -- each will be retagged as /Span <</ActualText>>, matching its own siblings.',
+        confidence: 1.0,
+        rationale: 'Deterministic fix -- the real letter is read directly from the active font\'s own /ToUnicode CMap, the same mechanism already used by the LINK-MISSING-ANNOTATION ligature decoder; no AI judgment call needed',
+        model: 'rule-based',
+        applyMode: 'apply-to-pdf',
       };
     }
 
@@ -3707,7 +3728,7 @@ class AiAnalysisService {
     // failures in a single round), never once reaching the real writer
     // calls (fixArtifactSwallowsContentComplex / retagPlacedPdfAsFigure)
     // below despite both being fully implemented, tested, and merged.
-    const STRUCTURE_WRITER_TYPES = new Set(['heading-fix', 'list-fix', 'table-header-fix', 'table-header-fix-column', 'table-header-scope-fix', 'table-artifact-fix', 'table-from-layout-fix', 'bookmark-generate', 'heading-multiple-h1-fix', 'pdfua-identifier', 'color-contrast-fix', 'alt-text-decorative', 'untagged-content-fix', 'invisible-text-artifact-fix', 'figure-caption-reattach-fix', 'inline-figure-reattach-fix', 'tagged-content-artifact-split-fix', 'table-cell-reattach-fix', 'table-row-reattach-fix', 'font-tounicode-synthesis-fix', 'font-tounicode-extend-fix', 'artifact-unwrap-complex-fix', 'placedpdf-retag-fix', 'link-missing-annotation-fix']);
+    const STRUCTURE_WRITER_TYPES = new Set(['heading-fix', 'list-fix', 'table-header-fix', 'table-header-fix-column', 'table-header-scope-fix', 'table-artifact-fix', 'table-from-layout-fix', 'bookmark-generate', 'heading-multiple-h1-fix', 'pdfua-identifier', 'color-contrast-fix', 'alt-text-decorative', 'untagged-content-fix', 'invisible-text-artifact-fix', 'figure-caption-reattach-fix', 'inline-figure-reattach-fix', 'tagged-content-artifact-split-fix', 'table-cell-reattach-fix', 'table-row-reattach-fix', 'font-tounicode-synthesis-fix', 'font-tounicode-extend-fix', 'artifact-unwrap-complex-fix', 'placedpdf-retag-fix', 'link-missing-annotation-fix', 'artifact-actualtext-fix']);
 
     let applied = 0;
     let failed = 0;
@@ -3883,6 +3904,16 @@ class AiAnalysisService {
           const r = pdfStructureWriterService.fixArtifactSwallowsContentComplex(doc, originalIssue);
           modification = { success: r.success, description: r.after, error: r.error };
           // Same content-stream-rewrite reasoning as artifact-unwrap-fix above.
+          if (r.success && originalIssue.pageNumber !== undefined) {
+            pagesRewrittenSincePreResolve.add(originalIssue.pageNumber);
+          }
+        } else if (suggestionType === 'artifact-actualtext-fix') {
+          const r = pdfStructureWriterService.fixArtifactActualTextSibling(doc, originalIssue);
+          modification = { success: r.success, description: r.after, error: r.error };
+          // Rewrites the page's own content stream (retags each candidate
+          // letter's own BDC properties dict in place) -- same
+          // pagesRewrittenSincePreResolve tracking as every other content-
+          // stream-rewriting fix above, for the same reason.
           if (r.success && originalIssue.pageNumber !== undefined) {
             pagesRewrittenSincePreResolve.add(originalIssue.pageNumber);
           }

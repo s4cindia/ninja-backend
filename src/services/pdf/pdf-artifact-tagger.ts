@@ -907,3 +907,190 @@ export function buildPlacedPdfRetagEdit(span: PlacedPdfSpan, mcid: number): { of
     text: `/Figure <</MCID ${mcid}>> BDC `,
   };
 }
+
+function decodeHexStringLiteral(raw: string): string {
+  const hex = raw.slice(1, -1).replace(/\s+/g, '');
+  const padded = hex.length % 2 === 0 ? hex : hex + '0';
+  let out = '';
+  for (let i = 0; i < padded.length; i += 2) {
+    out += String.fromCharCode(parseInt(padded.slice(i, i + 2), 16));
+  }
+  return out;
+}
+
+export interface ArtifactActualTextSibling {
+  /** Byte offset where this candidate's own tag-name operand starts -- the start of the region a fix would replace. */
+  tagStart: number;
+  /** Byte offset right after the opening BDC/BMC keyword -- where this span's own content (the single text-show call) begins. */
+  contentStart: number;
+  /** Byte offset of the matching EMC operator that closes this span. */
+  closeOpStart: number;
+  /** Byte offset right after that matching EMC. */
+  closeOpEnd: number;
+  /** Raw decoded bytes (each char code 0-255, PDF-string-escape-resolved) of the single text-show call this span wraps -- usually one byte (one letter), occasionally more (e.g. a two-letter swash ligature). */
+  rawBytes: string;
+  /** The font resource name active (via the most recent Tf before this point in the SAME text object) needed to resolve rawBytes to real text, or null if no Tf was ever seen. */
+  fontResourceName: string | null;
+}
+
+/**
+ * Finds every `/Artifact` span (bare `BMC`, or `BDC` with a property dict
+ * like `<</O /Layout>>`), nested directly inside a `BT…ET` text object at
+ * depth 0 relative to that text object, that wraps EXACTLY ONE text-show
+ * operator (`Tj`/`TJ`/`'`/`"`) -- AND sits in the SAME `BT…ET` block as at
+ * least one `/Span <</ActualText …>>`-tagged sibling.
+ *
+ * Real defect confirmed on Karsaklian_189165_9781606497623
+ * (1183 occurrences, 156 pages, matching PAC's own reported 1133 "Text
+ * object not tagged" errors closely): Adobe InDesign's export splits a
+ * running-header word letter-by-letter, giving SOME letters
+ * `/Span <</ActualText "x">>` (correctly accessible) and OTHERS --
+ * whichever decorative/swash glyph substitution InDesign's own export
+ * couldn't resolve back to Unicode at export time -- `/Artifact` instead,
+ * silently dropping real, meaningful heading text from the accessible
+ * structure tree. Confirmed (separately, against the real document) that
+ * the font's own `/ToUnicode` CMap already correctly resolves every
+ * Artifact-wrapped letter's real character -- the data this fix needs was
+ * never actually lost, just misclassified.
+ *
+ * The ActualText-sibling-in-the-same-text-object requirement is the
+ * discriminating signal that separates this real defect from a
+ * genuinely decorative, standalone `/Artifact` (a page-folio number, a
+ * rule) that should stay exactly as it is -- PAC's own 1133 is close to
+ * but not equal to the raw 1183-/Artifact-wrapped-single-Tj count found
+ * without this filter; the gap is plausibly exactly the legitimate
+ * standalone cases this adjacency requirement correctly excludes.
+ */
+interface TopLevelMarkedContentSpan {
+  tagStart: number;
+  contentStart: number;
+  closeOpStart: number;
+  closeOpEnd: number;
+  tagName: string;
+  hasActualText: boolean;
+  textShowCount: number;
+  rawBytes: string;
+  fontResourceName: string | null;
+  /** True if an ET occurred while this span was open -- see findArtifactWrappedActualTextSiblings's own doc comment for why this is the real discriminator between a genuinely self-contained decorative span (a page number, closing its OWN BT/ET pair within its own tag) and a defective word-splitting letter (sharing one long-lived BT across several sibling spans, none of which ever see their own ET). */
+  sawOwnET: boolean;
+}
+
+export function findArtifactWrappedActualTextSiblings(content: string): ArtifactActualTextSibling[] {
+  const tokens = tokenize(content);
+  const spans: TopLevelMarkedContentSpan[] = [];
+
+  // Marked-content nesting is tracked independently of BT/ET on purpose --
+  // confirmed on the real document that a single BT can stay open across
+  // SEVERAL sibling top-level spans with no ET in between (the first
+  // letter's own /Artifact BDC even opens BEFORE its word's one BT; every
+  // following letter's span opens and closes entirely after it, still
+  // inside that same still-open BT). Treating BT as a reset point (an
+  // earlier version of this function did) silently lost that first-letter
+  // span the instant BT fired. BT/ET affect only text-positioning state
+  // (irrelevant here, since a byte's font is all this needs, via Tf), not
+  // marked-content depth.
+  let currentFont: string | null = null;
+  let depth = 0;
+  let current: TopLevelMarkedContentSpan | null = null;
+  const operands: Token[] = [];
+
+  for (let k = 0; k < tokens.length; k++) {
+    const tk = tokens[k];
+    if (tk.t !== 'op') { operands.push(tk); continue; }
+    const op = tk.v;
+
+    if (op === 'Tf') {
+      if (operands.length >= 1 && operands[0].t === 'name') currentFont = operands[0].v;
+      operands.length = 0;
+      continue;
+    }
+    if (op === 'BDC' || op === 'BMC') {
+      const tagName = operands.length ? operands[0].v : '';
+      if (depth === 0) {
+        current = {
+          tagStart: operands.length ? operands[0].start : tk.start,
+          contentStart: tk.end,
+          closeOpStart: -1,
+          closeOpEnd: -1,
+          tagName,
+          hasActualText: operands.some((o) => o.t === 'name' && o.v === '/ActualText'),
+          textShowCount: 0,
+          rawBytes: '',
+          fontResourceName: currentFont,
+          sawOwnET: false,
+        };
+      }
+      depth++;
+      operands.length = 0;
+      continue;
+    }
+    if (op === 'ET') {
+      if (current) current.sawOwnET = true;
+      operands.length = 0;
+      continue;
+    }
+    if (op === 'EMC') {
+      depth = Math.max(0, depth - 1);
+      if (depth === 0 && current) {
+        current.closeOpStart = tk.start;
+        current.closeOpEnd = tk.end;
+        spans.push(current);
+        current = null;
+      }
+      operands.length = 0;
+      continue;
+    }
+    if (op === 'BI') {
+      const idm = /\bID\b/.exec(content.slice(tk.end));
+      const from = idm ? tk.end + idm.index + 2 : tk.end;
+      const eim = /\sEI\b/.exec(content.slice(from));
+      const eiEnd = eim ? from + eim.index + eim[0].length : content.length;
+      while (k + 1 < tokens.length && tokens[k + 1].start < eiEnd) k++;
+      operands.length = 0;
+      continue;
+    }
+
+    if (depth === 1 && current && TEXT_SHOW_OPS.has(op)) {
+      current.textShowCount++;
+      const strOperands = operands.filter((o) => o.t === 's' || o.t === 'h');
+      current.rawBytes += strOperands.map((o) => (o.t === 's' ? decodePdfStringLiteral(o.v) : decodeHexStringLiteral(o.v))).join('');
+    }
+    operands.length = 0;
+  }
+
+  // Adjacency check: a maximal RUN of consecutive candidate /Artifact
+  // spans qualifies as a whole when the span immediately BEFORE or AFTER
+  // the whole run is /ActualText-tagged -- not just each span's own
+  // immediate neighbor, which would silently miss the middle letter(s) of
+  // a run of 3+ consecutive Artifact-wrapped letters (two is already
+  // confirmed real -- INTRODUCTION's own "I" is immediately followed by
+  // "NTR", not another Artifact, but a longer decorative run elsewhere in
+  // the document is not something to assume away).
+  const isCandidateSpan = (s: TopLevelMarkedContentSpan | undefined): boolean =>
+    !!s && s.tagName === '/Artifact' && s.textShowCount === 1 && !s.sawOwnET;
+
+  const result: ArtifactActualTextSibling[] = [];
+  let i = 0;
+  while (i < spans.length) {
+    if (!isCandidateSpan(spans[i])) { i++; continue; }
+    let j = i;
+    while (isCandidateSpan(spans[j + 1])) j++;
+    const before = spans[i - 1];
+    const after = spans[j + 1];
+    if (before?.hasActualText || after?.hasActualText) {
+      for (let r = i; r <= j; r++) {
+        const s = spans[r];
+        result.push({
+          tagStart: s.tagStart,
+          contentStart: s.contentStart,
+          closeOpStart: s.closeOpStart,
+          closeOpEnd: s.closeOpEnd,
+          rawBytes: s.rawBytes,
+          fontResourceName: s.fontResourceName,
+        });
+      }
+    }
+    i = j + 1;
+  }
+  return result;
+}

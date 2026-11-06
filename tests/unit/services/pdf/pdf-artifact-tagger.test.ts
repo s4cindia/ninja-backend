@@ -12,6 +12,7 @@ import {
   buildArtifactSplitEdits,
   findPlacedPdfSpans,
   buildPlacedPdfRetagEdit,
+  findArtifactWrappedActualTextSiblings,
 } from '../../../../src/services/pdf/pdf-artifact-tagger';
 
 describe('findUntaggedPathRuns', () => {
@@ -644,5 +645,86 @@ describe('buildPlacedPdfRetagEdit', () => {
     // The pre-existing closing EMC is untouched -- it still correctly
     // closes the new /Figure tag directly.
     expect((result.match(/EMC/g) ?? []).length).toBe(1);
+  });
+});
+
+describe('findArtifactWrappedActualTextSiblings', () => {
+  // Real shape confirmed live on Karsaklian_189165_9781606497623, page 12:
+  // the running-header word "Description" split letter-by-letter. "D" and
+  // "O" are mis-marked /Artifact; "ESCRIPTI" and "N" are correctly tagged
+  // /Span <</ActualText>>. Note the real document's own structure: only
+  // ONE BT for the whole word, no ET between letters -- the FIRST letter's
+  // own /Artifact BDC even opens BEFORE that BT.
+  const REAL_DESCRIPTION_SHAPE =
+    '/T1_0 1 Tf\n' +
+    '/Artifact <</O /Layout >>BDC \nBT\n8 0 0 8 87 608.9656 Tm\n(D)Tj\n EMC ' +
+    '/Span<</ActualText<FEFF00650073006300720069007000740069>>> BDC \n(ESCRIPTI)Tj\n' +
+    'EMC /Artifact BMC  \n(O)Tj\n EMC ' +
+    '/Span<</ActualText<FEFF006E>>> BDC \n(N)Tj\nEMC /Artifact BMC  \nET\nEMC\n';
+
+  it('reproduces the real Karsaklian_189165 defect: finds the D and O letters, excludes the correctly-tagged siblings', () => {
+    const result = findArtifactWrappedActualTextSiblings(REAL_DESCRIPTION_SHAPE);
+    expect(result).toHaveLength(2);
+    expect(result[0].rawBytes).toBe('D');
+    expect(result[0].fontResourceName).toBe('/T1_0');
+    expect(result[1].rawBytes).toBe('O');
+  });
+
+  it('the returned tagStart/contentStart span exactly the "/Artifact <props>BDC" (or bare BMC) opening, not a byte more or less', () => {
+    const result = findArtifactWrappedActualTextSiblings(REAL_DESCRIPTION_SHAPE);
+    const dCandidate = result[0];
+    expect(REAL_DESCRIPTION_SHAPE.slice(dCandidate.tagStart, dCandidate.contentStart)).toBe('/Artifact <</O /Layout >>BDC');
+  });
+
+  it('does NOT flag a genuinely standalone decorative Artifact (a page-folio number) that closes its own complete BT...ET pair, even immediately next to the real defect', () => {
+    // Real shape: the page number "xii" sits immediately before the
+    // defective word, self-contained (opens AND closes its own text
+    // object), unlike every defective letter which never does.
+    const withFolio =
+      '/T1_0 1 Tf\n' +
+      '/Artifact <</O /Layout >>BDC \nBT\n8 0 0 8 63 608.9656 Tm\n(xii)Tj\nET\nEMC \n' +
+      REAL_DESCRIPTION_SHAPE;
+    const result = findArtifactWrappedActualTextSiblings(withFolio);
+    expect(result.map((r) => r.rawBytes)).toEqual(['D', 'O']);
+    expect(result.every((r) => r.rawBytes !== 'xii')).toBe(true);
+  });
+
+  it('captures the ENTIRE run when 3+ consecutive letters are all mis-marked /Artifact, not just the ones immediately touching the ActualText sibling', () => {
+    const threeInARow =
+      '/T1_0 1 Tf\n' +
+      '/Artifact BMC \n(A)Tj\nEMC ' +
+      '/Artifact BMC \n(B)Tj\nEMC ' +
+      '/Artifact BMC \n(C)Tj\nEMC ' +
+      '/Span<</ActualText<0044>>> BDC \n(D)Tj\nEMC\n';
+    const result = findArtifactWrappedActualTextSiblings(threeInARow);
+    expect(result.map((r) => r.rawBytes)).toEqual(['A', 'B', 'C']);
+  });
+
+  it('does not flag an /Artifact-wrapped letter with no /ActualText-tagged sibling anywhere adjacent', () => {
+    const noSibling = '/Artifact BMC \n(X)Tj\nEMC /P <</MCID 0>> BDC \n(real paragraph)Tj\nEMC\n';
+    expect(findArtifactWrappedActualTextSiblings(noSibling)).toHaveLength(0);
+  });
+
+  it('does not flag an /Artifact span wrapping more than one text-show operator, even beside an ActualText sibling', () => {
+    const twoTj = '/Artifact BMC \n(X)Tj\n(Y)Tj\nEMC /Span<</ActualText<0041>>> BDC \n(A)Tj\nEMC\n';
+    expect(findArtifactWrappedActualTextSiblings(twoTj)).toHaveLength(0);
+  });
+
+  it('decodes a hex-string Tj operand the same as a parenthesized one', () => {
+    const hexOperand = '/Artifact BMC \n<44>Tj\nEMC /Span<</ActualText<0045>>> BDC \n(E)Tj\nEMC\n';
+    const result = findArtifactWrappedActualTextSiblings(hexOperand);
+    expect(result).toHaveLength(1);
+    expect(result[0].rawBytes).toBe('D');
+  });
+
+  it('tracks the font resource name from the most recent Tf seen anywhere before the span, not reset by an intervening BT', () => {
+    const content = '/T1_9 1 Tf\nBT\n/Artifact BMC \n(Z)Tj\nEMC /Span<</ActualText<005A>>> BDC \n(Z)Tj\nEMC\nET\n';
+    const result = findArtifactWrappedActualTextSiblings(content);
+    expect(result).toHaveLength(1);
+    expect(result[0].fontResourceName).toBe('/T1_9');
+  });
+
+  it('returns an empty array for a page with no /Artifact spans at all', () => {
+    expect(findArtifactWrappedActualTextSiblings('/P <</MCID 0>> BDC \n(hello)Tj\nEMC\n')).toHaveLength(0);
   });
 });
