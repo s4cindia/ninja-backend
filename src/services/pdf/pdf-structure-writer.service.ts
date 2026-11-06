@@ -59,7 +59,15 @@ import { MIN_APPLY_CONFIDENCE, resolveSourceColor } from './pdf-contrast-writer.
 import { verifyStillNoDetectableInk } from './color-contrast-verification';
 import { tokenize } from '../zone-extractor/seam-c/content-stream';
 import type { ParsedPDF } from './pdf-parser.service';
-import { findUrlOperatorRun, buildLinkCompletenessSplice, type GlyphTextResolver } from './pdf-link-completeness-writer';
+import {
+  findUrlOperatorRun,
+  buildLinkCompletenessSplice,
+  findUrlSubstringRun,
+  buildUrlSubstringSplice,
+  type GlyphTextResolver,
+  type LinkCompletenessSplice,
+  type UrlSubstringSplice,
+} from './pdf-link-completeness-writer';
 
 // ─── Public Types ─────────────────────────────────────────────────────────────
 
@@ -6620,7 +6628,9 @@ export class PdfStructureWriterService {
   /**
    * LINK-MISSING-ANNOTATION fix (Matterhorn 28-011), Slice 3 -- wires
    * slices 1-2's pure content-stream splice (pdf-link-completeness-
-   * writer.ts's findUrlOperatorRun/buildLinkCompletenessSplice) into a real
+   * writer.ts's findUrlOperatorRun/buildLinkCompletenessSplice), AND the
+   * same-operand URL splitter (findUrlSubstringRun/buildUrlSubstringSplice,
+   * tried as a fallback when the clean path declines), into a real
    * PDFDocument: creates the /Link annotation PAC/veraPDF actually look
    * for, a matching /Link structure element carrying both the URL's own
    * text (via its fresh MCID) and an OBJR back to the annotation, splices
@@ -6636,10 +6646,14 @@ export class PdfStructureWriterService {
    * Scoped to real, measured data: a full sweep of
    * Curiel_187961_CSHP.pdf's own 209 real LINK-MISSING-ANNOTATION issues
    * found the URL arrives as a clean, findUrlOperatorRun-locatable run in
-   * 135/209 (64.6%) of cases; this method declines the other two real
-   * buckets (a URL sharing its own text-show operand with substantial
-   * surrounding prose, or a handful of genuinely unexplained misses)
-   * rather than guess -- see pdf-link-completeness-writer.ts's own header
+   * 135/209 (64.6%) of cases, and findUrlSubstringRun locates a run (with a
+   * real, verified-exact splice) for the remaining 74/209 (35.4%) --
+   * confirmed live, every one of those 74 produced a /Link span whose own
+   * content, precisely re-decoded, is exactly the target URL. Both
+   * functions still decline (return null) on a genuinely unsafe shape --
+   * a non-simple (CID/Type0) font at a cut point, or a target position
+   * landing strictly inside a ligature's own multi-character expansion --
+   * rather than guess; see pdf-link-completeness-writer.ts's own header
    * comment for the full breakdown. Also declines when the enclosing
    * content has no MCID of its own (a bare /Artifact) -- no natural
    * struct-tree parent to attach the new /Link under, the same
@@ -6647,6 +6661,12 @@ export class PdfStructureWriterService {
    * elsewhere (reattachTableCell, retagPlacedPdfAsFigure) rather than
    * invent one; not hit by any of the 135 real clean matches above (every
    * one sits inside a real, MCID-bound /P).
+   *
+   * Everything from the enclosing-tag resolution onward is IDENTICAL
+   * regardless of which path produced `splice` -- LinkCompletenessSplice
+   * and UrlSubstringSplice are structurally identical
+   * ({edits, linkMcid, remainderMcid, enclosingTag, enclosingMcid}), by
+   * design, so the rest of this method never needs to know which one ran.
    *
    * Rollback on any failure restores the page's original content bytes,
    * /Annots, and the enclosing element's /K, and clears every newly
@@ -6682,21 +6702,34 @@ export class PdfStructureWriterService {
     if (!originalContent) return fail(`Page ${pageNumber} has no content stream`);
 
     const resolveGlyphText = this.buildGlyphTextResolver(doc, pageNumber);
-    const run = findUrlOperatorRun(originalContent, 0, originalContent.length, url, resolveGlyphText);
-    if (!run) {
-      return fail(
-        'Could not locate this URL as a clean run of text-show operators on this page -- either already fixed, ' +
-        'or this is one of the real cases where the URL shares its own operand with surrounding prose (needs a ' +
-        'harder, font-encoding-aware mid-string split this fixer does not attempt -- see pdf-link-completeness-writer.ts)'
-      );
-    }
-
     const existingMcids = pageContentMcids(doc, pageNumber) ?? new Set<number>();
     const nextMcid = existingMcids.size > 0 ? Math.max(...existingMcids) + 1 : 0;
 
-    const splice = buildLinkCompletenessSplice(originalContent, run, nextMcid);
+    let splice: LinkCompletenessSplice | UrlSubstringSplice | null = null;
+    let method: 'clean' | 'substring' = 'clean';
+
+    const run = findUrlOperatorRun(originalContent, 0, originalContent.length, url, resolveGlyphText);
+    if (run) {
+      splice = buildLinkCompletenessSplice(originalContent, run, nextMcid);
+    } else {
+      // Fallback: the URL shares its own text-show operand with other
+      // prose (the 35.4% bucket the clean path above declines on by
+      // design) -- try the same-operand splitter before giving up.
+      const isSimpleFont = this.buildSimpleFontChecker(doc, pageNumber);
+      const substringRun = findUrlSubstringRun(originalContent, 0, originalContent.length, url, resolveGlyphText, isSimpleFont);
+      if (substringRun) {
+        method = 'substring';
+        splice = buildUrlSubstringSplice(originalContent, substringRun, nextMcid);
+      }
+    }
+
     if (!splice) {
-      return fail('Could not build a content-stream splice for this match -- no enclosing tag, or the match crosses its own enclosing tag\'s close');
+      return fail(
+        'Could not locate this URL as a clean run of text-show operators, or safely carve it out of an operand it ' +
+        'shares with other prose, on this page -- either already fixed, or a genuinely unsafe shape (a non-simple ' +
+        'font at the needed cut point, or a position landing inside a ligature\'s own multi-character expansion) ' +
+        'that this fixer declines rather than guesses on -- see pdf-link-completeness-writer.ts'
+      );
     }
     if (splice.enclosingMcid === null) {
       return fail(
@@ -6816,7 +6849,8 @@ export class PdfStructureWriterService {
       issueId: issue.id,
       success: true,
       before: 'URL-shaped text with no Link annotation',
-      after: `Created a /Link annotation + structure element for "${url.slice(0, 80)}"`,
+      after: `Created a /Link annotation + structure element for "${url.slice(0, 80)}"` +
+        (method === 'substring' ? ' (carved out of a shared operand via the same-operand splitter)' : ''),
     };
   }
 }

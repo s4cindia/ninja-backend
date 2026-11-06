@@ -257,4 +257,62 @@ describe('fixLinkMissingAnnotation', () => {
     expect(fixedContent).toContain('EMC /Link <</MCID 1>> BDC ');
     expect(fixedContent).toContain('(https://example.com/de\x01les)'); // original bytes untouched, still the raw ligature code
   });
+
+  // Real, live-confirmed shape: the URL shares its own text-show operand
+  // with a short lead-in phrase ("Retrieved from ", 30.1%+5.3% of
+  // Curiel_187961_CSHP.pdf's own real issues) -- the clean path
+  // (findUrlOperatorRun) declines this; fixLinkMissingAnnotation now falls
+  // back to the same-operand splitter (findUrlSubstringRun/
+  // buildUrlSubstringSplice) rather than giving up.
+  it('falls back to the same-operand splitter when the clean path declines, carving the URL out of a shared operand', async () => {
+    const url = 'https://example.com/citation-url';
+    const content = `/P <</MCID 0>> BDC BT\n/T1_0 1 Tf\n(Retrieved from ${url})Tj\nET EMC`;
+    const { doc, pRef } = await buildDoc(content);
+
+    // The splitter's own font-safety guard requires a resolvable, simple
+    // (/Type1/TrueType/MMType1/Type3) font at the cut point -- declines
+    // (correctly) when it can't verify this, same as the "non-simple font"
+    // decline test below. A real font dict, no /ToUnicode needed here
+    // (this fixture has no ligature to resolve).
+    const page0 = doc.getPage(0);
+    const simpleFontRef = doc.context.register(doc.context.obj({ Type: PDFName.of('Font'), Subtype: PDFName.of('Type1'), BaseFont: PDFName.of('ABCDEF+Test') }));
+    page0.node.set(PDFName.of('Resources'), doc.context.obj({ Font: { T1_0: simpleFontRef } }));
+
+    const result = pdfStructureWriterService.fixLinkMissingAnnotation(doc, issueFor(1, url));
+    expect(result.success).toBe(true);
+    expect(result.after).toContain('same-operand splitter');
+
+    // Enclosing /P's own /K: [0, linkRef] -- no remainder needed, the URL
+    // was the last real content before the enclosing tag's own close.
+    const pK = kidsOf(doc, pRef);
+    expect(pK).toHaveLength(2);
+    expect((pK[0] as PDFNumber).asNumber()).toBe(0);
+    const linkRef = pK[1] as PDFRef;
+
+    const linkDict = doc.context.lookup(linkRef, PDFDict);
+    expect(linkDict.get(PDFName.of('S'))?.toString()).toBe('/Link');
+
+    const fixedContent = decodePageContent(doc, 1)!;
+    expect(fixedContent).toContain('(Retrieved from )'); // leading leftover, now its own properly-closed literal
+    expect(fixedContent).toContain(`EMC /Link <</MCID 1>> BDC (${url})`);
+
+    // The real annotation exists too, same as the clean path's own test above.
+    const page = doc.getPage(0);
+    const annots = doc.context.lookup(page.node.get(PDFName.of('Annots')), PDFArray);
+    expect(annots.size()).toBe(1);
+  });
+
+  it('still declines (does not guess) when even the same-operand splitter cannot safely cut -- e.g. a non-simple font', async () => {
+    const url = 'https://example.com/citation-url';
+    const content = `/P <</MCID 0>> BDC BT\n/T1_0 1 Tf\n(Retrieved from ${url})Tj\nET EMC`;
+    const { doc } = await buildDoc(content);
+
+    const page = doc.getPage(0);
+    const fontRef = doc.context.register(doc.context.obj({ Type: PDFName.of('Font'), Subtype: PDFName.of('Type0'), BaseFont: PDFName.of('ABCDEF+CIDTest') }));
+    page.node.set(PDFName.of('Resources'), doc.context.obj({ Font: { T1_0: fontRef } }));
+
+    const result = pdfStructureWriterService.fixLinkMissingAnnotation(doc, issueFor(1, url));
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('Could not locate this URL');
+  });
 });
