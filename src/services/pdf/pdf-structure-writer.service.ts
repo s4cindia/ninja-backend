@@ -26,6 +26,8 @@ import {
   PDFHexString,
   PDFNumber,
   PDFObject,
+  PDFRawStream,
+  decodePDFRawStream,
 } from 'pdf-lib';
 import { AuditIssue } from '../audit/base-audit.service';
 import { logger } from '../../lib/logger';
@@ -57,7 +59,15 @@ import { MIN_APPLY_CONFIDENCE, resolveSourceColor } from './pdf-contrast-writer.
 import { verifyStillNoDetectableInk } from './color-contrast-verification';
 import { tokenize } from '../zone-extractor/seam-c/content-stream';
 import type { ParsedPDF } from './pdf-parser.service';
-import { findUrlOperatorRun, buildLinkCompletenessSplice } from './pdf-link-completeness-writer';
+import {
+  findUrlOperatorRun,
+  buildLinkCompletenessSplice,
+  findUrlSubstringRun,
+  buildUrlSubstringSplice,
+  type GlyphTextResolver,
+  type LinkCompletenessSplice,
+  type UrlSubstringSplice,
+} from './pdf-link-completeness-writer';
 
 // ─── Public Types ─────────────────────────────────────────────────────────────
 
@@ -6468,9 +6478,159 @@ export class PdfStructureWriterService {
   }
 
   /**
+   * Parses a /ToUnicode CMap's own bfchar/bfrange blocks into a real
+   * byte-code -> decoded-Unicode-TEXT map -- NOT just which codes are
+   * covered (unlike font-tounicode.service.ts's own parseExistingCMapCodes,
+   * built for a different purpose: checking coverage, not reading values).
+   * A destination value is one or more UTF-16BE code units per
+   * PDF32000-1:2008's own CMap spec -- exactly how a single glyph code can
+   * represent a multi-character ligature (e.g. "fi" decodes as the TWO-
+   * character destination <0066 0069>, not one). Single-byte (0x00-0xFF)
+   * source codes only, matching pdf-link-completeness-writer.ts's own
+   * simple-font-only scope. Same regex-based parsing style as
+   * font-tounicode.service.ts's own parseExistingCMapCodes (not a full
+   * CMap-language parser) -- an established, already-proven-in-production
+   * approach in this codebase for reading a real embedded font's real
+   * CMap.
+   */
+  private parseToUnicodeCMapValues(cmapText: string): Map<number, string> {
+    const map = new Map<number, string>();
+    const decodeHexDest = (hex: string): string => {
+      let out = '';
+      for (let i = 0; i + 4 <= hex.length; i += 4) {
+        out += String.fromCharCode(parseInt(hex.slice(i, i + 4), 16));
+      }
+      return out;
+    };
+
+    for (const m of cmapText.matchAll(/beginbfchar([\s\S]*?)endbfchar/g)) {
+      for (const pair of m[1].matchAll(/<([0-9a-fA-F]+)>\s*<([0-9a-fA-F]+)>/g)) {
+        if (pair[1].length > 2) continue; // multi-byte source code -- out of scope (simple fonts only)
+        map.set(parseInt(pair[1], 16), decodeHexDest(pair[2]));
+      }
+    }
+    for (const m of cmapText.matchAll(/beginbfrange([\s\S]*?)endbfrange/g)) {
+      // Array form: <lo> <hi> [<d0> <d1> ...] -- each source code gets its OWN explicit destination.
+      for (const rangeArr of m[1].matchAll(/<([0-9a-fA-F]{1,2})>\s*<([0-9a-fA-F]{1,2})>\s*\[([\s\S]*?)\]/g)) {
+        const lo = parseInt(rangeArr[1], 16);
+        const dests = [...rangeArr[3].matchAll(/<([0-9a-fA-F]+)>/g)].map((d) => decodeHexDest(d[1]));
+        dests.forEach((text, i) => map.set(lo + i, text));
+      }
+      // Scalar form: <lo> <hi> <dest> -- dest's LAST UTF-16 unit increments per source code.
+      for (const rangeScalar of m[1].matchAll(/<([0-9a-fA-F]{1,2})>\s*<([0-9a-fA-F]{1,2})>\s*<([0-9a-fA-F]+)>/g)) {
+        const lo = parseInt(rangeScalar[1], 16);
+        const hi = parseInt(rangeScalar[2], 16);
+        if (hi < lo || hi - lo > 0xff) continue; // malformed/unexpectedly huge range -- ignore rather than loop forever
+        const destHex = rangeScalar[3];
+        const prefix = decodeHexDest(destHex.slice(0, -4));
+        const lastUnit = parseInt(destHex.slice(-4), 16);
+        for (let c = lo; c <= hi; c++) map.set(c, prefix + String.fromCharCode(lastUnit + (c - lo)));
+      }
+    }
+    return map;
+  }
+
+  /**
+   * Builds a GlyphTextResolver (pdf-link-completeness-writer.ts's own
+   * type) for a single page: given a font's own resource-dictionary tag
+   * name (e.g. "/T1_2", the SAME name a `Tf` operator references) and a
+   * single byte code, returns that font's own /ToUnicode-CMap-mapped
+   * Unicode text for that code, or null when the font has no usable
+   * /ToUnicode CMap, or the code isn't covered by it -- callers fall back
+   * to the raw byte's own Latin-1 interpretation in that case (today's
+   * existing behavior, unchanged for any document/font that doesn't need
+   * this). Each font's own map is built at most once per call to this
+   * method (cached by tag name) -- cheap insurance against a page with
+   * several LINK-MISSING-ANNOTATION issues re-parsing the SAME font's CMap
+   * once per issue (real shape: Curiel_187961_CSHP.pdf's own page 102 has
+   * 6).
+   *
+   * Real incident this exists to fix: Curiel_187961_CSHP.pdf's own
+   * embedded Type1 subset fonts (ACaslonPro Regular/Italic) encode
+   * typographic ligatures (fi, fl, ff, Th) as custom single-byte glyph
+   * codes -- standard PDF subsetting, confirmed live (and confirmed NOT a
+   * fixed, reusable table: the SAME ligature maps to a DIFFERENT byte code
+   * in the Regular vs Italic subset, each subsetted font getting its own
+   * independent encoding). Reading each font's own, already-present
+   * /ToUnicode CMap (PDF32000-1:2008's own designed-for-this-exact-purpose
+   * mechanism) is both simpler and more broadly correct than re-deriving
+   * glyph names via /Differences + the Adobe Glyph List, which
+   * font-tounicode.service.ts's OWN buildCodeMap does for the OPPOSITE
+   * direction (writing a NEW CMap for a font that lacks one entirely) --
+   * that reverse-engineering doesn't apply here, since these fonts already
+   * have a real CMap to just read.
+   */
+  private buildGlyphTextResolver(doc: PDFDocument, pageNumber: number): GlyphTextResolver {
+    const page = doc.getPage(pageNumber - 1);
+    const resourcesRaw = page.node.get(PDFName.of('Resources'));
+    const resources = resourcesRaw instanceof PDFRef ? doc.context.lookup(resourcesRaw, PDFDict) : resourcesRaw instanceof PDFDict ? resourcesRaw : null;
+    const fontsRaw = resources?.get(PDFName.of('Font'));
+    const fonts = fontsRaw instanceof PDFRef ? doc.context.lookup(fontsRaw, PDFDict) : fontsRaw instanceof PDFDict ? fontsRaw : null;
+
+    const cache = new Map<string, Map<number, string> | null>();
+
+    const buildMapFor = (fontTag: string): Map<number, string> | null => {
+      const fontRef = fonts?.get(PDFName.of(fontTag.replace(/^\//, '')));
+      const fontDict = fontRef instanceof PDFRef ? doc.context.lookup(fontRef, PDFDict) : fontRef instanceof PDFDict ? fontRef : null;
+      if (!fontDict) return null;
+      const toUnicodeRaw = fontDict.get(PDFName.of('ToUnicode'));
+      const toUnicodeStream = toUnicodeRaw instanceof PDFRef ? doc.context.lookup(toUnicodeRaw) : toUnicodeRaw;
+      if (!(toUnicodeStream instanceof PDFRawStream)) return null;
+      let cmapText: string;
+      try {
+        cmapText = Buffer.from(decodePDFRawStream(toUnicodeStream).decode()).toString('latin1');
+      } catch {
+        return null;
+      }
+      return this.parseToUnicodeCMapValues(cmapText);
+    };
+
+    return (fontTag: string, byteCode: number): string | null => {
+      let map = cache.get(fontTag);
+      if (map === undefined) {
+        map = buildMapFor(fontTag);
+        cache.set(fontTag, map);
+      }
+      return map?.get(byteCode) ?? null;
+    };
+  }
+
+  /**
+   * Companion to buildGlyphTextResolver, for the same-operand URL
+   * splitter's own font-safety guard (pdf-link-completeness-writer.ts's
+   * findUrlSubstringRun): reports whether a font tag resolves to a simple
+   * (single-byte) font subtype -- the ONLY kind that module's byte-level
+   * cut logic is safe to attempt on. Same SIMPLE_FONT_SUBTYPES set
+   * font-tounicode.service.ts already uses for the identical distinction,
+   * duplicated locally rather than imported -- a 4-string Set, and this
+   * file already duplicates small, self-contained lookups rather than
+   * couple to that file's own class (see e.g. parseToUnicodeCMapValues's
+   * own doc comment). An unresolvable font tag (missing /Resources, no
+   * matching entry, no /Subtype) reports false -- decline rather than
+   * guess, matching every other "can't verify" gate in this same fixer.
+   */
+  private buildSimpleFontChecker(doc: PDFDocument, pageNumber: number): (fontTag: string) => boolean {
+    const SIMPLE_FONT_SUBTYPES = new Set(['/Type1', '/TrueType', '/MMType1', '/Type3']);
+    const page = doc.getPage(pageNumber - 1);
+    const resourcesRaw = page.node.get(PDFName.of('Resources'));
+    const resources = resourcesRaw instanceof PDFRef ? doc.context.lookup(resourcesRaw, PDFDict) : resourcesRaw instanceof PDFDict ? resourcesRaw : null;
+    const fontsRaw = resources?.get(PDFName.of('Font'));
+    const fonts = fontsRaw instanceof PDFRef ? doc.context.lookup(fontsRaw, PDFDict) : fontsRaw instanceof PDFDict ? fontsRaw : null;
+
+    return (fontTag: string): boolean => {
+      const fontRef = fonts?.get(PDFName.of(fontTag.replace(/^\//, '')));
+      const fontDict = fontRef instanceof PDFRef ? doc.context.lookup(fontRef, PDFDict) : fontRef instanceof PDFDict ? fontRef : null;
+      const subtype = fontDict?.get(PDFName.of('Subtype'))?.toString();
+      return subtype !== undefined && SIMPLE_FONT_SUBTYPES.has(subtype);
+    };
+  }
+
+  /**
    * LINK-MISSING-ANNOTATION fix (Matterhorn 28-011), Slice 3 -- wires
    * slices 1-2's pure content-stream splice (pdf-link-completeness-
-   * writer.ts's findUrlOperatorRun/buildLinkCompletenessSplice) into a real
+   * writer.ts's findUrlOperatorRun/buildLinkCompletenessSplice), AND the
+   * same-operand URL splitter (findUrlSubstringRun/buildUrlSubstringSplice,
+   * tried as a fallback when the clean path declines), into a real
    * PDFDocument: creates the /Link annotation PAC/veraPDF actually look
    * for, a matching /Link structure element carrying both the URL's own
    * text (via its fresh MCID) and an OBJR back to the annotation, splices
@@ -6486,10 +6646,14 @@ export class PdfStructureWriterService {
    * Scoped to real, measured data: a full sweep of
    * Curiel_187961_CSHP.pdf's own 209 real LINK-MISSING-ANNOTATION issues
    * found the URL arrives as a clean, findUrlOperatorRun-locatable run in
-   * 135/209 (64.6%) of cases; this method declines the other two real
-   * buckets (a URL sharing its own text-show operand with substantial
-   * surrounding prose, or a handful of genuinely unexplained misses)
-   * rather than guess -- see pdf-link-completeness-writer.ts's own header
+   * 135/209 (64.6%) of cases, and findUrlSubstringRun locates a run (with a
+   * real, verified-exact splice) for the remaining 74/209 (35.4%) --
+   * confirmed live, every one of those 74 produced a /Link span whose own
+   * content, precisely re-decoded, is exactly the target URL. Both
+   * functions still decline (return null) on a genuinely unsafe shape --
+   * a non-simple (CID/Type0) font at a cut point, or a target position
+   * landing strictly inside a ligature's own multi-character expansion --
+   * rather than guess; see pdf-link-completeness-writer.ts's own header
    * comment for the full breakdown. Also declines when the enclosing
    * content has no MCID of its own (a bare /Artifact) -- no natural
    * struct-tree parent to attach the new /Link under, the same
@@ -6497,6 +6661,12 @@ export class PdfStructureWriterService {
    * elsewhere (reattachTableCell, retagPlacedPdfAsFigure) rather than
    * invent one; not hit by any of the 135 real clean matches above (every
    * one sits inside a real, MCID-bound /P).
+   *
+   * Everything from the enclosing-tag resolution onward is IDENTICAL
+   * regardless of which path produced `splice` -- LinkCompletenessSplice
+   * and UrlSubstringSplice are structurally identical
+   * ({edits, linkMcid, remainderMcid, enclosingTag, enclosingMcid}), by
+   * design, so the rest of this method never needs to know which one ran.
    *
    * Rollback on any failure restores the page's original content bytes,
    * /Annots, and the enclosing element's /K, and clears every newly
@@ -6531,21 +6701,35 @@ export class PdfStructureWriterService {
     }
     if (!originalContent) return fail(`Page ${pageNumber} has no content stream`);
 
-    const run = findUrlOperatorRun(originalContent, 0, originalContent.length, url);
-    if (!run) {
-      return fail(
-        'Could not locate this URL as a clean run of text-show operators on this page -- either already fixed, ' +
-        'or this is one of the real cases where the URL shares its own operand with surrounding prose (needs a ' +
-        'harder, font-encoding-aware mid-string split this fixer does not attempt -- see pdf-link-completeness-writer.ts)'
-      );
-    }
-
+    const resolveGlyphText = this.buildGlyphTextResolver(doc, pageNumber);
     const existingMcids = pageContentMcids(doc, pageNumber) ?? new Set<number>();
     const nextMcid = existingMcids.size > 0 ? Math.max(...existingMcids) + 1 : 0;
 
-    const splice = buildLinkCompletenessSplice(originalContent, run, nextMcid);
+    let splice: LinkCompletenessSplice | UrlSubstringSplice | null = null;
+    let method: 'clean' | 'substring' = 'clean';
+
+    const run = findUrlOperatorRun(originalContent, 0, originalContent.length, url, resolveGlyphText);
+    if (run) {
+      splice = buildLinkCompletenessSplice(originalContent, run, nextMcid);
+    } else {
+      // Fallback: the URL shares its own text-show operand with other
+      // prose (the 35.4% bucket the clean path above declines on by
+      // design) -- try the same-operand splitter before giving up.
+      const isSimpleFont = this.buildSimpleFontChecker(doc, pageNumber);
+      const substringRun = findUrlSubstringRun(originalContent, 0, originalContent.length, url, resolveGlyphText, isSimpleFont);
+      if (substringRun) {
+        method = 'substring';
+        splice = buildUrlSubstringSplice(originalContent, substringRun, nextMcid);
+      }
+    }
+
     if (!splice) {
-      return fail('Could not build a content-stream splice for this match -- no enclosing tag, or the match crosses its own enclosing tag\'s close');
+      return fail(
+        'Could not locate this URL as a clean run of text-show operators, or safely carve it out of an operand it ' +
+        'shares with other prose, on this page -- either already fixed, or a genuinely unsafe shape (a non-simple ' +
+        'font at the needed cut point, or a position landing inside a ligature\'s own multi-character expansion) ' +
+        'that this fixer declines rather than guesses on -- see pdf-link-completeness-writer.ts'
+      );
     }
     if (splice.enclosingMcid === null) {
       return fail(
@@ -6584,10 +6768,43 @@ export class PdfStructureWriterService {
     // exactly this MCID -- that's sufficient to prove it's the right
     // element to splice into, independent of what its /S happens to say.
     const originalK = enclosingDict.get(PDFName.of('K'));
-    if (!(originalK instanceof PDFNumber) || originalK.asNumber() !== enclosingMcid) {
+    // Paragraph-ceiling follow-on (2026-11-06): confirmed live on
+    // Curiel_187961_CSHP.pdf that all 209 real issues sit in only 28
+    // unique paragraphs, so requiring /K to STILL be a bare scalar meant
+    // only the first URL per paragraph could ever be fixed -- every other
+    // URL in the same paragraph declined here once the first fix widened
+    // /K to an array. The invariant that actually matters is unchanged
+    // either way: enclosingMcid must be the UNIQUE bare-number entry
+    // marking exactly where this content sits in the element's own
+    // reading order -- whether /K is still that scalar itself, or (an
+    // earlier fix on this same paragraph already ran) one entry inside an
+    // array of several. Either way the new /Link (and remainder, if any)
+    // splice in immediately after that entry's own position.
+    let kidsArrayIndex: number | null = null;
+    if (originalK instanceof PDFNumber) {
+      if (originalK.asNumber() !== enclosingMcid) {
+        return fail(
+          `Enclosing struct element's own /K is the bare MCID ${originalK.asNumber()}, not the ${enclosingMcid} ` +
+          'the splice was built against -- declining rather than guessing at how to merge with whatever else is there now'
+        );
+      }
+    } else if (originalK instanceof PDFArray) {
+      const kArr = originalK.asArray();
+      const matchingIndices = kArr.reduce<number[]>((acc, item, i) => {
+        if (item instanceof PDFNumber && item.asNumber() === enclosingMcid) acc.push(i);
+        return acc;
+      }, []);
+      if (matchingIndices.length !== 1) {
+        return fail(
+          `Enclosing struct element's own /K is an array containing bare MCID ${enclosingMcid} ` +
+          `${matchingIndices.length} time(s) (expected exactly 1) -- declining rather than guessing where to splice`
+        );
+      }
+      kidsArrayIndex = matchingIndices[0];
+    } else {
       return fail(
-        `Enclosing struct element's own /K is no longer the single bare MCID ${enclosingMcid} the splice was ` +
-        'built against -- declining rather than guessing at how to merge with whatever else is there now'
+        'Enclosing struct element\'s own /K is neither a bare MCID nor an array containing one -- declining ' +
+        'rather than guessing'
       );
     }
 
@@ -6638,9 +6855,25 @@ export class PdfStructureWriterService {
       }
       writePageContent(doc, pageNumber, newContent);
 
-      const newK: PDFObject[] = [PDFNumber.of(enclosingMcid), linkRef];
-      if (splice.remainderMcid !== null) newK.push(PDFNumber.of(splice.remainderMcid));
-      enclosingDict.set(PDFName.of('K'), doc.context.obj(newK));
+      const newEntries: PDFObject[] = [linkRef];
+      if (splice.remainderMcid !== null) newEntries.push(PDFNumber.of(splice.remainderMcid));
+      if (kidsArrayIndex !== null) {
+        // /K was already an array (a prior fix on this same paragraph) --
+        // splice the new entries in right after the existing enclosingMcid
+        // entry, preserving reading order, WITHOUT mutating the array
+        // object `originalK` itself holds -- so the catch block's plain
+        // `enclosingDict.set(..., originalK)` below is still a correct,
+        // untouched rollback.
+        const existingArr = (originalK as PDFArray).asArray();
+        const updatedArr = [
+          ...existingArr.slice(0, kidsArrayIndex + 1),
+          ...newEntries,
+          ...existingArr.slice(kidsArrayIndex + 1),
+        ];
+        enclosingDict.set(PDFName.of('K'), doc.context.obj(updatedArr));
+      } else {
+        enclosingDict.set(PDFName.of('K'), doc.context.obj([PDFNumber.of(enclosingMcid), ...newEntries]));
+      }
 
       if (!this.isReachableFromRoot(doc, enclosingRef)) {
         throw new Error('Enclosing struct element is no longer reachable from the structure tree root after splicing -- not committing');
@@ -6665,7 +6898,8 @@ export class PdfStructureWriterService {
       issueId: issue.id,
       success: true,
       before: 'URL-shaped text with no Link annotation',
-      after: `Created a /Link annotation + structure element for "${url.slice(0, 80)}"`,
+      after: `Created a /Link annotation + structure element for "${url.slice(0, 80)}"` +
+        (method === 'substring' ? ' (carved out of a shared operand via the same-operand splitter)' : ''),
     };
   }
 }
