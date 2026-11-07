@@ -640,6 +640,23 @@ export class PdfContrastWriterService {
       matchTrueColor !== null &&
       colorDistance(matchTrueColor, hexToUnitRgb(cd.foreground)) >= DETECTION_MISMATCH_THRESHOLD;
 
+    // Temporary diagnostic (2026-11-07): only fires when the primary,
+    // position-matched run already failed verification -- i.e. exactly the
+    // case this file's own sibling-check mechanism exists to rescue.
+    // Real incident: issue contrast-1 on Karsaklian_189165_9781606497623
+    // page 155 ("Po" + "ssible solutions" merged into one pdfjs item, the
+    // matched run landing on the already-black "Po" prefix) failed outright
+    // with no indication of whether this check ever ran or why it didn't
+    // reach the genuinely-failing sibling. Remove once that's confirmed one
+    // way or the other.
+    if (!primaryResult.success) {
+      logger.info(
+        `[ContrastWriter][DIAG] issue=${issue.id} page=${pageNumber} primary match failed ` +
+        `(${primaryResult.error}) -- matchTrueColor=${JSON.stringify(matchTrueColor)} ` +
+        `cd.foreground=${cd.foreground} detectionUnreliableForThisRun=${detectionUnreliableForThisRun}`
+      );
+    }
+
     if (!detectionUnreliableForThisRun) {
       return primaryResult;
     }
@@ -666,6 +683,10 @@ export class PdfContrastWriterService {
         const trueColor = trueColorOfRun(freshContent, sibling);
         return trueColor !== null && genuinelyFailsContrast(trueColor, cd);
       });
+      logger.info(
+        `[ContrastWriter][DIAG] issue=${issue.id} page=${pageNumber} sibling attempt ${attempt}: ` +
+        `${siblings.length} sibling(s) found, nextFailingIndex=${nextFailingIndex}`
+      );
       if (nextFailingIndex === -1) break;
 
       const sibling = siblings[nextFailingIndex];
@@ -707,6 +728,11 @@ export class PdfContrastWriterService {
         pageHeight: boundingBox.pageHeight,
       };
       const result = await this.fixOneRun(issue.id, doc, pageNumber, sibling, siblingBoundingBox, cd, before, backplateExclusionRects);
+      logger.info(
+        `[ContrastWriter][DIAG] issue=${issue.id} page=${pageNumber} sibling fix attempt ${attempt} ` +
+        `(slice=${JSON.stringify(freshContent.slice(sibling.start, Math.min(sibling.end, sibling.start + 40)))}): ` +
+        `success=${result.success}${result.success ? ` after=${result.after}` : ` error=${result.error}`}`
+      );
       if (!result.success) break; // this sibling's true color won't change by retrying — stop rather than looping
       fixedDescriptions.push(result.after);
     }
