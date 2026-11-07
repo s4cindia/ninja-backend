@@ -174,4 +174,46 @@ describe('PdfStructureWriterService.fixActualTextMissingMcid', () => {
     expect(result.success).toBe(false);
     expect(result.error).toContain('no usable tagged neighbor');
   });
+
+  /**
+   * Real, confirmed-live gap on Karsaklian_189165_9781606497623: the
+   * running header's own nearest tagged neighbor is page 12's own first
+   * real body paragraph, whose own parent (an InDesign /Story element)
+   * has EXACTLY that one paragraph as its sole child -- a legitimate
+   * scalar /K, not an array (no earlier content on the page at all).
+   * insertIntoKidsBefore used to decline this outright; 6 of 156 real
+   * runs hit exactly this shape. Now promotes the scalar to a real array
+   * instead.
+   */
+  it('promotes the right-hand anchor\'s own parent\'s scalar (non-array) /K to a real array, matching the real Karsaklian_189165 page-12 shape (no content precedes the running header at all)', async () => {
+    const doc = await PDFDocument.create();
+    const page = doc.addPage([612, 792]);
+    page.node.set(PDFName.of('StructParents'), doc.context.obj(0));
+    // No content precedes DESCRIPTION_RUN at all -- only a real paragraph after it.
+    const content = `${DESCRIPTION_RUN}/P <</MCID 0 >>BDC\n(After)Tj\nEMC\n`;
+    writePageContent(doc, 1, content);
+
+    const rightRef = doc.context.register(doc.context.obj({ Type: PDFName.of('StructElem'), S: PDFName.of('P'), Pg: page.ref, K: 0 }));
+    // flowParentRef's /K is a BARE SCALAR equal to rightRef -- rightRef is
+    // its one and only child, no array wrapping it at all.
+    const flowParentRef = doc.context.register(doc.context.obj({ Type: PDFName.of('StructElem'), S: PDFName.of('Story'), K: rightRef }));
+    doc.context.lookup(rightRef, PDFDict).set(PDFName.of('P'), flowParentRef);
+
+    const structTreeRootRef = doc.context.register(doc.context.obj({ Type: PDFName.of('StructTreeRoot'), K: [flowParentRef] }));
+    doc.catalog.set(PDFName.of('StructTreeRoot'), structTreeRootRef);
+    setFlatParentTree(doc, structTreeRootRef, [rightRef]);
+
+    const result = pdfStructureWriterService.fixActualTextMissingMcid(doc, issueForPage(1));
+    expect(result.success).toBe(true);
+
+    const flowParentDict = doc.context.lookup(flowParentRef, PDFDict);
+    const kAfter = flowParentDict.get(PDFName.of('K'));
+    expect(kAfter).toBeInstanceOf(PDFArray);
+    const kidsAfter = (kAfter as PDFArray).asArray();
+    expect(kidsAfter).toHaveLength(2);
+    // New /Span spliced in BEFORE the right-hand neighbor -- reading order preserved.
+    const newSpanDict = doc.context.lookup(kidsAfter[0] as PDFRef, PDFDict);
+    expect(newSpanDict.get(PDFName.of('S'))?.toString()).toBe('/Span');
+    expect((kidsAfter[1] as PDFRef).objectNumber).toBe(rightRef.objectNumber);
+  });
 });

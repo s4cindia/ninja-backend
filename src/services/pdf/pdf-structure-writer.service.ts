@@ -225,6 +225,28 @@ export class PdfStructureWriterService {
   // SECTION 2 — Foundation: K-Array Helpers
   // ══════════════════════════════════════════════════════════════════════════
 
+  /**
+   * True if `k` (a struct element's own /K value) legitimately contains
+   * targetRef as a child -- either as a member of an array, or as the
+   * sole SCALAR child itself (a single-child struct element legitimately
+   * has a bare /K per spec, not wrapped in an array). Shared by
+   * insertIntoKidsAfter/insertIntoKidsBefore's own "is this shape even
+   * insertable" gate and buildFigureFromImage's own preflight, which must
+   * agree exactly with what those two methods will actually accept --
+   * previously buildFigureFromImage's preflight required /K to ALREADY be
+   * an array, strictly more restrictive than necessary once those two
+   * methods learned to promote a matching scalar (see their own doc
+   * comments for the real, confirmed-live gap this closes: 6 of
+   * Karsaklian_189165_9781606497623's own 156 real actualtext-missing-
+   * mcid-fix candidates permanently declined on exactly this shape).
+   */
+  private kContainsChild(k: PDFObject | undefined, targetRef: PDFRef): boolean {
+    if (k instanceof PDFArray) {
+      return k.asArray().some(item => item instanceof PDFRef && item.objectNumber === targetRef.objectNumber);
+    }
+    return k instanceof PDFRef && k.objectNumber === targetRef.objectNumber;
+  }
+
   /** Append childRef to the /K array of the element at parentRef. */
   private appendToKids(doc: PDFDocument, parentRef: PDFRef, childRef: PDFRef): void {
     const parent = doc.context.lookup(parentRef);
@@ -251,9 +273,17 @@ export class PdfStructureWriterService {
    * spanning the entire book; appendToKids there would place new content
    * at the very end of the WHOLE DOCUMENT's reading order regardless of
    * which page it's actually on). Throws rather than guessing when afterRef
-   * isn't found in parentRef's /K array, or /K isn't an array at all (a
-   * lone-child parent has no meaningful "position" for this to preserve) --
-   * matches this file's established "bail rather than guess" convention.
+   * isn't found in parentRef's /K at all -- matches this file's established
+   * "bail rather than guess" convention.
+   *
+   * A SCALAR /K equal to afterRef (a single-child struct element,
+   * legitimate per spec, not wrapped in an array) is promoted to a real
+   * array with newRef appended -- exactly as safe as appendToKids already
+   * does for its own "no array yet" case, since afterRef is, by
+   * construction, this parent's one and only child. Previously declined
+   * outright; real, confirmed-live gap (6 of Karsaklian_189165_9781606497623's
+   * own 156 real actualtext-missing-mcid-fix candidates, all this exact
+   * shape) -- see kContainsChild's own doc comment.
    */
   private insertIntoKidsAfter(doc: PDFDocument, parentRef: PDFRef, afterRef: PDFRef, newRef: PDFRef): void {
     const parent = doc.context.lookup(parentRef);
@@ -261,6 +291,10 @@ export class PdfStructureWriterService {
       throw new Error('insertIntoKidsAfter: parent does not resolve to a dictionary');
     }
     const k = parent.get(PDFName.of('K'));
+    if (k instanceof PDFRef && k.objectNumber === afterRef.objectNumber) {
+      parent.set(PDFName.of('K'), doc.context.obj([afterRef, newRef]));
+      return;
+    }
     if (!(k instanceof PDFArray)) {
       throw new Error('insertIntoKidsAfter: parent /K is not an array -- cannot position relative to a sibling');
     }
@@ -282,6 +316,9 @@ export class PdfStructureWriterService {
    * gap, so anchoring on the left neighbor alone would insert one slot
    * too early. Anchoring on a confirmed RIGHT neighbor's own position is
    * correct regardless of what sits between it and the left neighbor.
+   *
+   * Same scalar-/K promotion as insertIntoKidsAfter -- see that method's
+   * own doc comment.
    */
   private insertIntoKidsBefore(doc: PDFDocument, parentRef: PDFRef, beforeRef: PDFRef, newRef: PDFRef): void {
     const parent = doc.context.lookup(parentRef);
@@ -289,6 +326,10 @@ export class PdfStructureWriterService {
       throw new Error('insertIntoKidsBefore: parent does not resolve to a dictionary');
     }
     const k = parent.get(PDFName.of('K'));
+    if (k instanceof PDFRef && k.objectNumber === beforeRef.objectNumber) {
+      parent.set(PDFName.of('K'), doc.context.obj([newRef, beforeRef]));
+      return;
+    }
     if (!(k instanceof PDFArray)) {
       throw new Error('insertIntoKidsBefore: parent /K is not an array -- cannot position relative to a sibling');
     }
@@ -1346,24 +1387,21 @@ export class PdfStructureWriterService {
         // Preflight what insertIntoKidsAfter itself would need to succeed --
         // a property of the document as it already stands (nothing mutates
         // this parent's /K between here and the actual insertion below),
-        // fully knowable up front. A single-child struct element legitimately
-        // has a SCALAR /K per spec (not wrapped in an array) -- insertIntoKidsAfter
-        // throws on that shape, and previously did so only AFTER the content
-        // stream had already been rewritten (Codex finding on PR #555,
-        // confirmed real).
+        // fully knowable up front. kContainsChild accepts a single-child
+        // struct element's legitimate SCALAR /K (per spec, not wrapped in
+        // an array) too -- insertIntoKidsAfter now promotes that shape to
+        // a real array rather than declining (see its own doc comment);
+        // this preflight must agree exactly with what it will actually do,
+        // or a page that WOULD now succeed would still wrongly decline here
+        // first.
         const parentDict = doc.context.lookup(parentRaw);
         if (!(parentDict instanceof PDFDict)) {
           results.push({ issueId: img.imageId, success: false, before: 'unknown', after: 'unknown', error: 'Anchor parent does not resolve to a dictionary' });
           continue;
         }
         const parentK = parentDict.get(PDFName.of('K'));
-        if (!(parentK instanceof PDFArray)) {
-          results.push({ issueId: img.imageId, success: false, before: 'unknown', after: 'unknown', error: 'Anchor parent /K is not an array -- cannot position relative to a sibling' });
-          continue;
-        }
-        const anchorInArray = parentK.asArray().some(item => item instanceof PDFRef && item.objectNumber === anchor.ref.objectNumber);
-        if (!anchorInArray) {
-          results.push({ issueId: img.imageId, success: false, before: 'unknown', after: 'unknown', error: 'Anchor not found in its own parent /K array' });
+        if (!this.kContainsChild(parentK, anchor.ref)) {
+          results.push({ issueId: img.imageId, success: false, before: 'unknown', after: 'unknown', error: 'Anchor not found in its own parent /K (neither as an array member nor as a matching scalar)' });
           continue;
         }
         validEntries.push({ img, range, anchorRef: anchor.ref, parentRef: parentRaw });

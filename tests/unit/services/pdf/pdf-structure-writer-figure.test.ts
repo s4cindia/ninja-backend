@@ -303,15 +303,23 @@ describe('PdfStructureWriterService.buildFigureFromImage', () => {
   }, 30_000);
 
   /**
-   * Regression for a real Codex finding on PR #555: insertIntoKidsAfter
-   * throws if the anchor's parent's /K is a SCALAR (a real, valid
-   * single-child struct element shape per spec, not wrapped in an array) --
-   * previously this only surfaced AFTER insertMarkedContentSpans had
-   * already rewritten the content stream, leaving a real BDC/EMC+MCID
-   * sequence with no owning struct element despite the reported failure.
-   * Now preflighted before any mutation.
+   * Regression for a real Codex finding on PR #555, later SUPERSEDED: the
+   * anchor's parent's /K being a SCALAR (a real, valid single-child struct
+   * element shape per spec, not wrapped in an array) used to make
+   * insertIntoKidsAfter throw -- previously this only surfaced AFTER
+   * insertMarkedContentSpans had already rewritten the content stream,
+   * leaving a real BDC/EMC+MCID sequence with no owning struct element
+   * despite the reported failure, so it was moved to a preflight. Later
+   * confirmed live as a real, not just theoretical, gap: 6 of
+   * Karsaklian_189165_9781606497623's own 156 real actualtext-missing-mcid-fix
+   * candidates permanently declined on exactly this shape -- insertIntoKidsAfter/
+   * insertIntoKidsBefore now promote a matching scalar /K to a real array
+   * instead of declining (safe by construction: the scalar IS, by
+   * definition, this parent's one and only child), and this preflight was
+   * updated to agree (kContainsChild, shared with the insertion methods
+   * themselves).
    */
-  it('fails cleanly with NO content-stream mutation when the anchor\'s parent has a scalar (non-array) /K', async () => {
+  it('promotes the anchor\'s parent\'s scalar (non-array) /K to a real array rather than declining', async () => {
     const { doc, parsedPdf, xObjectName, tmpPath } = await buildDocWithTaggedTextAndUntaggedImage();
     try {
       const imageId = `img_p1_0_${xObjectName}`;
@@ -323,15 +331,20 @@ describe('PdfStructureWriterService.buildFigureFromImage', () => {
       const parentDict = doc.context.lookup(parentRef) as PDFDict;
       parentDict.set(PDFName.of('K'), paraRef);
 
-      const before = decodeContent(doc);
       const results = await pdfStructureWriterService.buildFigureFromImage(doc, parsedPdf, [
         { imageId, pageNumber: 1, position: { x: 50, y: 100, width: 100, height: 80 } },
       ]);
-      expect(results[0].success).toBe(false);
-      expect(results[0].error).toMatch(/not an array/i);
+      expect(results[0].success).toBe(true);
 
-      const after = decodeContent(doc);
-      expect(after).toBe(before);
+      // Parent's /K is now a real array: the original scalar child first,
+      // the new Figure spliced in right after it (insertIntoKidsAfter's
+      // own anchor-after semantics), not reordered or replaced.
+      const parentKAfter = parentDict.get(PDFName.of('K'));
+      expect(parentKAfter).toBeInstanceOf(PDFArray);
+      const kidsAfter = (parentKAfter as PDFArray).asArray();
+      expect(kidsAfter).toHaveLength(2);
+      expect((kidsAfter[0] as PDFRef).objectNumber).toBe(paraRef.objectNumber);
+      expect(tagOf(doc.context.lookup(kidsAfter[1]))).toBe('Figure');
     } finally {
       await pdfParserService.close(parsedPdf);
       fs.unlinkSync(tmpPath);
