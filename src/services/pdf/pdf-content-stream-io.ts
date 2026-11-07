@@ -77,7 +77,31 @@ export function writePageContent(doc: PDFDocument, pageNumber: number, content: 
 // real, valuable, out of scope for this fallback's purpose (recovering an
 // otherwise totally unresolvable element), which this regex already
 // strictly improves on for the realistic cases seen in real tagged PDFs.
-const BDC_PROPS_RE = /<<((?:(?!>>).)*)>>\s*BDC/g;
+//
+// FIXED (2026-11-07), unlike the two limitations above: a dict ending in a
+// nested `<...>` HEX STRING immediately followed by the dict's own closing
+// `>>` -- e.g. `<</MCID 7 /ActualText<FEFF0041>>>` -- produces three
+// consecutive `>` characters (the hex string's own close, then the dict's).
+// The naive `(?!>>).` loop stops one character too early (right before the
+// hex string's own closing `>`, since the lookahead sees '>>' starting
+// there), then fails to match the required literal `>>` immediately after
+// (what's actually there is a THIRD `>`, not whitespace/BDC) -- silently
+// dropping the WHOLE BDC occurrence, MCID included. Confirmed real and
+// newly load-bearing, not theoretical: Karsaklian_189165_9781606497623's
+// own InDesign-authored /ActualText values use this exact hex form
+// (confirmed via decodePdfStringLiteral's own UTF-16BE/FEFF-BOM handling
+// elsewhere), and once pdf-structure-writer.service.ts's own
+// fixActualTextMissingMcid started writing a real /MCID into these same
+// dicts (PR #781), this function's own undercount of "next available
+// MCID" started colliding with /ParentTree's real, already-correct entry
+// count -- confirmed live: buildFigureFromImage failed with "MCID 2556
+// does not append contiguously" on a page whose content stream, scanned
+// directly, plainly contains a literal `/MCID 2556` this regex alone
+// couldn't see. Fixed by letting a complete hex-string token (`<` + hex
+// digits/whitespace + `>`) consume as ONE atomic alternative before the
+// general character-by-character rule applies -- a hex string's own `>`
+// can then never be mistaken for the dict's.
+const BDC_PROPS_RE = /<<((?:<[0-9A-Fa-f\s]*>|(?!>>).)*)>>\s*BDC/g;
 const MCID_ATTR_RE = /\/MCID\s+(\d+)/;
 
 /**
