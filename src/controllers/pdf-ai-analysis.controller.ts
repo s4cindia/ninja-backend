@@ -638,6 +638,17 @@ export class PdfAiAnalysisController {
 
       if (!modification.success) {
         logger.warn(`[ApplySuggestion] modification failed: ${modification.error}`);
+        // Keeps failedAttempts/lastErrorReason current for a manual Retry on
+        // an already-terminal suggestion too -- without this, retrying a
+        // 'failed' row left its lastErrorReason showing the ORIGINAL
+        // failure's text even after a fresh attempt failed for a different
+        // reason. Same helper applyApprovedSuggestions' own bulk path uses.
+        await aiAnalysisService.recordApplyFailure(
+          jobId,
+          issueId,
+          analysis.failedAttempts,
+          modification.error ?? 'Failed to apply modification'
+        );
         throw AppError.unprocessable(modification.error ?? 'Failed to apply modification');
       }
 

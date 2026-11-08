@@ -4224,7 +4224,12 @@ class AiAnalysisService {
    * can aggregate a job's full failure history, not just its most
    * recent round's first 50.
    */
-  private async recordApplyFailure(jobId: string, issueId: string, currentFailedAttempts: number, reason: string): Promise<void> {
+  // Not private: pdf-ai-analysis.controller.ts's single-issue applySuggestion
+  // calls this too, so a manual Retry on an already-terminal ('failed')
+  // suggestion refreshes failedAttempts/lastErrorReason exactly the same way
+  // a bulk apply-all round's own failure does, rather than leaving the row's
+  // failure text stale after a retry that fails for a different reason.
+  async recordApplyFailure(jobId: string, issueId: string, currentFailedAttempts: number, reason: string): Promise<void> {
     const failedAttempts = currentFailedAttempts + 1;
     await prisma.aiAnalysis.update({
       where: { jobId_issueId: { jobId, issueId } },
