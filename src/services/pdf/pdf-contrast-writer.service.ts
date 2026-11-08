@@ -652,8 +652,10 @@ export class PdfContrastWriterService {
     if (!primaryResult.success) {
       logger.info(
         `[ContrastWriter][DIAG] issue=${issue.id} page=${pageNumber} primary match failed ` +
-        `(${primaryResult.error}) -- matchTrueColor=${JSON.stringify(matchTrueColor)} ` +
-        `cd.foreground=${cd.foreground} detectionUnreliableForThisRun=${detectionUnreliableForThisRun}`
+        `(${primaryResult.error}) -- matchStart=${match.start} matchSlice=${JSON.stringify(content.slice(match.start, Math.min(match.end, match.start + 40)))} ` +
+        `matchTrueColor=${JSON.stringify(matchTrueColor)} ` +
+        `cd.foreground=${cd.foreground} cd.background=${cd.background} cd.requiredRatio=${cd.requiredRatio} ` +
+        `detectionUnreliableForThisRun=${detectionUnreliableForThisRun}`
       );
     }
 
@@ -685,7 +687,11 @@ export class PdfContrastWriterService {
       });
       logger.info(
         `[ContrastWriter][DIAG] issue=${issue.id} page=${pageNumber} sibling attempt ${attempt}: ` +
-        `${siblings.length} sibling(s) found, nextFailingIndex=${nextFailingIndex}`
+        `candidates=${JSON.stringify(siblings.map(s => ({
+          start: s.start,
+          slice: freshContent.slice(s.start, Math.min(s.end, s.start + 30)),
+          trueColor: trueColorOfRun(freshContent, s),
+        })))} nextFailingIndex=${nextFailingIndex}`
       );
       if (nextFailingIndex === -1) break;
 
