@@ -1093,4 +1093,84 @@ ET
     const positions = siblings.map((s) => s.start);
     expect(positions).toEqual([...positions].sort((a, b) => a - b));
   });
+
+  // Real shape from Karsaklian_189165_9781606497623 page 155: a bare space
+  // between two words inherits whatever color was last set (InDesign's own
+  // redundant per-glyph color-state emission), but shows no visible ink of
+  // its own -- it must never be returned as a sibling candidate at all, even
+  // when that inherited color would otherwise "genuinely fail" a contrast
+  // check against some background. Before this fix, fixColorContrast's own
+  // sibling loop could select such a space as "the next failing sibling",
+  // attempt to fix+verify it, get a degenerate measurement, and then
+  // unconditionally break -- never reaching the real failing word right
+  // after it.
+  it('never returns a whitespace-only run as a sibling candidate', () => {
+    const stream = `BT
+0 0 0 rg
+/F1 12 Tf
+1 0 0 1 50 500 Tm
+(Es) Tj
+0.643 0.643 0.643 rg
+0 -20 Td
+( ) Tj
+0 -20 Td
+(ta) Tj
+0 -20 Td
+(blish) Tj
+ET
+`;
+    const matched = locateTextRun(stream, { x: 50, baselineY: 500 }); // "Es"'s own position, right after Tm
+    expect(matched).not.toBeNull();
+
+    const siblings = findSiblingRuns(stream, matched!, 8);
+    const texts = siblings.map((s) => stream.slice(s.start, s.end));
+
+    expect(texts.some((t) => t.includes('( )'))).toBe(false);
+    expect(texts.some((t) => t.includes('(ta)'))).toBe(true);
+    expect(texts.some((t) => t.includes('(blish)'))).toBe(true);
+  });
+
+  it('still returns a run showing a hex-string operand -- declines to guess it is whitespace', () => {
+    const stream = `BT
+0 0 0 rg
+/F1 12 Tf
+1 0 0 1 50 500 Tm
+(Es) Tj
+0 -20 Td
+<0020> Tj
+0 -20 Td
+(ta) Tj
+ET
+`;
+    const matched = locateTextRun(stream, { x: 50, baselineY: 500 }); // "Es"'s own position, right after Tm
+    expect(matched).not.toBeNull();
+
+    const siblings = findSiblingRuns(stream, matched!, 8);
+    const texts = siblings.map((s) => stream.slice(s.start, s.end));
+
+    expect(texts.some((t) => t.includes('<0020>'))).toBe(true);
+  });
+
+  it('never returns a whitespace-only TJ-array run as a sibling candidate', () => {
+    const stream = `BT
+0 0 0 rg
+/F1 12 Tf
+1 0 0 1 50 500 Tm
+(Es) Tj
+0.643 0.643 0.643 rg
+0 -20 Td
+[( )-20( )] TJ
+0 -20 Td
+(ta) Tj
+ET
+`;
+    const matched = locateTextRun(stream, { x: 50, baselineY: 500 }); // "Es"'s own position, right after Tm
+    expect(matched).not.toBeNull();
+
+    const siblings = findSiblingRuns(stream, matched!, 8);
+    const texts = siblings.map((s) => stream.slice(s.start, s.end));
+
+    expect(texts.some((t) => t.includes('TJ'))).toBe(false);
+    expect(texts.some((t) => t.includes('(ta)'))).toBe(true);
+  });
 });

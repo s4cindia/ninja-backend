@@ -657,6 +657,88 @@ export function locateTextRun(
  * writer's width estimation from `siblings[i+1].anchorX`) assume that
  * ordering.
  */
+/**
+ * True when every show op (Tj/'/"/TJ) within [run.start, run.end) shows a
+ * literal string operand that's entirely whitespace, AND the run shows at
+ * least one such operand (an empty span with zero show ops is NOT
+ * "whitespace-only" -- it's not a text run at all, and callers already
+ * filter those out elsewhere). A HEX string operand always declines (returns
+ * false, i.e. "not confirmed whitespace-only") -- its decoded glyph depends
+ * on the font's own encoding, which this module has no access to, and
+ * guessing wrong would silently treat a genuinely visible glyph as blank.
+ * Same "bail rather than guess" discipline as the rest of this file.
+ *
+ * Real incident (Karsaklian_189165_9781606497623, page 155): InDesign's own
+ * redundant per-glyph color-state emission means a bare `( )Tj` space
+ * between two real words routinely carries its own (inherited, never
+ * actually rendered-visibly) fill-color operand -- e.g. the same light gray
+ * `0.643 0.643 0.643 rg` a genuinely failing sibling word two positions
+ * later also carries. Before this check, findSiblingRuns' own caller
+ * (fixColorContrast's sibling-fix loop) could select such a space as "the
+ * next failing sibling" (its inherited color DOES fail the math check,
+ * genuinelyFailsContrast has no notion of "but nothing is actually drawn
+ * here"), attempt to fix+verify it, get a degenerate measurement (no real
+ * ink in the sampled region, confirmed live: measured exactly 1:1), and then
+ * STOP -- the loop breaks unconditionally on any failed sibling fix,
+ * permanently abandoning the search before ever reaching the real, visibly
+ * failing word right after the space. Filtering whitespace-only units out
+ * at the source here (rather than only in that one caller) also fixes the
+ * same blind spot in pdf-audit.service.ts's reconcileContrastFalsePositives
+ * cross-check, which uses this same function to decide whether a sibling
+ * defect exists before dropping an issue as a false positive.
+ */
+function isWhitespaceOnlyRun(content: string, run: { start: number; end: number }): boolean {
+  const tokens = tokenize(content);
+  let sawAnyShow = false;
+
+  const operandIsConfirmedWhitespace = (tk: Token): boolean => {
+    if (tk.t !== 's') return false; // hex ('h') or anything else -- decline
+    const inner = tk.v.slice(1, -1);
+    const decoded = inner.replace(
+      /\\([nrtbf()\\])/g,
+      (_, c: string) => ({ n: '\n', r: '\r', t: '\t', b: '\b', f: '\f', '(': '(', ')': ')', '\\': '\\' }[c] ?? c)
+    );
+    return /^[\s\0]*$/.test(decoded);
+  };
+
+  for (let i = 0; i < tokens.length; i++) {
+    const tk = tokens[i];
+    if (tk.start < run.start) continue;
+    if (tk.start >= run.end) break;
+    if (tk.t !== 'op') continue;
+
+    if (tk.v === 'Tj' || tk.v === "'" || tk.v === '"') {
+      sawAnyShow = true;
+      // '"' takes two leading numeric operands (aw, ac) before its string --
+      // skip those to reach the actual string operand.
+      let j = i - 1;
+      while (j >= 0 && tokens[j].t === 'n') j--;
+      const strTok = j >= 0 ? tokens[j] : undefined;
+      if (!strTok || !operandIsConfirmedWhitespace(strTok)) return false;
+    } else if (tk.v === 'TJ') {
+      sawAnyShow = true;
+      // Operand is the nearest preceding, depth-balanced `[ ... ]` array.
+      let depth = 0;
+      let arrStart = -1;
+      for (let j = i - 1; j >= 0; j--) {
+        if (tokens[j].t === ']') depth++;
+        else if (tokens[j].t === '[') {
+          depth--;
+          if (depth === 0) { arrStart = j; break; }
+        }
+      }
+      if (arrStart === -1) return false; // malformed -- decline rather than guess
+      for (let k = arrStart + 1; k < i; k++) {
+        const el = tokens[k];
+        if (el.t === 'h') return false; // hex operand anywhere in the array -- decline
+        if (el.t === 's' && !operandIsConfirmedWhitespace(el)) return false;
+      }
+    }
+  }
+
+  return sawAnyShow;
+}
+
 export function findSiblingRuns(
   content: string,
   afterRun: TextRunMatch,
@@ -670,6 +752,7 @@ export function findSiblingRuns(
 
   const buildMatch = (u: TextUnit): TextRunMatch | null => {
     if (u.anchorX === null || u.anchorY === null) return null;
+    if (isWhitespaceOnlyRun(content, { start: u.start, end: u.end })) return null;
     const ops = findFillColorOps(tokens, u.start, u.lastShowEnd!);
     let restoreColorOverride: [number, number, number] | undefined;
     if (ops.length > 0) {
