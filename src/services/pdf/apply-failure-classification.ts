@@ -45,11 +45,18 @@ const CLASSIFICATION_RULES: ClassificationRule[] = [
       'The specific thing this fix was looking for (a span, a count, a position) no longer matches what the fix expected -- usually because an earlier fix in the same batch already changed it, or the document moved since the audit that found it. Re-running AI Analysis typically clears this.',
   },
   {
-    pattern: /declining rather than guessing/i,
+    pattern: /declining rather than guessing|declining rather than deleting/i,
     category: 'correctly_skipped',
     categoryLabel: 'Correctly skipped',
     explanation:
       "The fix found a genuinely ambiguous structure (e.g. an unexpected existing pointer, or more than one plausible target) and declined rather than risk guessing wrong. This is the intended, conservative behavior -- not a bug.",
+  },
+  {
+    pattern: /cannot safely determine a positional insertion point/i,
+    category: 'correctly_skipped',
+    categoryLabel: 'Correctly skipped',
+    explanation:
+      "The fix needs the existing MCIDs on this row/table/container to be in ascending order to safely figure out where new content belongs, and they aren't -- rather than guess a position and risk corrupting the reading order, it declined. This is the intended, conservative behavior -- not a bug.",
   },
   {
     pattern: /did not verify even after escalating/i,

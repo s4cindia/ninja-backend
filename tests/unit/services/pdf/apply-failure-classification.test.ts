@@ -42,6 +42,22 @@ describe('classifyApplyFailureReason', () => {
     expect(result.category).toBe('likely_resolved');
   });
 
+  it('classifies a real "declining rather than deleting real content" decline (table-artifact-fix) as correctly_skipped', () => {
+    const result = classifyApplyFailureReason(
+      'Table has a descendant cell with real painted content (a genuine MCID) -- not the always-empty decorative box this fix is safe for; declining rather than deleting real content'
+    );
+    expect(result.category).toBe('correctly_skipped');
+    expect(result.categoryLabel).toBe('Correctly skipped');
+  });
+
+  it('classifies a real "cannot safely determine a positional insertion point" decline (non-ascending MCIDs) as correctly_skipped', () => {
+    const result = classifyApplyFailureReason(
+      "Table's existing rows on this page do not have ascending MCIDs -- cannot safely determine a positional insertion point"
+    );
+    expect(result.category).toBe('correctly_skipped');
+    expect(result.categoryLabel).toBe('Correctly skipped');
+  });
+
   it('classifies a real color-contrast verification failure as needs_investigation with a contrast-specific label', () => {
     const result = classifyApplyFailureReason(
       'Fix did not verify even after escalating to #000000 (measured ratio 1.06:1, needs 4.5:1)'
