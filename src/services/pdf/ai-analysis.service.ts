@@ -224,9 +224,26 @@ function looksLikePrintProductionSlugLine(context: string | undefined): boolean 
   return PRINT_PRODUCTION_SLUG_LINE_RE.test(match[1]);
 }
 const LINK_CODES = new Set(['LINK-NOT-DESCRIPTIVE', 'LINK-URL-AS-TEXT', 'LINK-GENERIC-TEXT']);
+// pdfa11y-sourced (UA-28-025 -> 28-004): a Link annotation with neither a
+// /Contents entry nor an /Alt on its enclosing structure element -- no
+// visible link text at all, as opposed to LINK_CODES' "text exists but is
+// low-quality" issues. Routed through analyzeLinkText too (it falls back to
+// resolving the real annotation directly when issue.context has no "Link
+// text:"/"URL:" pattern to extract -- pdfa11y's own context is a
+// struct_path, not that format) so both share one 'link-text' dispatch.
+const LINK_MISSING_DESCRIPTION_CODES = new Set(['MATTERHORN-28-004']);
 const FORM_CODES = new Set(['FORM-FIELD-NO-LABEL', 'FORM-FIELD-MISSING-TOOLTIP']);
 const BOOKMARK_CODES = new Set(['BOOKMARK-MISSING', 'BOOKMARK-INSUFFICIENT', 'BOOKMARK-GENERIC-TEXT']);
 const PDFUA_IDENTIFIER_CODES = new Set(['PDFUA-IDENTIFIER-MISSING', 'MATTERHORN-06-002']);
+// pdfa11y-sourced (UA-07-001 -> 07-001, and 07-002 for completeness --
+// "DisplayDocTitle present but false" needs the identical fix): NOT
+// 'MATTERHORN-01-002' despite that code appearing in a few older
+// comments/constants elsewhere (pdf-fix-classification.ts,
+// pdf-auto-remediation.service.ts) -- confirmed against the real Matterhorn
+// 1.1 catalog that '01-002' is an unrelated condition ("Real content is
+// marked as artifact"). See setDisplayDocTitle's own doc comment
+// (pdf-modifier.service.ts) for the full mislabeling history.
+const DISPLAY_DOC_TITLE_CODES = new Set(['MATTERHORN-07-001', 'MATTERHORN-07-002']);
 // pdf-font-tounicode.validator.ts's own real finding: a simple font
 // (Type1/TrueType/MMType1/Type3) actually used on some page carries no
 // /ToUnicode CMap at all -- Matterhorn CP10-001. One document-level issue
@@ -1688,8 +1705,14 @@ class AiAnalysisService {
 
     if (LINK_CODES.has(code)) {
       if (config.linkTextMode === 'disabled') return null;
-      if (!page) return null;
-      return this.analyzeLinkText(issue, page, config.linkTextMode);
+      if (!page || !parsed.parsedPdf) return null;
+      return this.analyzeLinkText(issue, page, config.linkTextMode, parsed.parsedPdf.pdfLibDoc);
+    }
+
+    if (LINK_MISSING_DESCRIPTION_CODES.has(code)) {
+      if (config.linkTextMode === 'disabled') return null;
+      if (!page || !parsed.parsedPdf) return null;
+      return this.analyzeLinkText(issue, page, config.linkTextMode, parsed.parsedPdf.pdfLibDoc);
     }
 
     if (FORM_CODES.has(code)) {
@@ -1701,6 +1724,19 @@ class AiAnalysisService {
     if (BOOKMARK_CODES.has(code)) {
       if (config.bookmarkMode === 'disabled') return null;
       return this.analyzeBookmark(issue, parsed, config.bookmarkMode);
+    }
+
+    if (DISPLAY_DOC_TITLE_CODES.has(code)) {
+      // Purely mechanical (a single ViewerPreferences key set, same shape
+      // as pdfua-identifier below) -- same confidence/rule-based treatment.
+      return {
+        suggestionType: 'display-doc-title-fix',
+        guidance: "ViewerPreferences/DisplayDocTitle will be set to true so the document's title (not its filename) shows in the viewer's title bar.",
+        confidence: 1.0,
+        rationale: 'Deterministic fix — sets a single ViewerPreferences boolean flag',
+        model: 'rule-based',
+        applyMode: 'apply-to-pdf',
+      };
     }
 
     if (PDFUA_IDENTIFIER_CODES.has(code)) {
@@ -2769,12 +2805,31 @@ class AiAnalysisService {
   private async analyzeLinkText(
     issue: AuditIssue,
     page: PdfPage,
-    mode: 'guidance-only' | 'apply-to-pdf'
+    mode: 'guidance-only' | 'apply-to-pdf',
+    doc: PDFDocument
   ): Promise<AiSuggestionResult | null> {
     const linkTextMatch = issue.context?.match(/Link text: "([^"]+)"/);
     const urlMatch = issue.context?.match(/URL: "([^"]+)"/);
     const linkText = linkTextMatch?.[1] ?? '';
-    const url = urlMatch?.[1] ?? '';
+    let url = urlMatch?.[1] ?? '';
+
+    // pdfa11y-sourced issues (MATTERHORN-28-004) carry no "Link text:"/
+    // "URL:" context string -- their own context is a struct_path instead.
+    // Fall back to resolving the real annotation directly: the same
+    // single-candidate resolution setLinkAltText's own bbox-less fallback
+    // uses at apply time (pdf-modifier.service.ts), so analysis and apply
+    // can never disagree about which link is being described. Declines
+    // (returns null) whenever that resolution isn't exactly 1 candidate --
+    // same "refuse to guess" discipline as every positional match in this
+    // file.
+    if (!url && !linkText && issue.pageNumber !== undefined) {
+      const candidates = pdfModifierService.findLinksMissingContents(doc, issue.pageNumber);
+      if (candidates.length !== 1) {
+        logger.info(`[AiAnalysis] analyzeLinkText: ${candidates.length} undescribed Link annotation(s) on page ${issue.pageNumber} -- declining (need exactly 1)`);
+        return null;
+      }
+      url = pdfModifierService.getLinkUri(doc, candidates[0]) ?? '';
+    }
 
     const surroundingText = page.content
       .map(c => c.text)
@@ -3782,7 +3837,7 @@ class AiAnalysisService {
     // failures in a single round), never once reaching the real writer
     // calls (fixArtifactSwallowsContentComplex / retagPlacedPdfAsFigure)
     // below despite both being fully implemented, tested, and merged.
-    const STRUCTURE_WRITER_TYPES = new Set(['heading-fix', 'list-fix', 'table-header-fix', 'table-header-fix-column', 'table-header-scope-fix', 'table-artifact-fix', 'table-from-layout-fix', 'bookmark-generate', 'heading-multiple-h1-fix', 'pdfua-identifier', 'color-contrast-fix', 'alt-text-decorative', 'untagged-content-fix', 'invisible-text-artifact-fix', 'figure-caption-reattach-fix', 'inline-figure-reattach-fix', 'tagged-content-artifact-split-fix', 'table-cell-reattach-fix', 'table-row-reattach-fix', 'font-tounicode-synthesis-fix', 'font-tounicode-extend-fix', 'artifact-unwrap-complex-fix', 'placedpdf-retag-fix', 'link-missing-annotation-fix', 'artifact-actualtext-fix', 'actualtext-missing-mcid-fix', 'tab-order-fix', 'mcid-page-mismatch-fix']);
+    const STRUCTURE_WRITER_TYPES = new Set(['heading-fix', 'list-fix', 'table-header-fix', 'table-header-fix-column', 'table-header-scope-fix', 'table-artifact-fix', 'table-from-layout-fix', 'bookmark-generate', 'heading-multiple-h1-fix', 'pdfua-identifier', 'color-contrast-fix', 'alt-text-decorative', 'untagged-content-fix', 'invisible-text-artifact-fix', 'figure-caption-reattach-fix', 'inline-figure-reattach-fix', 'tagged-content-artifact-split-fix', 'table-cell-reattach-fix', 'table-row-reattach-fix', 'font-tounicode-synthesis-fix', 'font-tounicode-extend-fix', 'artifact-unwrap-complex-fix', 'placedpdf-retag-fix', 'link-missing-annotation-fix', 'artifact-actualtext-fix', 'actualtext-missing-mcid-fix', 'tab-order-fix', 'mcid-page-mismatch-fix', 'display-doc-title-fix']);
 
     let applied = 0;
     let failed = 0;
@@ -4019,6 +4074,8 @@ class AiAnalysisService {
           }
         } else if (suggestionType === 'pdfua-identifier') {
           modification = await pdfModifierService.writePdfUaIdentifier(doc);
+        } else if (suggestionType === 'display-doc-title-fix') {
+          modification = await pdfModifierService.setDisplayDocTitle(doc, true);
         } else if (suggestionType === 'font-tounicode-synthesis-fix') {
           // Whole-document, same as pdfua-identifier above -- one call
           // covers every affected font regardless of which issue triggered it.

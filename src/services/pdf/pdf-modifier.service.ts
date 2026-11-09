@@ -596,8 +596,18 @@ export class PdfModifierService {
   }
 
   /**
-   * Set DisplayDocTitle flag to show document title in window title bar
-   * Tier 1 Handler - MATTERHORN-01-002
+   * Set DisplayDocTitle flag to show document title in window title bar.
+   * Wired to MATTERHORN-07-001/07-002 (ViewerPreferences/DisplayDocTitle
+   * missing or false) in ai-analysis.service.ts's live dispatch -- NOT
+   * '01-002', despite that code appearing in a few older comments/constants
+   * elsewhere in the codebase (pdf-fix-classification.ts,
+   * pdf-auto-remediation.service.ts, change-logging.helpers.ts). Confirmed
+   * against the real Matterhorn 1.1 catalog (matterhorn-1.1.data.ts):
+   * '01-002' is "Real content is marked as artifact", an unrelated
+   * condition -- those other references are a pre-existing mislabeling in a
+   * separate, not-currently-live-for-this-flow remediation subsystem
+   * (pdf-remediation.controller.ts's plan-based endpoints), left as-is here
+   * since fixing them is out of scope for wiring up the live dispatch path.
    */
   async setDisplayDocTitle(doc: PDFDocument, display: boolean = true): Promise<ModificationResult> {
     try {
@@ -1377,11 +1387,39 @@ export class PdfModifierService {
     try {
       const targetPage = issue.pageNumber;
       const bbox = issue.boundingBox;
-      if (!targetPage || !bbox) {
+      if (!targetPage) {
         return {
           success: false,
           description: 'Link position not available',
-          error: 'Issue has no pageNumber/boundingBox to locate the link',
+          error: 'Issue has no pageNumber to locate the link',
+        };
+      }
+
+      // pdfa11y-sourced issues (e.g. MATTERHORN-28-004) carry no
+      // boundingBox at all -- their own context is a struct_path string,
+      // not positional data. Fall back to the same single-candidate
+      // resolution analyzeLinkText (ai-analysis.service.ts) already used to
+      // draft a description for this link in the first place
+      // (findLinksMissingContents, below) -- kept as the one shared
+      // resolution so analysis and apply can never target different links.
+      if (!bbox) {
+        const candidates = this.findLinksMissingContents(doc, targetPage);
+        if (candidates.length !== 1) {
+          return {
+            success: false,
+            description: candidates.length === 0 ? 'No undescribed Link annotation found' : 'Multiple undescribed Link annotations found',
+            error: `Expected exactly 1 Link annotation missing /Contents on page ${targetPage} (no position data to disambiguate), found ${candidates.length} -- refusing to guess`,
+          };
+        }
+        const best = candidates[0];
+        best.set(PDFName.of('Contents'), PDFHexString.fromText(altText));
+        logger.info(`[PdfModifier] Set link description on page ${targetPage} (sole undescribed-link match, no position data)`);
+        return {
+          success: true,
+          description: `Set accessible description on link (page ${targetPage})`,
+          pageNumber: targetPage,
+          before: 'None',
+          after: altText,
         };
       }
 
@@ -1473,6 +1511,54 @@ export class PdfModifierService {
         error: error instanceof Error ? error.message : String(error),
       };
     }
+  }
+
+  /**
+   * Finds every Link annotation on a page whose own /Contents entry is
+   * absent -- the MATTERHORN-28-004 condition (an annotation with neither a
+   * /Contents entry nor an /Alt on its enclosing structure element).
+   * Deliberately does NOT also check each candidate's enclosing structure
+   * element for an /Alt that might independently satisfy the condition:
+   * writing /Contents on a link that already has one via its enclosing
+   * /Alt is redundant, never wrong, so skipping that (more expensive)
+   * struct-tree walk only ever widens recall, it can't misfire.
+   *
+   * Shared by analyzeLinkText (ai-analysis.service.ts, to find a
+   * description target) and setLinkAltText's own bbox-less fallback above
+   * (to actually apply it) -- kept as the single resolution so analysis
+   * and apply can never disagree about which link is being described.
+   */
+  findLinksMissingContents(doc: PDFDocument, pageNumber: number): PDFDict[] {
+    const results: PDFDict[] = [];
+    let page;
+    try {
+      page = doc.getPage(pageNumber - 1);
+    } catch {
+      return results;
+    }
+    const annotsRaw = page.node.get(PDFName.of('Annots'));
+    const annots = annotsRaw instanceof PDFArray ? annotsRaw : annotsRaw ? doc.context.lookup(annotsRaw) : null;
+    if (!(annots instanceof PDFArray)) return results;
+
+    for (let i = 0; i < annots.size(); i++) {
+      const annotRef = annots.get(i);
+      const annot = annotRef instanceof PDFRef ? doc.context.lookup(annotRef) : annotRef;
+      if (!(annot instanceof PDFDict)) continue;
+      if (annot.get(PDFName.of('Subtype'))?.toString() !== '/Link') continue;
+      const contents = annot.get(PDFName.of('Contents'));
+      if (contents instanceof PDFString || contents instanceof PDFHexString) continue;
+      results.push(annot);
+    }
+    return results;
+  }
+
+  /** Extracts a Link annotation's own /A /URI action target, if it has one. */
+  getLinkUri(doc: PDFDocument, annot: PDFDict): string | null {
+    const actionRaw = annot.get(PDFName.of('A'));
+    const action = actionRaw instanceof PDFDict ? actionRaw : actionRaw ? doc.context.lookup(actionRaw) : null;
+    if (!(action instanceof PDFDict)) return null;
+    const uri = action.get(PDFName.of('URI'));
+    return uri instanceof PDFString || uri instanceof PDFHexString ? uri.decodeText() : null;
   }
 
   /**
