@@ -539,6 +539,9 @@ export class PdfAiAnalysisController {
       } else if (suggestionType === 'heading-multiple-h1-fix') {
         const result = pdfStructureWriterService.fixMultipleH1(doc, originalIssue);
         modification = { success: result.success, description: result.after, error: result.error };
+      } else if (suggestionType === 'tab-order-fix') {
+        const result = pdfStructureWriterService.fixTabOrder(doc, originalIssue);
+        modification = { success: result.success, description: result.after, error: result.error };
       } else if (suggestionType === 'mcid-page-mismatch-fix') {
         const result = pdfStructureWriterService.fixMcidPageMismatch(doc, originalIssue);
         modification = { success: result.success, description: result.after, error: result.error };
@@ -593,9 +596,23 @@ export class PdfAiAnalysisController {
         // Same prerequisite as the value-based alt-text branch below -- see
         // that branch's own comment.
         await aiAnalysisService.ensureFigureForImages(doc, pdfBuffer, fileName, [elementId]);
-        // Hardcoded '' rather than the stored value — '' is falsy and would
-        // otherwise trip the "no value to apply" guard below for no reason.
-        modification = await pdfModifierService.setAltText(doc, elementId, '');
+        // Try the real PDF/UA-correct retag first (Artifact, not a Figure
+        // with an empty /Alt -- PAC treats empty the same as missing) --
+        // only ever succeeds for buildFigureFromImage's own created shape
+        // (a single bare-MCID /K), declining cleanly for anything else.
+        // Every one of its own failure returns happens BEFORE any
+        // mutation, so falling through to the old empty-/Alt behavior on
+        // ANY failure (not just the shape decline) is safe -- see its own
+        // doc comment.
+        const retag = pdfStructureWriterService.retagDecorativeFigureAsArtifact(doc, issueId, elementId);
+        if (retag.success) {
+          modification = { success: true, description: retag.after };
+        } else {
+          // Hardcoded '' rather than the stored value — '' is falsy and
+          // would otherwise trip the "no value to apply" guard below for
+          // no reason.
+          modification = await pdfModifierService.setAltText(doc, elementId, '');
+        }
       } else {
         // Value-based operations
         if (!value) throw AppError.badRequest('This suggestion has no value to apply');

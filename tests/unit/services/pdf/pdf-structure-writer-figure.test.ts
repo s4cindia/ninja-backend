@@ -12,7 +12,7 @@
  * shape this method targets (confirmed live: 54/224 real Math_Kim images).
  */
 import { describe, it, expect } from 'vitest';
-import { PDFDocument, PDFName, PDFDict, PDFArray, PDFRef, PDFString, PDFNumber } from 'pdf-lib';
+import { PDFDocument, PDFName, PDFDict, PDFArray, PDFRef, PDFString, PDFNumber, PDFNull } from 'pdf-lib';
 import { pdfStructureWriterService } from '../../../../src/services/pdf/pdf-structure-writer.service';
 import { pdfModifierService } from '../../../../src/services/pdf/pdf-modifier.service';
 import { decodePageContent } from '../../../../src/services/pdf/pdf-content-stream-io';
@@ -169,6 +169,45 @@ describe('PdfStructureWriterService.buildFigureFromImage', () => {
       walk(root);
       expect(figureCount).toBe(1);
       expect(figureAlt).toBe('A test image');
+    } finally {
+      await pdfParserService.close(parsedPdf);
+      fs.unlinkSync(tmpPath);
+    }
+  }, 30_000);
+
+  it('writes /A/BBox onto the new Figure, converted from top-left-origin position to bottom-left-origin PDF points', async () => {
+    const { doc, parsedPdf, xObjectName, tmpPath } = await buildDocWithTaggedTextAndUntaggedImage();
+    try {
+      const imageId = `img_p1_0_${xObjectName}`;
+
+      const results = await pdfStructureWriterService.buildFigureFromImage(doc, parsedPdf, [
+        { imageId, pageNumber: 1, position: { x: 50, y: 100, width: 100, height: 80 } },
+      ]);
+      expect(results[0].success).toBe(true);
+
+      const root = doc.context.lookup(doc.catalog.get(PDFName.of('StructTreeRoot'))) as PDFDict;
+      let figureDict: PDFDict | null = null;
+      const walk = (node: unknown): void => {
+        if (!(node instanceof PDFDict)) return;
+        if (tagOf(node) === 'Figure') figureDict = node;
+        const k = node.get(PDFName.of('K'));
+        const kids = k instanceof PDFArray ? k.asArray() : [k];
+        for (const kid of kids) if (kid instanceof PDFRef) walk(doc.context.lookup(kid));
+      };
+      walk(root);
+      expect(figureDict).toBeTruthy();
+
+      const a = doc.context.lookup(figureDict!.get(PDFName.of('A'))) as PDFDict;
+      expect(a).toBeTruthy();
+      expect(a.get(PDFName.of('O'))?.toString()).toBe('/Layout');
+      expect(a.get(PDFName.of('Placement'))?.toString()).toBe('/Block');
+
+      const bbox = doc.context.lookup(a.get(PDFName.of('BBox'))) as PDFArray;
+      const values = bbox.asArray().map(n => (n as PDFNumber).asNumber());
+      // Page is 600pt tall; image position {x:50, y:100, w:100, h:80}
+      // (top-left-origin) -> BBox [llx, lly, urx, ury] (bottom-left-origin):
+      // llx=50, lly=600-(100+80)=420, urx=50+100=150, ury=600-100=500.
+      expect(values).toEqual([50, 420, 150, 500]);
     } finally {
       await pdfParserService.close(parsedPdf);
       fs.unlinkSync(tmpPath);
@@ -508,6 +547,113 @@ describe('PdfStructureWriterService.buildFigureFromImage', () => {
       expect(valueArr.asArray().length).toBeGreaterThan(0);
       const newFigureRef = valueArr.asArray()[valueArr.asArray().length - 1] as PDFRef;
       expect(tagOf(doc.context.lookup(newFigureRef))).toBe('Figure');
+    } finally {
+      await pdfParserService.close(parsedPdf);
+      fs.unlinkSync(tmpPath);
+    }
+  }, 30_000);
+});
+
+describe('PdfStructureWriterService.retagDecorativeFigureAsArtifact', () => {
+  it('retags a buildFigureFromImage-created Figure to /Artifact: struct element removed, /ParentTree slot nulled, content stream rewritten', async () => {
+    const { doc, parsedPdf, xObjectName, tmpPath } = await buildDocWithTaggedTextAndUntaggedImage();
+    try {
+      const imageId = `img_p1_0_${xObjectName}`;
+
+      const buildResults = await pdfStructureWriterService.buildFigureFromImage(doc, parsedPdf, [
+        { imageId, pageNumber: 1, position: { x: 50, y: 100, width: 100, height: 80 } },
+      ]);
+      expect(buildResults[0].success).toBe(true);
+
+      const root = doc.context.lookup(doc.catalog.get(PDFName.of('StructTreeRoot'))) as PDFDict;
+      let figureRef: PDFRef | null = null;
+      let parentRef: PDFRef | null = null;
+      const findFigure = (node: unknown, parent: PDFRef | null): void => {
+        if (!(node instanceof PDFDict)) return;
+        const k = node.get(PDFName.of('K'));
+        const kids = k instanceof PDFArray ? k.asArray() : [k];
+        for (const kid of kids) {
+          if (kid instanceof PDFRef) {
+            const resolved = doc.context.lookup(kid);
+            if (tagOf(resolved) === 'Figure') { figureRef = kid; parentRef = parent; }
+            findFigure(resolved, kid);
+          }
+        }
+      };
+      findFigure(root, null);
+      expect(figureRef).toBeTruthy();
+      expect(parentRef).toBeTruthy();
+      const mcid = ((doc.context.lookup(figureRef!) as PDFDict).get(PDFName.of('K')) as PDFNumber).asNumber();
+
+      const retagResult = pdfStructureWriterService.retagDecorativeFigureAsArtifact(doc, 'issue-1', imageId);
+      expect(retagResult.success).toBe(true);
+
+      // No longer in its former parent's /K.
+      const parentDict = doc.context.lookup(parentRef!) as PDFDict;
+      const parentK = parentDict.get(PDFName.of('K')) as PDFArray;
+      expect(parentK.asArray().some(r => r instanceof PDFRef && r.objectNumber === figureRef!.objectNumber)).toBe(false);
+
+      // The struct element itself no longer carries /K or /P.
+      const figureDict = doc.context.lookup(figureRef!) as PDFDict;
+      expect(figureDict.get(PDFName.of('K'))).toBeUndefined();
+      expect(figureDict.get(PDFName.of('P'))).toBeUndefined();
+
+      // Content stream: the /Figure <</MCID n>>BDC opening is now /Artifact BMC.
+      const content = decodeContent(doc);
+      expect(content).not.toMatch(/\/Figure\s*<<[^>]*BDC/);
+      expect(content).toContain('/Artifact BMC');
+
+      // /ParentTree's own slot for this MCID is nulled, not removed --
+      // the array itself must keep its length so no later-appended MCID's
+      // position shifts.
+      const parentTreeRef = root.get(PDFName.of('ParentTree')) as PDFRef;
+      const parentTreeDict = doc.context.lookup(parentTreeRef) as PDFDict;
+      const numsArr = parentTreeDict.get(PDFName.of('Nums')) as PDFArray;
+      const flat = numsArr.asArray();
+      const pageValueArr = flat[1] as PDFArray;
+      expect(pageValueArr.get(mcid)).toBe(PDFNull);
+    } finally {
+      await pdfParserService.close(parsedPdf);
+      fs.unlinkSync(tmpPath);
+    }
+  }, 30_000);
+
+  it('declines (no mutation) when the Figure /K is not a single bare MCID', async () => {
+    const { doc, parsedPdf, xObjectName, tmpPath } = await buildDocWithTaggedTextAndUntaggedImage();
+    try {
+      const imageId = `img_p1_0_${xObjectName}`;
+      await pdfStructureWriterService.buildFigureFromImage(doc, parsedPdf, [
+        { imageId, pageNumber: 1, position: { x: 50, y: 100, width: 100, height: 80 } },
+      ]);
+
+      const root = doc.context.lookup(doc.catalog.get(PDFName.of('StructTreeRoot'))) as PDFDict;
+      let figureRef: PDFRef | null = null;
+      const findFigure = (node: unknown): void => {
+        if (!(node instanceof PDFDict)) return;
+        const k = node.get(PDFName.of('K'));
+        const kids = k instanceof PDFArray ? k.asArray() : [k];
+        for (const kid of kids) {
+          if (kid instanceof PDFRef) {
+            const resolved = doc.context.lookup(kid);
+            if (tagOf(resolved) === 'Figure') figureRef = kid;
+            findFigure(resolved);
+          }
+        }
+      };
+      findFigure(root);
+      expect(figureRef).toBeTruthy();
+      // Promote /K to an array -- the richer, pre-existing-document shape
+      // this fix is deliberately scoped to decline for.
+      const figureDict = doc.context.lookup(figureRef!) as PDFDict;
+      const mcid = (figureDict.get(PDFName.of('K')) as PDFNumber).asNumber();
+      figureDict.set(PDFName.of('K'), doc.context.obj([PDFNumber.of(mcid)]));
+
+      const contentBefore = decodeContent(doc);
+      const result = pdfStructureWriterService.retagDecorativeFigureAsArtifact(doc, 'issue-1', imageId);
+
+      expect(result.success).toBe(false);
+      expect(result.error).toContain('single bare MCID');
+      expect(decodeContent(doc)).toBe(contentBefore);
     } finally {
       await pdfParserService.close(parsedPdf);
       fs.unlinkSync(tmpPath);

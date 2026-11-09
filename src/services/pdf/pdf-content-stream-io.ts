@@ -156,3 +156,29 @@ export function orderedPageContentMcids(content: string): PositionedMcid[] {
   }
   return results;
 }
+
+/**
+ * Locates the FULL `/TagName <<...props...>> BDC` span (from the tag
+ * name's own start through the literal `BDC` keyword) that opens the given
+ * MCID -- unlike orderedPageContentMcids's own `start` (the `<<` only),
+ * this includes the tag name so a caller can replace the WHOLE opening
+ * sequence (e.g. retagging `/Figure <</MCID n>>BDC` to `/Artifact BMC`,
+ * which carries no properties dict and no MCID at all). The matching EMC
+ * never needs locating separately for that kind of retag -- EMC carries no
+ * tag name of its own, so it closes correctly regardless of what opened it.
+ * Returns null if no BDC opens exactly this MCID (never guesses which one
+ * if the content is malformed enough to have none).
+ */
+export function findBdcTagSpanForMcid(content: string, mcid: number): { start: number; end: number } | null {
+  const re = new RegExp(BDC_PROPS_RE.source, 'g');
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(content)) !== null) {
+    const mcidMatch = MCID_ATTR_RE.exec(m[1]);
+    if (!mcidMatch || Number(mcidMatch[1]) !== mcid) continue;
+    let tagStart = m.index;
+    while (tagStart > 0 && /\s/.test(content[tagStart - 1])) tagStart--;
+    while (tagStart > 0 && !/\s/.test(content[tagStart - 1])) tagStart--;
+    return { start: tagStart, end: m.index + m[0].length };
+  }
+  return null;
+}

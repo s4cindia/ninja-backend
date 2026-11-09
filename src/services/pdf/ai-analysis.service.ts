@@ -173,6 +173,7 @@ const LIST_CODES = new Set(['LIST-NOT-TAGGED', 'LIST-IMPROPER-MARKUP']);
 const READING_ORDER_CODES = new Set(['MATTERHORN-09-004', 'READING-ORDER-SUSPECT', 'READING-ORDER-COLUMN', 'READING-ORDER-RTOL']);
 const HEADING_CODES = new Set(['HEADING-SKIP', 'HEADING-MULTIPLE-H1', 'HEADING-NESTING', 'MATTERHORN-06-001']);
 const LANGUAGE_CODES = new Set(['MATTERHORN-11-001', 'LANGUAGE-MISSING']);
+const TAB_ORDER_CODES = new Set(['TAB-ORDER-NOT-STRUCTURE']);
 const MCID_PAGE_MISMATCH_CODES = new Set(['MCID-PAGE-MISMATCH']);
 // Exported for pdf-ai-analysis.controller.ts's single-suggestion apply
 // endpoint, which needs the SAME sibling-issue set this file's own
@@ -1602,6 +1603,20 @@ class AiAnalysisService {
 
     if (LANGUAGE_CODES.has(code)) {
       return this.analyzeLanguage(issue, parsed, config.languageMode);
+    }
+
+    if (TAB_ORDER_CODES.has(code)) {
+      // Purely mechanical (a single key set, no ambiguity once the page
+      // itself resolves) -- same confidence/rule-based treatment as
+      // heading-multiple-h1-fix above.
+      return {
+        suggestionType: 'tab-order-fix',
+        guidance: "This page's /Tabs entry will be set to /S so tab order follows the structure tree's reading order.",
+        confidence: 1.0,
+        rationale: 'Mechanical PDF/UA fix -- no content judgment required',
+        model: 'rule-based',
+        applyMode: 'apply-to-pdf',
+      };
     }
 
     if (MCID_PAGE_MISMATCH_CODES.has(code)) {
@@ -3767,7 +3782,7 @@ class AiAnalysisService {
     // failures in a single round), never once reaching the real writer
     // calls (fixArtifactSwallowsContentComplex / retagPlacedPdfAsFigure)
     // below despite both being fully implemented, tested, and merged.
-    const STRUCTURE_WRITER_TYPES = new Set(['heading-fix', 'list-fix', 'table-header-fix', 'table-header-fix-column', 'table-header-scope-fix', 'table-artifact-fix', 'table-from-layout-fix', 'bookmark-generate', 'heading-multiple-h1-fix', 'pdfua-identifier', 'color-contrast-fix', 'alt-text-decorative', 'untagged-content-fix', 'invisible-text-artifact-fix', 'figure-caption-reattach-fix', 'inline-figure-reattach-fix', 'tagged-content-artifact-split-fix', 'table-cell-reattach-fix', 'table-row-reattach-fix', 'font-tounicode-synthesis-fix', 'font-tounicode-extend-fix', 'artifact-unwrap-complex-fix', 'placedpdf-retag-fix', 'link-missing-annotation-fix', 'artifact-actualtext-fix', 'actualtext-missing-mcid-fix', 'mcid-page-mismatch-fix']);
+    const STRUCTURE_WRITER_TYPES = new Set(['heading-fix', 'list-fix', 'table-header-fix', 'table-header-fix-column', 'table-header-scope-fix', 'table-artifact-fix', 'table-from-layout-fix', 'bookmark-generate', 'heading-multiple-h1-fix', 'pdfua-identifier', 'color-contrast-fix', 'alt-text-decorative', 'untagged-content-fix', 'invisible-text-artifact-fix', 'figure-caption-reattach-fix', 'inline-figure-reattach-fix', 'tagged-content-artifact-split-fix', 'table-cell-reattach-fix', 'table-row-reattach-fix', 'font-tounicode-synthesis-fix', 'font-tounicode-extend-fix', 'artifact-unwrap-complex-fix', 'placedpdf-retag-fix', 'link-missing-annotation-fix', 'artifact-actualtext-fix', 'actualtext-missing-mcid-fix', 'tab-order-fix', 'mcid-page-mismatch-fix']);
 
     let applied = 0;
     let failed = 0;
@@ -3886,6 +3901,9 @@ class AiAnalysisService {
           };
         } else if (suggestionType === 'heading-multiple-h1-fix') {
           const result = pdfStructureWriterService.fixMultipleH1(doc, originalIssue);
+          modification = { success: result.success, description: result.after, error: result.error };
+        } else if (suggestionType === 'tab-order-fix') {
+          const result = pdfStructureWriterService.fixTabOrder(doc, originalIssue);
           modification = { success: result.success, description: result.after, error: result.error };
         } else if (suggestionType === 'mcid-page-mismatch-fix') {
           const result = pdfStructureWriterService.fixMcidPageMismatch(doc, originalIssue);
@@ -4039,8 +4057,18 @@ class AiAnalysisService {
             pagesRewrittenSincePreResolve.add(originalIssue.pageNumber);
           }
         } else if (suggestionType === 'alt-text-decorative') {
-          // Hardcoded '' rather than the stored value -- matches applyAll/applySuggestion.
-          modification = await pdfModifierService.setAltText(doc, elementId, '');
+          // Try the real PDF/UA-correct retag first -- see
+          // retagDecorativeFigureAsArtifact's own doc comment. Only ever
+          // succeeds for buildFigureFromImage's own created shape; every
+          // one of its failure returns happens before any mutation, so
+          // falling through to the pre-existing empty-/Alt behavior on ANY
+          // failure (matches applySuggestion's own identical fallback) is
+          // safe.
+          const retag = pdfStructureWriterService.retagDecorativeFigureAsArtifact(doc, issueId, elementId);
+          modification = retag.success
+            ? { success: true, description: retag.after }
+            // Hardcoded '' rather than the stored value -- matches applyAll/applySuggestion.
+            : await pdfModifierService.setAltText(doc, elementId, '');
         } else if (suggestionType === 'alt-text' || suggestionType === 'alt-text-improvement' || suggestionType === 'alt-text-glyph' || suggestionType === 'alt-text-formula-transcript') {
           modification = await pdfModifierService.setAltText(doc, elementId, value!);
         } else if (suggestionType === 'table-summary') {

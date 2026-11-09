@@ -32,6 +32,7 @@ import { pdfInlineFigureTreeValidator } from './validators/pdf-inline-figure-tre
 import { pdfMcidPageMismatchValidator } from './validators/pdf-mcid-page-mismatch.validator';
 import { pdfTableCellTreeValidator } from './validators/pdf-table-cell-tree.validator';
 import { pdfFontToUnicodeValidator } from './validators/pdf-font-tounicode.validator';
+import { pdfTabOrderValidator } from './validators/pdf-tab-order.validator';
 import { pdfTableHeaderScopeValidator } from './validators/pdf-table-header-scope.validator';
 import { pdfStructureValidator } from './validators/pdf-structure.validator';
 import { pdfLinkValidator } from './validators/pdf-link.validator';
@@ -481,7 +482,25 @@ class PdfAuditService extends BaseAuditService<PdfParseResult, PdfValidationResu
           }
         }
 
-        // 1e. MCID Page-Mismatch Validator -- see mcid-page-mismatch.ts's
+        // 1e. Tab Order Validator (Matterhorn 28-008/28-009) -- see that
+        // validator's own header comment for the real, confirmed 8-page
+        // defect this catches on Karsaklian_189165_9781606497623.pdf (a
+        // live PAC 2026 report) that this codebase never checked for at all.
+        if (willRunStructure) {
+          try {
+            logger.info(`[PdfAudit] Running PdfTabOrderValidator...`);
+            const tabOrderResult = await pdfTabOrderValidator.validate(parsedPdf);
+            result.structureIssues.push(...tabOrderResult.issues);
+            result.issues.push(...tabOrderResult.issues);
+            logger.info(`[PdfAudit] PdfTabOrderValidator found ${tabOrderResult.issues.length} issue(s)`);
+          } catch (error) {
+            const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+            logger.error(`[PdfAudit] PdfTabOrderValidator failed:`, error);
+            result.validatorErrors.push({ validator: 'PdfTabOrderValidator', error: errorMessage });
+          }
+        }
+
+        // 1f. MCID Page-Mismatch Validator -- see mcid-page-mismatch.ts's
         // own header comment for the real, confirmed defect this catches
         // on Karsaklian_189165_9781606497623.pdf (a live PAC 2026 report)
         // that this codebase never checked for at all.
