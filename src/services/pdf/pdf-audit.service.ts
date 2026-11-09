@@ -29,6 +29,7 @@ import { pdfFormulaValidator } from './validators/pdf-formula.validator';
 import { pdfFigureStructTreeValidator } from './validators/pdf-figure-structtree.validator';
 import { pdfFigureCaptionTreeValidator } from './validators/pdf-figure-caption-tree.validator';
 import { pdfInlineFigureTreeValidator } from './validators/pdf-inline-figure-tree.validator';
+import { pdfMcidPageMismatchValidator } from './validators/pdf-mcid-page-mismatch.validator';
 import { pdfTableCellTreeValidator } from './validators/pdf-table-cell-tree.validator';
 import { pdfFontToUnicodeValidator } from './validators/pdf-font-tounicode.validator';
 import { pdfTabOrderValidator } from './validators/pdf-tab-order.validator';
@@ -496,6 +497,24 @@ class PdfAuditService extends BaseAuditService<PdfParseResult, PdfValidationResu
             const errorMessage = error instanceof Error ? error.message : 'Unknown error';
             logger.error(`[PdfAudit] PdfTabOrderValidator failed:`, error);
             result.validatorErrors.push({ validator: 'PdfTabOrderValidator', error: errorMessage });
+          }
+        }
+
+        // 1f. MCID Page-Mismatch Validator -- see mcid-page-mismatch.ts's
+        // own header comment for the real, confirmed defect this catches
+        // on Karsaklian_189165_9781606497623.pdf (a live PAC 2026 report)
+        // that this codebase never checked for at all.
+        if (willRunStructure) {
+          try {
+            logger.info(`[PdfAudit] Running PdfMcidPageMismatchValidator...`);
+            const mcidMismatchResult = await pdfMcidPageMismatchValidator.validate(parsedPdf);
+            result.structureIssues.push(...mcidMismatchResult.issues);
+            result.issues.push(...mcidMismatchResult.issues);
+            logger.info(`[PdfAudit] PdfMcidPageMismatchValidator found ${mcidMismatchResult.issues.length} issue(s)`);
+          } catch (error) {
+            const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+            logger.error(`[PdfAudit] PdfMcidPageMismatchValidator failed:`, error);
+            result.validatorErrors.push({ validator: 'PdfMcidPageMismatchValidator', error: errorMessage });
           }
         }
       };

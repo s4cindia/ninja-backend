@@ -542,6 +542,9 @@ export class PdfAiAnalysisController {
       } else if (suggestionType === 'tab-order-fix') {
         const result = pdfStructureWriterService.fixTabOrder(doc, originalIssue);
         modification = { success: result.success, description: result.after, error: result.error };
+      } else if (suggestionType === 'mcid-page-mismatch-fix') {
+        const result = pdfStructureWriterService.fixMcidPageMismatch(doc, originalIssue);
+        modification = { success: result.success, description: result.after, error: result.error };
       } else if (suggestionType === 'untagged-content-fix') {
         const results = pdfStructureWriterService.fixUntaggedContent(doc, [originalIssue]);
         const r = results[0];

@@ -35,6 +35,7 @@ import { logger } from '../../lib/logger';
 import { pdfModifierService } from './pdf-modifier.service';
 import { pageContentMcids, orderedPageContentMcids, findBdcTagSpanForMcid, decodePageContent, writePageContent } from './pdf-content-stream-io';
 import { locateMcidBoundingBoxes, locateByteRangeBoundingBox, type DeviceBoundingBox } from './mcid-bounding-box';
+import { findMcidPageMismatches } from './mcid-page-mismatch';
 import { buildFormXObjectResolver } from './validators/pdf-figure-structtree.validator';
 import {
   tagUntaggedPaintedPaths,
@@ -1613,6 +1614,57 @@ export class PdfStructureWriterService {
     }
 
     return results;
+  }
+
+  /**
+   * Wraps a mis-placed bare MCID (one that implicitly inherits its owning
+   * struct element's own /Pg but doesn't actually exist on that page's
+   * content stream) into a proper MCR dict declaring the correct /Pg --
+   * see mcid-page-mismatch.ts's own header comment for the full real
+   * incident and exact shape this fixes.
+   *
+   * Re-runs findMcidPageMismatches fresh (never trusts the issue's own
+   * analysis-time snapshot) and only mutates if the EXACT same (page,
+   * mcid) pair is still found -- matching this file's "always re-confirm
+   * at apply time" discipline elsewhere (findTargetTable, resolveFigureForImage).
+   * No /ParentTree change needed: the correct page's own ParentTree slot
+   * for this MCID already correctly points at this struct element (the
+   * defect is purely in the downward /K direction), confirmed live for
+   * the real incident this was built for.
+   */
+  fixMcidPageMismatch(doc: PDFDocument, issue: AuditIssue): FixResult {
+    const match = issue.element ? /^mcid-mismatch_p(\d+)_mc(\d+)$/.exec(issue.element) : null;
+    if (!match) {
+      return { issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error: `Unrecognized element id "${issue.element}"` };
+    }
+    const wrongPage = parseInt(match[1], 10);
+    const mcid = parseInt(match[2], 10);
+
+    const mismatches = findMcidPageMismatches(doc);
+    const target = mismatches.find(m => m.wrongPage === wrongPage && m.mcid === mcid);
+    if (!target) {
+      return {
+        issueId: issue.id, success: false, before: 'unknown', after: 'unknown',
+        error: `Could not re-confirm a page mismatch for MCID ${mcid} on page ${wrongPage} -- may already be fixed, or the document changed`,
+      };
+    }
+
+    let correctPageRef: PDFRef;
+    try {
+      correctPageRef = doc.getPage(target.correctPage - 1).ref;
+    } catch (err) {
+      return { issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error: err instanceof Error ? err.message : String(err) };
+    }
+
+    const mcrDict = doc.context.obj({ Type: PDFName.of('MCR'), Pg: correctPageRef, MCID: PDFNumber.of(mcid) });
+    target.kArray.set(target.entryIndex, mcrDict);
+
+    return {
+      issueId: issue.id,
+      success: true,
+      before: `Bare MCID ${mcid} implicitly on page ${wrongPage} (doesn't exist in that page's content)`,
+      after: `Wrapped as an MCR dict pointing to page ${target.correctPage} (where MCID ${mcid} actually exists)`,
+    };
   }
 
   /**
