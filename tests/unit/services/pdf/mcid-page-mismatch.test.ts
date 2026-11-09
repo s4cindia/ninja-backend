@@ -4,7 +4,7 @@
  * (Karsaklian_189165_9781606497623.pdf, page 54, struct element 531).
  */
 import { describe, it, expect } from 'vitest';
-import { PDFDocument, PDFName, PDFDict, PDFArray, PDFRef, PDFNumber } from 'pdf-lib';
+import { PDFDocument, PDFName, PDFRef, PDFNumber } from 'pdf-lib';
 import { findMcidPageMismatches } from '../../../../src/services/pdf/mcid-page-mismatch';
 import { writePageContent } from '../../../../src/services/pdf/pdf-content-stream-io';
 
