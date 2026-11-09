@@ -4038,8 +4038,18 @@ class AiAnalysisService {
             pagesRewrittenSincePreResolve.add(originalIssue.pageNumber);
           }
         } else if (suggestionType === 'alt-text-decorative') {
-          // Hardcoded '' rather than the stored value -- matches applyAll/applySuggestion.
-          modification = await pdfModifierService.setAltText(doc, elementId, '');
+          // Try the real PDF/UA-correct retag first -- see
+          // retagDecorativeFigureAsArtifact's own doc comment. Only ever
+          // succeeds for buildFigureFromImage's own created shape; every
+          // one of its failure returns happens before any mutation, so
+          // falling through to the pre-existing empty-/Alt behavior on ANY
+          // failure (matches applySuggestion's own identical fallback) is
+          // safe.
+          const retag = pdfStructureWriterService.retagDecorativeFigureAsArtifact(doc, issueId, elementId);
+          modification = retag.success
+            ? { success: true, description: retag.after }
+            // Hardcoded '' rather than the stored value -- matches applyAll/applySuggestion.
+            : await pdfModifierService.setAltText(doc, elementId, '');
         } else if (suggestionType === 'alt-text' || suggestionType === 'alt-text-improvement' || suggestionType === 'alt-text-glyph' || suggestionType === 'alt-text-formula-transcript') {
           modification = await pdfModifierService.setAltText(doc, elementId, value!);
         } else if (suggestionType === 'table-summary') {
