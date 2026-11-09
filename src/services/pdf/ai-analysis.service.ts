@@ -173,6 +173,7 @@ const LIST_CODES = new Set(['LIST-NOT-TAGGED', 'LIST-IMPROPER-MARKUP']);
 const READING_ORDER_CODES = new Set(['MATTERHORN-09-004', 'READING-ORDER-SUSPECT', 'READING-ORDER-COLUMN', 'READING-ORDER-RTOL']);
 const HEADING_CODES = new Set(['HEADING-SKIP', 'HEADING-MULTIPLE-H1', 'HEADING-NESTING', 'MATTERHORN-06-001']);
 const LANGUAGE_CODES = new Set(['MATTERHORN-11-001', 'LANGUAGE-MISSING']);
+const MCID_PAGE_MISMATCH_CODES = new Set(['MCID-PAGE-MISMATCH']);
 // Exported for pdf-ai-analysis.controller.ts's single-suggestion apply
 // endpoint, which needs the SAME sibling-issue set this file's own
 // applyApprovedSuggestions uses to correctly batch resolveColorContrastTargets
@@ -1601,6 +1602,21 @@ class AiAnalysisService {
 
     if (LANGUAGE_CODES.has(code)) {
       return this.analyzeLanguage(issue, parsed, config.languageMode);
+    }
+
+    if (MCID_PAGE_MISMATCH_CODES.has(code)) {
+      // Purely mechanical (re-confirmed fresh at apply time against the
+      // same single source of truth, findMcidPageMismatches -- see its own
+      // doc comment) -- same confidence/rule-based treatment as
+      // tab-order-fix/heading-multiple-h1-fix above.
+      return {
+        suggestionType: 'mcid-page-mismatch-fix',
+        guidance: 'This MCID will be re-wrapped as an MCR dict declaring the page it actually exists on, matching its sibling entries.',
+        confidence: 1.0,
+        rationale: 'Mechanical PDF structural-consistency fix -- no content judgment required',
+        model: 'rule-based',
+        applyMode: 'apply-to-pdf',
+      };
     }
 
     if (CONTRAST_CODES.has(code)) {
@@ -3751,7 +3767,7 @@ class AiAnalysisService {
     // failures in a single round), never once reaching the real writer
     // calls (fixArtifactSwallowsContentComplex / retagPlacedPdfAsFigure)
     // below despite both being fully implemented, tested, and merged.
-    const STRUCTURE_WRITER_TYPES = new Set(['heading-fix', 'list-fix', 'table-header-fix', 'table-header-fix-column', 'table-header-scope-fix', 'table-artifact-fix', 'table-from-layout-fix', 'bookmark-generate', 'heading-multiple-h1-fix', 'pdfua-identifier', 'color-contrast-fix', 'alt-text-decorative', 'untagged-content-fix', 'invisible-text-artifact-fix', 'figure-caption-reattach-fix', 'inline-figure-reattach-fix', 'tagged-content-artifact-split-fix', 'table-cell-reattach-fix', 'table-row-reattach-fix', 'font-tounicode-synthesis-fix', 'font-tounicode-extend-fix', 'artifact-unwrap-complex-fix', 'placedpdf-retag-fix', 'link-missing-annotation-fix', 'artifact-actualtext-fix', 'actualtext-missing-mcid-fix']);
+    const STRUCTURE_WRITER_TYPES = new Set(['heading-fix', 'list-fix', 'table-header-fix', 'table-header-fix-column', 'table-header-scope-fix', 'table-artifact-fix', 'table-from-layout-fix', 'bookmark-generate', 'heading-multiple-h1-fix', 'pdfua-identifier', 'color-contrast-fix', 'alt-text-decorative', 'untagged-content-fix', 'invisible-text-artifact-fix', 'figure-caption-reattach-fix', 'inline-figure-reattach-fix', 'tagged-content-artifact-split-fix', 'table-cell-reattach-fix', 'table-row-reattach-fix', 'font-tounicode-synthesis-fix', 'font-tounicode-extend-fix', 'artifact-unwrap-complex-fix', 'placedpdf-retag-fix', 'link-missing-annotation-fix', 'artifact-actualtext-fix', 'actualtext-missing-mcid-fix', 'mcid-page-mismatch-fix']);
 
     let applied = 0;
     let failed = 0;
@@ -3870,6 +3886,9 @@ class AiAnalysisService {
           };
         } else if (suggestionType === 'heading-multiple-h1-fix') {
           const result = pdfStructureWriterService.fixMultipleH1(doc, originalIssue);
+          modification = { success: result.success, description: result.after, error: result.error };
+        } else if (suggestionType === 'mcid-page-mismatch-fix') {
+          const result = pdfStructureWriterService.fixMcidPageMismatch(doc, originalIssue);
           modification = { success: result.success, description: result.after, error: result.error };
         } else if (suggestionType === 'untagged-content-fix') {
           const results = pdfStructureWriterService.fixUntaggedContent(doc, [originalIssue]);
