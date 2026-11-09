@@ -954,6 +954,32 @@ export class PdfStructureWriterService {
     };
   }
 
+  /**
+   * Set a page's own /Tabs entry to /S (structure order) -- Matterhorn
+   * 28-008/28-009 (PDF32000-1:2008 §12.5, §14.8.4.2). A page with any
+   * /Annots but no /Tabs=/S leaves keyboard/screen-reader tab order
+   * undefined or viewer-dependent instead of following the structure tree's
+   * reading order. Purely mechanical: a single key set with no MCID/struct-
+   * tree interaction and no failure mode once the page itself resolves.
+   */
+  fixTabOrder(doc: PDFDocument, issue: AuditIssue): FixResult {
+    if (!issue.pageNumber) {
+      return { issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error: 'Issue is missing pageNumber' };
+    }
+    let page;
+    try {
+      page = doc.getPage(issue.pageNumber - 1);
+    } catch {
+      return { issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error: `Page ${issue.pageNumber} not found` };
+    }
+
+    const before = page.node.get(PDFName.of('Tabs'))?.toString() ?? 'missing';
+    page.node.set(PDFName.of('Tabs'), PDFName.of('S'));
+
+    logger.info(`[StructureWriter] fixTabOrder: page ${issue.pageNumber} /Tabs ${before} -> /S`);
+    return { issueId: issue.id, success: true, before: `/Tabs ${before}`, after: '/Tabs /S' };
+  }
+
   // ══════════════════════════════════════════════════════════════════════════
   // SECTION 6 — Composite: List Rewrap
   // ══════════════════════════════════════════════════════════════════════════
@@ -1337,8 +1363,11 @@ export class PdfStructureWriterService {
       }
 
       let pageRef: PDFRef;
+      let pageHeight: number;
       try {
-        pageRef = doc.getPage(pageNumber - 1).ref;
+        const page = doc.getPage(pageNumber - 1);
+        pageRef = page.ref;
+        pageHeight = page.getHeight();
       } catch (err) {
         for (const img of pageImages) {
           results.push({ issueId: img.imageId, success: false, before: 'unknown', after: 'unknown', error: err instanceof Error ? err.message : String(err) });
@@ -1487,12 +1516,27 @@ export class PdfStructureWriterService {
             pageResults.push({ issueId: ve.img.imageId, success: false, before: 'unknown', after: 'unknown', error: 'MCID missing from insertMarkedContentSpans result' });
             continue;
           }
+          // /A/BBox, matching the shape every correctly-tagged (InDesign-
+          // native) /Figure in a real document already carries. Real
+          // incident (Karsaklian_189165_9781606497623.pdf, 2026-11-09): PAC
+          // flagged "'Figure' element on a single page with no bounding box"
+          // for all 4 Figures this method had created -- it never wrote /A
+          // at all, even though img.position already carries the exact
+          // geometry needed. position is top-left-origin (image-extractor
+          // .service.ts's own extractImagePlacements computes it as
+          // `viewport.height - f - height`, flipping native bottom-left PDF
+          // space) -- /BBox needs bottom-left-origin PDF points, same
+          // pageHeight - y flip pdf-form.validator.ts's own buildBoundingBox
+          // already uses for the identical conversion.
+          const { x, y, width, height } = ve.img.position;
+          const bbox = doc.context.obj([x, pageHeight - (y + height), x + width, pageHeight - y]);
           const figureObj = doc.context.obj({
             Type: PDFName.of('StructElem'),
             S: PDFName.of('Figure'),
             P: ve.parentRef,
             Pg: pageRef,
             K: PDFNumber.of(mcid),
+            A: doc.context.obj({ O: PDFName.of('Layout'), BBox: bbox, Placement: PDFName.of('Block') }),
           });
           const figureRef = doc.context.register(figureObj as PDFDict);
           figureRefsByIndex.set(i, figureRef);

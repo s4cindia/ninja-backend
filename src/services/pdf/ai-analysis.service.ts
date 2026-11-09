@@ -173,6 +173,7 @@ const LIST_CODES = new Set(['LIST-NOT-TAGGED', 'LIST-IMPROPER-MARKUP']);
 const READING_ORDER_CODES = new Set(['MATTERHORN-09-004', 'READING-ORDER-SUSPECT', 'READING-ORDER-COLUMN', 'READING-ORDER-RTOL']);
 const HEADING_CODES = new Set(['HEADING-SKIP', 'HEADING-MULTIPLE-H1', 'HEADING-NESTING', 'MATTERHORN-06-001']);
 const LANGUAGE_CODES = new Set(['MATTERHORN-11-001', 'LANGUAGE-MISSING']);
+const TAB_ORDER_CODES = new Set(['TAB-ORDER-NOT-STRUCTURE']);
 // Exported for pdf-ai-analysis.controller.ts's single-suggestion apply
 // endpoint, which needs the SAME sibling-issue set this file's own
 // applyApprovedSuggestions uses to correctly batch resolveColorContrastTargets
@@ -1601,6 +1602,20 @@ class AiAnalysisService {
 
     if (LANGUAGE_CODES.has(code)) {
       return this.analyzeLanguage(issue, parsed, config.languageMode);
+    }
+
+    if (TAB_ORDER_CODES.has(code)) {
+      // Purely mechanical (a single key set, no ambiguity once the page
+      // itself resolves) -- same confidence/rule-based treatment as
+      // heading-multiple-h1-fix above.
+      return {
+        suggestionType: 'tab-order-fix',
+        guidance: "This page's /Tabs entry will be set to /S so tab order follows the structure tree's reading order.",
+        confidence: 1.0,
+        rationale: 'Mechanical PDF/UA fix -- no content judgment required',
+        model: 'rule-based',
+        applyMode: 'apply-to-pdf',
+      };
     }
 
     if (CONTRAST_CODES.has(code)) {
@@ -3751,7 +3766,7 @@ class AiAnalysisService {
     // failures in a single round), never once reaching the real writer
     // calls (fixArtifactSwallowsContentComplex / retagPlacedPdfAsFigure)
     // below despite both being fully implemented, tested, and merged.
-    const STRUCTURE_WRITER_TYPES = new Set(['heading-fix', 'list-fix', 'table-header-fix', 'table-header-fix-column', 'table-header-scope-fix', 'table-artifact-fix', 'table-from-layout-fix', 'bookmark-generate', 'heading-multiple-h1-fix', 'pdfua-identifier', 'color-contrast-fix', 'alt-text-decorative', 'untagged-content-fix', 'invisible-text-artifact-fix', 'figure-caption-reattach-fix', 'inline-figure-reattach-fix', 'tagged-content-artifact-split-fix', 'table-cell-reattach-fix', 'table-row-reattach-fix', 'font-tounicode-synthesis-fix', 'font-tounicode-extend-fix', 'artifact-unwrap-complex-fix', 'placedpdf-retag-fix', 'link-missing-annotation-fix', 'artifact-actualtext-fix', 'actualtext-missing-mcid-fix']);
+    const STRUCTURE_WRITER_TYPES = new Set(['heading-fix', 'list-fix', 'table-header-fix', 'table-header-fix-column', 'table-header-scope-fix', 'table-artifact-fix', 'table-from-layout-fix', 'bookmark-generate', 'heading-multiple-h1-fix', 'pdfua-identifier', 'color-contrast-fix', 'alt-text-decorative', 'untagged-content-fix', 'invisible-text-artifact-fix', 'figure-caption-reattach-fix', 'inline-figure-reattach-fix', 'tagged-content-artifact-split-fix', 'table-cell-reattach-fix', 'table-row-reattach-fix', 'font-tounicode-synthesis-fix', 'font-tounicode-extend-fix', 'artifact-unwrap-complex-fix', 'placedpdf-retag-fix', 'link-missing-annotation-fix', 'artifact-actualtext-fix', 'actualtext-missing-mcid-fix', 'tab-order-fix']);
 
     let applied = 0;
     let failed = 0;
@@ -3870,6 +3885,9 @@ class AiAnalysisService {
           };
         } else if (suggestionType === 'heading-multiple-h1-fix') {
           const result = pdfStructureWriterService.fixMultipleH1(doc, originalIssue);
+          modification = { success: result.success, description: result.after, error: result.error };
+        } else if (suggestionType === 'tab-order-fix') {
+          const result = pdfStructureWriterService.fixTabOrder(doc, originalIssue);
           modification = { success: result.success, description: result.after, error: result.error };
         } else if (suggestionType === 'untagged-content-fix') {
           const results = pdfStructureWriterService.fixUntaggedContent(doc, [originalIssue]);
