@@ -8,6 +8,7 @@ import { z } from 'zod';
 import type { ExplanationSource } from '../services/acr/explanation-catalog.service';
 import { getPrhConfig, updatePrhConfig } from '../services/prh/prh-config.service';
 import { getAxes4TenantConfig, updateAxes4TenantConfig } from '../services/pdf/axes4-tenant-config.service';
+import { getComplianceTenantConfig, updateComplianceTenantConfig } from '../services/pdf/compliance-tenant-config.service';
 
 /**
  * Zod schema for workflow configuration updates.
@@ -56,6 +57,17 @@ const prhConfigUpdateSchema = z.object({
  */
 const axes4ConfigUpdateSchema = z.object({
   enabled: z.boolean(),
+}).strict();
+
+/**
+ * Compliance "ACR required" tenant toggle -- a single feature flag
+ * controlling whether the single-job PDF Audit Results page's Compliance
+ * phase needs a generated ACR (in addition to the PAC Report) to show
+ * done. See compliance-tenant-config.service.ts's own header for why this
+ * is scoped away from the separate Workflow Agent's ACR sign-off gate.
+ */
+const complianceConfigUpdateSchema = z.object({
+  acrRequired: z.boolean(),
 }).strict();
 
 const aiRemediationConfigUpdateSchema = z.object({
@@ -651,6 +663,61 @@ export class TenantConfigController {
         success: true,
         data: config,
         message: 'axes4 configuration updated successfully',
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
+   * GET /api/v1/tenant/config/compliance
+   * Get the compliance "ACR required" tenant toggle (the require/optional
+   * flag + audit trail of last-flipped userId/timestamp). Returns
+   * { acrRequired: true, acrRequiredChangedBy: null, acrRequiredChangedAt:
+   * null } when the tenant has never touched the setting -- required by
+   * default, matching the page's pre-existing behavior.
+   */
+  async getComplianceConfig(req: Request, res: Response, next: NextFunction) {
+    try {
+      if (!req.user) throw AppError.unauthorized('Not authenticated');
+      const config = await getComplianceTenantConfig(req.user.tenantId);
+      res.json({ success: true, data: config });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
+   * PATCH /api/v1/tenant/config/compliance
+   * Update the compliance "ACR required" tenant toggle. ADMIN-ONLY --
+   * this changes what "Compliance: done" means for every job in the
+   * tenant, a policy decision, same reasoning as updatePrhConfig/
+   * updateAxes4Config above. Body: { acrRequired: boolean }. Audit trail
+   * (acrRequiredChangedBy/acrRequiredChangedAt) is server-stamped from
+   * req.user.id and the current time.
+   */
+  async updateComplianceConfig(req: Request, res: Response, next: NextFunction) {
+    try {
+      if (!req.user) throw AppError.unauthorized('Not authenticated');
+      if (req.user.role !== 'ADMIN') {
+        throw AppError.forbidden('Only admins can update compliance configuration');
+      }
+
+      const validationResult = complianceConfigUpdateSchema.safeParse(req.body);
+      if (!validationResult.success) {
+        throw AppError.badRequest('Invalid compliance configuration: ' + validationResult.error.message);
+      }
+
+      const config = await updateComplianceTenantConfig(
+        req.user.tenantId,
+        validationResult.data,
+        req.user.id,
+      );
+
+      res.json({
+        success: true,
+        data: config,
+        message: 'Compliance configuration updated successfully',
       });
     } catch (error) {
       next(error);

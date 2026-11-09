@@ -152,4 +152,33 @@ router.patch(
   tenantConfigController.updateAxes4Config.bind(tenantConfigController)
 );
 
+/**
+ * GET /api/v1/tenant/config/compliance
+ * Get the compliance "ACR required" tenant toggle (whether the single-job
+ * PDF Audit Results page's Compliance phase needs a generated ACR, in
+ * addition to the PAC Report, to show done). Returns
+ * { acrRequired: true, acrRequiredChangedBy: null, acrRequiredChangedAt:
+ * null } when never touched -- required by default.
+ */
+router.get(
+  '/compliance',
+  authenticate,
+  tenantConfigController.getComplianceConfig.bind(tenantConfigController)
+);
+
+/**
+ * PATCH /api/v1/tenant/config/compliance
+ * Update the compliance "ACR required" tenant toggle. ADMIN-ONLY -- this
+ * changes what "Compliance: done" means for every job in the tenant.
+ * Body: { acrRequired: boolean }. Audit trail (acrRequiredChangedBy/
+ * acrRequiredChangedAt) is server-stamped from req.user.id and the
+ * current time.
+ */
+router.patch(
+  '/compliance',
+  authenticate,
+  authorize('ADMIN'),
+  tenantConfigController.updateComplianceConfig.bind(tenantConfigController)
+);
+
 export default router;
