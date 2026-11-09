@@ -25,13 +25,15 @@ import {
   PDFString,
   PDFHexString,
   PDFNumber,
+  PDFNull,
   PDFObject,
   PDFRawStream,
   decodePDFRawStream,
 } from 'pdf-lib';
 import { AuditIssue } from '../audit/base-audit.service';
 import { logger } from '../../lib/logger';
-import { pageContentMcids, orderedPageContentMcids, decodePageContent, writePageContent } from './pdf-content-stream-io';
+import { pdfModifierService } from './pdf-modifier.service';
+import { pageContentMcids, orderedPageContentMcids, findBdcTagSpanForMcid, decodePageContent, writePageContent } from './pdf-content-stream-io';
 import { locateMcidBoundingBoxes, locateByteRangeBoundingBox, type DeviceBoundingBox } from './mcid-bounding-box';
 import { buildFormXObjectResolver } from './validators/pdf-figure-structtree.validator';
 import {
@@ -1567,6 +1569,147 @@ export class PdfStructureWriterService {
     }
 
     return results;
+  }
+
+  /**
+   * When a buildFigureFromImage-created Figure's own underlying image is
+   * classified decorative (ai-analysis.service.ts's analyzeAltText,
+   * isDecorative === true), retag it as /Artifact instead of leaving it a
+   * /Figure with an empty /Alt. PDF/UA's real convention for decorative
+   * content is Artifact, not a Figure with an empty description -- PAC
+   * treats an explicitly-empty /Alt the same as a genuinely missing one.
+   *
+   * Real incident (Karsaklian_189165_9781606497623.pdf, 2026-11-09): refs
+   * 4120/4121 (a BATNA/ZOPA negotiation-box background card graphic, built
+   * by buildFigureFromImage, correctly classified decorative by Gemini --
+   * the real informational text is separate, already-tagged vector text
+   * layered on top) both flagged "Alternative text missing for Figure"
+   * despite carrying a real, explicit /Alt ().
+   *
+   * Scoped to EXACTLY buildFigureFromImage's own created shape -- a
+   * /Figure whose /K is a single bare MCID (no array, no MCR dict, no
+   * sibling content). A pre-existing, InDesign-native Figure with a richer
+   * /K shape is a document-authoring decision this method has no business
+   * overriding; declines rather than guessing for anything outside this
+   * one shape.
+   *
+   * Mirrors markTableAsArtifact's "retag to Artifact" shape, but that
+   * method's whole safety assumption is an ALWAYS-EMPTY decorative box (no
+   * /K at all, nothing in the content stream to touch) -- this Figure
+   * carries a REAL MCID with real painted content, so unlike
+   * markTableAsArtifact/deleteElement, this must ALSO rewrite the
+   * content-stream's own opening BDC tag (/Figure <</MCID n>>BDC ->
+   * /Artifact BMC -- EMC closes either form identically, no tag name of
+   * its own) and null out this page's /ParentTree slot for that MCID
+   * (array.set, never shrinking the array -- a later-appended MCID on this
+   * page may already assume this array's current length as its own append
+   * position, the same contiguity invariant extendParentTree enforces).
+   */
+  retagDecorativeFigureAsArtifact(doc: PDFDocument, issueId: string, imageId: string): FixResult {
+    const structRoot = this.getStructTreeRoot(doc);
+    if (!structRoot) {
+      return { issueId, success: false, before: 'unknown', after: 'unknown', error: 'No structure tree root found' };
+    }
+
+    const figureDict = pdfModifierService.resolveFigureForImage(doc, imageId);
+    if (!figureDict) {
+      return { issueId, success: false, before: 'unknown', after: 'unknown', error: `No Figure element found for image "${imageId}"` };
+    }
+
+    const kRaw = figureDict.get(PDFName.of('K'));
+    if (!(kRaw instanceof PDFNumber)) {
+      return {
+        issueId, success: false, before: 'unknown', after: 'unknown',
+        error: 'Figure /K is not a single bare MCID -- not the buildFigureFromImage shape this fix is scoped to',
+      };
+    }
+    const mcid = kRaw.asNumber();
+
+    const pageMatch = imageId.match(/^img_p(\d+)_/);
+    const pageNumber = pageMatch ? parseInt(pageMatch[1], 10) : null;
+    if (pageNumber === null) {
+      return { issueId, success: false, before: 'unknown', after: 'unknown', error: `Could not parse page number from image id "${imageId}"` };
+    }
+
+    const parentRaw = figureDict.get(PDFName.of('P'));
+    if (!(parentRaw instanceof PDFRef)) {
+      return { issueId, success: false, before: 'unknown', after: 'unknown', error: 'Figure has no /P (parent) entry' };
+    }
+    const parentDict = doc.context.lookup(parentRaw);
+    if (!(parentDict instanceof PDFDict)) {
+      return { issueId, success: false, before: 'unknown', after: 'unknown', error: 'Figure parent does not resolve to a dictionary' };
+    }
+
+    // Find this Figure's own ref by identity within its parent's /K --
+    // deleteElement-style removal needs the REF, not just the dict, and
+    // resolveFigureForImage (pdf-modifier.service.ts) only ever returns the
+    // dict. Safe: pdf-lib's PDFContext caches one canonical object instance
+    // per ref, so repeated lookups of the SAME ref return the SAME object.
+    const parentKRaw = parentDict.get(PDFName.of('K'));
+    const parentKArr = parentKRaw instanceof PDFRef ? doc.context.lookup(parentKRaw) : parentKRaw;
+    let figureRef: PDFRef | null = null;
+    if (parentKArr instanceof PDFArray) {
+      for (const entry of parentKArr.asArray()) {
+        if (entry instanceof PDFRef && doc.context.lookup(entry) === figureDict) { figureRef = entry; break; }
+      }
+    }
+    if (!figureRef) {
+      return { issueId, success: false, before: 'unknown', after: 'unknown', error: "Figure not found by identity in its own parent's /K array" };
+    }
+
+    const content = decodePageContent(doc, pageNumber);
+    if (content === null) {
+      return { issueId, success: false, before: 'unknown', after: 'unknown', error: `Could not decode page ${pageNumber} content stream` };
+    }
+    const span = findBdcTagSpanForMcid(content, mcid);
+    if (!span) {
+      return { issueId, success: false, before: 'unknown', after: 'unknown', error: `No BDC sequence found opening MCID ${mcid} on page ${pageNumber}` };
+    }
+
+    // Resolve this page's own per-page /ParentTree value array BEFORE any
+    // mutation -- same "resolve everything first" discipline as
+    // buildFigureFromImage's own preflight. Mirrors extendParentTree's own
+    // foundIndex lookup (never reuses it directly -- that method's own
+    // append-only contract has no "retire a slot" mode, and this is a
+    // small enough lookup to duplicate rather than risk changing tested,
+    // heavily-relied-on logic for an unrelated caller).
+    let pageTreeArr: PDFArray;
+    try {
+      const { numsArr, pageKey } = this.resolveParentTreeNumsArray(doc, pageNumber);
+      const raw = numsArr.asArray();
+      let foundIndex = -1;
+      for (let i = 0; i < raw.length; i += 2) {
+        const keyObj = raw[i] instanceof PDFRef ? doc.context.lookup(raw[i] as PDFRef) : raw[i];
+        if (keyObj instanceof PDFNumber && keyObj.asNumber() === pageKey) { foundIndex = i; break; }
+      }
+      if (foundIndex === -1) {
+        return { issueId, success: false, before: 'unknown', after: 'unknown', error: `Page ${pageNumber} has no existing /ParentTree entry` };
+      }
+      const valueRaw = raw[foundIndex + 1];
+      const valueResolved = valueRaw instanceof PDFRef ? doc.context.lookup(valueRaw) : valueRaw;
+      if (!(valueResolved instanceof PDFArray) || mcid >= valueResolved.size()) {
+        return { issueId, success: false, before: 'unknown', after: 'unknown', error: `Page ${pageNumber}'s /ParentTree array has no slot for MCID ${mcid}` };
+      }
+      pageTreeArr = valueResolved;
+    } catch (err) {
+      return { issueId, success: false, before: 'unknown', after: 'unknown', error: err instanceof Error ? err.message : String(err) };
+    }
+
+    // Only now mutate: content stream, struct tree, /ParentTree.
+    const newContent = content.slice(0, span.start) + '/Artifact BMC' + content.slice(span.end);
+    writePageContent(doc, pageNumber, newContent);
+
+    this.removeFromKids(doc, parentRaw, figureRef);
+    figureDict.delete(PDFName.of('K'));
+    figureDict.delete(PDFName.of('P'));
+    pageTreeArr.set(mcid, PDFNull);
+
+    return {
+      issueId,
+      success: true,
+      before: 'Figure with an empty /Alt (decorative, PAC flags empty as missing)',
+      after: `Retagged as /Artifact (MCID ${mcid} removed from the structure tree and /ParentTree)`,
+    };
   }
 
   /**
