@@ -50,12 +50,22 @@ function escapePdfString(text: string): string {
 /**
  * Returns true if the string looks like a filename, UUID, or other non-meaningful title.
  * Used to decide whether to replace the existing title with a derived one.
+ *
+ * Real incident (Karsaklian_189165_9781606497623.pdf, 2026-11-09): /Info/
+ * Title was "9781606497623_PRINT.indd" -- the original InDesign export
+ * filename, non-empty so the bare "does a title exist" check never fired,
+ * and PAC flagged "Display of document title in window title" (Matterhorn
+ * 06-001). The original extension list (pdf/docx?/txt/epub) only covered
+ * document-format source filenames, never the design-tool export formats
+ * (.indd/.ai/.psd/.eps/.idml) that routinely leak into /Info/Title from
+ * InDesign/Illustrator/Photoshop/QuarkXPress PDF exports -- the same class
+ * of bug, not a one-off.
  */
-function isFilenameLike(title: string): boolean {
+export function isFilenameLike(title: string): boolean {
   // UUID pattern (with or without hyphens)
   if (/^[0-9a-f]{8}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{12}$/i.test(title)) return true;
   // Looks like a filename: contains extension, underscores/hyphens only, or is all digits
-  if (/\.(pdf|docx?|txt|epub)$/i.test(title)) return true;
+  if (/\.(pdf|docx?|txt|epub|indd|idml|ai|psd|eps|qxp)$/i.test(title)) return true;
   // Short alphanumeric code (e.g. "9798765788493")
   if (/^\d{10,}$/.test(title)) return true;
   return false;

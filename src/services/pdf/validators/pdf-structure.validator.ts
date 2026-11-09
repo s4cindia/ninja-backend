@@ -13,6 +13,7 @@ import { PDFName, PDFDict, PDFArray, PDFRef, PDFNumber, type PDFDocument } from 
 import { AuditIssue, IssueSeverity } from '../../audit/base-audit.service';
 import { structureAnalyzerService, DocumentStructure } from '../structure-analyzer.service';
 import { pdfParserService, ParsedPDF } from '../pdf-parser.service';
+import { isFilenameLike } from '../pdf-modifier.service';
 import { decodePageContent } from '../pdf-content-stream-io';
 import { findUntaggedPathRuns, type UntaggedPathRun, findTaggedContentInsideArtifact, findOversizedArtifactSpans, findPlacedPdfSpans, findArtifactWrappedActualTextSiblings, findActualTextRunsMissingMcid } from '../pdf-artifact-tagger';
 import { logger } from '../../../lib/logger';
@@ -310,13 +311,26 @@ class PDFStructureValidator {
       }));
     }
 
-    // Check document title (WCAG 2.4.2)
-    if (!parsedPdf.structure.metadata.title) {
+    // Check document title (WCAG 2.4.2) -- flags both a missing title AND
+    // one that's just a leaked source-export filename (e.g. InDesign's own
+    // "<something>.indd" landing in /Info/Title verbatim): neither is a
+    // real, meaningful document title a viewer should display, but a bare
+    // existence check alone only ever caught the first case. Real incident:
+    // Karsaklian_189165_9781606497623.pdf's title was
+    // "9781606497623_PRINT.indd" -- non-empty, so this check never fired,
+    // and PAC flagged "Display of document title in window title"
+    // (Matterhorn 06-001) even though pdfModifierService.deriveAndSetTitle
+    // already correctly derives and sets a real title once this issue code
+    // reaches it -- the gap was purely detection, not the fix.
+    const title = parsedPdf.structure.metadata.title;
+    if (!title || isFilenameLike(title)) {
       issues.push(this.createIssue({
         source: 'pdf-structure',
         severity: 'serious',
         code: 'WCAG-2.4.2',
-        message: 'Document title is not present in metadata',
+        message: title
+          ? `Document title is just a leaked filename ("${title}"), not a real, meaningful title`
+          : 'Document title is not present in metadata',
         wcagCriteria: ['2.4.2'],
         location: 'Document metadata',
         suggestion: 'Add a descriptive title to the PDF document metadata.',

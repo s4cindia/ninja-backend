@@ -133,6 +133,60 @@ describe('PDFStructureValidator', () => {
       expect(titleIssue?.message).toContain('title is not present');
       expect(titleIssue?.wcagCriteria).toContain('2.4.2');
     });
+
+    // Real incident: Karsaklian_189165_9781606497623.pdf's /Info/Title was
+    // "9781606497623_PRINT.indd" -- the original InDesign export filename,
+    // non-empty, so the bare "does a title exist" check alone never fired.
+    it('should identify serious issue when the title is just a leaked InDesign export filename', async () => {
+      const mockParsedPdf = createMockParsedPdf({
+        isTagged: true,
+        hasLanguage: true,
+        hasTitle: true,
+        title: '9781606497623_PRINT.indd',
+      });
+
+      const mockStructure = createMockStructure({
+        isTaggedPDF: true,
+        hasProperHeadingHierarchy: true,
+        hasDocumentLanguage: true,
+        hasLogicalReadingOrder: true,
+      });
+
+      vi.mocked(pdfParserService.parse).mockResolvedValue(mockParsedPdf);
+      vi.mocked(pdfParserService.close).mockResolvedValue(undefined);
+      vi.mocked(structureAnalyzerService.analyzeStructure).mockResolvedValue(mockStructure);
+
+      const result = await pdfStructureValidator.validateFromFile('/path/to/test.pdf');
+
+      const titleIssue = result.issues.find(i => i.code === 'WCAG-2.4.2');
+      expect(titleIssue).toBeDefined();
+      expect(titleIssue?.message).toContain('leaked filename');
+      expect(titleIssue?.message).toContain('9781606497623_PRINT.indd');
+    });
+
+    it('should NOT flag a genuinely meaningful title as filename-like', async () => {
+      const mockParsedPdf = createMockParsedPdf({
+        isTagged: true,
+        hasLanguage: true,
+        hasTitle: true,
+        title: 'Become a Marketing Negotiator',
+      });
+
+      const mockStructure = createMockStructure({
+        isTaggedPDF: true,
+        hasProperHeadingHierarchy: true,
+        hasDocumentLanguage: true,
+        hasLogicalReadingOrder: true,
+      });
+
+      vi.mocked(pdfParserService.parse).mockResolvedValue(mockParsedPdf);
+      vi.mocked(pdfParserService.close).mockResolvedValue(undefined);
+      vi.mocked(structureAnalyzerService.analyzeStructure).mockResolvedValue(mockStructure);
+
+      const result = await pdfStructureValidator.validateFromFile('/path/to/test.pdf');
+
+      expect(result.issues.find(i => i.code === 'WCAG-2.4.2')).toBeUndefined();
+    });
   });
 
   describe('untagged content (Matterhorn 01-005)', () => {
@@ -1356,6 +1410,8 @@ function createMockParsedPdf(options: {
   isTagged: boolean;
   hasLanguage: boolean;
   hasTitle: boolean;
+  /** Overrides the default 'Test Document' title when hasTitle is true -- for a leaked-filename title test. */
+  title?: string;
 }): ParsedPDF {
   return {
     structure: {
@@ -1363,7 +1419,7 @@ function createMockParsedPdf(options: {
       metadata: {
         isTagged: options.isTagged,
         language: options.hasLanguage ? 'en' : undefined,
-        title: options.hasTitle ? 'Test Document' : undefined,
+        title: options.hasTitle ? (options.title ?? 'Test Document') : undefined,
         suspect: false,
         hasAcroForm: false,
       },
