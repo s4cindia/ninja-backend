@@ -175,6 +175,45 @@ describe('PdfStructureWriterService.buildFigureFromImage', () => {
     }
   }, 30_000);
 
+  it('writes /A/BBox onto the new Figure, converted from top-left-origin position to bottom-left-origin PDF points', async () => {
+    const { doc, parsedPdf, xObjectName, tmpPath } = await buildDocWithTaggedTextAndUntaggedImage();
+    try {
+      const imageId = `img_p1_0_${xObjectName}`;
+
+      const results = await pdfStructureWriterService.buildFigureFromImage(doc, parsedPdf, [
+        { imageId, pageNumber: 1, position: { x: 50, y: 100, width: 100, height: 80 } },
+      ]);
+      expect(results[0].success).toBe(true);
+
+      const root = doc.context.lookup(doc.catalog.get(PDFName.of('StructTreeRoot'))) as PDFDict;
+      let figureDict: PDFDict | null = null;
+      const walk = (node: unknown): void => {
+        if (!(node instanceof PDFDict)) return;
+        if (tagOf(node) === 'Figure') figureDict = node;
+        const k = node.get(PDFName.of('K'));
+        const kids = k instanceof PDFArray ? k.asArray() : [k];
+        for (const kid of kids) if (kid instanceof PDFRef) walk(doc.context.lookup(kid));
+      };
+      walk(root);
+      expect(figureDict).toBeTruthy();
+
+      const a = doc.context.lookup(figureDict!.get(PDFName.of('A'))) as PDFDict;
+      expect(a).toBeTruthy();
+      expect(a.get(PDFName.of('O'))?.toString()).toBe('/Layout');
+      expect(a.get(PDFName.of('Placement'))?.toString()).toBe('/Block');
+
+      const bbox = doc.context.lookup(a.get(PDFName.of('BBox'))) as PDFArray;
+      const values = bbox.asArray().map(n => (n as PDFNumber).asNumber());
+      // Page is 600pt tall; image position {x:50, y:100, w:100, h:80}
+      // (top-left-origin) -> BBox [llx, lly, urx, ury] (bottom-left-origin):
+      // llx=50, lly=600-(100+80)=420, urx=50+100=150, ury=600-100=500.
+      expect(values).toEqual([50, 420, 150, 500]);
+    } finally {
+      await pdfParserService.close(parsedPdf);
+      fs.unlinkSync(tmpPath);
+    }
+  }, 30_000);
+
   it('places the new Figure near the resolved anchor via insertIntoKidsAfter, not appended blindly at the end', async () => {
     const { doc, parsedPdf, xObjectName, tmpPath } = await buildDocWithTaggedTextAndUntaggedImage();
     try {
