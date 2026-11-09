@@ -5,7 +5,7 @@
  * the `element` id format the fixer re-parses.
  */
 import { describe, it, expect } from 'vitest';
-import { PDFDocument, PDFName, PDFNumber, PDFRef } from 'pdf-lib';
+import { PDFDocument, PDFName, PDFNumber } from 'pdf-lib';
 import { pdfMcidPageMismatchValidator } from '../../../../src/services/pdf/validators/pdf-mcid-page-mismatch.validator';
 import { writePageContent } from '../../../../src/services/pdf/pdf-content-stream-io';
 import type { ParsedPDF } from '../../../../src/services/pdf/pdf-parser.service';

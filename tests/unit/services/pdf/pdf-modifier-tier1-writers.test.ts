@@ -127,13 +127,53 @@ describe('setLinkAltText', () => {
     expect((doc.context.lookup(bRef) as PDFDict).get(PDFName.of('Contents'))).toBeUndefined();
   });
 
-  it('fails gracefully when the issue has no boundingBox', async () => {
+  it('fails gracefully when the issue has no pageNumber at all', async () => {
+    const doc = await PDFDocument.create();
+    doc.addPage([400, 600]);
+
+    const result = await pdfModifierService.setLinkAltText(doc, baseIssue({}), 'text');
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/pageNumber/);
+  });
+
+  it('falls back to the sole undescribed Link annotation when the issue has no boundingBox (pdfa11y-sourced issues carry no position data)', async () => {
+    const doc = await PDFDocument.create();
+    doc.addPage([400, 600]);
+
+    const linkRef = doc.context.register(
+      doc.context.obj({ Subtype: PDFName.of('Link'), Rect: doc.context.obj([100, 400, 300, 420]) })
+    );
+    doc.getPage(0).node.set(PDFName.of('Annots'), doc.context.obj([linkRef]));
+
+    const result = await pdfModifierService.setLinkAltText(doc, baseIssue({ pageNumber: 1 }), 'Enrollment form');
+
+    expect(result.success).toBe(true);
+    const linkDict = doc.context.lookup(linkRef) as PDFDict;
+    expect((linkDict.get(PDFName.of('Contents')) as PDFHexString).decodeText()).toBe('Enrollment form');
+  });
+
+  it('fails when the issue has no boundingBox and no undescribed Link annotation is found (nothing to disambiguate)', async () => {
     const doc = await PDFDocument.create();
     doc.addPage([400, 600]);
 
     const result = await pdfModifierService.setLinkAltText(doc, baseIssue({ pageNumber: 1 }), 'text');
     expect(result.success).toBe(false);
-    expect(result.error).toMatch(/pageNumber\/boundingBox/);
+    expect(result.error).toMatch(/found 0/);
+  });
+
+  it('fails when the issue has no boundingBox and multiple undescribed Link annotations exist (ambiguous, nothing to disambiguate by)', async () => {
+    const doc = await PDFDocument.create();
+    doc.addPage([400, 600]);
+
+    const aRef = doc.context.register(doc.context.obj({ Subtype: PDFName.of('Link'), Rect: doc.context.obj([0, 0, 20, 20]) }));
+    const bRef = doc.context.register(doc.context.obj({ Subtype: PDFName.of('Link'), Rect: doc.context.obj([100, 400, 300, 420]) }));
+    doc.getPage(0).node.set(PDFName.of('Annots'), doc.context.obj([aRef, bRef]));
+
+    const result = await pdfModifierService.setLinkAltText(doc, baseIssue({ pageNumber: 1 }), 'text');
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/found 2/);
+    expect((doc.context.lookup(aRef) as PDFDict).get(PDFName.of('Contents'))).toBeUndefined();
+    expect((doc.context.lookup(bRef) as PDFDict).get(PDFName.of('Contents'))).toBeUndefined();
   });
 
   it('fails gracefully when the page has no Link annotations', async () => {
@@ -147,6 +187,60 @@ describe('setLinkAltText', () => {
     const result = await pdfModifierService.setLinkAltText(doc, issue, 'text');
     expect(result.success).toBe(false);
     expect(result.error).toMatch(/no \/Annots|No Link annotation/);
+  });
+});
+
+describe('findLinksMissingContents', () => {
+  it('returns only Link annotations whose /Contents is absent, ignoring other Subtypes and already-described links', async () => {
+    const doc = await PDFDocument.create();
+    doc.addPage([400, 600]);
+
+    const undescribedRef = doc.context.register(doc.context.obj({ Subtype: PDFName.of('Link') }));
+    const describedRef = doc.context.register(
+      doc.context.obj({ Subtype: PDFName.of('Link'), Contents: PDFHexString.fromText('Already described') })
+    );
+    const widgetRef = doc.context.register(doc.context.obj({ Subtype: PDFName.of('Widget') }));
+    doc.getPage(0).node.set(PDFName.of('Annots'), doc.context.obj([undescribedRef, describedRef, widgetRef]));
+
+    const results = pdfModifierService.findLinksMissingContents(doc, 1);
+    expect(results).toHaveLength(1);
+    // pdf-lib's context.lookup returns the same canonical object instance
+    // for the same ref -- identity comparison confirms it's the undescribed
+    // one, not the already-described or Widget sibling.
+    expect(results[0]).toBe(doc.context.lookup(undescribedRef));
+  });
+
+  it('returns an empty array for a page with no /Annots', async () => {
+    const doc = await PDFDocument.create();
+    doc.addPage([400, 600]);
+    expect(pdfModifierService.findLinksMissingContents(doc, 1)).toEqual([]);
+  });
+
+  it('returns an empty array for an out-of-range page number', async () => {
+    const doc = await PDFDocument.create();
+    doc.addPage([400, 600]);
+    expect(pdfModifierService.findLinksMissingContents(doc, 99)).toEqual([]);
+  });
+});
+
+describe('getLinkUri', () => {
+  it("extracts a Link annotation's /A /URI", async () => {
+    const doc = await PDFDocument.create();
+    doc.addPage([400, 600]);
+    const linkDict = doc.context.obj({
+      Subtype: PDFName.of('Link'),
+      A: doc.context.obj({ S: PDFName.of('URI'), URI: PDFString.of('https://example.com/enroll') }),
+    }) as PDFDict;
+
+    expect(pdfModifierService.getLinkUri(doc, linkDict)).toBe('https://example.com/enroll');
+  });
+
+  it('returns null when the Link has no /A action (e.g. a GoTo or no action at all)', async () => {
+    const doc = await PDFDocument.create();
+    doc.addPage([400, 600]);
+    const linkDict = doc.context.obj({ Subtype: PDFName.of('Link') }) as PDFDict;
+
+    expect(pdfModifierService.getLinkUri(doc, linkDict)).toBeNull();
   });
 });
 

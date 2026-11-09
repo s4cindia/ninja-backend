@@ -563,6 +563,8 @@ export class PdfAiAnalysisController {
         modification = { success: r.success, description: r.after, error: r.error };
       } else if (suggestionType === 'pdfua-identifier') {
         modification = await pdfModifierService.writePdfUaIdentifier(doc);
+      } else if (suggestionType === 'display-doc-title-fix') {
+        modification = await pdfModifierService.setDisplayDocTitle(doc, true);
       } else if (suggestionType === 'font-tounicode-synthesis-fix') {
         const r = fontToUnicodeService.synthesizeToUnicode(doc);
         modification = {
