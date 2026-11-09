@@ -292,6 +292,40 @@ describe('insertMarkedContentSpans', () => {
     expect(spans[0].mcid).toBe(4);
   });
 
+  /**
+   * Regression for a real incident (Karsaklian_189165_9781606497623.pdf,
+   * page 74, 2026-11-09): a struct element can occupy a /ParentTree slot
+   * without ever writing a literal "/MCID n" BDC span into the content
+   * stream (e.g. one registered directly by extendParentTree elsewhere), so
+   * a content-stream-only scan can undercount the real next-available MCID
+   * -- buildFigureFromImage's own allocation collided with extendParentTree's
+   * contiguity guard this way. The optional minNextMcid floor lets a caller
+   * that already knows the page's real /ParentTree-array length correct for
+   * this; passing it higher than the content-stream-derived count raises
+   * the allocated MCID to match.
+   */
+  it('uses minNextMcid as a floor when it exceeds the content-stream-derived next MCID', async () => {
+    const doc = await realPdfWithLines([{ text: 'FooLine', x: 50, y: 500 }]);
+    const content = decodePageContent(doc, 1)!;
+    const match = locateTextRun(content, { x: 50, baselineY: 500 })!;
+
+    const spans = insertMarkedContentSpans(doc, 1, [{ range: { start: match.start, end: match.lastShowEnd } }], 'Span', 7);
+
+    expect(spans[0].mcid).toBe(7);
+  });
+
+  it('does not let minNextMcid lower the allocation below the content-stream-derived next MCID', async () => {
+    const doc = await realPdfWithLines([{ text: 'FooLine', x: 50, y: 500 }]);
+    const original = decodePageContent(doc, 1)!;
+    writePageContent(doc, 1, `${original}\n/P << /MCID 3 >> BDC\nq Q\nEMC\n`);
+
+    const content = decodePageContent(doc, 1)!;
+    const match = locateTextRun(content, { x: 50, baselineY: 500 })!;
+    const spans = insertMarkedContentSpans(doc, 1, [{ range: { start: match.start, end: match.lastShowEnd } }], 'Span', 1);
+
+    expect(spans[0].mcid).toBe(4);
+  });
+
   it('rejects two byte-identical ranges rather than silently double-wrapping or merging them', async () => {
     const doc = await realPdfWithLines([{ text: 'FooLine', x: 50, y: 500 }]);
     const range: ContentRange = { start: 10, end: 20 };

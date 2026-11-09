@@ -262,7 +262,11 @@ export interface InsertedSpan {
  *
  * MCID allocation extends the page's existing usage (via pageContentMcids)
  * rather than assuming a blank page -- unlike Seam-C's struct-tree-builder.ts,
- * which always starts at 0 and owns a page's entire MCID space.
+ * which always starts at 0 and owns a page's entire MCID space. The optional
+ * `minNextMcid` floor lets a caller that already knows the page's real
+ * /ParentTree-array length correct for cases where that content-stream scan
+ * alone would undercount -- see the allocation site's own comment below for
+ * the real incident this covers.
  *
  * Deliberately does NOT merge across the input ranges (unlike
  * matchCellRanges, which merges WITHIN one cell's own ranges) -- this
@@ -301,7 +305,8 @@ export function insertMarkedContentSpans(
   doc: PDFDocument,
   pageNumber: number,
   requests: RangeInsertionRequest[],
-  tag = 'Span'
+  tag = 'Span',
+  minNextMcid?: number
 ): InsertedSpan[] {
   if (requests.length === 0) return [];
 
@@ -368,7 +373,23 @@ export function insertMarkedContentSpans(
     );
   }
   for (const m of namedForm) existingMcids.add(m);
-  let nextMcid = existingMcids.size > 0 ? Math.max(...existingMcids) + 1 : 0;
+  const contentDerivedNext = existingMcids.size > 0 ? Math.max(...existingMcids) + 1 : 0;
+  // /ParentTree is the real, authoritative record of every MCID slot a page
+  // has ever used -- a struct element can occupy a slot without ever
+  // writing a literal "/MCID n" BDC span into the content stream (e.g. one
+  // registered directly by extendParentTree elsewhere), so a content-
+  // stream-only scan can undercount. Real incident
+  // (Karsaklian_189165_9781606497623.pdf, page 74, 2026-11-09): this scan
+  // alone computed 2557 as the next free MCID, but the page's real
+  // /ParentTree array already had 2559 entries (slots 2557/2558 claimed by
+  // an earlier ACTUALTEXT-MISSING-MCID fix that never wrote a matching
+  // literal BDC span) -- extendParentTree's own contiguity guard then
+  // correctly refused the mismatch rather than silently misaligning the
+  // array, failing the whole caller. Callers that already know the real
+  // count (buildFigureFromImage resolves it for its own preflight) pass it
+  // as a floor; callers that don't keep this function's original content-
+  // stream-only behavior unchanged.
+  let nextMcid = Math.max(contentDerivedNext, minNextMcid ?? 0);
 
   const spans: InsertedSpan[] = [];
   const insertions: Array<{ offset: number; text: string }> = [];
