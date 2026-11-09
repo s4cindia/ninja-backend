@@ -15,7 +15,7 @@ import { describe, it, expect } from 'vitest';
 import { PDFDocument, PDFName, PDFDict, PDFArray, PDFRef, PDFString, PDFNumber, PDFNull } from 'pdf-lib';
 import { pdfStructureWriterService } from '../../../../src/services/pdf/pdf-structure-writer.service';
 import { pdfModifierService } from '../../../../src/services/pdf/pdf-modifier.service';
-import { decodePageContent } from '../../../../src/services/pdf/pdf-content-stream-io';
+import { decodePageContent, writePageContent } from '../../../../src/services/pdf/pdf-content-stream-io';
 import { buildStructTreeFromZones } from '../../../../src/services/zone-extractor/seam-c/struct-tree-builder';
 import type { OrderableZone } from '../../../../src/services/zone-extractor/seam-c/reading-order';
 import { pdfParserService } from '../../../../src/services/pdf/pdf-parser.service';
@@ -408,29 +408,22 @@ describe('PdfStructureWriterService.buildFigureFromImage', () => {
       const imageId = `img_p1_0_${xObjectName}`;
       const root = doc.context.lookup(doc.catalog.get(PDFName.of('StructTreeRoot'))) as PDFDict;
 
-      const page = doc.getPages()[0];
-      const structParentsRaw = page.node.get(PDFName.of('StructParents'));
-      const pageKey = structParentsRaw instanceof PDFNumber ? structParentsRaw.asNumber() : 0;
-
-      // A valid array-shaped /ParentTree (passes resolveParentTreeNumsArray's
-      // preflight) whose page entry already has 3 entries -- but the tagged
-      // paragraph itself only uses MCID 0, so insertMarkedContentSpans will
-      // allocate the new Figure's MCID starting at 1 (pageContentMcids'
-      // next-available), not the 3 this stale array's own length implies,
-      // guaranteeing extendParentTree's contiguity check rejects the commit
-      // (same construction as buildTableFromLayout's own analogous
-      // regression test -- there the content stream truly had zero existing
-      // MCIDs, so a 1-entry stale array was enough; here the paragraph's own
-      // real MCID 0 means the stale array must be deliberately longer than
-      // "real next MCID + 1" to force a genuine mismatch).
-      const staleEntryArray = doc.context.obj([
-        doc.context.register(doc.context.obj({ S: PDFName.of('Span') })),
-        doc.context.register(doc.context.obj({ S: PDFName.of('Span') })),
-        doc.context.register(doc.context.obj({ S: PDFName.of('Span') })),
-      ]);
-      const numsArr = doc.context.obj([PDFNumber.of(pageKey), staleEntryArray]);
-      const parentTreeRef = doc.context.register(doc.context.obj({ Nums: numsArr }));
-      root.set(PDFName.of('ParentTree'), parentTreeRef);
+      // The fixture's own /ParentTree is left exactly as buildStructTreeFromZones
+      // produced it (one real entry, for the tagged paragraph's own MCID 0) --
+      // now the authoritative source buildFigureFromImage's minNextMcid floor
+      // reads from, so a STALE (longer) array can no longer be used to force a
+      // mismatch (that scenario is exactly what this fix resolves correctly
+      // instead of failing -- see pdf-structure-writer-figure.test.ts's own
+      // "allocates the new Figure's MCID from the real /ParentTree array
+      // length" test). Forcing a genuine mismatch now requires the OTHER
+      // direction: a content-stream MCID reference higher than anything
+      // actually registered in /ParentTree (an orphaned/dangling reference,
+      // not tracked anywhere) -- pageContentMcids' scan alone still can't see
+      // past this, so insertMarkedContentSpans allocates MCID 6, but the real
+      // array's own length (1) means extendParentTree expects MCID 1 -- a
+      // genuine contiguity mismatch even with the real-array floor in place.
+      const original = decodeContent(doc);
+      writePageContent(doc, 1, `${original}\n/Span <</MCID 5>> BDC\nq Q\nEMC\n`);
 
       const before = decodeContent(doc);
       const results = await pdfStructureWriterService.buildFigureFromImage(doc, parsedPdf, [
@@ -547,6 +540,67 @@ describe('PdfStructureWriterService.buildFigureFromImage', () => {
       expect(valueArr.asArray().length).toBeGreaterThan(0);
       const newFigureRef = valueArr.asArray()[valueArr.asArray().length - 1] as PDFRef;
       expect(tagOf(doc.context.lookup(newFigureRef))).toBe('Figure');
+    } finally {
+      await pdfParserService.close(parsedPdf);
+      fs.unlinkSync(tmpPath);
+    }
+  }, 30_000);
+
+  /**
+   * Regression for a second, real failure on the same document
+   * (Karsaklian_189165_9781606497623.pdf, page 74, 2026-11-09): once the
+   * /Kids-tree issue above was fixed, an alt-text-decorative suggestion for
+   * a DIFFERENT image on the same page still failed with "No Figure element
+   * at page 74, index 2". Root cause this time: a struct element can occupy
+   * a /ParentTree slot without ever writing a literal "/MCID n" BDC span
+   * into the content stream (confirmed real: the document's own
+   * ACTUALTEXT-MISSING-MCID fixer had already extended the page's
+   * /ParentTree to 2559 entries, but only 2557 of those MCIDs appeared as
+   * literal text) -- buildFigureFromImage's content-stream-only scan
+   * computed "next MCID = 2557" and extendParentTree's own contiguity guard
+   * correctly refused the mismatch rather than silently corrupting the
+   * array. Reproduced synthetically here by pushing extra entries directly
+   * onto the page's real /ParentTree array (simulating a slot used by
+   * something that left no content-stream trace) and confirming
+   * buildFigureFromImage now allocates starting from the array's real
+   * length, not the content-stream-derived (lower) count.
+   */
+  it('allocates the new Figure\'s MCID from the real /ParentTree array length, not just the content-stream MCID scan', async () => {
+    const { doc, parsedPdf, xObjectName, tmpPath } = await buildDocWithTaggedTextAndUntaggedImage();
+    try {
+      const imageId = `img_p1_0_${xObjectName}`;
+      const root = doc.context.lookup(doc.catalog.get(PDFName.of('StructTreeRoot'))) as PDFDict;
+      const { paraRef } = findParaAndParent(doc, root);
+
+      const page = doc.getPages()[0];
+      const structParentsRaw = page.node.get(PDFName.of('StructParents'));
+      const pageKey = structParentsRaw instanceof PDFNumber ? structParentsRaw.asNumber() : 0;
+
+      const parentTreeRef = root.get(PDFName.of('ParentTree')) as PDFRef;
+      const parentTreeDict = doc.context.lookup(parentTreeRef) as PDFDict;
+      const numsArr = doc.context.lookup(parentTreeDict.get(PDFName.of('Nums'))) as PDFArray;
+      const flat = numsArr.asArray();
+      let pageArr: PDFArray | null = null;
+      for (let i = 0; i < flat.length; i += 2) {
+        if ((flat[i] as PDFNumber).asNumber() === pageKey) {
+          pageArr = doc.context.lookup(flat[i + 1] as PDFRef) as PDFArray;
+          break;
+        }
+      }
+      expect(pageArr).toBeTruthy();
+
+      // Simulate two slots claimed by something that never wrote a matching
+      // literal "/MCID n" BDC span -- the content-stream scan alone can't
+      // see these, only the array's real length reflects them.
+      pageArr!.push(paraRef);
+      pageArr!.push(paraRef);
+      const realLength = pageArr!.size();
+
+      const results = await pdfStructureWriterService.buildFigureFromImage(doc, parsedPdf, [
+        { imageId, pageNumber: 1, position: { x: 50, y: 100, width: 100, height: 80 } },
+      ]);
+      expect(results[0].success).toBe(true);
+      expect(results[0].after).toContain(`MCID ${realLength}`);
     } finally {
       await pdfParserService.close(parsedPdf);
       fs.unlinkSync(tmpPath);

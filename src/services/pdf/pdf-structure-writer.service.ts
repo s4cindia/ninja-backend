@@ -1456,8 +1456,9 @@ export class PdfStructureWriterService {
       // preflight (PR #552, CodeRabbit pushback): every failure mode
       // resolveParentTreeNumsArray checks is a property of the document as
       // it already stands, knowable up front.
+      let parentTreePageSize: number;
       try {
-        this.resolveParentTreeNumsArray(doc, pageNumber);
+        parentTreePageSize = this.getPageParentTreeArraySize(doc, pageNumber);
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         for (const ve of validEntries) {
@@ -1474,7 +1475,10 @@ export class PdfStructureWriterService {
       const requests: RangeInsertionRequest[] = validEntries.map((ve, i) => ({ range: ve.range, id: String(i) }));
       let inserted: InsertedSpan[];
       try {
-        inserted = insertMarkedContentSpans(doc, pageNumber, requests, 'Figure');
+        // minNextMcid: the page's real /ParentTree array length, resolved
+        // above -- see getPageParentTreeArraySize's own doc comment for why
+        // a content-stream-only scan can undercount this.
+        inserted = insertMarkedContentSpans(doc, pageNumber, requests, 'Figure', parentTreePageSize);
       } catch (err) {
         for (const ve of validEntries) {
           results.push({ issueId: ve.img.imageId, success: false, before: 'unknown', after: 'unknown', error: err instanceof Error ? err.message : String(err) });
@@ -2906,6 +2910,43 @@ export class PdfStructureWriterService {
     }
 
     return { numsArr, pageKey };
+  }
+
+  /**
+   * The real, authoritative "how many MCID slots has this page already
+   * used" count -- the per-page /ParentTree array's own current length.
+   * Returns 0 when the page has no existing entry yet (equivalent to "no
+   * constraint", matching what a brand-new page's content-stream-derived
+   * MCID count would already compute on its own).
+   *
+   * Exists because a struct element can occupy a /ParentTree slot without
+   * ever writing a literal "/MCID n" BDC span into the content stream (e.g.
+   * one registered directly by a prior extendParentTree call elsewhere) --
+   * a scan of the content stream's own text (pageContentMcids,
+   * insertMarkedContentSpans's own default allocation) can then undercount
+   * the real next-available MCID. Real incident
+   * (Karsaklian_189165_9781606497623.pdf, page 74, 2026-11-09):
+   * buildFigureFromImage's content-stream-derived "next MCID" computed
+   * 2557, but the page's real /ParentTree array already had 2559 entries
+   * (slots 2557/2558 claimed by an earlier ACTUALTEXT-MISSING-MCID fix that
+   * never wrote a matching literal BDC span) -- extendParentTree's own
+   * contiguity guard correctly refused rather than silently misaligning the
+   * array, failing the whole apply. Callers that can cheaply know this real
+   * count up front (buildFigureFromImage already resolves the array for its
+   * own preflight) should pass it to insertMarkedContentSpans as a floor.
+   */
+  private getPageParentTreeArraySize(doc: PDFDocument, pageNumber: number): number {
+    const { numsArr, pageKey } = this.resolveParentTreeNumsArray(doc, pageNumber);
+    const raw = numsArr.asArray();
+    for (let i = 0; i < raw.length; i += 2) {
+      const keyObj = raw[i] instanceof PDFRef ? doc.context.lookup(raw[i] as PDFRef) : raw[i];
+      if (keyObj instanceof PDFNumber && keyObj.asNumber() === pageKey) {
+        const valueRaw = raw[i + 1];
+        const valueResolved = valueRaw instanceof PDFRef ? doc.context.lookup(valueRaw) : valueRaw;
+        return valueResolved instanceof PDFArray ? valueResolved.size() : 0;
+      }
+    }
+    return 0;
   }
 
   /**
