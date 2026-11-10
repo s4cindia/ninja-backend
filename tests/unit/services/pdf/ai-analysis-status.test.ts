@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { resolveSuggestionStatus, buildIssueFingerprint, resolveCarriedFailedAttempts } from '../../../../src/services/pdf/ai-analysis.service';
+import { resolveSuggestionStatus, buildIssueFingerprint, resolveCarriedFailedAttempts, resolveCarriedLastErrorReason } from '../../../../src/services/pdf/ai-analysis.service';
 
 const FP = 'MATTERHORN-13-001:img_p150_0_Im0';
 
@@ -145,6 +145,31 @@ describe('resolveCarriedFailedAttempts', () => {
       row = { failedAttempts: carried + 1 }; // what recordApplyFailure does after this round's own failure
     }
     expect(row!.failedAttempts).toBe(3);
+  });
+});
+
+// Real, confirmed gap found on the SAME class of bug resolveCarriedFailedAttempts
+// above fixes, for a different field (WPVP_180188_9798986469300_txt.pdf,
+// contrast-10/contrast-11, 2026-11-10): a 'failed' status preserved onto a
+// reassigned issue.id used to create a brand-new row with lastErrorReason
+// stuck at null, because the upsert's `create` branch never carried it
+// forward -- the Apply Failure Report then had nothing but its legacy-row
+// fallback text to show, even though a real reason existed under the old id.
+describe('resolveCarriedLastErrorReason', () => {
+  it('carries the fingerprint-matched OLD row\'s lastErrorReason forward when this round\'s issue.id has changed (the real bug)', () => {
+    const existing = { lastErrorReason: 'Fix did not verify even after escalating to #000000 (measured 3.02:1, required 4.5:1)' };
+    expect(resolveCarriedLastErrorReason(existing, false)).toBe(
+      'Fix did not verify even after escalating to #000000 (measured 3.02:1, required 4.5:1)'
+    );
+  });
+
+  it('starts a genuinely new row (no existing match at all) at null', () => {
+    expect(resolveCarriedLastErrorReason(null, false)).toBeNull();
+  });
+
+  it('resets to null when the finding genuinely changed out from under a previously-failed row', () => {
+    const existing = { lastErrorReason: 'Some stale reason from the old, now-unrelated finding' };
+    expect(resolveCarriedLastErrorReason(existing, true)).toBeNull();
   });
 });
 
