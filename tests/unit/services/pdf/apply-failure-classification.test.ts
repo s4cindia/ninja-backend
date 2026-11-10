@@ -66,6 +66,14 @@ describe('classifyApplyFailureReason', () => {
     expect(result.categoryLabel).toMatch(/contrast/i);
   });
 
+  it('classifies a real stale-contrastData message (a cached color-contrast-fix suggestion whose id/fingerprint was reassigned to a different finding) as likely_resolved', () => {
+    const result = classifyApplyFailureReason(
+      'Issue has no contrastData -- the finding this issue id now resolves to no longer matches what this suggestion was generated from (a re-audit likely reassigned it to a different finding); re-running AI Analysis will generate a fresh suggestion for what is actually here now'
+    );
+    expect(result.category).toBe('likely_resolved');
+    expect(result.categoryLabel).toBe('Likely already resolved');
+  });
+
   it('falls back to a generic needs_investigation classification for an unrecognized reason', () => {
     const result = classifyApplyFailureReason('Some brand-new error nobody has seen before');
     expect(result.category).toBe('needs_investigation');

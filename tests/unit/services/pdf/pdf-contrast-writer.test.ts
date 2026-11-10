@@ -562,6 +562,39 @@ describe('PdfContrastWriterService.fixColorContrast', () => {
     expect(snippet).not.toContain('Q');
   });
 
+  // Real, live-confirmed incident (WPVP_180188_9798986469300_txt.pdf,
+  // contrast-138/139, 2026-11-10): when the backplate tier is attempted but
+  // its own measurement still fails, the final error used to silently drop
+  // that attempt entirely and blame only the earlier text-color escalation
+  // -- misleading, since a reader would assume the backplate was never
+  // tried at all. The final message must mention both.
+  it('mentions the backplate attempt in the final error when the backplate tier also fails to verify', async () => {
+    const mockVerify = vi.mocked(verifyContrastInRegion);
+    const mockVerifyBackplate = vi.mocked(verifyBackplateContrast);
+    mockVerify.mockClear();
+    mockVerifyBackplate.mockClear();
+    mockVerify
+      .mockResolvedValueOnce({ ratio: 3.0, passes: false, foreground: '#888888', background: '#ffffff', uncertain: true, variance: 0.05 })
+      .mockResolvedValueOnce({ ratio: 3.02, passes: false, foreground: '#000000', background: '#ffffff', uncertain: false, variance: 0.05 });
+    mockVerifyBackplate.mockResolvedValueOnce({ ratio: 2.8, passes: false, foreground: '#000000', background: '#333333', uncertain: false, variance: 0 });
+
+    const doc = await realPdfWithText(60, 450, 14, { bold: false });
+    const originalReport = await pdfAuditService.runAuditFromBuffer(
+      Buffer.from(await doc.save()), 'writer-test-backplate-also-fails', 'test.pdf', 'custom', ['contrast']
+    );
+    const issue = originalReport.issues.find(i => i.code === 'COLOR-CONTRAST')!;
+    const beforeContent = decodePageContent(doc, 1)!;
+
+    const result = await pdfContrastWriterService.fixColorContrast(doc, issue);
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('escalating to');
+    expect(result.error).toContain('also tried a backplate');
+    expect(result.error).toContain('2.8:1');
+    const afterContent = decodePageContent(doc, 1)!;
+    expect(afterContent).toBe(beforeContent); // fully reverted, including the reverted backplate attempt
+  });
+
   // Real, live-confirmed incident, 2026-11-04 (Farrar_2E_Comp_188910.pdf,
   // page 118): a COLOR-CONTRAST issue oscillated resolved/regressed every
   // single Auto Mode round, never converging. Root cause: fixColorContrast
