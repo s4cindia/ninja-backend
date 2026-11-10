@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { PDFDocument, StandardFonts } from 'pdf-lib';
+import { PDFDocument, PDFName, StandardFonts } from 'pdf-lib';
 import { decodePageContent, writePageContent, pageContentMcids, orderedPageContentMcids } from '../../../../src/services/pdf/pdf-content-stream-io';
 
 // Regression coverage for the exact decode/write logic previously inlined in
@@ -28,6 +28,35 @@ describe('decodePageContent', () => {
   it('returns null for an out-of-range page rather than throwing', async () => {
     const doc = await realPdf();
     expect(decodePageContent(doc, 99)).toBeNull();
+  });
+
+  // Real, confirmed incident (WPVP_180188_9798986469300_txt.pdf, 2026-11-10):
+  // a /Contents array whose boundary falls right between a /Tf operator and
+  // the tag that needs it glued the two segments' adjacent tokens into one
+  // unrecognized token when concatenated with no separator -- silently
+  // losing the font-selection operator from that point on. PDF32000 §7.8.2
+  // guarantees each array element is internally a complete token sequence,
+  // but says nothing about whitespace AT the boundary, so this is a real,
+  // legal shape a conforming producer can emit.
+  it('inserts a newline between /Contents array elements, so a token split across the boundary (no trailing/leading whitespace on either side) decodes as two separate tokens, not one glued one', async () => {
+    const doc = await PDFDocument.create();
+    const page = doc.addPage([400, 600]);
+
+    // Segment 1 ends with "Tf" (no trailing whitespace); segment 2 begins
+    // with "BMC" (no leading whitespace) -- naive concatenation would glue
+    // them into the single, unrecognized token "TfBMC".
+    const seg1 = doc.context.register(doc.context.stream('/F1 12 Tf'));
+    const seg2 = doc.context.register(doc.context.stream('BMC'));
+    page.node.set(PDFName.of('Contents'), doc.context.obj([seg1, seg2]));
+
+    const content = decodePageContent(doc, 1)!;
+    expect(content).toContain('Tf');
+    expect(content).toContain('BMC');
+    expect(content).not.toContain('TfBMC');
+    // The two segments are joined by exactly one inserted newline -- not
+    // reproducing any original formatting that genuinely wasn't there, the
+    // minimum needed to keep the boundary tokens apart.
+    expect(content).toBe('/F1 12 Tf\nBMC');
   });
 });
 
