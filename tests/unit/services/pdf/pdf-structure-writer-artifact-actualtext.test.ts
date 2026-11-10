@@ -90,6 +90,45 @@ describe('PdfStructureWriterService.fixArtifactActualTextSibling', () => {
     expect(after).not.toBe(before);
   });
 
+  // Real, confirmed incident (WPVP_180188_9798986469300_txt.pdf, 84 pages,
+  // 2026-11-10): a completely ordinary, spec-legal "open tag -> set font ->
+  // show text" sequence -- /Artifact BMC opens, THEN its own /Tf sets the
+  // font, THEN the text shows -- used to permanently decline with "Could
+  // not determine the active font" whenever this was the page's very
+  // FIRST Tf anywhere (the font snapshot used to be taken at tag-open
+  // time, before that Tf had run). Reproduced here as the first and only
+  // content on the page, matching the real shape exactly.
+  it('resolves the font when it is set via Tf AFTER the Artifact tag opens but BEFORE the text shows -- even as the page\'s very first Tf', async () => {
+    const doc = await PDFDocument.create();
+    const page = doc.addPage([612, 792]);
+
+    const cmapText = '/CIDInit /ProcSet findresource begin\n12 dict begin\nbegincmap\n1 beginbfchar\n<43> <0043>\nendbfchar\nendcmap\nend\nend';
+    const toUnicodeRef = doc.context.register(doc.context.stream(cmapText));
+    const fontDict = doc.context.obj({
+      Type: PDFName.of('Font'),
+      Subtype: PDFName.of('Type1'),
+      BaseFont: PDFName.of('GoudyStd'),
+      ToUnicode: toUnicodeRef,
+    });
+    const fontRef = doc.context.register(fontDict);
+    page.node.set(PDFName.of('Resources'), doc.context.obj({ Font: { TT0: fontRef } }));
+
+    // No Tf anywhere before this -- the font is set INSIDE the Artifact
+    // span, after BMC but before the text-show op.
+    const content =
+      '/Artifact BMC BT\n' +
+      '/TT0 1 Tf\n8 0 0 8 87 608.9656 Tm\n(C)Tj\n EMC ' +
+      '/Span<</ActualText<FEFF0068006100700074006500720020003100>>> BDC \n(hapter 1)Tj\nEMC\nET\n';
+    writePageContent(doc, 1, content);
+
+    const result = pdfStructureWriterService.fixArtifactActualTextSibling(doc, issueForPage(1));
+    expect(result.success).toBe(true);
+    expect(result.after).toContain('C');
+
+    const after = decodePageContent(doc, 1)!;
+    expect(after).toContain('/Span <</ActualText (C)>> BDC');
+  });
+
   it('is idempotent -- running it again on the already-fixed page finds nothing left to do', async () => {
     const { doc } = await buildDescriptionDoc();
     pdfStructureWriterService.fixArtifactActualTextSibling(doc, issueForPage(1));

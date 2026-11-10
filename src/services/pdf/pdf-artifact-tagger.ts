@@ -990,6 +990,11 @@ interface TopLevelMarkedContentSpan {
   hasMcid: boolean;
   textShowCount: number;
   rawBytes: string;
+  /** The font active as of this span's own LAST text-show op, not merely
+   * whatever was active when its BDC/BMC opened -- a span can legally set
+   * its own font (via Tf) after opening but before showing text, so an
+   * open-time-only snapshot would wrongly stay null whenever the page's
+   * very first Tf happens to fall inside its very first span. */
   fontResourceName: string | null;
   /** True if an ET occurred while this span was open -- see findArtifactWrappedActualTextSiblings's own doc comment for why this is the real discriminator between a genuinely self-contained decorative span (a page number, closing its OWN BT/ET pair within its own tag) and a defective word-splitting letter (sharing one long-lived BT across several sibling spans, none of which ever see their own ET). */
   sawOwnET: boolean;
@@ -1087,6 +1092,15 @@ function collectTopLevelMarkedContentSpans(content: string): TopLevelMarkedConte
       current.textShowCount++;
       const strOperands = operands.filter((o) => o.t === 's' || o.t === 'h');
       current.rawBytes += strOperands.map((o) => (o.t === 's' ? decodePdfStringLiteral(o.v) : decodeHexStringLiteral(o.v))).join('');
+      // Re-sync to whatever font is ACTIVE NOW, not just whatever was active
+      // when this span's own BDC/BMC opened -- real, confirmed incident
+      // (WPVP_180188_9798986469300_txt.pdf, 84 pages, 2026-11-10): a
+      // completely ordinary, spec-legal "open tag -> set font -> show text"
+      // sequence (`/Artifact BMC` then `/TT0 1 Tf` then `TJ`) left
+      // fontResourceName permanently null whenever the page's FIRST Tf
+      // happens to fall inside the very first span, since the open-time
+      // snapshot at line ~1051 above necessarily ran before that Tf did.
+      current.fontResourceName = currentFont;
     }
     operands.length = 0;
   }

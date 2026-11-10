@@ -725,6 +725,20 @@ describe('findArtifactWrappedActualTextSiblings', () => {
     expect(result[0].fontResourceName).toBe('/T1_9');
   });
 
+  // Real, confirmed incident (WPVP_180188_9798986469300_txt.pdf, 84 pages,
+  // 2026-11-10): an ordinary, spec-legal "open tag -> set font -> show
+  // text" sequence -- the span's OWN Tf runs AFTER its BMC but BEFORE its
+  // text-show -- used to leave fontResourceName permanently null whenever
+  // this was the page's very FIRST Tf anywhere (the span's open-time
+  // snapshot ran before that Tf did). No Tf precedes this span at all here,
+  // matching the real shape exactly.
+  it('picks up a font set via Tf AFTER the span opens but BEFORE its own text-show, even with no Tf anywhere earlier on the page', () => {
+    const content = '/Artifact BMC \n/TT0 1 Tf\n(C)Tj\nEMC /Span<</ActualText<0043>>> BDC \n(C)Tj\nEMC\n';
+    const result = findArtifactWrappedActualTextSiblings(content);
+    expect(result).toHaveLength(1);
+    expect(result[0].fontResourceName).toBe('/TT0');
+  });
+
   it('returns an empty array for a page with no /Artifact spans at all', () => {
     expect(findArtifactWrappedActualTextSiblings('/P <</MCID 0>> BDC \n(hello)Tj\nEMC\n')).toHaveLength(0);
   });
