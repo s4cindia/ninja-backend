@@ -118,6 +118,83 @@ describe('PdfStructureWriterService.fixArtifactActualTextSibling', () => {
     expect(decodePageContent(doc, 1)).toBe(before);
   });
 
+  // Real, confirmed pattern (WPVP_180188_9798986469300_txt.pdf, 2026-11-10):
+  // two different fonts (/TT1, /TT0) each had a /ToUnicode CMap with no
+  // entry for byte 149 (0x95) -- CP1252's bullet character. Both declared
+  // WinAnsiEncoding, so the byte's own code-point identity under that
+  // confirmed encoding is a fact, not a guess, even though the sibling-
+  // detection logic this fixer targets is specifically about decorative
+  // glyph SUBSTITUTION (the drawn glyph can differ; the character identity
+  // can't, once the encoding is confirmed).
+  it('resolves byte 149 as U+2022 BULLET when the active font explicitly declares WinAnsiEncoding, even with no /ToUnicode entry for it', async () => {
+    const doc = await PDFDocument.create();
+    const page = doc.addPage([612, 792]);
+    const fontDict = doc.context.obj({
+      Type: PDFName.of('Font'),
+      Subtype: PDFName.of('Type1'),
+      BaseFont: PDFName.of('GoudyStd'),
+      Encoding: PDFName.of('WinAnsiEncoding'),
+    });
+    const fontRef = doc.context.register(fontDict);
+    page.node.set(PDFName.of('Resources'), doc.context.obj({ Font: { T1_0: fontRef } }));
+
+    const bulletByte = String.fromCharCode(0x95);
+    const content =
+      `/T1_0 1 Tf\n/Artifact BMC \n(${bulletByte})Tj\nEMC /Span<</ActualText<0065>>> BDC \n(e)Tj\nEMC\n`;
+    writePageContent(doc, 1, content);
+
+    const result = pdfStructureWriterService.fixArtifactActualTextSibling(doc, issueForPage(1));
+    expect(result.success).toBe(true);
+    expect(result.after).toContain('•');
+
+    // Written as a UTF-16BE hex string (<FEFF...>), not a plain literal --
+    // U+2022 doesn't fit in a single Latin-1 byte.
+    const after = decodePageContent(doc, 1)!;
+    expect(after).toContain('/Span <</ActualText <FEFF2022>>> BDC');
+  });
+
+  it('still declines on byte 149 when the font has no explicit /Encoding entry -- an implicit/built-in encoding is not a confirmed WinAnsiEncoding declaration', async () => {
+    const doc = await PDFDocument.create();
+    const page = doc.addPage([612, 792]);
+    const fontDict = doc.context.obj({ Type: PDFName.of('Font'), Subtype: PDFName.of('Type1'), BaseFont: PDFName.of('GoudyStd') });
+    const fontRef = doc.context.register(fontDict);
+    page.node.set(PDFName.of('Resources'), doc.context.obj({ Font: { T1_0: fontRef } }));
+
+    const byte149 = String.fromCharCode(0x95);
+    const content =
+      `/T1_0 1 Tf\n/Artifact BMC \n(${byte149})Tj\nEMC /Span<</ActualText<0065>>> BDC \n(e)Tj\nEMC\n`;
+    writePageContent(doc, 1, content);
+    const before = decodePageContent(doc, 1)!;
+
+    const result = pdfStructureWriterService.fixArtifactActualTextSibling(doc, issueForPage(1));
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/ToUnicode/i);
+    expect(decodePageContent(doc, 1)).toBe(before);
+  });
+
+  it('resolves byte 149 as i-dieresis (U+00EF), NOT bullet, when the font explicitly declares MacRomanEncoding -- confirms the fallback reads the font\'s OWN declared encoding rather than assuming WinAnsi/CP1252 universally', async () => {
+    const doc = await PDFDocument.create();
+    const page = doc.addPage([612, 792]);
+    const fontDict = doc.context.obj({
+      Type: PDFName.of('Font'),
+      Subtype: PDFName.of('Type1'),
+      BaseFont: PDFName.of('GoudyStd'),
+      Encoding: PDFName.of('MacRomanEncoding'),
+    });
+    const fontRef = doc.context.register(fontDict);
+    page.node.set(PDFName.of('Resources'), doc.context.obj({ Font: { T1_0: fontRef } }));
+
+    const byte149 = String.fromCharCode(0x95);
+    const content =
+      `/T1_0 1 Tf\n/Artifact BMC \n(${byte149})Tj\nEMC /Span<</ActualText<0065>>> BDC \n(e)Tj\nEMC\n`;
+    writePageContent(doc, 1, content);
+
+    const result = pdfStructureWriterService.fixArtifactActualTextSibling(doc, issueForPage(1));
+    expect(result.success).toBe(true);
+    expect(result.after).toContain('ï');
+    expect(result.after).not.toContain('•');
+  });
+
   it('declines cleanly when the page has no content stream at all', async () => {
     const doc = await PDFDocument.create();
     doc.addPage([612, 792]);
