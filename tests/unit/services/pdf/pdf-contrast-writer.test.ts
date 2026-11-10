@@ -252,6 +252,22 @@ describe('resolveColorSpaceKind', () => {
     doc.addPage([100, 100]);
     expect(resolveColorSpaceKind(doc, 1, 'CS0')).toBeNull();
   });
+
+  // Defensive, not yet reachable through any real caller today --
+  // findPrecedingColor's own cs-tracking already strips the leading '/'
+  // before calling in (contrast-content-stream.ts). Confirmed directly
+  // against a real document's /Resources /ColorSpace dict while
+  // investigating a live contrast-fix failure, 2026-11-10:
+  // PDFName.of('/CS0') and PDFName.of('CS0') are different keys, so a
+  // slash-prefixed name would otherwise silently miss this dict lookup.
+  it('resolves a resource-indirected colorspace name the same whether or not it carries a leading "/"', async () => {
+    const doc = await PDFDocument.create();
+    doc.addPage([100, 100]);
+    addColorSpaceResource(doc, 0, 'CS0', ['CalRGB', { WhitePoint: [0.9505, 1.0, 1.089] }]);
+
+    expect(resolveColorSpaceKind(doc, 1, '/CS0')).toBe('rgb');
+    expect(resolveColorSpaceKind(doc, 1, 'CS0')).toBe('rgb');
+  });
 });
 
 // Real incident: 70 of Math_Olszewski_PDF.pdf's color-contrast suggestions
@@ -355,6 +371,17 @@ describe('resolveSourceColor', () => {
     addColorSpaceResource(doc, 0, 'CS0', 'Pattern');
 
     expect(resolveSourceColor(doc, 1, 'CS0', [0])).toBeNull();
+  });
+
+  // See resolveColorSpaceKind's own identical test above for why this is
+  // defensive, not yet reachable through any real caller today.
+  it('resolves a Separation colorspace the same whether its name carries a leading "/" or not', async () => {
+    const doc = await PDFDocument.create();
+    doc.addPage([100, 100]);
+    addColorSpaceResource(doc, 0, 'CS0', ['Separation', 'Black', 'DeviceCMYK', { FunctionType: 2, Domain: [0, 1], C0: [0, 0, 0, 0], C1: [0, 0, 0, 1], N: 1 }]);
+
+    expect(resolveSourceColor(doc, 1, '/CS0', [1])).toEqual([0, 0, 0]);
+    expect(resolveSourceColor(doc, 1, 'CS0', [1])).toEqual([0, 0, 0]);
   });
 });
 
