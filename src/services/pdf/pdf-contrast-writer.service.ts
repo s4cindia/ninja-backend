@@ -321,7 +321,16 @@ export function resolveColorSpaceKind(doc: PDFDocument, pageNumber: number, csNa
     const resources = page.node.Resources();
     if (!resources) return null;
     const colorSpaces = resources.lookup(PDFName.of('ColorSpace'), PDFDict);
-    const entry = colorSpaces.lookup(PDFName.of(csName));
+    // Every current caller already strips a leading '/' before reaching
+    // here (findPrecedingColor's own cs-tracking does `lastOperand.v.slice(1)`
+    // -- see contrast-content-stream.ts), so this never fires today. Kept
+    // defensive rather than assumed: PDFName.of('/CS0') and PDFName.of('CS0')
+    // are NOT the same key, so a future caller passing the raw, slash-
+    // prefixed token value would otherwise silently miss every lookup here
+    // and in resolveSourceColor below -- confirmed directly against a real
+    // document's /Resources /ColorSpace dict while investigating
+    // WPVP_180188_9798986469300_txt.pdf's contrast-139, 2026-11-10.
+    const entry = colorSpaces.lookup(PDFName.of(csName.replace(/^\//, '')));
 
     // decodeText(), not asString()/toString() -- asString() returns the raw
     // encoded form INCLUDING the leading '/' (e.g. "/ICCBased"), which would
@@ -511,7 +520,8 @@ export function resolveSourceColor(
     const resources = page.node.Resources();
     if (!resources) return null;
     const colorSpaces = resources.lookup(PDFName.of('ColorSpace'), PDFDict);
-    const entry = colorSpaces.lookup(PDFName.of(csName));
+    // See resolveColorSpaceKind's own identical comment above.
+    const entry = colorSpaces.lookup(PDFName.of(csName.replace(/^\//, '')));
     if (!(entry instanceof PDFArray) || entry.size() === 0) return null;
     const family = entry.lookup(0, PDFName).decodeText();
 
