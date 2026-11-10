@@ -499,6 +499,26 @@ export function resolveCarriedFailedAttempts(
 ): number {
   return resetFailedAttempts ? 0 : (existing?.failedAttempts ?? 0);
 }
+
+/**
+ * Same carry-forward reasoning as resolveCarriedFailedAttempts above,
+ * for lastErrorReason -- real, confirmed gap (WPVP_180188_9798986469300_
+ * txt.pdf, contrast-10/contrast-11, 2026-11-10): when a 'failed' status is
+ * preserved onto an issue whose id was reassigned by an intervening
+ * re-audit (resolveSuggestionStatus above), the upsert below can take its
+ * `create` branch for the new id -- and lastErrorReason was never in that
+ * branch's data, so the brand-new row ended up 'failed' with
+ * lastErrorReason stuck at null. The Apply Failure Report
+ * (pdf-remediation.controller.ts) then only had its legacy-row fallback
+ * text ("failed before failure reasons were recorded") to show, even
+ * though a perfectly good reason existed under the old id the whole time.
+ */
+export function resolveCarriedLastErrorReason(
+  existing: { lastErrorReason: string | null } | null,
+  resetFailedAttempts: boolean
+): string | null {
+  return resetFailedAttempts ? null : (existing?.lastErrorReason ?? null);
+}
 // TABLE_LIKELY_FORMULA_CODE is a heuristic redirect (see its own doc comment
 // in pdf-table.validator.ts) — routed through the same AI-drafting path as
 // a genuine formula finding, but analyzeFormulaActualText forces it to stay
@@ -1153,7 +1173,7 @@ class AiAnalysisService {
           const issueFingerprint = buildIssueFingerprint(issue);
           let existing = await prisma.aiAnalysis.findUnique({
             where: { jobId_issueId: { jobId, issueId: issue.id } },
-            select: { status: true, suggestionType: true, value: true, issueFingerprint: true, failedAttempts: true },
+            select: { status: true, suggestionType: true, value: true, issueFingerprint: true, failedAttempts: true, lastErrorReason: true },
           });
           // Fallback: issue.id can be stale even for THIS issue. An intervening
           // re-audit (e.g. applyAll's internal reauditAndCompare) regenerates every
@@ -1168,7 +1188,7 @@ class AiAnalysisService {
           if (!existing || existing.issueFingerprint !== issueFingerprint) {
             const byFingerprint = await prisma.aiAnalysis.findFirst({
               where: { jobId, issueFingerprint },
-              select: { status: true, suggestionType: true, value: true, issueFingerprint: true, failedAttempts: true },
+              select: { status: true, suggestionType: true, value: true, issueFingerprint: true, failedAttempts: true, lastErrorReason: true },
               // Stale rows can accumulate under successive old ids sharing this
               // fingerprint across repeated re-audits — take the most recently
               // written one, not an arbitrary one.
@@ -1183,6 +1203,7 @@ class AiAnalysisService {
           // carrying over a count earned against a now-stale finding.
           const resetFailedAttempts = existing?.status === 'failed' && status !== 'failed';
           const carriedFailedAttempts = resolveCarriedFailedAttempts(existing, resetFailedAttempts);
+          const carriedLastErrorReason = resolveCarriedLastErrorReason(existing, resetFailedAttempts);
 
           await prisma.aiAnalysis.upsert({
             where: { jobId_issueId: { jobId, issueId: issue.id } },
@@ -1200,6 +1221,7 @@ class AiAnalysisService {
               requiresManualReview: suggestion.requiresManualReview ?? false,
               issueFingerprint,
               failedAttempts: carriedFailedAttempts,
+              lastErrorReason: carriedLastErrorReason,
               updatedAt: new Date(),
             },
             update: {
@@ -1214,6 +1236,7 @@ class AiAnalysisService {
               requiresManualReview: suggestion.requiresManualReview ?? false,
               issueFingerprint,
               failedAttempts: carriedFailedAttempts,
+              lastErrorReason: carriedLastErrorReason,
               updatedAt: new Date(),
             },
           });
