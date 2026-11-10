@@ -63,6 +63,7 @@ import { locateTextRun, locateEnclosingTextObject, computeCtmAt, findPrecedingCo
 import { MIN_APPLY_CONFIDENCE, resolveSourceColor } from './pdf-contrast-writer.service';
 import { verifyStillNoDetectableInk } from './color-contrast-verification';
 import { tokenize } from '../zone-extractor/seam-c/content-stream';
+import { baseEncodingTable } from './font-encodings';
 import type { ParsedPDF } from './pdf-parser.service';
 import {
   findUrlOperatorRun,
@@ -4562,9 +4563,31 @@ export class PdfStructureWriterService {
       }
       let text = '';
       for (let i = 0; i < c.rawBytes.length; i++) {
-        const glyph = resolveGlyphText(c.fontResourceName, c.rawBytes.charCodeAt(i));
+        const byteCode = c.rawBytes.charCodeAt(i);
+        let glyph = resolveGlyphText(c.fontResourceName, byteCode);
+        // A /ToUnicode miss on a byte whose font CONFIRMS one of the three
+        // standard base encodings (WinAnsi/Standard/MacRoman) as its own
+        // declared /Encoding isn't actually ambiguous for that byte's
+        // code-point identity -- the substituted glyph may be decorative,
+        // but the character a screen reader should announce is still
+        // whatever that CONFIRMED encoding defines for the code (real,
+        // recurring pattern: byte 149/0x95 = U+2022 BULLET under
+        // WinAnsiEncoding, confirmed on two different fonts in
+        // WPVP_180188_9798986469300_txt.pdf, 2026-11-10 -- but the SAME
+        // byte means 'i-dieresis' under MacRomanEncoding and is unassigned
+        // under StandardEncoding, per font-encodings.ts's own tables, so
+        // this reads the font's OWN declared encoding rather than assuming
+        // WinAnsi universally). Gated on an EXPLICIT /Encoding declaration
+        // (fontBaseEncodingName below), never a missing/implicit one -- a
+        // symbolic font, or a nonsymbolic one relying on its own built-in
+        // encoding with no /Encoding entry at all, stays a genuine decline.
         if (glyph === null) {
-          return fail(`Font ${c.fontResourceName}'s own /ToUnicode CMap has no entry for byte ${c.rawBytes.charCodeAt(i)} at offset ${c.tagStart} -- declining rather than guessing the real letter`);
+          const table = baseEncodingTable(this.fontBaseEncodingName(doc, pageNumber, c.fontResourceName));
+          const cp = table?.[byteCode];
+          if (cp) glyph = String.fromCodePoint(cp);
+        }
+        if (glyph === null) {
+          return fail(`Font ${c.fontResourceName}'s own /ToUnicode CMap has no entry for byte ${byteCode} at offset ${c.tagStart} -- declining rather than guessing the real letter`);
         }
         text += glyph;
       }
@@ -4573,7 +4596,7 @@ export class PdfStructureWriterService {
 
     let newContent = originalContent;
     for (const r of [...resolved].sort((a, b) => b.tagStart - a.tagStart)) {
-      const replacement = `/Span <</ActualText (${this.escapeLinkPdfString(r.text)})>> BDC `;
+      const replacement = `/Span <</ActualText ${this.actualTextLiteral(r.text)}>> BDC `;
       newContent = newContent.slice(0, r.tagStart) + replacement + newContent.slice(r.tagEnd);
     }
     writePageContent(doc, pageNumber, newContent);
@@ -7075,6 +7098,33 @@ export class PdfStructureWriterService {
   }
 
   /**
+   * Renders a resolved ActualText value for content-stream splicing
+   * (fixArtifactActualTextSibling above) as either a plain literal string
+   * (escaped) when every character fits in a single Latin-1 byte, or a
+   * UTF-16BE hex string (<FEFF...>, the exact convention this codebase's
+   * own correctly-tagged ActualText siblings already use -- see that
+   * fixer's own test fixture) when it doesn't. A plain literal string
+   * byte-truncates anything above U+00FF (0x2022 BULLET & 0xFF = 0x22 =
+   * '"') -- latent since this fixer only ever resolved Latin-1-range
+   * letters before; surfaced once its own confirmed-encoding ToUnicode
+   * fallback started resolving real, confirmed non-Latin-1 characters
+   * like bullet (WPVP_180188_9798986469300_txt.pdf, 2026-11-10).
+   * charCodeAt-based iteration already yields correct UTF-16BE code units
+   * for an astral (surrogate-pair) character too -- no extra handling
+   * needed.
+   */
+  private actualTextLiteral(text: string): string {
+    if (/^[\x00-\xff]*$/.test(text)) {
+      return `(${this.escapeLinkPdfString(text)})`;
+    }
+    let hex = '';
+    for (let i = 0; i < text.length; i++) {
+      hex += text.charCodeAt(i).toString(16).padStart(4, '0');
+    }
+    return `<FEFF${hex}>`;
+  }
+
+  /**
    * Allocates the next free STANDALONE-object /StructParent key and
    * appends [key, structElementRef] to /StructTreeRoot's own top-level
    * /ParentTree /Nums array -- a SEPARATE PDF mechanism from a page's own
@@ -7358,6 +7408,44 @@ export class PdfStructureWriterService {
       }
       return map?.get(byteCode) ?? null;
     };
+  }
+
+  /**
+   * A page font's own declared base encoding name (e.g. "/WinAnsiEncoding"),
+   * read directly from its /Encoding entry -- either a bare Name, or an
+   * Encoding dictionary's own /BaseEncoding. Returns undefined when there's
+   * no explicit declaration at all (a symbolic font, or a nonsymbolic one
+   * relying on its own built-in encoding per PDF32000 9.6.6.2) -- NOT a
+   * guessed default, since StandardEncoding/MacRomanEncoding/WinAnsiEncoding
+   * disagree on what several byte codes mean (confirmed via
+   * font-encodings.ts's own tables: byte 149 alone is bullet under
+   * WinAnsiEncoding, unassigned under StandardEncoding, and 'i-dieresis'
+   * under MacRomanEncoding) -- only an EXPLICIT declaration makes a
+   * byte-code's meaning a confirmed fact rather than an assumption. Used by
+   * fixArtifactActualTextSibling's own confirmed-encoding ToUnicode-miss
+   * fallback above.
+   */
+  private fontBaseEncodingName(doc: PDFDocument, pageNumber: number, fontTag: string): string | undefined {
+    try {
+      const page = doc.getPage(pageNumber - 1);
+      const resourcesRaw = page.node.get(PDFName.of('Resources'));
+      const resources = resourcesRaw instanceof PDFRef ? doc.context.lookup(resourcesRaw, PDFDict) : resourcesRaw instanceof PDFDict ? resourcesRaw : null;
+      const fontsRaw = resources?.get(PDFName.of('Font'));
+      const fonts = fontsRaw instanceof PDFRef ? doc.context.lookup(fontsRaw, PDFDict) : fontsRaw instanceof PDFDict ? fontsRaw : null;
+      const fontRef = fonts?.get(PDFName.of(fontTag.replace(/^\//, '')));
+      const fontDict = fontRef instanceof PDFRef ? doc.context.lookup(fontRef, PDFDict) : fontRef instanceof PDFDict ? fontRef : null;
+      if (!fontDict) return undefined;
+      let encRaw = fontDict.get(PDFName.of('Encoding'));
+      if (encRaw instanceof PDFRef) encRaw = doc.context.lookup(encRaw);
+      if (encRaw instanceof PDFName) return encRaw.toString();
+      if (encRaw instanceof PDFDict) {
+        const base = encRaw.get(PDFName.of('BaseEncoding'));
+        return base instanceof PDFName ? base.toString() : undefined;
+      }
+      return undefined;
+    } catch {
+      return undefined;
+    }
   }
 
   /**
