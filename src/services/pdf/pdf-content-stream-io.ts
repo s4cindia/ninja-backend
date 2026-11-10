@@ -29,7 +29,26 @@ export function decodePageContent(doc: PDFDocument, pageNumber: number): string 
       const anyS = s as { decode?: () => Uint8Array };
       if (anyS && typeof anyS.decode === 'function') { try { bytes = anyS.decode(); } catch { /* */ } }
       if (!bytes && s instanceof PDFRawStream) { try { bytes = decodePDFRawStream(s).decode(); } catch { /* */ } }
-      if (bytes) out += Buffer.from(bytes).toString('latin1');
+      if (bytes) {
+        // PDF32000-1:2008 §7.8.2 only guarantees each /Contents array
+        // element is internally a complete token sequence -- it says
+        // nothing about what byte immediately precedes/follows the next
+        // element, and real producers routinely emit a segment with no
+        // trailing whitespace right before one with no leading whitespace
+        // (confirmed real: a running-header /Artifact BDC whose own
+        // preceding /Tf lived in the PRECEDING array element, 149 pages,
+        // WPVP_180188_9798986469300_txt.pdf, 2026-11-10). Concatenating
+        // with no separator silently glues the last token of one segment
+        // to the first token of the next into one unrecognized token --
+        // here, Tf's own font-name operand merging with the next
+        // segment's leading tag name, making the font untrackable from
+        // that point on. A newline is always syntactically safe to insert
+        // (whitespace is never significant inside a content stream), so
+        // this has no downside for a conforming producer and heals this
+        // real non-conforming shape.
+        if (out.length > 0) out += '\n';
+        out += Buffer.from(bytes).toString('latin1');
+      }
     }
     return out;
   } catch {
