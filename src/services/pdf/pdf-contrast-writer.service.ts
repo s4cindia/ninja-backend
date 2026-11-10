@@ -559,7 +559,18 @@ export class PdfContrastWriterService {
   ): Promise<FixResult> {
     const cd = issue.contrastData;
     if (!cd) {
-      return { issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error: 'Issue has no contrastData (deterministic measurement missing)' };
+      // The suggestion-generation gate (ai-analysis.service.ts) never
+      // offers color-contrast-fix for an issue without contrastData in the
+      // first place, so reaching this with no contrastData means the
+      // CACHED suggestion's issueId/fingerprint has since been reassigned,
+      // by an intervening re-audit, to a genuinely different finding that
+      // this time has none -- a stale suggestion, not a new defect. Worded
+      // to match the apply-failure classifier's "likely_resolved" pattern
+      // (apply-failure-classification.ts's "no longer matches" rule)
+      // rather than its generic "needs investigation" catch-all, since
+      // the real, actionable takeaway is "re-run AI Analysis", not "go
+      // read the code".
+      return { issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error: 'Issue has no contrastData -- the finding this issue id now resolves to no longer matches what this suggestion was generated from (a re-audit likely reassigned it to a different finding); re-running AI Analysis will generate a fresh suggestion for what is actually here now' };
     }
     if (!issue.pageNumber || !issue.boundingBox) {
       return { issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error: 'Issue is missing pageNumber or boundingBox' };
@@ -939,8 +950,21 @@ export class PdfContrastWriterService {
     // comment. A flat background's variance is always comfortably under
     // this threshold by definition, so case 2 above is never blocked by it
     // in practice -- the gate's real job is still guarding case 1.
+    // Tracks what the backplate tier actually did, so the final failure
+    // message below (if execution falls through to it) can say so instead
+    // of always blaming "escalating to #000000" even when a backplate was
+    // ALSO tried and failed for its own, different reason -- a real,
+    // confirmed-misleading gap (WPVP_180188_9798986469300_txt.pdf,
+    // contrast-138/139, 2026-11-10): every fall-through path below this
+    // point left `verification` at its stale pre-backplate value, so the
+    // reported ratio/color was always the extreme-escalation's own, never
+    // the backplate's.
+    let backplateFailureDetail: string | null = null;
     if (verification && (!verification.passes || verification.uncertain) && verification.variance <= BUSY_VARIANCE_THRESHOLD) {
       const enclosing = locateEnclosingTextObject(content, match.start);
+      if (!enclosing) {
+        backplateFailureDetail = 'also tried a backplate, but found no enclosing text object to anchor it to';
+      }
       // Contrast against the text run's own TRUE displayed color -- NOT
       // cd.foreground. cd.foreground is the audit's own sampled estimate,
       // which can be flatly wrong for text whose real ink color visually
@@ -1017,6 +1041,9 @@ export class PdfContrastWriterService {
       const spliced = enclosing
         ? spliceBackplate(content, enclosing, rect, hexToUnitRgb(backplateColorHex), (csName, nums) => resolveSourceColor(doc, pageNumber, csName, nums))
         : null;
+      if (enclosing && !spliced) {
+        backplateFailureDetail = 'also tried a backplate, but the splice itself failed';
+      }
 
       if (spliced) {
         writePageContent(doc, pageNumber, spliced);
@@ -1061,6 +1088,8 @@ export class PdfContrastWriterService {
         // to the unchanged failure path below (which itself reverts again,
         // harmlessly, from the same pristine `content`).
         writePageContent(doc, pageNumber, content);
+        backplateFailureDetail = `also tried a backplate (${backplateColorHex}), which measured ` +
+          `${backplateVerification?.ratio ?? 'unknown'}:1 (required ${cd.requiredRatio}:1)`;
       }
     }
 
@@ -1076,12 +1105,17 @@ export class PdfContrastWriterService {
       // same batch succeeds -- would silently persist this "failed" color
       // change into the final output anyway.
       writePageContent(doc, pageNumber, content);
-      const error = verification?.uncertain
+      // backplateFailureDetail (set above, if that tier was attempted at
+      // all) always describes the LAST thing this method actually tried --
+      // appending it keeps the message honest instead of implying the
+      // extreme-color escalation was the only thing attempted.
+      const error = (verification?.uncertain
         ? 'Could not confidently measure the background near this text (every nearby sampled region showed ' +
           'meaningful color variation -- either adjacent contamination, or a genuinely non-uniform background ' +
           'like a photo or gradient) — skipping rather than risking a false pass/fail; likely needs manual review'
         : `Fix did not verify even after escalating to ${appliedColor} ` +
-          `(measured ${verification?.ratio ?? 'unknown'}:1, required ${cd.requiredRatio}:1)`;
+          `(measured ${verification?.ratio ?? 'unknown'}:1, required ${cd.requiredRatio}:1)`
+      ) + (backplateFailureDetail ? ` -- ${backplateFailureDetail}` : '');
       return { issueId, success: false, before, after: 'unknown', error };
     }
 
