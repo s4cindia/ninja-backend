@@ -1,6 +1,7 @@
 import prisma from '../../lib/prisma';
 import { logger } from '../../lib/logger';
-import { FeedbackType, FeedbackStatus, Feedback as PrismaFeedback } from '@prisma/client';
+import { notificationService } from '../notification/notification.service';
+import { FeedbackType, FeedbackStatus, FeedbackSeverity, Feedback as PrismaFeedback } from '@prisma/client';
 
 type FeedbackWithUser = PrismaFeedback & {
   user: {
@@ -39,6 +40,7 @@ interface FeedbackContext {
 
 interface CreateFeedbackInput {
   type: FeedbackType;
+  severity?: FeedbackSeverity;
   rating?: number;
   comment: string;
   context?: FeedbackContext;
@@ -51,6 +53,7 @@ interface CreateFeedbackInput {
 interface FeedbackFilters {
   type?: FeedbackType;
   status?: FeedbackStatus;
+  severity?: FeedbackSeverity;
   rating?: number;
   jobId?: string;
   userId?: string;
@@ -70,6 +73,7 @@ interface FeedbackStats {
   total: number;
   byType: Record<string, number>;
   byStatus: Record<string, number>;
+  bySeverity: Record<string, number>;
   byRating: Record<string, number>;
   averageRating: number;
   recentCount: number;
@@ -108,6 +112,13 @@ const STATUS_MAP: Record<string, FeedbackStatus> = {
   dismissed: 'DISMISSED',
 };
 
+const SEVERITY_MAP: Record<string, FeedbackSeverity> = {
+  critical: 'CRITICAL',
+  high: 'HIGH',
+  medium: 'MEDIUM',
+  low: 'LOW',
+};
+
 class FeedbackService {
   async createFeedback(input: CreateFeedbackInput): Promise<PrismaFeedback> {
     const feedback = await prisma.feedback.create({
@@ -116,6 +127,7 @@ class FeedbackService {
         userId: input.userId,
         userEmail: input.userEmail,
         type: input.type,
+        severity: input.severity,
         rating: input.rating,
         comment: input.comment,
         context: input.context ? JSON.parse(JSON.stringify(input.context)) : undefined,
@@ -177,6 +189,7 @@ class FeedbackService {
     if (filters.userId) where.userId = filters.userId;
     if (filters.type) where.type = filters.type;
     if (filters.status) where.status = filters.status;
+    if (filters.severity) where.severity = filters.severity;
     if (filters.rating) where.rating = filters.rating;
     
     if (filters.jobId) {
@@ -242,7 +255,8 @@ class FeedbackService {
     tenantId: string,
     status: FeedbackStatus,
     response?: string,
-    respondedBy?: string
+    respondedBy?: string,
+    severity?: FeedbackSeverity
   ): Promise<PrismaFeedback> {
     try {
       const result = await prisma.feedback.updateMany({
@@ -252,6 +266,7 @@ class FeedbackService {
         },
         data: {
           status,
+          ...(severity !== undefined && { severity }),
           ...(response && {
             response,
             respondedBy,
@@ -273,6 +288,32 @@ class FeedbackService {
       }
 
       logger.info(`Feedback ${id} status updated to ${status}`);
+
+      // Closes the loop back to whoever filed it -- same pattern as the
+      // TeamReview notification loop. Skipped for anonymous submissions
+      // (no userId to notify) and never allowed to fail the status update
+      // itself, same "nice-to-have, never the critical path" contract as
+      // every other fire-and-forget notification in this codebase.
+      if (updated.userId) {
+        notificationService
+          .createNotification({
+            userId: updated.userId,
+            tenantId: updated.tenantId,
+            type: 'FEEDBACK_STATUS_CHANGED',
+            title: 'Your feedback was updated',
+            message: response
+              ? `Your "${updated.type.replace(/_/g, ' ').toLowerCase()}" feedback is now ${status.replace(/_/g, ' ').toLowerCase()}: ${response}`
+              : `Your "${updated.type.replace(/_/g, ' ').toLowerCase()}" feedback is now ${status.replace(/_/g, ' ').toLowerCase()}.`,
+            data: { feedbackId: updated.id },
+            link: '/feedback',
+          })
+          .catch((notifyErr) => {
+            logger.error(
+              `[Feedback] Failed to create status-change notification for ${id}: ${notifyErr instanceof Error ? notifyErr.message : String(notifyErr)}`
+            );
+          });
+      }
+
       return updated;
     } catch (error) {
       if ((error as { code?: string }).code === 'P2025') {
@@ -352,6 +393,14 @@ class FeedbackService {
     return mapped;
   }
 
+  static toFeedbackSeverity(severity: string): FeedbackSeverity {
+    const mapped = SEVERITY_MAP[severity.toLowerCase()];
+    if (!mapped) {
+      throw new Error(`Invalid feedback severity: ${severity}`);
+    }
+    return mapped;
+  }
+
   async getStats(tenantId?: string): Promise<FeedbackStats> {
     const where = tenantId ? { tenantId } : {};
 
@@ -362,6 +411,7 @@ class FeedbackService {
       total,
       typeCounts,
       statusCounts,
+      severityCounts,
       ratingStats,
       recentCount,
       responseMetrics,
@@ -375,6 +425,11 @@ class FeedbackService {
       prisma.feedback.groupBy({
         by: ['status'],
         where,
+        _count: true,
+      }),
+      prisma.feedback.groupBy({
+        by: ['severity'],
+        where: { ...where, severity: { not: null } },
         _count: true,
       }),
       prisma.feedback.aggregate({
@@ -407,6 +462,11 @@ class FeedbackService {
       byStatus[item.status] = item._count;
     }
 
+    const bySeverity: Record<string, number> = {};
+    for (const item of severityCounts) {
+      if (item.severity) bySeverity[item.severity] = item._count;
+    }
+
     const byRating: Record<string, number> = { '1': 0, '2': 0, '3': 0, '4': 0, '5': 0 };
     for (const item of ratingDistribution) {
       if (item.rating) {
@@ -422,6 +482,7 @@ class FeedbackService {
       total,
       byType,
       byStatus,
+      bySeverity,
       byRating,
       averageRating: ratingStats._avg.rating 
         ? Math.round(ratingStats._avg.rating * 10) / 10 
@@ -539,7 +600,11 @@ class FeedbackService {
 
     return prisma.feedback.findMany({
       where,
+      // severity's declaration order (CRITICAL..LOW) IS the priority
+      // order -- nulls (no severity set) sort last by Postgres's own
+      // default for ASC, which is exactly "unprioritized goes last" here.
       orderBy: [
+        { severity: 'asc' },
         { rating: 'asc' },
         { createdAt: 'asc' },
       ],
