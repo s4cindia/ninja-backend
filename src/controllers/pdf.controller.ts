@@ -841,6 +841,11 @@ export class PdfController {
             reviewer: { select: { id: true, firstName: true, lastName: true, email: true } },
           },
         });
+        // Mirrors review-gate.service.ts's getActiveReviewBlock exactly
+        // (teamReviews[0] is the most recent row, same ordering) so the UI
+        // can show the blocked state without a second round trip -- keep
+        // both in sync if that gate's definition of "blocked" ever changes.
+        const reviewBlocked = teamReviews.length > 0 && teamReviews[0].outcome === 'NEEDS_CORRECTION';
 
         return res.json({
           success: true,
@@ -867,6 +872,7 @@ export class PdfController {
             matterhornSummary,
             isOwner,
             teamReviews,
+            reviewBlocked,
           },
         });
       }

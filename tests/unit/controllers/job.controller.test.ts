@@ -19,6 +19,7 @@ vi.mock('../../../src/lib/prisma', () => ({
   default: {
     job: { findMany: vi.fn(), count: vi.fn() },
     teamMembership: { findMany: vi.fn() },
+    teamReview: { findMany: vi.fn() },
   },
 }));
 vi.mock('../../../src/services/queue.service', () => ({
@@ -181,6 +182,7 @@ describe('JobController', () => {
     beforeEach(() => {
       (prisma.job.findMany as any).mockResolvedValue([]);
       (prisma.job.count as any).mockResolvedValue(0);
+      (prisma.teamReview.findMany as any).mockResolvedValue([]);
     });
 
     it('includes the owner\'s name/email in the select, not just the raw userId (RBAC frontend PR #360 follow-up)', async () => {
@@ -285,6 +287,45 @@ describe('JobController', () => {
       const where = (prisma.job.findMany as any).mock.calls[0][0].where;
       expect(where.tenantId).toBe('tenant-1');
       expect(where.userId).toEqual({ in: ['leader-1'] });
+    });
+
+    it('attaches reviewBlocked per job from each job\'s most recent TeamReview', async () => {
+      (prisma.teamMembership.findMany as any)
+        .mockResolvedValueOnce([{ teamId: 'team-1' }])
+        .mockResolvedValueOnce([{ userId: 'leader-1' }]);
+      (prisma.job.findMany as any).mockResolvedValue([
+        { id: 'job-blocked', type: 'PDF_ACCESSIBILITY', status: 'COMPLETED', output: null },
+        { id: 'job-ok', type: 'PDF_ACCESSIBILITY', status: 'COMPLETED', output: null },
+        { id: 'job-unreviewed', type: 'PDF_ACCESSIBILITY', status: 'COMPLETED', output: null },
+      ]);
+      (prisma.job.count as any).mockResolvedValue(3);
+      // Already in "ordered by reviewedAt desc" order, as the real query
+      // would return -- job-blocked's most recent row (first occurrence) is
+      // NEEDS_CORRECTION; its older OK row later in the array is ignored.
+      (prisma.teamReview.findMany as any).mockResolvedValue([
+        { jobId: 'job-blocked', outcome: 'NEEDS_CORRECTION' },
+        { jobId: 'job-ok', outcome: 'OK' },
+        { jobId: 'job-blocked', outcome: 'OK' },
+      ]);
+
+      const res = makeRes();
+      await jobController.listTeamJobs(makeReq({ user: { id: 'leader-1', tenantId: 'tenant-1' } } as any), res, next);
+
+      const jobs = (res.json as any).mock.calls[0][0].data.jobs;
+      expect(jobs.find((j: any) => j.id === 'job-blocked').reviewBlocked).toBe(true);
+      expect(jobs.find((j: any) => j.id === 'job-ok').reviewBlocked).toBe(false);
+      expect(jobs.find((j: any) => j.id === 'job-unreviewed').reviewBlocked).toBe(false);
+    });
+
+    it('does not query TeamReview when the page is empty', async () => {
+      (prisma.teamMembership.findMany as any)
+        .mockResolvedValueOnce([{ teamId: 'team-1' }])
+        .mockResolvedValueOnce([{ userId: 'leader-1' }]);
+
+      const res = makeRes();
+      await jobController.listTeamJobs(makeReq({ user: { id: 'leader-1', tenantId: 'tenant-1' } } as any), res, next);
+
+      expect(prisma.teamReview.findMany).not.toHaveBeenCalled();
     });
   });
 

@@ -20,6 +20,7 @@ import { ComparisonService, mapFixTypeToChangeType, extractWcagCriteria, extract
 import { workflowService } from '../services/workflow/workflow.service';
 import { workflowConfigService } from '../services/workflow/workflow-config.service';
 import { gateAiAltText } from '../utils/prh-ai-gate';
+import { getActiveReviewBlock } from '../services/team-review/review-gate.service';
 
 const comparisonService = new ComparisonService(prisma);
 
@@ -1041,6 +1042,18 @@ export const epubController = {
         });
       }
 
+      const reviewBlock = await getActiveReviewBlock(jobId);
+      if (reviewBlock) {
+        return res.status(403).json({
+          success: false,
+          error: {
+            code: 'BLOCKED_NEEDS_CORRECTION',
+            message: 'This job is blocked from shipment: the most recent QC review flagged it as needing correction.',
+            details: reviewBlock,
+          },
+        });
+      }
+
       const output = job.output as { autoRemediation?: { remediatedFileName?: string } } | null;
       const remediatedFileName = output?.autoRemediation?.remediatedFileName;
 
@@ -1696,6 +1709,18 @@ export const epubController = {
         return res.status(401).json({
           success: false,
           error: 'Authentication required',
+        });
+      }
+
+      const reviewBlock = await getActiveReviewBlock(jobId);
+      if (reviewBlock) {
+        return res.status(403).json({
+          success: false,
+          error: {
+            code: 'BLOCKED_NEEDS_CORRECTION',
+            message: 'This job is blocked from shipment: the most recent QC review flagged it as needing correction.',
+            details: reviewBlock,
+          },
         });
       }
 

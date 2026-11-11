@@ -139,5 +139,30 @@ describe('PdfController.getAuditResult', () => {
       expect(data.isOwner).toBe(false);
       expect(data.teamReviews).toEqual([]);
     });
+
+    it('reports reviewBlocked: true when the most recent (first) teamReviews row is NEEDS_CORRECTION', async () => {
+      vi.mocked(prisma.teamReview.findMany).mockResolvedValueOnce([
+        { id: 'review-2', jobId: 'job-1', outcome: 'NEEDS_CORRECTION', reviewer: { id: 'tl-1', firstName: 'Tess', lastName: 'Lead', email: 'tl@x.com' } },
+        { id: 'review-1', jobId: 'job-1', outcome: 'OK', reviewer: { id: 'tl-1', firstName: 'Tess', lastName: 'Lead', email: 'tl@x.com' } },
+      ] as any);
+      const req = makeReq(baseJob, { id: 'owner-1' });
+      const res = makeRes();
+
+      await pdfController.getAuditResult(req, res);
+
+      const data = (res.json as any).mock.calls[0][0].data;
+      expect(data.reviewBlocked).toBe(true);
+    });
+
+    it('reports reviewBlocked: false when there are no reviews yet, or the latest is OK', async () => {
+      vi.mocked(prisma.teamReview.findMany).mockResolvedValueOnce([]);
+      const req = makeReq(baseJob, { id: 'owner-1' });
+      const res = makeRes();
+
+      await pdfController.getAuditResult(req, res);
+
+      const data = (res.json as any).mock.calls[0][0].data;
+      expect(data.reviewBlocked).toBe(false);
+    });
   });
 });

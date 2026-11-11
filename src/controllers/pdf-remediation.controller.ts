@@ -27,6 +27,7 @@ import {
 } from '../services/comparison';
 import { remediationCycleLockService } from '../services/pdf/remediation-cycle-lock.service';
 import { remediationCycleHistoryService } from '../services/pdf/remediation-cycle-history.service';
+import { getActiveReviewBlock } from '../services/team-review/review-gate.service';
 import { classifyApplyFailureReason } from '../services/pdf/apply-failure-classification';
 
 const comparisonService = new ComparisonService(prisma);
@@ -1005,6 +1006,19 @@ export class PdfRemediationController {
           error: {
             code: 'INVALID_JOB_TYPE',
             message: 'Job is not a PDF accessibility job',
+          },
+        });
+        return;
+      }
+
+      const reviewBlock = await getActiveReviewBlock(jobId);
+      if (reviewBlock) {
+        res.status(403).json({
+          success: false,
+          error: {
+            code: 'BLOCKED_NEEDS_CORRECTION',
+            message: 'This job is blocked from shipment: the most recent QC review flagged it as needing correction.',
+            details: reviewBlock,
           },
         });
         return;
