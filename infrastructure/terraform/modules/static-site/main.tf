@@ -43,6 +43,7 @@ resource "aws_cloudfront_distribution" "this" {
   comment             = "ninja-frontend-${var.environment}"
   default_root_object = "index.html"
   price_class         = "PriceClass_100"
+  aliases             = var.aliases
 
   origin {
     domain_name              = aws_s3_bucket.this.bucket_regional_domain_name
@@ -80,8 +81,15 @@ resource "aws_cloudfront_distribution" "this" {
     }
   }
 
+  # Falls back to the shared *.cloudfront.net certificate when no alias is
+  # configured (var.acm_certificate_arn stays null) -- the two attributes
+  # are mutually exclusive on this resource, so both are driven off the same
+  # condition rather than set independently.
   viewer_certificate {
-    cloudfront_default_certificate = true
+    cloudfront_default_certificate = var.acm_certificate_arn == null
+    acm_certificate_arn            = var.acm_certificate_arn
+    ssl_support_method             = var.acm_certificate_arn == null ? null : "sni-only"
+    minimum_protocol_version       = var.acm_certificate_arn == null ? null : "TLSv1.2_2021"
   }
 
   tags = {
