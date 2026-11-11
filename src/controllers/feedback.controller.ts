@@ -1,16 +1,17 @@
 import { Response } from 'express';
-import { FeedbackType, FeedbackStatus } from '@prisma/client';
+import { FeedbackType, FeedbackStatus, FeedbackSeverity } from '@prisma/client';
 import { feedbackService, FeedbackService } from '../services/feedback/feedback.service';
 import { logger } from '../lib/logger';
 import { AuthenticatedRequest } from '../types/authenticated-request';
 
 const VALID_FEEDBACK_TYPES = Object.values(FeedbackType);
 const VALID_FEEDBACK_STATUSES = Object.values(FeedbackStatus);
+const VALID_FEEDBACK_SEVERITIES = Object.values(FeedbackSeverity);
 
 export const feedbackController = {
   async create(req: AuthenticatedRequest, res: Response) {
     try {
-      const { type, rating, comment, context, metadata } = req.body;
+      const { type, severity, rating, comment, context, metadata } = req.body;
       const userId = req.user?.id;
       const userEmail = req.user?.email;
       const tenantId = req.user?.tenantId;
@@ -36,6 +37,13 @@ export const feedbackController = {
         });
       }
 
+      if (severity !== undefined && !VALID_FEEDBACK_SEVERITIES.includes(severity.toUpperCase() as FeedbackSeverity)) {
+        return res.status(400).json({
+          success: false,
+          error: `Invalid severity. Must be one of: ${VALID_FEEDBACK_SEVERITIES.join(', ')}`,
+        });
+      }
+
       if (rating !== undefined && (rating < 1 || rating > 5)) {
         return res.status(400).json({
           success: false,
@@ -44,9 +52,11 @@ export const feedbackController = {
       }
 
       const feedbackType = FeedbackService.toFeedbackType(type);
+      const feedbackSeverity = severity ? FeedbackService.toFeedbackSeverity(severity) : undefined;
 
       const feedback = await feedbackService.createFeedback({
         type: feedbackType,
+        severity: feedbackSeverity,
         rating,
         comment,
         context,
@@ -108,6 +118,7 @@ export const feedbackController = {
       const {
         type,
         status,
+        severity,
         rating,
         jobId,
         page = '1',
@@ -131,6 +142,7 @@ export const feedbackController = {
         {
           type: type ? FeedbackService.toFeedbackType(type as string) : undefined,
           status: status ? FeedbackService.toFeedbackStatus(status as string) : undefined,
+          severity: severity ? FeedbackService.toFeedbackSeverity(severity as string) : undefined,
           rating: rating ? Number(rating) : undefined,
           jobId: jobId as string | undefined,
           tenantId,
@@ -155,7 +167,7 @@ export const feedbackController = {
   async updateStatus(req: AuthenticatedRequest, res: Response) {
     try {
       const { id } = req.params;
-      const { status, response } = req.body;
+      const { status, severity, response } = req.body;
       const respondedBy = req.user?.id;
       const tenantId = req.user?.tenantId;
 
@@ -180,14 +192,23 @@ export const feedbackController = {
         });
       }
 
+      if (severity !== undefined && !VALID_FEEDBACK_SEVERITIES.includes(severity.toUpperCase() as FeedbackSeverity)) {
+        return res.status(400).json({
+          success: false,
+          error: `Invalid severity. Must be one of: ${VALID_FEEDBACK_SEVERITIES.join(', ')}`,
+        });
+      }
+
       const feedbackStatus = FeedbackService.toFeedbackStatus(status);
+      const feedbackSeverity = severity ? FeedbackService.toFeedbackSeverity(severity) : undefined;
 
       const feedback = await feedbackService.updateFeedbackStatus(
         id,
         tenantId,
         feedbackStatus,
         response,
-        respondedBy
+        respondedBy,
+        feedbackSeverity
       );
 
       return res.json({
