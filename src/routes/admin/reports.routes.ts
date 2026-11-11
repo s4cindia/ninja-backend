@@ -238,4 +238,39 @@ router.get('/reports/quality/:jobId/score-trend', authenticate, async (req: Requ
   }
 });
 
+// GET /api/v1/admin/reports/jobs/:jobId/review-status
+// Backs the Cost/Quality tabs' job drill-down dialog with the same
+// TeamReview history/gate state PdfAuditResultsPage and MyTeamPage show --
+// an ADMIN reviewing a job's trend here shouldn't have to go find it again
+// just to see whether it's blocked from shipment.
+router.get('/reports/jobs/:jobId/review-status', authenticate, async (req: Request, res: Response) => {
+  try {
+    if (!isAdmin(req)) return forbidden(res);
+    const user = getUserFromReq(req);
+    if (!user?.tenantId) return noTenant(res);
+
+    // Same ownership check as the cost/score-trend drill-downs above --
+    // TeamReview carries no tenantId of its own.
+    const job = await prisma.job.findUnique({ where: { id: req.params.jobId }, select: { tenantId: true } });
+    if (!job || job.tenantId !== user.tenantId) {
+      return res.status(404).json({ success: false, error: { code: 'NOT_FOUND', message: 'Job not found' } });
+    }
+
+    const teamReviews = await prisma.teamReview.findMany({
+      where: { jobId: req.params.jobId },
+      orderBy: { reviewedAt: 'desc' },
+      include: {
+        reviewer: { select: { id: true, firstName: true, lastName: true, email: true } },
+      },
+    });
+    // Same most-recent-review rule as review-gate.service.ts's
+    // getActiveReviewBlock and pdf.controller.ts's getAuditResult.
+    const reviewBlocked = teamReviews.length > 0 && teamReviews[0].outcome === 'NEEDS_CORRECTION';
+
+    return res.json({ success: true, data: { jobId: req.params.jobId, teamReviews, reviewBlocked } });
+  } catch (err) {
+    return internalError(res, 'GET /admin/reports/jobs/:jobId/review-status', err);
+  }
+});
+
 export default router;
