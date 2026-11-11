@@ -272,11 +272,16 @@ locals {
     # (returns null, never throws) if this is ever unset or unreachable, so
     # there's no ordering requirement between this and the ecs_ace module.
     { name = "ACE_SERVICE_URL", value = "http://${module.alb.alb_dns_name}/ace" },
-    # Phase 9 -- the frontend's own CloudFront domain. Express's CORS
-    # middleware (src/index.ts, src/config/index.ts's corsOrigins) rejects
-    # any origin not in this list; without it, config/index.ts's fallback
-    # default (localhost only) silently blocks every real browser request.
-    { name = "CORS_ORIGINS", value = "https://${module.frontend.cloudfront_domain_name}" },
+    # Phase 9 -- the frontend's custom domain, plus its raw CloudFront
+    # domain kept alongside it during cutover (CloudFront keeps serving the
+    # default *.cloudfront.net hostname even once an alias is attached, so
+    # anything still pointed at it -- a stale bookmark, an uninvalidated
+    # cache -- doesn't start failing CORS the moment the alias goes live).
+    # Express's CORS middleware (src/index.ts, src/config/index.ts's
+    # corsOrigins) rejects any origin not in this list; without it,
+    # config/index.ts's fallback default (localhost only) silently blocks
+    # every real browser request.
+    { name = "CORS_ORIGINS", value = "https://ninja.s4carlisle.com,https://${module.frontend.cloudfront_domain_name}" },
   ]
 
   app_secrets = [
@@ -382,11 +387,29 @@ module "cloudfront" {
 # backend), not a combined one. bucket_name reuses the exact name
 # ninja-frontend's existing (previously never-applied) deploy-frontend-
 # production.yml already hardcodes.
+
+# Hardcoded rather than looked up via data "aws_acm_certificate" -- that
+# data source was tried first, and the domain lookup itself worked (it
+# resolved to this exact ARN), but the data source also eagerly calls
+# acm:GetCertificate to populate attributes this module never reads, and
+# the avrvenkatesa IAM identity used to apply this stack isn't granted that
+# action (confirmed by a real `terraform plan` AccessDeniedException, not a
+# guess). Hardcoding is safe here: this cert was requested and DNS-validated
+# by hand in ACM before this block existed, and ACM keeps a certificate's
+# ARN stable across its DNS-validated auto-renewals, so this won't need to
+# change on renewal -- only if the certificate is ever deleted and
+# re-requested from scratch.
+locals {
+  frontend_acm_certificate_arn = "arn:aws:acm:us-east-1:223643972423:certificate/152e148f-61bf-4524-abe4-3e08b879364c"
+}
+
 module "frontend" {
   source = "../../modules/static-site"
 
-  environment = "production"
-  bucket_name = "s4carlisle-ninja-frontend-prod"
+  environment         = "production"
+  bucket_name         = "s4carlisle-ninja-frontend-prod"
+  aliases             = ["ninja.s4carlisle.com"]
+  acm_certificate_arn = local.frontend_acm_certificate_arn
 }
 
 # --- Phase 8: ACE microservice (EPUB accessibility checker) ---
