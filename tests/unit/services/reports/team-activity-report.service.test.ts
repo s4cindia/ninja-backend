@@ -51,19 +51,73 @@ describe('TeamActivityReportService.getReport', () => {
     expect(report.reviewThroughput[0].reviewerName).toBe('noname@x.com');
   });
 
+  function mockJob(overrides: Record<string, any> = {}) {
+    return {
+      id: 'job-x',
+      userId: 'exec-1',
+      status: 'COMPLETED',
+      type: 'PDF_ACCESSIBILITY',
+      input: { fileName: 'doc.pdf' },
+      product: null,
+      createdAt: new Date('2026-10-05T00:00:00.000Z'),
+      updatedAt: new Date('2026-10-06T00:00:00.000Z'),
+      user: { firstName: 'Eve', lastName: 'Exec', email: 'e@x.com' },
+      ...overrides,
+    };
+  }
+
   it('groups ownership by owner and buckets status into completed/failed/inProgress', async () => {
     (prisma.job.findMany as any).mockResolvedValue([
-      { userId: 'exec-1', status: 'COMPLETED', user: { firstName: 'Eve', lastName: 'Exec', email: 'e@x.com' } },
-      { userId: 'exec-1', status: 'FAILED', user: { firstName: 'Eve', lastName: 'Exec', email: 'e@x.com' } },
-      { userId: 'exec-1', status: 'PROCESSING', user: { firstName: 'Eve', lastName: 'Exec', email: 'e@x.com' } },
-      { userId: 'exec-1', status: 'QUEUED', user: { firstName: 'Eve', lastName: 'Exec', email: 'e@x.com' } },
+      mockJob({ id: 'job-1', status: 'COMPLETED' }),
+      mockJob({ id: 'job-2', status: 'FAILED' }),
+      mockJob({ id: 'job-3', status: 'PROCESSING' }),
+      mockJob({ id: 'job-4', status: 'QUEUED' }),
     ]);
 
     const report = await teamActivityReportService.getReport({ tenantId: 't-1', from: FROM, to: TO });
 
-    expect(report.ownership).toEqual([
-      { ownerId: 'exec-1', ownerName: 'Eve Exec', ownerEmail: 'e@x.com', totalJobs: 4, completedJobs: 1, failedJobs: 1, inProgressJobs: 2 },
+    expect(report.ownership).toHaveLength(1);
+    const entry = report.ownership[0];
+    expect(entry).toMatchObject({
+      ownerId: 'exec-1', ownerName: 'Eve Exec', ownerEmail: 'e@x.com',
+      totalJobs: 4, completedJobs: 1, failedJobs: 1, inProgressJobs: 2,
+    });
+    expect(entry.jobs).toHaveLength(4);
+  });
+
+  it('builds a JobAssignment per job: Product.title wins when linked, else the upload\'s fileName', async () => {
+    (prisma.job.findMany as any).mockResolvedValue([
+      mockJob({ id: 'job-titled', product: { title: 'The Great Gatsby' }, input: { fileName: 'upload.pdf' } }),
+      mockJob({ id: 'job-untitled', product: null, input: { fileName: 'raw-upload.pdf' } }),
+      mockJob({ id: 'job-neither', product: null, input: {} }),
     ]);
+
+    const report = await teamActivityReportService.getReport({ tenantId: 't-1', from: FROM, to: TO });
+
+    const jobs = report.ownership[0].jobs;
+    expect(jobs.find((j) => j.jobId === 'job-titled')?.title).toBe('The Great Gatsby');
+    expect(jobs.find((j) => j.jobId === 'job-untitled')?.title).toBe('raw-upload.pdf');
+    expect(jobs.find((j) => j.jobId === 'job-neither')?.title).toBe('Untitled');
+  });
+
+  it('carries type/status/timestamps on each JobAssignment, newest first', async () => {
+    (prisma.job.findMany as any).mockResolvedValue([
+      mockJob({
+        id: 'job-1', type: 'EPUB_ACCESSIBILITY', status: 'FAILED',
+        createdAt: new Date('2026-10-10T00:00:00.000Z'), updatedAt: new Date('2026-10-11T00:00:00.000Z'),
+      }),
+    ]);
+
+    const report = await teamActivityReportService.getReport({ tenantId: 't-1', from: FROM, to: TO });
+
+    expect(report.ownership[0].jobs[0]).toEqual({
+      jobId: 'job-1',
+      title: 'doc.pdf',
+      type: 'EPUB_ACCESSIBILITY',
+      status: 'FAILED',
+      createdAt: '2026-10-10T00:00:00.000Z',
+      updatedAt: '2026-10-11T00:00:00.000Z',
+    });
   });
 
   it('scopes both queries to tenantId only when memberUserIds is omitted (ADMIN view)', async () => {

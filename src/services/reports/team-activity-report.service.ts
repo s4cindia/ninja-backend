@@ -32,6 +32,18 @@ export interface ReviewThroughputEntry {
   total: number;
 }
 
+/** One job "assignment" under an owner -- title falls back to the upload's
+ * own fileName when the job has no linked Product (Job.productId is
+ * nullable), rather than showing a bare jobId. */
+export interface JobAssignment {
+  jobId: string;
+  title: string;
+  type: string;
+  status: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface OwnershipEntry {
   ownerId: string;
   ownerName: string;
@@ -40,6 +52,14 @@ export interface OwnershipEntry {
   completedJobs: number;
   failedJobs: number;
   inProgressJobs: number;
+  /** Newest first -- matches the underlying query's orderBy. */
+  jobs: JobAssignment[];
+}
+
+function jobTitle(job: { product: { title: string } | null; input: unknown }): string {
+  if (job.product?.title) return job.product.title;
+  const input = job.input as { fileName?: string } | null;
+  return input?.fileName || 'Untitled';
 }
 
 export interface TeamActivityReport {
@@ -95,10 +115,17 @@ class TeamActivityReportService {
         ...(memberUserIds ? { userId: { in: memberUserIds } } : {}),
       },
       select: {
+        id: true,
         userId: true,
         status: true,
+        type: true,
+        input: true,
+        createdAt: true,
+        updatedAt: true,
         user: { select: { firstName: true, lastName: true, email: true } },
+        product: { select: { title: true } },
       },
+      orderBy: { createdAt: 'desc' },
     });
 
     const ownershipByOwner = new Map<string, OwnershipEntry>();
@@ -113,11 +140,20 @@ class TeamActivityReportService {
           completedJobs: 0,
           failedJobs: 0,
           inProgressJobs: 0,
+          jobs: [],
         } satisfies OwnershipEntry);
       entry.totalJobs += 1;
       if (job.status === 'COMPLETED') entry.completedJobs += 1;
       else if (job.status === 'FAILED') entry.failedJobs += 1;
       else entry.inProgressJobs += 1;
+      entry.jobs.push({
+        jobId: job.id,
+        title: jobTitle(job),
+        type: job.type,
+        status: job.status,
+        createdAt: job.createdAt.toISOString(),
+        updatedAt: job.updatedAt.toISOString(),
+      });
       ownershipByOwner.set(job.userId, entry);
     }
 

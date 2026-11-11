@@ -17,6 +17,7 @@ const mockGetQualityReport = vi.fn();
 const mockGetStuckIssues = vi.fn();
 const mockGetScoreTrend = vi.fn();
 const mockJobFindUnique = vi.fn();
+const mockTeamReviewFindMany = vi.fn();
 
 vi.mock('../../../../src/services/reports/throughput-report.service', () => ({
   throughputReportService: { getReport: (...args: unknown[]) => mockGetReport(...args) },
@@ -46,7 +47,10 @@ vi.mock('../../../../src/services/reports/quality-report.service', () => ({
 }));
 
 vi.mock('../../../../src/lib/prisma', () => ({
-  default: { job: { findUnique: (...args: unknown[]) => mockJobFindUnique(...args) } },
+  default: {
+    job: { findUnique: (...args: unknown[]) => mockJobFindUnique(...args) },
+    teamReview: { findMany: (...args: unknown[]) => mockTeamReviewFindMany(...args) },
+  },
 }));
 
 vi.mock('../../../../src/lib/logger', () => ({
@@ -87,6 +91,7 @@ describe('admin/reports.routes', () => {
     mockGetStuckIssues.mockResolvedValue([]);
     mockGetScoreTrend.mockResolvedValue([]);
     mockJobFindUnique.mockResolvedValue({ tenantId: 't-1' });
+    mockTeamReviewFindMany.mockResolvedValue([]);
   });
 
   it('returns 403 for a non-ADMIN caller', async () => {
@@ -294,6 +299,69 @@ describe('admin/reports.routes', () => {
       expect(res.status).toBe(200);
       expect(mockGetScoreTrend).toHaveBeenCalledWith('job-1');
       expect(res.body.data.jobId).toBe('job-1');
+    });
+  });
+
+  describe('GET /admin/reports/jobs/:jobId/review-status', () => {
+    it('returns 403 for a non-ADMIN caller', async () => {
+      mockUser = { ...mockUser, role: 'USER' };
+      const res = await request(buildApp()).get('/admin/reports/jobs/job-1/review-status');
+      expect(res.status).toBe(403);
+      expect(mockTeamReviewFindMany).not.toHaveBeenCalled();
+    });
+
+    it('returns 404 without querying TeamReview when the job belongs to a different tenant', async () => {
+      mockJobFindUnique.mockResolvedValue({ tenantId: 'some-other-tenant' });
+      const res = await request(buildApp()).get('/admin/reports/jobs/job-1/review-status');
+      expect(res.status).toBe(404);
+      expect(mockTeamReviewFindMany).not.toHaveBeenCalled();
+    });
+
+    it('returns 404 when the job does not exist', async () => {
+      mockJobFindUnique.mockResolvedValue(null);
+      const res = await request(buildApp()).get('/admin/reports/jobs/job-1/review-status');
+      expect(res.status).toBe(404);
+    });
+
+    it('returns reviewBlocked: false and empty history when the job has no reviews', async () => {
+      const res = await request(buildApp()).get('/admin/reports/jobs/job-1/review-status');
+      expect(res.status).toBe(200);
+      expect(res.body.data).toEqual({ jobId: 'job-1', teamReviews: [], reviewBlocked: false });
+    });
+
+    it('returns reviewBlocked: true when the most recent (first) review is NEEDS_CORRECTION', async () => {
+      mockTeamReviewFindMany.mockResolvedValue([
+        { id: 'r-2', jobId: 'job-1', outcome: 'NEEDS_CORRECTION', reviewer: { id: 'tl-1', firstName: 'Tess', lastName: 'Lead', email: 'tl@x.com' } },
+        { id: 'r-1', jobId: 'job-1', outcome: 'OK', reviewer: { id: 'tl-1', firstName: 'Tess', lastName: 'Lead', email: 'tl@x.com' } },
+      ]);
+
+      const res = await request(buildApp()).get('/admin/reports/jobs/job-1/review-status');
+
+      expect(res.status).toBe(200);
+      expect(res.body.data.reviewBlocked).toBe(true);
+      expect(res.body.data.teamReviews).toHaveLength(2);
+      expect(mockTeamReviewFindMany).toHaveBeenCalledWith(
+        expect.objectContaining({ where: { jobId: 'job-1' }, orderBy: { reviewedAt: 'desc' } })
+      );
+    });
+
+    it('returns reviewBlocked: false when the most recent review is OK, even if an earlier one was NEEDS_CORRECTION', async () => {
+      mockTeamReviewFindMany.mockResolvedValue([
+        { id: 'r-2', jobId: 'job-1', outcome: 'OK', reviewer: { id: 'tl-1', firstName: 'Tess', lastName: 'Lead', email: 'tl@x.com' } },
+        { id: 'r-1', jobId: 'job-1', outcome: 'NEEDS_CORRECTION', reviewer: { id: 'tl-1', firstName: 'Tess', lastName: 'Lead', email: 'tl@x.com' } },
+      ]);
+
+      const res = await request(buildApp()).get('/admin/reports/jobs/job-1/review-status');
+
+      expect(res.status).toBe(200);
+      expect(res.body.data.reviewBlocked).toBe(false);
+    });
+
+    it('returns 500 (not a crash) when the service throws', async () => {
+      mockTeamReviewFindMany.mockRejectedValueOnce(new Error('db exploded'));
+      const res = await request(buildApp()).get('/admin/reports/jobs/job-1/review-status');
+      expect(res.status).toBe(500);
+      expect(res.body.success).toBe(false);
     });
   });
 });
