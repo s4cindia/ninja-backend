@@ -74,6 +74,8 @@ Read this once before your first job — these terms appear everywhere in the re
 
 **Remediation cycle lock** — only one remediation action (a manual Apply, a bulk Apply, an Auto Mode round, a manual-fix re-audit upload) can run on a given job at a time. If you see a control greyed out with a message naming who/what currently holds the lock, that's why — wait for it to clear, don't fight it.
 
+**QC Shipment Gate (Team Review)** — a Team Leader can leave a spot-check verdict (**OK** or **Needs Correction**, plus notes) on a teammate's job via the Team Review panel on that job's Audit Results page, or from **My Team**. The job's **most recent** verdict actually gates shipment: a **Needs Correction** blocks **Download AI-Fixed PDF** (and the equivalent EPUB export) with a clear "blocked" message, until a follow-up review records **OK**. A job nobody has reviewed yet still ships normally — review isn't mandatory, only an active rejection blocks. The owning Executive is notified automatically when flagged, sees the reviewer's note plus a **Request re-review** action once they've addressed it, and the Team Leader is notified back when that happens. This is a real gate now, not just an audit trail — see Part 4 (Step 10) and Part 5.2's toolbar reference for where the block itself shows up, and Part 9 (Team Activity) for the reviewer's-eye view.
+
 ---
 
 ## Part 3 — The Jobs Page and the Files Page
@@ -214,6 +216,8 @@ In short: **Auto Remediation → Re-run AI Analysis → Apply Fixes → check wh
 
 Click **Download AI-Fixed PDF** on the toolbar (only appears once at least one fix has been applied or a remediated file exists). This downloads the document exactly as Ninja has remediated it so far.
 
+> **Blocked by a QC review?** If the job's most recent Team Review verdict is **Needs Correction** (Part 2's QC Shipment Gate), this button is disabled and a direct download attempt is rejected with a clear "blocked" message instead of the file. Address the reviewer's note, then either wait for a follow-up **OK** review or use **Request re-review** (shown on the Audit Results page) to notify the reviewer yourself.
+
 ### Step 11 — Fix the remainder in Acrobat Pro
 
 Using the downloaded file, manually fix whatever's left in the "Needs investigation" bucket (and anything else you've decided needs a human) using Adobe Acrobat Pro's own accessibility tools. This happens entirely outside Ninja — nothing on the platform can see this work happening.
@@ -260,7 +264,7 @@ File name, page count, file size, and the **Auto-tagged** or **Already tagged** 
 |---|---|
 | **Create Remediation Plan** | Navigates away to a separate page (Part 7) that groups every issue into Auto-fixable / Quick Fix / Manual sections. Disabled if there are zero issues. |
 | **Download Report** | Downloads the full audit result as a JSON file — the raw data, not a formatted document. |
-| **Download AI-Fixed PDF** | Downloads the document as currently remediated. Only appears once at least one fix has been applied or a remediated file exists. |
+| **Download AI-Fixed PDF** | Downloads the document as currently remediated. Only appears once at least one fix has been applied or a remediated file exists. Disabled if the job's most recent Team Review verdict is Needs Correction (Part 2's QC Shipment Gate). |
 | **Share** | Copies the current results page URL to your clipboard. |
 | **Re-run Audit** | A full, from-scratch structural re-validation of the current document state. Use this after a manual, outside-the-normal-flow change you want freshly validated — Auto Remediation already re-audits itself every round, so you don't need this during/right after an Auto Mode run. |
 | **Re-run AI Analysis** + 3 checkboxes | One single analysis pass with per-run overrides (color-contrast, link-text, client-supplied-alt-text) — see Part 4, Step 6 for the recommended settings. Each checkbox affects only that one click, nothing else. |
@@ -314,7 +318,7 @@ A real rendered view of the actual page, not a placeholder.
 **Filters panel** (toggle open/closed): free-text search, **Severity** (All/Critical/Serious/Moderate/Minor), **WCAG criterion** (All, or any criterion actually present in this document), and a **page number** box. A **Clear** link appears whenever any filter — category, AI action, Matterhorn toggle, search, severity, WCAG, or page — is active.
 
 **Individual issue cards** show: issue number (matches the Preview panel's badges), rule code, severity badge, a provenance badge (Ninja's own check vs. an external validator like veraPDF/pdfa11y), a clickable Matterhorn checkpoint badge where applicable, a clickable page-number badge, the plain-language message, and element path if known. If there's an AI suggestion, a styled panel appears below:
-- **Manual Review Required** (amber) — no auto-fix offered at all.
+- **Manual Review Required** (amber) — no auto-fix offered at all. For an alt-text issue specifically, if the image needed a subject-matter expert, was blocked by a safety filter, or hit a generic failure, the box also shows AI-drafted **Short alt text** and **Long description** fields (via the standalone Alt-Text Generator) with their own **Copy** buttons — a starting point to review and paste into Acrobat Pro yourself, never auto-applied. If the fallback generator itself can't describe the image either, you just get the plain guidance text with no drafted fields, same as before this existed.
 - **AI Auto-Resolved** (green) — already handled, informational.
 - **AI Guidance** (blue) — confidence % + guidance text, nothing to click.
 - **AI Suggestion** (purple) — apply-to-pdf, with **Approve / Apply / Dismiss** (pending), an "Applied" badge, a "Dismissed" label, or a "Failed" badge + **Retry** button.
@@ -428,12 +432,12 @@ Five tabs: **Throughput, Cost, Quality, Reliability, Team Activity**. The first 
 **Read it as:** a large "Not Yet Categorized" bar is expected, not a problem — the failure classifier is deliberately narrow. Chase the named categories, not that one.
 
 ### Team Activity
-**Shows:** **Team Review Throughput** (one row per Team Leader — green=OK / amber=needs-correction spot-check counts, explicitly "an audit trail, not a pass/fail gate"); a **Job Ownership** table (per team member: Total, Completed, Failed, In Progress, Completion Rate).
-**Use it to:** see how actively each Team Leader is spot-checking their team's work, and each person's workload/completion rate.
-**Read it as:** not a performance scorecard for the people being reviewed — a low "OK" count for a reviewer could just as easily mean they're genuinely catching problems.
+**Shows:** **Team Review Throughput** (one row per Team Leader — green=OK / amber=needs-correction spot-check counts); a **Job Ownership** table (per team member: Total, Completed, Failed, In Progress, Completion Rate, plus a **"Show N assignments"** toggle per person listing their actual job titles/types/statuses with links into each one).
+**Use it to:** see how actively each Team Leader is spot-checking their team's work, each person's workload/completion rate, and — critically — whether any specific job is currently **blocked from shipment** by a Needs Correction verdict (Part 2's QC Shipment Gate; also visible on the Cost/Quality tabs' Job Drilldown Dialog, which now has its own Review Status section).
+**Read it as:** the "needs-correction" count is not a performance scorecard for the people being reviewed — a low "OK" count for a reviewer could just as easily mean they're genuinely catching problems. But unlike before, a Needs Correction verdict is no longer purely informational: it's an active block until resolved.
 
 ### The Job Drilldown Dialog
-Opened from a Cost-tab row or a Quality-tab Sample Job link: **"Job History — [job ID]"**, with a **Per-Round Cost** bar chart and a **Score Trend (Resolution Rate)** line chart, both by round number. Use it whenever a summary number makes you want to see what actually happened on *that* job, round by round.
+Opened from a Cost-tab row or a Quality-tab Sample Job link: **"Job History — [job ID]"**, with a **Per-Round Cost** bar chart and a **Score Trend (Resolution Rate)** line chart, both by round number, plus a **Review Status** section showing that job's full Team Review history — including a blocked banner if its most recent verdict is Needs Correction (Part 2's QC Shipment Gate). Use it whenever a summary number makes you want to see what actually happened on *that* job, round by round, or whether it's currently shippable at all.
 
 ---
 
