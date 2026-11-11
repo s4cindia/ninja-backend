@@ -3,8 +3,6 @@ import type { DocumentContext } from './context-extractor.service';
 import { logger } from '../../lib/logger';
 import { aiConfig } from '../../config/ai.config';
 
-const ACTIVE_MODEL = aiConfig.gemini.model;
-
 /**
  * Generator output profile. The default profile produces standard
  * accessibility alt text. The `prh-uk` profile applies PRH UK
@@ -249,6 +247,17 @@ class PhotoAltGeneratorService {
   private model: GenerativeModel | null = null;
 
   /**
+   * Resolved lazily, same reason as ensureInitialized() below: a module-level
+   * `const ACTIVE_MODEL = aiConfig.gemini.model` would read `aiConfig.gemini`
+   * at import time, breaking any test file that mocks `ai.config` without a
+   * `gemini` key but still transitively imports this module (confirmed real
+   * via ai-analysis.service.ts's own fallback-generator integration).
+   */
+  private get activeModel(): string {
+    return aiConfig.gemini.model;
+  }
+
+  /**
    * Lazily initialize the Gemini client.
    * This allows the module to be imported without requiring GEMINI_API_KEY,
    * which is needed for CI/CD test runs that don't use this service.
@@ -260,7 +269,7 @@ class PhotoAltGeneratorService {
       throw new Error('GEMINI_API_KEY environment variable is required');
     }
     this.genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-    this.model = this.genAI.getGenerativeModel({ model: ACTIVE_MODEL });
+    this.model = this.genAI.getGenerativeModel({ model: this.activeModel });
   }
 
   async generateAltText(
@@ -314,7 +323,7 @@ class PhotoAltGeneratorService {
         extendedAlt: '',
         confidence: 0,
         flags: ['LOW_CONFIDENCE', 'NEEDS_MANUAL_REVIEW'] as AltTextFlag[],
-        aiModel: ACTIVE_MODEL,
+        aiModel: this.activeModel,
         generatedAt: new Date(),
       };
     }
@@ -330,7 +339,7 @@ class PhotoAltGeneratorService {
         extendedAlt: '',
         confidence: 0,
         flags: ['LOW_CONFIDENCE', 'PARSE_ERROR'] as AltTextFlag[],
-        aiModel: ACTIVE_MODEL,
+        aiModel: this.activeModel,
         generatedAt: new Date(),
       };
     }
@@ -353,7 +362,7 @@ class PhotoAltGeneratorService {
       extendedAlt: sanitized.extendedAlt,
       confidence: parsed.confidence,
       flags: sanitized.flags,
-      aiModel: ACTIVE_MODEL,
+      aiModel: this.activeModel,
       generatedAt: new Date(),
     };
   }
@@ -460,7 +469,7 @@ class PhotoAltGeneratorService {
           extendedAlt: '',
           confidence: 0,
           flags: ['LOW_CONFIDENCE', 'NEEDS_MANUAL_REVIEW'],
-          aiModel: ACTIVE_MODEL,
+          aiModel: this.activeModel,
           generatedAt: new Date(),
         });
       }
@@ -542,7 +551,7 @@ class PhotoAltGeneratorService {
         extendedAlt: sanitized.extendedAlt,
         confidence: parsed.confidence || 75,
         flags: sanitized.flags,
-        aiModel: ACTIVE_MODEL,
+        aiModel: this.activeModel,
         generatedAt: new Date(),
       };
 

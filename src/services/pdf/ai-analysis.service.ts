@@ -41,6 +41,8 @@ import type { ParsedPDF } from './pdf-parser.service';
 import type { TextRunMatch } from './contrast-content-stream';
 import { computeCompliantColor } from './color-contrast-correction';
 import { findOversizedArtifactSpans, extractArtifactTextRuns, computeHeuristicBoundaryIndex, findRealTextSegmentsInSpan } from './pdf-artifact-tagger';
+import { photoAltGenerator } from '../alt-text/photo-alt-generator.service';
+import { assertAiAltTextAllowed, PrhAiDisabledError } from '../prh/prh-config.service';
 
 // ─── Config Types ──────────────────────────────────────────────────────────────
 
@@ -81,6 +83,15 @@ const DEFAULT_CONFIG: AiRemediationConfig = {
 interface AiSuggestionResult {
   suggestionType: string;
   value?: string;
+  /**
+   * Long-form alt text (a fuller description, not just the short alt
+   * string in `value`), from the standalone Alt-Text Generator's
+   * `extendedAlt` output. Only ever set on `requiresManualReview`
+   * alt-text suggestions where the PDF pipeline's own fixer declined
+   * to produce anything — this is a drafting aid for the operator to
+   * copy into Acrobat Pro, never a value this service applies itself.
+   */
+  extendedAlt?: string;
   guidance?: string;
   confidence: number;
   rationale: string;
@@ -1112,7 +1123,9 @@ class AiAnalysisService {
               imageById,
               tableById,
               pageRenderCache,
-              contrastMatchByIssueId
+              contrastMatchByIssueId,
+              jobId,
+              tenantId
             );
             suggestionCache.set(cacheKey, suggestionPromise);
           }
@@ -1212,6 +1225,7 @@ class AiAnalysisService {
               issueId: issue.id,
               suggestionType: suggestion.suggestionType,
               value: suggestion.value,
+              extendedAlt: suggestion.extendedAlt,
               guidance: suggestion.guidance,
               confidence: suggestion.confidence,
               rationale: suggestion.rationale,
@@ -1227,6 +1241,7 @@ class AiAnalysisService {
             update: {
               suggestionType: suggestion.suggestionType,
               value: suggestion.value,
+              extendedAlt: suggestion.extendedAlt,
               guidance: suggestion.guidance,
               confidence: suggestion.confidence,
               rationale: suggestion.rationale,
@@ -1355,7 +1370,9 @@ class AiAnalysisService {
     imageById: Map<string, ImageInfo>,
     tableById: Map<string, TableInfo>,
     pageRenderCache: Map<number, Promise<string | null>>,
-    contrastMatchByIssueId: Map<string, TextRunMatch | null>
+    contrastMatchByIssueId: Map<string, TextRunMatch | null>,
+    jobId: string,
+    tenantId: string
   ): Promise<AiSuggestionResult | null> {
     const code = issue.code;
     const page = issue.pageNumber ? parsed.pages[issue.pageNumber - 1] : undefined;
@@ -1415,7 +1432,7 @@ class AiAnalysisService {
       const img = issue.element ? imageById.get(issue.element) : undefined;
       const imgWithBase64 = img?.base64 ? img : await this.fallbackToPageRender(img, issue, parsed, pageRenderCache);
       if (!imgWithBase64) return null;
-      return this.analyzeAltText(issue, imgWithBase64, config.altTextMode);
+      return this.analyzeAltText(issue, imgWithBase64, config.altTextMode, jobId, tenantId);
     }
 
     if (ALT_TEXT_IMPROVE_CODES.has(code)) {
@@ -2043,10 +2060,58 @@ class AiAnalysisService {
     }
   }
 
+  /**
+   * Best-effort fallback for a manual-review alt-text issue: calls the
+   * same standalone Alt-Text Generator the operator-facing tool already
+   * uses, so a "requires a subject matter expert" dead end at least comes
+   * with AI-drafted short + long alt text the operator can review and
+   * paste into Acrobat Pro -- never auto-applied, since the caller always
+   * keeps `applyMode: 'guidance-only'` / `requiresManualReview: true`
+   * regardless of what this returns.
+   *
+   * Respects the PRH UK AI policy gate (Style Guide Appendix 7): returns
+   * null without calling Gemini at all when the job is a PRH-UK build and
+   * the tenant hasn't vetted/enabled AI alt text. Also returns null (never
+   * throws) on any other failure -- this is a nice-to-have on top of an
+   * already-generated guidance message, not a required step.
+   */
+  private async tryGenerateFallbackAltText(
+    jobId: string,
+    tenantId: string,
+    image: ImageInfo
+  ): Promise<{ shortAlt: string; extendedAlt: string } | null> {
+    try {
+      await assertAiAltTextAllowed(jobId, tenantId);
+    } catch (err) {
+      if (!(err instanceof PrhAiDisabledError)) {
+        // Keep the "never throws" contract even for an unexpected failure
+        // (e.g. a transient DB error) -- this is a nice-to-have fallback on
+        // top of an already-generated guidance message, never worth letting
+        // crash the whole analyzeAltText call over.
+        logger.warn(`[AiAnalysis] AI alt-text policy check failed for job ${jobId} (treating as not allowed): ${err instanceof Error ? err.message : String(err)}`);
+      }
+      return null;
+    }
+
+    try {
+      const result = await photoAltGenerator.generateAltText(
+        Buffer.from(image.base64!, 'base64'),
+        image.mimeType
+      );
+      if (!result.shortAlt) return null;
+      return { shortAlt: result.shortAlt, extendedAlt: result.extendedAlt };
+    } catch (err) {
+      logger.warn(`[AiAnalysis] Fallback Alt-Text Generator call failed for job ${jobId}: ${err instanceof Error ? err.message : String(err)}`);
+      return null;
+    }
+  }
+
   private async analyzeAltText(
     issue: AuditIssue,
     image: ImageInfo,
-    mode: 'apply-to-pdf' | 'guidance-only'
+    mode: 'apply-to-pdf' | 'guidance-only',
+    jobId: string,
+    tenantId: string
   ): Promise<AiSuggestionResult | null> {
     // Check if this image type requires a subject matter expert before attempting AI alt text
     const classification = await this.classifyImageType(image.base64!, image.mimeType);
@@ -2055,9 +2120,14 @@ class AiAnalysisService {
         ALWAYS_MANUAL_IMAGE_TYPES.has(classification.type) ||
         (MANUAL_IF_COMPLEX_IMAGE_TYPES.has(classification.type) && classification.complexity === 'complex');
       if (needsManual) {
+        const fallback = await this.tryGenerateFallbackAltText(jobId, tenantId, image);
         return {
           suggestionType: 'alt-text',
-          guidance: `This ${classification.type} requires a subject matter expert to write an accurate description.`,
+          value: fallback?.shortAlt,
+          extendedAlt: fallback?.extendedAlt,
+          guidance: fallback
+            ? `This ${classification.type} requires a subject matter expert to write an accurate description. AI-drafted alt text below is a starting point only — review and apply it manually in Acrobat Pro.`
+            : `This ${classification.type} requires a subject matter expert to write an accurate description.`,
           confidence: 0,
           rationale: `Image classified as ${classification.type} (${classification.complexity}) — automated alt text would be inaccurate`,
           model: 'gemini-flash',
@@ -2136,9 +2206,17 @@ class AiAnalysisService {
         // needed"). Reuses the same guidance-only shape as the
         // needs-a-subject-matter-expert fallback above.
         logger.warn(`[AiAnalysis] analyzeAltText blocked by safety filter for issue ${issue.id} (finishReason: ${err.finishReason})`);
+        // The standalone Alt-Text Generator uses a different prompt/model
+        // call than the blocked one above -- worth retrying through it
+        // rather than assuming it would be blocked too.
+        const blockedFallback = await this.tryGenerateFallbackAltText(jobId, tenantId, image);
         return {
           suggestionType: 'alt-text',
-          guidance: 'Automated alt-text generation was blocked by a content safety filter for this image. A subject matter expert should write the description manually.',
+          value: blockedFallback?.shortAlt,
+          extendedAlt: blockedFallback?.extendedAlt,
+          guidance: blockedFallback
+            ? 'Automated alt-text generation was blocked by a content safety filter for this image. AI-drafted alt text below is a starting point only — review and apply it manually in Acrobat Pro.'
+            : 'Automated alt-text generation was blocked by a content safety filter for this image. A subject matter expert should write the description manually.',
           confidence: 0,
           rationale: `Gemini blocked this request (finishReason: ${err.finishReason})`,
           model: 'gemini-flash',
@@ -2148,7 +2226,25 @@ class AiAnalysisService {
         };
       }
       logger.warn(`[AiAnalysis] analyzeAltText failed: ${err instanceof Error ? err.message : String(err)}`);
-      return null;
+      // Previously returned null here, silently dropping the issue entirely
+      // (no AiAnalysis row at all -- indistinguishable from "no suggestion
+      // needed"). Falls back to the standalone Alt-Text Generator and
+      // always surfaces a manual-review suggestion now, same as the other
+      // two decline paths above.
+      const genericFallback = await this.tryGenerateFallbackAltText(jobId, tenantId, image);
+      return {
+        suggestionType: 'alt-text',
+        value: genericFallback?.shortAlt,
+        extendedAlt: genericFallback?.extendedAlt,
+        guidance: genericFallback
+          ? 'Automated alt-text generation failed for this image. AI-drafted alt text below is a starting point only — review and apply it manually in Acrobat Pro.'
+          : 'Automated alt-text generation failed for this image. A subject matter expert should write the description manually.',
+        confidence: 0,
+        rationale: `Automated alt-text generation failed: ${err instanceof Error ? err.message : String(err)}`,
+        model: 'gemini-flash',
+        applyMode: 'guidance-only',
+        requiresManualReview: true,
+      };
     }
   }
 

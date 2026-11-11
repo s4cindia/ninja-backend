@@ -2264,6 +2264,14 @@ model AiAnalysis {
   suggestionType       String
   /// The fix value to write into the PDF (alt text string, summary, lang code, etc.)
   value                String?  @db.Text
+  /// Long-form alt text (a fuller description than `value`'s short alt
+  /// string), from the standalone Alt-Text Generator's `extendedAlt` output.
+  /// Only ever populated on a `requiresManualReview` alt-text suggestion
+  /// where the PDF pipeline's own fixer declined to produce anything --
+  /// a drafting aid for the operator to copy into Acrobat Pro, never a
+  /// value this service applies itself. Null for every other suggestion
+  /// type and for rows that predate this column.
+  extendedAlt          String?  @db.Text
   /// Human-readable instruction shown when the fix cannot be applied automatically
   guidance             String?  @db.Text
   confidence           Float
