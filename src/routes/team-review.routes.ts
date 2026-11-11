@@ -10,9 +10,10 @@
 import { Router, Request, Response } from 'express';
 import { z } from 'zod';
 import { authenticate } from '../middleware/auth.middleware';
-import { authorizeJobForReview } from '../middleware/authorize-job.middleware';
+import { authorizeJob, authorizeJobForReview } from '../middleware/authorize-job.middleware';
 import prisma from '../lib/prisma';
 import { logger } from '../lib/logger';
+import { notificationService } from '../services/notification/notification.service';
 
 const router = Router();
 
@@ -20,6 +21,19 @@ const teamReviewBodySchema = z.object({
   outcome: z.enum(['OK', 'NEEDS_CORRECTION']),
   notes: z.string().optional(),
 });
+
+const requestReviewBodySchema = z.object({
+  notes: z.string().optional(),
+});
+
+function jobLink(job: { id: string; type: string }): string {
+  return job.type === 'EPUB_ACCESSIBILITY' ? `/epub/remediate/${job.id}` : `/pdf/audit/${job.id}`;
+}
+
+function jobFileName(job: { input: unknown }): string {
+  const input = job.input as { fileName?: string } | null;
+  return input?.fileName || 'document';
+}
 
 // POST /api/v1/jobs/:jobId/team-review
 router.post('/:jobId/team-review', authenticate, authorizeJobForReview, async (req: Request, res: Response) => {
@@ -70,9 +84,82 @@ router.post('/:jobId/team-review', authenticate, authorizeJobForReview, async (r
       },
     });
 
+    if (parsed.data.outcome === 'NEEDS_CORRECTION') {
+      const fileName = jobFileName(job);
+      notificationService.createNotification({
+        userId: job.userId,
+        tenantId: job.tenantId,
+        type: 'TEAM_REVIEW_NEEDS_CORRECTION',
+        title: 'QC flagged this job for correction',
+        message: `"${fileName}" was reviewed and flagged as needing correction${parsed.data.notes ? `: ${parsed.data.notes}` : '.'} It's now blocked from shipment until a follow-up review clears it.`,
+        data: { jobId: job.id, reviewId: review.id },
+        link: jobLink(job),
+      }).catch((notifyErr) => {
+        logger.error(`[TeamReview] Failed to create NEEDS_CORRECTION notification for job ${job.id}: ${notifyErr instanceof Error ? notifyErr.message : String(notifyErr)}`);
+      });
+    }
+
     return res.status(201).json({ success: true, data: review });
   } catch (err) {
     logger.error('POST /jobs/:jobId/team-review error:', err);
+    return res.status(500).json({ success: false, error: { code: 'INTERNAL_ERROR', message: 'An unexpected error occurred' } });
+  }
+});
+
+// POST /api/v1/jobs/:jobId/team-review/request-review
+// The owning Executive asks the team's QC for another look (typically after
+// addressing a NEEDS_CORRECTION). Owner/ADMIN only -- it's a notification
+// nudge, not a write to TeamReview itself, so it leaves no audit row.
+router.post('/:jobId/team-review/request-review', authenticate, authorizeJob, async (req: Request, res: Response) => {
+  try {
+    const job = req.job!;
+    const userId = (req as Request & { user?: { id?: string } }).user?.id;
+    if (!userId) {
+      return res.status(401).json({ success: false, error: { code: 'UNAUTHORIZED', message: 'Not authenticated' } });
+    }
+
+    const parsed = requestReviewBodySchema.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      return res.status(422).json({
+        success: false,
+        error: { code: 'VALIDATION_ERROR', message: 'Request validation failed', details: parsed.error.issues },
+      });
+    }
+
+    const teamLeaders = await prisma.teamMembership.findMany({
+      where: {
+        teamRole: 'TEAM_LEADER',
+        team: { members: { some: { userId: job.userId } } },
+      },
+      select: { userId: true },
+    });
+
+    if (teamLeaders.length === 0) {
+      return res.status(404).json({
+        success: false,
+        error: { code: 'NO_TEAM_LEADER', message: "No Team Leader was found for this job's team" },
+      });
+    }
+
+    const fileName = jobFileName(job);
+    const link = jobLink(job);
+    await Promise.all(
+      teamLeaders.map((tl) =>
+        notificationService.createNotification({
+          userId: tl.userId,
+          tenantId: job.tenantId,
+          type: 'TEAM_REVIEW_RESUBMIT_REQUESTED',
+          title: 'Re-review requested',
+          message: `A re-review was requested for "${fileName}"${parsed.data.notes ? `: ${parsed.data.notes}` : '.'}`,
+          data: { jobId: job.id },
+          link,
+        })
+      )
+    );
+
+    return res.status(200).json({ success: true, data: { notified: teamLeaders.length } });
+  } catch (err) {
+    logger.error('POST /jobs/:jobId/team-review/request-review error:', err);
     return res.status(500).json({ success: false, error: { code: 'INTERNAL_ERROR', message: 'An unexpected error occurred' } });
   }
 });

@@ -117,9 +117,12 @@ enum ReviewOutcome {
 }
 
 /// A Team Leader's (never a Viewer's) read-only spot-check or final
-/// certificate review of a job they don't own. Non-blocking -- writing one
-/// never gates the owning Executive's finalize flow, it's purely an audit
-/// trail plus an optional "flag for correction" signal.
+/// certificate review of a job they don't own. The most recent review
+/// gates shipment: an explicit NEEDS_CORRECTION blocks the job's
+/// download/export endpoints (see getActiveReviewBlock) until a later
+/// review records OK. A job with no review yet, or whose latest review is
+/// OK, ships normally -- QC review itself is not mandatory, only an active
+/// rejection blocks.
 model TeamReview {
   id         String        @id @default(uuid())
   jobId      String
@@ -670,6 +673,8 @@ enum NotificationType {
   JOB_COMPLETED
   JOB_FAILED
   SYSTEM_ALERT
+  TEAM_REVIEW_NEEDS_CORRECTION
+  TEAM_REVIEW_RESUBMIT_REQUESTED
 }
 
 model Notification {

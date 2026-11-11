@@ -268,10 +268,15 @@ export class JobController {
       });
       const memberUserIds = [...new Set(teammates.map((m) => m.userId))];
 
-      await this.respondWithJobList(req, res, {
-        tenantId: req.user.tenantId,
-        userId: { in: memberUserIds },
-      });
+      await this.respondWithJobList(
+        req,
+        res,
+        {
+          tenantId: req.user.tenantId,
+          userId: { in: memberUserIds },
+        },
+        { includeReviewStatus: true }
+      );
     } catch (error) {
       next(error);
     }
@@ -352,7 +357,8 @@ export class JobController {
   private async respondWithJobList(
     req: Request,
     res: Response,
-    baseWhere: Record<string, unknown>
+    baseWhere: Record<string, unknown>,
+    options: { includeReviewStatus?: boolean } = {}
   ): Promise<void> {
     const {
       page = '1',
@@ -436,10 +442,34 @@ export class JobController {
       };
     });
 
+    let jobsForResponse: typeof normalizedJobs | Array<(typeof normalizedJobs)[number] & { reviewBlocked: boolean }> = normalizedJobs;
+    if (options.includeReviewStatus && normalizedJobs.length > 0) {
+      const jobIds = normalizedJobs.map((j) => j.id);
+      // Globally ordered by reviewedAt desc, so the first row seen for a
+      // given jobId while iterating is that job's most recent review --
+      // same definition of "latest" as review-gate.service.ts, in one query
+      // instead of one-per-job.
+      const reviews = await prisma.teamReview.findMany({
+        where: { jobId: { in: jobIds } },
+        orderBy: { reviewedAt: 'desc' },
+        select: { jobId: true, outcome: true },
+      });
+      const latestOutcomeByJobId = new Map<string, string>();
+      for (const r of reviews) {
+        if (!latestOutcomeByJobId.has(r.jobId)) {
+          latestOutcomeByJobId.set(r.jobId, r.outcome);
+        }
+      }
+      jobsForResponse = normalizedJobs.map((j) => ({
+        ...j,
+        reviewBlocked: latestOutcomeByJobId.get(j.id) === 'NEEDS_CORRECTION',
+      }));
+    }
+
     res.json({
       success: true,
       data: {
-        jobs: normalizedJobs,
+        jobs: jobsForResponse,
         pagination: {
           page: pageNum,
           limit: limitNum,

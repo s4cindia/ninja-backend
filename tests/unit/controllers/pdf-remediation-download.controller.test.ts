@@ -19,6 +19,7 @@ import { pdfRemediationController } from '../../../src/controllers/pdf-remediati
 import { AuthenticatedRequest } from '../../../src/types/authenticated-request';
 import prisma from '../../../src/lib/prisma';
 import { fileStorageService } from '../../../src/services/storage/file-storage.service';
+import { getActiveReviewBlock } from '../../../src/services/team-review/review-gate.service';
 
 vi.mock('../../../src/lib/prisma', () => ({
   default: {
@@ -26,6 +27,7 @@ vi.mock('../../../src/lib/prisma', () => ({
   },
 }));
 vi.mock('../../../src/services/storage/file-storage.service');
+vi.mock('../../../src/services/team-review/review-gate.service');
 vi.mock('../../../src/lib/logger', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
 }));
@@ -49,6 +51,54 @@ function makeReq(): AuthenticatedRequest {
 describe('PdfRemediationController.downloadRemediatedPdf', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(getActiveReviewBlock).mockResolvedValue(null);
+  });
+
+  describe('QC review gate', () => {
+    it('blocks with 403 when the most recent TeamReview is NEEDS_CORRECTION, without ever touching storage', async () => {
+      vi.mocked(prisma.job.findFirst).mockResolvedValue({
+        id: 'job-1',
+        type: 'PDF_ACCESSIBILITY',
+        input: { fileName: 'math_kim.pdf' },
+        output: { remediatedFileUrl: 'job-storage/job-1/remediated/math_kim.pdf' },
+      } as any);
+      vi.mocked(getActiveReviewBlock).mockResolvedValue({
+        reviewId: 'r-1',
+        reviewedBy: 'leader-1',
+        reviewedAt: new Date('2026-11-01'),
+        notes: 'fix the alt text',
+      });
+
+      const req = makeReq();
+      const res = makeRes();
+      await pdfRemediationController.downloadRemediatedPdf(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(403);
+      expect(res.json).toHaveBeenCalledWith(expect.objectContaining({
+        success: false,
+        error: expect.objectContaining({ code: 'BLOCKED_NEEDS_CORRECTION' }),
+      }));
+      expect(fileStorageService.downloadFile).not.toHaveBeenCalled();
+      expect(res.send).not.toHaveBeenCalled();
+    });
+
+    it('ships normally when there is no block (no review, or latest review is OK)', async () => {
+      vi.mocked(prisma.job.findFirst).mockResolvedValue({
+        id: 'job-1',
+        type: 'PDF_ACCESSIBILITY',
+        input: { fileName: 'math_kim.pdf' },
+        output: { remediatedFileUrl: 'job-storage/job-1/remediated/math_kim.pdf' },
+      } as any);
+      const pdfBytes = Buffer.from('%PDF-1.4 fake remediated bytes');
+      vi.mocked(fileStorageService.downloadFile).mockResolvedValue(pdfBytes);
+
+      const req = makeReq();
+      const res = makeRes();
+      await pdfRemediationController.downloadRemediatedPdf(req, res);
+
+      expect(res.send).toHaveBeenCalledWith(pdfBytes);
+      expect(res.status).not.toHaveBeenCalledWith(403);
+    });
   });
 
   it('downloads via fileStorageService.downloadFile using the stored remediatedFileUrl (S3 key), not raw local disk', async () => {
