@@ -122,21 +122,40 @@ class PdfReauditService {
         const onAltTextImageProgress = async (completed: number, total: number) => {
           await this.updateReauditProgress(jobId, { altTextImageProgress: { completed, total } });
         };
+        // Real incident (2026-11-13, NAEMT_EPC_German_...pdf, 321 pages,
+        // 618 high-contrast issues): this call never passed a contrast
+        // progress callback at all (the 9th runAuditFromBuffer argument was
+        // omitted entirely) -- the EXACT same class of gap onAltTextImageProgress
+        // above was built to fix, just for a callback added to
+        // runAuditFromBuffer's signature later and never mirrored to this
+        // second call site. Color-contrast re-verification on a document
+        // with this many issues can legitimately run well past
+        // pdfConfig.auditTimeoutMs's 15-minute no-progress window (likely
+        // render-based per-region checks, same cost shape as Alt Text's own
+        // per-image Gemini calls) -- without this, withAuditTimeout's
+        // resetTimeout() is never called during that phase, so a
+        // legitimately-slow-but-working contrast pass gets killed and
+        // misreported as "the parser or a validator likely hung."
+        const onContrastPageProgress = async (completed: number, total: number) => {
+          await this.updateReauditProgress(jobId, { contrastPageProgress: { completed, total } });
+        };
 
-        // altTextImageProgress explicitly reset to null (not just omitted) --
-        // updateReauditProgress merges into the existing postRemediationProgress
-        // object, so a second Auto Mode round would otherwise keep showing the
-        // PREVIOUS round's final Alt Text count (often completed === total)
-        // until this round's own Alt Text validator finishes extracting every
-        // image and fires its own upfront (0, total) call, misleadingly
-        // reading as "already done" during a potentially long extraction
-        // phase (CodeRabbit catch, PR #625).
+        // altTextImageProgress/contrastPageProgress explicitly reset to null
+        // (not just omitted) -- updateReauditProgress merges into the
+        // existing postRemediationProgress object, so a second Auto Mode
+        // round would otherwise keep showing the PREVIOUS round's final
+        // Alt Text/contrast count (often completed === total) until this
+        // round's own validator fires its own upfront (0, total) call,
+        // misleadingly reading as "already done" during a potentially long
+        // phase (CodeRabbit catch, PR #625 -- same reasoning now applied to
+        // contrastPageProgress too).
         await this.updateReauditProgress(jobId, {
           currentPage: 0,
           totalPages: 0,
           completedValidators: 0,
           totalValidators: 0,
           altTextImageProgress: null,
+          contrastPageProgress: null,
         });
 
         reauditReport = await pdfAuditService.runAuditFromBuffer(
@@ -147,7 +166,8 @@ class PdfReauditService {
           undefined,
           onProgress,
           onValidatorComplete,
-          onAltTextImageProgress
+          onAltTextImageProgress,
+          onContrastPageProgress
         );
       } catch (auditError) {
         logger.error(`[PdfReaudit] Audit execution failed:`, auditError);
@@ -514,6 +534,7 @@ class PdfReauditService {
       totalValidators?: number;
       currentValidator?: string;
       altTextImageProgress?: { completed: number; total: number } | null;
+      contrastPageProgress?: { completed: number; total: number } | null;
     }
   ): Promise<void> {
     try {
