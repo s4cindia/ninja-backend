@@ -146,3 +146,75 @@ describe('PdfLinkCompletenessValidator', () => {
     }
   });
 });
+
+describe('PdfLinkCompletenessValidator -- cross-reference detection', () => {
+  async function crossRefIssuesFor(text: string): Promise<import('../../../../src/services/audit/base-audit.service').AuditIssue[]> {
+    const src = await PDFDocument.create();
+    const page = src.addPage([500, 300]);
+    const font = await src.embedFont(StandardFonts.Helvetica);
+    page.drawText(text, { x: 60, y: 200, size: 12, font, color: rgb(0, 0, 0) });
+    const buffer = Buffer.from(await src.save());
+    const report = await pdfAuditService.runAuditFromBuffer(buffer, `cross-ref-${Date.now()}-${Math.random()}`, 'test.pdf', 'custom', ['links']);
+    return report.issues.filter(i => i.code === 'CROSS-REFERENCE-MISSING-LINK');
+  }
+
+  it('flags "see Chapter N"-style prose cross-references', async () => {
+    const issues = await crossRefIssuesFor('For more detail, see Chapter 3 of this book.');
+
+    expect(issues.length).toBe(1);
+    expect(issues[0].context).toContain('see Chapter 3');
+    expect(issues[0].category).toBe('links');
+    expect(issues[0].severity).toBe('moderate');
+  });
+
+  it('flags "see p. N" and "see page N" abbreviated forms', async () => {
+    const issues = await crossRefIssuesFor('As discussed, see p. 45 for the full table.');
+
+    expect(issues.length).toBe(1);
+    expect(issues[0].context).toContain('see p. 45');
+  });
+
+  it('flags "see Fig. N" and matches a decimal section number', async () => {
+    const issues = await crossRefIssuesFor('The results (see Fig. 2) show a clear trend.');
+
+    expect(issues.length).toBe(1);
+    expect(issues[0].context).toContain('see Fig. 2');
+  });
+
+  it('does not flag an unqualified "see above"/"see below" with no specific numbered target', async () => {
+    const issues = await crossRefIssuesFor('As noted above, see above for context.');
+
+    expect(issues.length).toBe(0);
+  });
+
+  it('does not flag ordinary prose containing the word "see" with no reference shape', async () => {
+    const issues = await crossRefIssuesFor('I see what you mean about this topic.');
+
+    expect(issues.length).toBe(0);
+  });
+
+  it('does not flag a cross-reference that already has a real Link annotation covering it', async () => {
+    const src = await PDFDocument.create();
+    const page = src.addPage([500, 300]);
+    const font = await src.embedFont(StandardFonts.Helvetica);
+    page.drawText('For more detail, see Chapter 3 of this book.', { x: 60, y: 200, size: 12, font, color: rgb(0, 0, 0) });
+    const buffer = Buffer.from(await src.save());
+
+    const parsed = await pdfComprehensiveParserService.parseBuffer(buffer, 'test.pdf');
+    try {
+      parsed.pages[0].links = [
+        {
+          text: 'see Chapter 3',
+          url: '#chapter-3',
+          position: { x: 50, y: 95, width: 350, height: 20 },
+          hasDescriptiveText: true,
+        },
+      ];
+
+      const issues = await pdfLinkCompletenessValidator.validate(parsed);
+      expect(issues.filter(i => i.code === 'CROSS-REFERENCE-MISSING-LINK')).toHaveLength(0);
+    } finally {
+      if (parsed.parsedPdf) await pdfParserService.close(parsed.parsedPdf);
+    }
+  });
+});

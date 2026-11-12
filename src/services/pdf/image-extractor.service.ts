@@ -4,6 +4,7 @@ import { PDFName, PDFDict, PDFStream, PDFRawStream, PDFArray, PDFString, PDFHexS
 import sharp from 'sharp';
 import { pdfParserService, ParsedPDF } from './pdf-parser.service';
 import { pdfModifierService } from './pdf-modifier.service';
+import { decodePageContent } from './pdf-content-stream-io';
 
 /**
  * A resolved PDF /ColorSpace, reduced to exactly the shapes confirmed
@@ -333,6 +334,22 @@ interface FigureAltInfo {
 export interface ImageInfo {
   id: string;
   pageNumber: number;
+  /**
+   * The occurrence ordinal (0-based) of THIS specific on-page invocation
+   * among every `Do` invocation of the same-named XObject resource on this
+   * page -- NOT a raw Resources/XObject dict-entry counter. A reused image
+   * resource (the same embedded image painted at more than one position, a
+   * normal authoring pattern) produces one ImageInfo per invocation, each
+   * carrying its own correct `position`; the first invocation is index 0,
+   * the second index 1, and so on. `id` embeds this value
+   * (`img_p{page}_{index}_{xObjectName}`) and pdf-modifier.service.ts's
+   * mcidForXObject/figure-content-tagger.ts's locateXObjectInvocation both
+   * use it the same way -- the Nth occurrence of `/{xObjectName} Do` in the
+   * page's own content stream, in source order -- so extraction and
+   * resolution never disagree about which invocation an id refers to. See
+   * extractPageImages's own doc comment for the real conflation bug this
+   * numbering replaces.
+   */
   index: number;
   position: {
     x: number;
@@ -478,9 +495,6 @@ class ImageExtractorService {
     try {
       const page = await parsedPdf.pdfjsDoc.getPage(pageNumber);
       const viewport = page.getViewport({ scale: 1 });
-      const operatorList = await page.getOperatorList();
-      
-      const imagePlacements = this.extractImagePlacements(operatorList, viewport);
 
       const pdfLibPage = parsedPdf.pdfLibDoc.getPages()[pageNumber - 1];
       const resources = pdfLibPage?.node?.get(PDFName.of('Resources'));
@@ -489,8 +503,34 @@ class ImageExtractorService {
         const xObjects = resources.get(PDFName.of('XObject'));
 
         if (xObjects instanceof PDFDict) {
-          const entries = xObjects.entries();
-          let index = 0;
+          const entries = [...xObjects.entries()];
+
+          // Every Subtype /Image resource name on this page -- used to
+          // filter out Form XObject `Do` invocations (and anything else
+          // that isn't a directly-painted image) when walking the raw
+          // content stream below. See extractImagePlacementsFromContent's
+          // own doc comment for why that walk, not pdfjs's operator list,
+          // is now the source of truth for both the real resource name
+          // and its real on-page position.
+          const imageXObjectNames = new Set<string>();
+          for (const [name, ref] of entries) {
+            try {
+              const candidate = parsedPdf.pdfLibDoc.context.lookup(ref);
+              if ((candidate instanceof PDFRawStream || candidate instanceof PDFStream) &&
+                  candidate.dict.get(PDFName.of('Subtype'))?.toString() === '/Image') {
+                imageXObjectNames.add(name.toString().replace('/', ''));
+              }
+            } catch {
+              // A single malformed/dangling XObject entry shouldn't abort
+              // name collection for the rest of the page -- matches the
+              // main loop's own per-entry try/catch below.
+            }
+          }
+
+          const pageContent = decodePageContent(parsedPdf.pdfLibDoc, pageNumber);
+          const imagePlacements = pageContent
+            ? this.extractImagePlacementsFromContent(pageContent, viewport.height, imageXObjectNames)
+            : [];
 
           for (const [name, ref] of entries) {
             try {
@@ -504,68 +544,102 @@ class ImageExtractorService {
                   const dictWidth = parseInt(xObject.dict.get(PDFName.of('Width'))?.toString() || '0', 10);
                   const dictHeight = parseInt(xObject.dict.get(PDFName.of('Height'))?.toString() || '0', 10);
                   if (dictWidth < options.minWidth || dictHeight < options.minHeight) {
-                    index++;
                     continue;
                   }
 
                   const xObjectName = name.toString().replace('/', '');
 
-                  const placement = imagePlacements.find(p => p.xObjectName === xObjectName)
-                    || imagePlacements[index]
-                    || { xObjectName, x: 0, y: 0, width: 100, height: 100 };
+                  // Resolve EVERY real on-page invocation of this XObject, not
+                  // just the first -- a reused image resource (the same
+                  // embedded image painted at more than one position on the
+                  // page, a normal, common authoring pattern) must get one
+                  // ImageInfo PER occurrence, each with ITS OWN correct
+                  // position. The OLD code here looped the Resources/XObject
+                  // dict once per NAME and did `imagePlacements.find(...)`
+                  // (always the FIRST matching placement, silently dropping
+                  // every later occurrence of a reused resource) with an
+                  // `imagePlacements[index]` fallback whenever no name match
+                  // existed at all -- that fallback indexed a content-stream
+                  // PAINT-ordered array using a Resources-dict ENUMERATION-
+                  // ordered counter, two unrelated orderings that desync as
+                  // soon as ANY resource on the page is reused or never
+                  // painted, silently handing a COMPLETELY UNRELATED image's
+                  // position (and, via fallbackToPageRender's own
+                  // issue.boundingBox, an unrelated crop) to the AI alt-text
+                  // generator. Confirmed real-world symptom: a client manual
+                  // QC report flagged "Duplicate figure tags and alt text" on
+                  // a live job (Karsaklian_189165_9781606497623.pdf); this
+                  // session's own investigation traced it to exactly this
+                  // dict-order-vs-paint-order mismatch. `index` on the
+                  // resulting ImageInfo now means "the Nth occurrence of THIS
+                  // xObjectName on this page" (0-based) -- see ImageInfo's
+                  // own doc comment, and mcidForXObject/locateXObjectInvocation's
+                  // matching occurrence parameter (pdf-modifier.service.ts,
+                  // figure-content-tagger.ts), which this numbering must stay
+                  // consistent with. A resource with NO matching placement at
+                  // all (never painted directly, e.g. a leftover/unused
+                  // Resources entry) still gets exactly one synthetic,
+                  // clearly-labeled placeholder position -- never another
+                  // image's real geometry.
+                  const matchingPlacements = imagePlacements.filter(p => p.xObjectName === xObjectName);
+                  const placementsForThisResource = matchingPlacements.length > 0
+                    ? matchingPlacements
+                    : [{ xObjectName, x: 0, y: 0, width: 100, height: 100 }];
 
-                  // Resolve the SAME Figure setAltText itself would resolve for this
-                  // exact image id (MCID-exact match, page-scoped positional fallback)
-                  // -- see resolveFigureForImage's own doc comment for why this must be
-                  // the single shared resolution used by both detection and writing.
-                  const imageId = `img_p${pageNumber}_${index}_${xObjectName}`;
-                  const figureDict = pdfModifierService.resolveFigureForImage(
-                    parsedPdf.pdfLibDoc,
-                    imageId,
-                    options.precomputedFigures
-                  );
-                  const structInfo: FigureAltInfo | undefined = figureDict
-                    ? this.extractFigureInfo(figureDict)
-                    : undefined;
+                  for (let occurrence = 0; occurrence < placementsForThisResource.length; occurrence++) {
+                    const placement = placementsForThisResource[occurrence];
 
-                  const imageInfo = await this.processImage(
-                    xObject,
-                    xObjectName,
-                    pageNumber,
-                    index,
-                    { x: placement.x, y: placement.y, width: placement.width, height: placement.height },
-                    viewport,
-                    options,
-                    structInfo?.altText,
-                    structInfo?.isDecorative
-                  );
+                    // Resolve the SAME Figure setAltText itself would resolve for this
+                    // exact image id (MCID-exact match, page-scoped positional fallback)
+                    // -- see resolveFigureForImage's own doc comment for why this must be
+                    // the single shared resolution used by both detection and writing.
+                    const imageId = `img_p${pageNumber}_${occurrence}_${xObjectName}`;
+                    const figureDict = pdfModifierService.resolveFigureForImage(
+                      parsedPdf.pdfLibDoc,
+                      imageId,
+                      options.precomputedFigures
+                    );
+                    const structInfo: FigureAltInfo | undefined = figureDict
+                      ? this.extractFigureInfo(figureDict)
+                      : undefined;
 
-                  // Real incident (2026-09-26): processImage -> decodeStreamBytes
-                  // runs zlib.inflateSync + reversePredictor's hand-written
-                  // per-byte pixel loop synchronously, with no yield points of
-                  // its own, for every PNG/predictor-encoded image (common for
-                  // scanned figures). On a 3843-image document, enough of these
-                  // back-to-back delayed Node's timer phase long enough that
-                  // BullMQ's own lock-renewal missed its window mid-extraction
-                  // -- BullMQ concluded the (actually-alive, just busy) worker
-                  // had died and silently restarted the ENTIRE audit from
-                  // scratch. This explicit macrotask yield after every image
-                  // guarantees the event loop gets a real chance to run pending
-                  // timers regardless of how expensive any single image's
-                  // decode turns out to be.
-                  await new Promise<void>(resolve => setImmediate(resolve));
+                    const imageInfo = await this.processImage(
+                      xObject,
+                      xObjectName,
+                      pageNumber,
+                      occurrence,
+                      { x: placement.x, y: placement.y, width: placement.width, height: placement.height },
+                      viewport,
+                      options,
+                      structInfo?.altText,
+                      structInfo?.isDecorative
+                    );
 
-                  if (imageInfo &&
-                      imageInfo.dimensions.width >= options.minWidth &&
-                      imageInfo.dimensions.height >= options.minHeight) {
-                    
-                    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- format comparison requires any cast
-                    if (!options.formats || options.formats.includes(imageInfo.format as any)) {
-                      images.push(imageInfo);
+                    // Real incident (2026-09-26): processImage -> decodeStreamBytes
+                    // runs zlib.inflateSync + reversePredictor's hand-written
+                    // per-byte pixel loop synchronously, with no yield points of
+                    // its own, for every PNG/predictor-encoded image (common for
+                    // scanned figures). On a 3843-image document, enough of these
+                    // back-to-back delayed Node's timer phase long enough that
+                    // BullMQ's own lock-renewal missed its window mid-extraction
+                    // -- BullMQ concluded the (actually-alive, just busy) worker
+                    // had died and silently restarted the ENTIRE audit from
+                    // scratch. This explicit macrotask yield after every image
+                    // guarantees the event loop gets a real chance to run pending
+                    // timers regardless of how expensive any single image's
+                    // decode turns out to be.
+                    await new Promise<void>(resolve => setImmediate(resolve));
+
+                    if (imageInfo &&
+                        imageInfo.dimensions.width >= options.minWidth &&
+                        imageInfo.dimensions.height >= options.minHeight) {
+
+                      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- format comparison requires any cast
+                      if (!options.formats || options.formats.includes(imageInfo.format as any)) {
+                        images.push(imageInfo);
+                      }
                     }
                   }
-                  
-                  index++;
                 }
               }
             } catch (err) {
@@ -585,69 +659,100 @@ class ImageExtractorService {
     };
   }
 
-  private extractImagePlacements(
-    operatorList: Record<string, unknown>,
-    viewport: pdfjsLib.PageViewport
+  /**
+   * Walks a page's own RAW, decoded content stream (NOT pdfjs's operator
+   * list -- see below for why) tracking the CTM via q/Q/cm, and returns
+   * one placement per literal `/xObjectName Do` invocation of a name in
+   * `imageXObjectNames`, in content-stream source order, carrying the REAL
+   * PDF resource name each invocation actually uses.
+   *
+   * This replaces a previous implementation built on pdfjs's own operator
+   * list (`page.getOperatorList()`), which turned out to be a confirmed,
+   * real bug, not just a theoretical risk: pdfjs's paintImageXObject/
+   * paintImageXObjectRepeat operator args carry pdfjs's OWN internal
+   * image-cache object id (`"img_" + idFactory.createObjId()`, confirmed
+   * directly in pdfjs-dist's own worker bundle source), NEVER the literal
+   * PDF content-stream resource name -- the real name (passed into
+   * buildPaintImageXObject as `cacheKey`) is used only for pdfjs's own
+   * internal per-page dedup cache and never makes it into the public
+   * operator-list output at all. The OLD extractPageImages compared THAT
+   * internal id against the real Resources/XObject dict's keys
+   * (`imagePlacements.find(p => p.xObjectName === xObjectName)`) -- a
+   * comparison that could never genuinely match anything, for ANY image,
+   * not just reused ones (confirmed directly: this session's own test run
+   * showed the name-match branch dead for ordinary, single-invocation
+   * images too). It silently "worked" in the common case only by
+   * accident, via the `imagePlacements[index]` fallback it fell through to
+   * every single time: that fallback indexed a content-stream PAINT-
+   * ordered array using a Resources-dict ENUMERATION-ordered counter, two
+   * unrelated orderings that happened to align whenever every resource on
+   * the page was painted exactly once, in the same relative order it was
+   * declared -- and silently broke, handing one image's position to a
+   * completely different image, whenever that coincidence didn't hold (a
+   * reused resource, an unpainted resource, or simply a producer that
+   * declares resources in a different order than it paints them).
+   * Confirmed real-world symptom: a client manual QC report flagged
+   * "Duplicate figure tags and alt text" on a live job
+   * (Karsaklian_189165_9781606497623.pdf).
+   *
+   * Walking the raw content-stream text directly instead sidesteps the
+   * whole problem: the real name is right there in the very token this
+   * function is already matching (`/name Do`), with no cross-referencing
+   * against a second, differently-ordered/differently-named data source
+   * needed at all -- and it keeps occurrence counting consistent with
+   * mcidForXObject/locateXObjectInvocation (pdf-modifier.service.ts,
+   * figure-content-tagger.ts), which walk this SAME raw content-stream
+   * text the SAME way, in the SAME order.
+   *
+   * `imageXObjectNames` filters out non-image `Do` invocations (Form
+   * XObjects, or any name this page's own Resources/XObject dict doesn't
+   * declare as Subtype /Image) -- matching extractPageImages's own
+   * existing scope boundary (only the page's own, directly top-level-
+   * invoked /Image resources; a Form's own nested images are out of scope
+   * here exactly as they were before this change).
+   *
+   * Deliberately a lightweight regex walk, not a full PDF content-stream
+   * tokenizer -- matches this codebase's own established convention for
+   * this exact class of task (mcidForXObject's identical BDC/EMC/Do walk).
+   */
+  private extractImagePlacementsFromContent(
+    content: string,
+    viewportHeight: number,
+    imageXObjectNames: ReadonlySet<string>
   ): ImagePlacement[] {
     const placements: ImagePlacement[] = [];
-    const OPS = pdfjsLib.OPS;
-    
     const transformStack: number[][] = [];
     let currentTransform = [1, 0, 0, 1, 0, 0];
 
-    const fnArray = operatorList.fnArray as unknown[];
-    const argsArray = operatorList.argsArray as unknown[][];
-
-    for (let i = 0; i < fnArray.length; i++) {
-      const fn = fnArray[i];
-      const args = argsArray[i];
-      
-      if (fn === OPS.save) {
+    const NUM = '([+-]?(?:\\d+\\.\\d*|\\.\\d+|\\d+))';
+    const re = new RegExp(
+      `\\bq\\b|\\bQ\\b|${NUM}\\s+${NUM}\\s+${NUM}\\s+${NUM}\\s+${NUM}\\s+${NUM}\\s+cm\\b|/([\\w.#+-]+)\\s+Do\\b`,
+      'g'
+    );
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(content)) !== null) {
+      if (m[0] === 'q') {
         transformStack.push([...currentTransform]);
-      } else if (fn === OPS.restore) {
-        if (transformStack.length > 0) {
-          currentTransform = transformStack.pop()!;
-        }
-      } else if (fn === OPS.transform) {
-        currentTransform = this.multiplyTransforms(currentTransform, args as number[]);
-      } else if (fn === OPS.paintImageXObject) {
-        const xObjectName = args[0] as string;
+      } else if (m[0] === 'Q') {
+        if (transformStack.length > 0) currentTransform = transformStack.pop()!;
+      } else if (m[7] !== undefined) {                       // `/name Do`
+        const xObjectName = m[7];
+        if (!imageXObjectNames.has(xObjectName)) continue;    // Form XObject, or unknown -- not an image placement
         const [a, b, c, d, e, f] = currentTransform;
-        
         const scaleX = Math.sqrt(a * a + b * b);
         const scaleY = Math.sqrt(c * c + d * d);
         const width = scaleX;
         const height = scaleY;
         const x = e;
-        const y = viewport.height - f - height;
-        
+        const y = viewportHeight - f - height;
         placements.push({ xObjectName, x, y, width, height });
-      } else if (fn === OPS.paintImageXObjectRepeat) {
-        const xObjectName = args[0] as string;
-        const scaleX = args[1] as number;
-        const scaleY = args[2] as number;
-        const positions = args[3] as number[];
-        
-        for (let j = 0; j < positions.length; j += 2) {
-          const tx = positions[j];
-          const ty = positions[j + 1];
-          
-          const instanceTransform = this.multiplyTransforms(
-            currentTransform,
-            [scaleX, 0, 0, scaleY, tx, ty]
-          );
-          
-          const [a, , , d, ie, ifa] = instanceTransform;
-          const width = Math.abs(a);
-          const height = Math.abs(d);
-          const x = ie;
-          const y = viewport.height - ifa - height;
-          
-          placements.push({ xObjectName, x, y, width, height });
-        }
+      } else if (m[1] !== undefined) {                        // `a b c d e f cm`
+        currentTransform = this.multiplyTransforms(currentTransform, [
+          Number(m[1]), Number(m[2]), Number(m[3]), Number(m[4]), Number(m[5]), Number(m[6]),
+        ]);
       }
     }
-    
+
     return placements;
   }
 

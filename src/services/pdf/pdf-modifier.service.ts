@@ -895,12 +895,21 @@ export class PdfModifierService {
         return this.resolvesToPageViaMcid(fig, doc, targetPage);
       });
 
-      const xObjectName = imageId.match(/^img_p\d+_\d+_(.+)$/)?.[1];
-      if (!xObjectName) return null;
+      // The numeric slot is the occurrence ordinal (0-based) of this
+      // specific invocation among every same-named XObject invocation on
+      // the page -- image-extractor.service.ts's own ImageInfo.index (see
+      // its doc comment), NOT a raw dict-entry counter. Required to
+      // disambiguate a reused XObject resource invoked more than once on
+      // one page; see mcidForXObject's own doc comment for the real
+      // conflation bug this closes.
+      const idMatch = imageId.match(/^img_p\d+_(\d+)_(.+)$/);
+      if (!idMatch) return null;
+      const occurrence = parseInt(idMatch[1], 10);
+      const xObjectName = idMatch[2];
 
       return (
-        this.findFigureByImageMcid(doc, figuresOnPage, targetPage, xObjectName) ??
-        this.findFigureByObjr(doc, figuresOnPage, targetPage, xObjectName)
+        this.findFigureByImageMcid(doc, figuresOnPage, targetPage, xObjectName, occurrence) ??
+        this.findFigureByObjr(doc, figuresOnPage, targetPage, xObjectName, occurrence)
       );
     } catch {
       return null;
@@ -1026,10 +1035,19 @@ export class PdfModifierService {
       // resolveFigureForImage (:882-883) -- this was a separate, incomplete
       // copy of that same lookup, missing the OBJR fallback entirely and
       // falling straight to a positional guess for any OBJR-tagged Figure.
-      const xObjectName = imageId.match(/^img_p\d+_\d+_(.+)$/)?.[1];
+      //
+      // The numeric slot is the occurrence ordinal (0-based) of this exact
+      // invocation among every same-named XObject invocation on the page --
+      // see resolveFigureForImage's own comment and mcidForXObject's doc
+      // comment for why a reused XObject (invoked more than once on one
+      // page) needs this to resolve the CORRECT one of its several Figures,
+      // not always the first.
+      const xObjectIdMatch = imageId.match(/^img_p\d+_(\d+)_(.+)$/);
+      const xObjectOccurrence = xObjectIdMatch ? parseInt(xObjectIdMatch[1], 10) : 0;
+      const xObjectName = xObjectIdMatch?.[2];
       const exact = xObjectName
-        ? this.findFigureByImageMcid(doc, figuresOnPage, targetPage, xObjectName) ??
-          this.findFigureByObjr(doc, figuresOnPage, targetPage, xObjectName)
+        ? this.findFigureByImageMcid(doc, figuresOnPage, targetPage, xObjectName, xObjectOccurrence) ??
+          this.findFigureByObjr(doc, figuresOnPage, targetPage, xObjectName, xObjectOccurrence)
         : null;
 
       // Exact MCID match, or the exact page+index match -- no cross-page
@@ -1075,14 +1093,21 @@ export class PdfModifierService {
    * MCID-exact figure match: find the MCID that marks `xObjectName`'s image on the
    * page, then the Figure whose /K references that MCID. Returns null if the tree
    * isn't MCID-bound (positional matching then applies).
+   *
+   * `occurrence` (0-based, default 0) picks which invocation of a
+   * same-named, multiply-invoked XObject to resolve -- see mcidForXObject's
+   * own doc comment for why this is needed at all (a reused image resource
+   * painted at more than one position on the page is a normal, common
+   * authoring pattern, not an edge case).
    */
   private findFigureByImageMcid(
     doc: PDFDocument,
     figuresOnPage: PDFDict[],
     targetPage: number,
     xObjectName: string,
+    occurrence = 0,
   ): PDFDict | null {
-    const mcid = this.mcidForXObject(doc, targetPage, xObjectName);
+    const mcid = this.mcidForXObject(doc, targetPage, xObjectName, occurrence);
     if (mcid === null) return null;
     return figuresOnPage.find((fig) => this.structElemHasMcid(fig, mcid)) ?? null;
   }
@@ -1094,16 +1119,29 @@ export class PdfModifierService {
    * above. A Figure is tagged one way or the other, not both, so trying this
    * only after an MCID match misses is safe and exact -- no ambiguity, no
    * guessing, same discipline as the MCID path.
+   *
+   * `occurrence` (0-based, default 0): an OBJR points at the XObject's own
+   * indirect reference, which is IDENTICAL for every invocation of a reused
+   * resource -- it cannot itself distinguish which on-page placement a given
+   * OBJR-tagged Figure belongs to. When more than one Figure on the page
+   * carries an OBJR to the SAME xObjectRef (each a separate, legitimately
+   * OBJR-tagged invocation), `occurrence` selects the Nth such Figure
+   * (struct-tree traversal order) instead of always the first -- the same
+   * disambiguation findFigureByImageMcid applies via mcidForXObject, kept
+   * consistent here for symmetry even though this path has no content-stream
+   * position of its own to anchor the ordinal to.
    */
   private findFigureByObjr(
     doc: PDFDocument,
     figuresOnPage: PDFDict[],
     targetPage: number,
     xObjectName: string,
+    occurrence = 0,
   ): PDFDict | null {
     const xObjectRef = this.resolveXObjectRef(doc, targetPage, xObjectName);
     if (!xObjectRef) return null;
-    return figuresOnPage.find((fig) => this.structElemHasObjrTo(fig, doc, xObjectRef)) ?? null;
+    const matches = figuresOnPage.filter((fig) => this.structElemHasObjrTo(fig, doc, xObjectRef));
+    return matches[occurrence] ?? null;
   }
 
   /** The PDFRef of a named XObject in a page's /Resources /XObject dict, if any (undefined/direct entries return null -- an XObject resource is always stored indirectly in practice, and an OBJR's /Obj is always a PDFRef, so only an indirect entry can ever match). */
@@ -1147,8 +1185,31 @@ export class PdfModifierService {
     return false;
   }
 
-  /** MCID of the marked-content sequence enclosing `/xObjectName Do` on the page. */
-  private mcidForXObject(doc: PDFDocument, targetPage: number, xObjectName: string): number | null {
+  /**
+   * MCID of the marked-content sequence enclosing the (occurrence)-th
+   * `/xObjectName Do` on the page (0-based, default 0 -- the first
+   * invocation, matching this method's original, single-invocation-only
+   * behavior for every pre-existing caller that doesn't pass it).
+   *
+   * `occurrence` exists because a reused XObject resource (the same
+   * embedded image invoked more than once on one page, at different
+   * positions -- a normal, common authoring pattern, not an edge case) was
+   * previously ALWAYS resolved to its FIRST invocation's MCID regardless of
+   * which specific placement a caller actually meant: this method returned
+   * as soon as it found ANY `/xObjectName Do`, with no way to target the
+   * second, third, etc. invocation's own, DIFFERENT enclosing Figure.
+   * Confirmed real-world symptom of this exact conflation: a client manual
+   * QC report flagged "Duplicate figure tags and alt text" on a live job
+   * (Karsaklian_189165_9781606497623.pdf) -- two genuinely different
+   * invocations of one reused image resource, each with its own real
+   * Figure/MCID, could never be told apart here. image-extractor.service.ts's
+   * ImageInfo.index now carries this exact occurrence number end-to-end
+   * (see its own doc comment) so callers resolving a SPECIFIC invocation
+   * (findFigureByImageMcid, and transitively resolveFigureForImage/
+   * setAltText) can request it directly instead of silently colliding on
+   * the first one every time.
+   */
+  private mcidForXObject(doc: PDFDocument, targetPage: number, xObjectName: string, occurrence = 0): number | null {
     const content = this.decodePageContent(doc, targetPage);
     if (!content) return null;
     // BDC's property dict (with or without /MCID among other keys, e.g.
@@ -1156,6 +1217,7 @@ export class PdfModifierService {
     // source order tracking the MCID stack.
     const re = /<<((?:(?!>>).)*)>>\s*BDC|\/[\w.#+-]+\s+BMC|\bEMC\b|\/([\w.#+-]+)\s+Do\b/g;
     const stack: number[] = [];
+    let seen = 0;
     let m: RegExpExecArray | null;
     while ((m = re.exec(content)) !== null) {
       if (m[1] !== undefined) {                               // BDC (dict may or may not carry /MCID)
@@ -1163,8 +1225,11 @@ export class PdfModifierService {
         stack.push(mcidMatch ? Number(mcidMatch[1]) : -1);
       } else if (m[2] !== undefined) {                        // `/name Do`
         if (m[2] === xObjectName) {
-          for (let i = stack.length - 1; i >= 0; i--) if (stack[i] >= 0) return stack[i];
-          return null;
+          if (seen === occurrence) {
+            for (let i = stack.length - 1; i >= 0; i--) if (stack[i] >= 0) return stack[i];
+            return null;
+          }
+          seen++;
         }
       } else if (/BMC$/.test(m[0])) stack.push(-1);           // artifact BMC (no MCID)
       else stack.pop();                                       // EMC

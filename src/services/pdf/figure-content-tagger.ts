@@ -34,21 +34,37 @@ export interface ContentRange {
  * Exact string match on the operand name immediately before a `Do` operator
  * -- no position tolerance, no ambiguity scoring, unlike locateTextRun.
  *
- * Bails (returns null) rather than guessing when the same XObject name is
- * invoked zero or more-than-once on the page: zero means nothing to wrap;
- * more-than-once means there's no way to know which invocation corresponds
- * to "the" image without additional information this function doesn't have
- * (this codebase's established "bail rather than guess" convention for
- * structure-tree/content-stream mutation, same reasoning insertMarkedContentSpans
- * and extendParentTree already apply for their own ambiguous cases).
+ * Without `occurrence`, bails (returns null) rather than guessing when the
+ * same XObject name is invoked zero or more-than-once on the page: zero
+ * means nothing to wrap; more-than-once means there's no way to know which
+ * invocation corresponds to "the" image without additional information this
+ * function doesn't otherwise have (this codebase's established "bail rather
+ * than guess" convention for structure-tree/content-stream mutation, same
+ * reasoning insertMarkedContentSpans and extendParentTree already apply for
+ * their own ambiguous cases).
+ *
+ * `occurrence` (0-based), when given, supplies exactly that missing
+ * information and disambiguates instead of bailing: returns the
+ * (occurrence)-th `/xObjectName Do` match in source order, regardless of how
+ * many total matches exist, or null if there's no match at that position.
+ * Exists for a reused XObject resource (the same embedded image invoked more
+ * than once on one page at different positions, a normal, common authoring
+ * pattern) -- image-extractor.service.ts's own ImageInfo.index now carries
+ * this exact occurrence number (see its doc comment), so a caller resolving
+ * a specific invocation (e.g. buildFigureFromImage, pdf-structure-writer
+ * .service.ts) can target it directly instead of being stuck at "ambiguous,
+ * decline".
  */
-export function locateXObjectInvocation(content: string, xObjectName: string): ContentRange | null {
+export function locateXObjectInvocation(content: string, xObjectName: string, occurrence?: number): ContentRange | null {
   const escaped = xObjectName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const re = new RegExp(`/${escaped}\\s+Do\\b`, 'g');
   const matches: ContentRange[] = [];
   let m: RegExpExecArray | null;
   while ((m = re.exec(content)) !== null) {
     matches.push({ start: m.index, end: m.index + m[0].length });
+  }
+  if (occurrence !== undefined) {
+    return matches[occurrence] ?? null;
   }
   if (matches.length !== 1) return null;
   return matches[0];

@@ -50,6 +50,25 @@ const TRAILING_PUNCTUATION_RE = /[.,;:]+$/;
 // worth flagging.
 const MIN_LINK_TEXT_LENGTH = 10;
 
+// Prose-style internal cross-references -- "see Chapter 3", "see p. 45",
+// "see Fig. 2" -- confirmed real via a live S4 Carlisle manual QC report
+// ("Cross-reference links not retained") plus direct inspection of the
+// exact file they reviewed: it has zero named destinations anywhere
+// (/Names/Dests entirely absent), so this class of reference was never a
+// real link even before this platform touched the document. Deliberately
+// requires a specific numbered target (Chapter/Section/Figure/Table/page
+// + a number) -- an unqualified "see above"/"see below" has no specific
+// destination to link to, and guessing one would be worse than not
+// flagging it at all (same "bail rather than guess" convention as
+// URL_IN_TEXT_GLOBAL_RE's own deliberate non-handling of line-wrapped
+// URLs, above). DETECT-ONLY by design: unlike a literal URL (whose link
+// target is the text itself), building the actual /GoTo destination here
+// requires resolving WHICH chapter/page/figure the reference means, a
+// semantic judgment call this validator does not attempt -- see this
+// code's dispatch (or rather, deliberate lack of one) in
+// ai-analysis.service.ts.
+const CROSS_REFERENCE_RE = /\bsee\s+(chapter|section|figure|fig|table|page|pg|p)\.?\s+(\d+(?:\.\d+)*)\b/gi;
+
 interface Box {
   x: number;
   y: number;
@@ -59,6 +78,11 @@ interface Box {
 
 interface UrlSpan {
   url: string;
+  box: Box;
+}
+
+interface CrossRefSpan {
+  text: string;
   box: Box;
 }
 
@@ -78,9 +102,16 @@ class PdfLinkCompletenessValidator {
 
     for (const page of parsed.pages) {
       try {
-        const spans = await this.findMissingLinkSpans(pdfjsDoc, page.pageNumber, page.links);
-        for (const span of spans) {
+        const { items, viewport } = await this.getTextItems(pdfjsDoc, page.pageNumber);
+
+        const urlSpans = this.findMissingLinkSpans(items, viewport, page.links);
+        for (const span of urlSpans) {
           issues.push(this.createIssue(page.pageNumber, span, page.width, page.height));
+        }
+
+        const crossRefSpans = this.findMissingCrossReferenceSpans(items, viewport, page.links);
+        for (const span of crossRefSpans) {
+          issues.push(this.createCrossReferenceIssue(page.pageNumber, span, page.width, page.height));
         }
       } catch (error) {
         logger.warn(
@@ -93,11 +124,10 @@ class PdfLinkCompletenessValidator {
     return issues;
   }
 
-  private async findMissingLinkSpans(
+  private async getTextItems(
     pdfjsDoc: pdfjsLib.PDFDocumentProxy,
-    pageNumber: number,
-    existingLinks: PdfLink[]
-  ): Promise<UrlSpan[]> {
+    pageNumber: number
+  ): Promise<{ items: Array<{ str: string; transform: number[]; width?: number }>; viewport: pdfjsLib.PageViewport }> {
     const page = await pdfjsDoc.getPage(pageNumber);
     const viewport = page.getViewport({ scale: 1 });
     const content = await page.getTextContent();
@@ -106,7 +136,14 @@ class PdfLinkCompletenessValidator {
       if (!('str' in rawItem)) continue;
       items.push(rawItem as { str: string; transform: number[]; width?: number });
     }
+    return { items, viewport };
+  }
 
+  private findMissingLinkSpans(
+    items: Array<{ str: string; transform: number[]; width?: number }>,
+    viewport: pdfjsLib.PageViewport,
+    existingLinks: PdfLink[]
+  ): UrlSpan[] {
     // Deliberately does NOT attempt to join a URL that wraps across physical
     // lines back into one span. Tried first, then abandoned as unsafe: in a
     // hanging-indent bibliography (this validator's real target case), a
@@ -185,6 +222,27 @@ class PdfLinkCompletenessValidator {
     });
   }
 
+  /** Same per-item scanning shape as findMissingLinkSpans, but for prose
+   *  cross-references rather than URLs -- see CROSS_REFERENCE_RE's own doc
+   *  comment for why this is detect-only and requires a specific numbered
+   *  target. */
+  private findMissingCrossReferenceSpans(
+    items: Array<{ str: string; transform: number[]; width?: number }>,
+    viewport: pdfjsLib.PageViewport,
+    existingLinks: PdfLink[]
+  ): CrossRefSpan[] {
+    const spans: CrossRefSpan[] = [];
+    for (const item of items) {
+      for (const match of item.str.matchAll(CROSS_REFERENCE_RE)) {
+        const text = match[0];
+        const box = this.itemBox(item, viewport);
+        if (this.hasNearbyLinkAnnotation(box, existingLinks)) continue;
+        spans.push({ text, box });
+      }
+    }
+    return spans;
+  }
+
   private createIssue(pageNumber: number, span: UrlSpan, pageWidth: number, pageHeight: number): AuditIssue {
     return {
       id: `link-completeness-${++this.issueCounter}`,
@@ -201,6 +259,33 @@ class PdfLinkCompletenessValidator {
         'Convert this text into a real hyperlink: add a Link annotation with a URI action pointing to the address, and wrap it in a matching Link structure element.',
       context: `URL-shaped text: "${span.url.substring(0, 120)}"`,
       linkCompletenessData: { url: span.url },
+      pageNumber,
+      boundingBox: {
+        x: span.box.x,
+        y: span.box.y,
+        width: span.box.width,
+        height: span.box.height,
+        pageWidth,
+        pageHeight,
+      },
+    };
+  }
+
+  private createCrossReferenceIssue(pageNumber: number, span: CrossRefSpan, pageWidth: number, pageHeight: number): AuditIssue {
+    return {
+      id: `link-completeness-${++this.issueCounter}`,
+      source: 'link-completeness-validator',
+      severity: 'moderate',
+      code: 'CROSS-REFERENCE-MISSING-LINK',
+      message: `Text reads as a cross-reference ("${span.text}") but has no underlying Link annotation to its target`,
+      wcagCriteria: ['1.3.1', '4.1.2'],
+      matterhornCheckpoint: '28-011',
+      matterhornHow: 'M',
+      location: `Page ${pageNumber} at (${Math.round(span.box.x)}, ${Math.round(span.box.y)})`,
+      category: 'links',
+      suggestion:
+        'Manual review recommended -- identify the actual chapter/section/page/figure/table this reference points to and add a real internal link (a Link annotation with a GoTo action) to it.',
+      context: `Cross-reference text: "${span.text}"`,
       pageNumber,
       boundingBox: {
         x: span.box.x,

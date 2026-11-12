@@ -21,7 +21,7 @@ describe('locateXObjectInvocation', () => {
     expect(locateXObjectInvocation(content, 'Im0')).toBeNull();
   });
 
-  it('bails (returns null) rather than guessing when the same XObject is invoked more than once', () => {
+  it('bails (returns null) rather than guessing when the same XObject is invoked more than once and no occurrence is given', () => {
     const content = '/Im0 Do /Im0 Do';
     expect(locateXObjectInvocation(content, 'Im0')).toBeNull();
   });
@@ -29,6 +29,40 @@ describe('locateXObjectInvocation', () => {
   it('does not false-match a name that is a substring of another (e.g. Im0 vs Im01)', () => {
     const content = '/Im01 Do';
     expect(locateXObjectInvocation(content, 'Im0')).toBeNull();
+  });
+
+  /**
+   * Regression for the confirmed root cause of "alt text describes
+   * completely unrelated content" / S4 Carlisle's "Duplicate figure tags
+   * and alt text" defect: a reused XObject resource (the same embedded
+   * image invoked more than once on one page, at different positions -- a
+   * normal, common authoring pattern) used to make this function bail
+   * entirely, with no way for a caller to target a SPECIFIC invocation.
+   * `occurrence` (0-based) disambiguates instead of bailing, matching
+   * image-extractor.service.ts's own ImageInfo.index numbering.
+   */
+  it('with occurrence, disambiguates instead of bailing when the same XObject is invoked more than once', () => {
+    const content = '/Im0 Do /Im0 Do /Im0 Do';
+    const first = locateXObjectInvocation(content, 'Im0', 0);
+    const second = locateXObjectInvocation(content, 'Im0', 1);
+    const third = locateXObjectInvocation(content, 'Im0', 2);
+    expect(first).toEqual({ start: 0, end: 7 });
+    expect(second).toEqual({ start: 8, end: 15 });
+    expect(third).toEqual({ start: 16, end: 23 });
+    // Each occurrence's own range really does slice out "/Im0 Do" on its own.
+    expect(content.slice(first!.start, first!.end)).toBe('/Im0 Do');
+    expect(content.slice(second!.start, second!.end)).toBe('/Im0 Do');
+    expect(content.slice(third!.start, third!.end)).toBe('/Im0 Do');
+  });
+
+  it('returns null (does not wrap around or clamp) when the requested occurrence does not exist', () => {
+    const content = '/Im0 Do /Im0 Do';
+    expect(locateXObjectInvocation(content, 'Im0', 2)).toBeNull();
+  });
+
+  it('occurrence 0 on a single invocation behaves exactly like the no-occurrence form (backward compatible)', () => {
+    const content = 'q 1 0 0 1 10 10 cm /Im0 Do Q';
+    expect(locateXObjectInvocation(content, 'Im0', 0)).toEqual(locateXObjectInvocation(content, 'Im0'));
   });
 });
 

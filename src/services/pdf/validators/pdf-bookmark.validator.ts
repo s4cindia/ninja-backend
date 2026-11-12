@@ -13,8 +13,14 @@ import { PdfParseResult } from '../pdf-comprehensive-parser.service';
 import { PDFOutlineItem } from '../pdf-parser.service';
 import { logger } from '../../../lib/logger';
 
-// Matches generic/auto-generated bookmark titles
-const GENERIC_TITLE_RE = /^(section|chapter|untitled|bookmark|\d+)([\s\d.:-]*)$/i;
+// Matches generic/auto-generated bookmark titles. The "p(age)?" branch is
+// confirmed real via Karsaklian_189165_9781606497623.pdf's actual bookmarks
+// (67 of them, every single one literally "Section p.25", "Section p.26",
+// etc.) -- InDesign's own fallback when it can't resolve real heading text
+// for a bookmark. The original [\s\d.:-]* branch alone doesn't match these
+// (the literal "p" isn't in that character class), a real false negative
+// this exact document slipped through.
+const GENERIC_TITLE_RE = /^(section|chapter|untitled|bookmark|\d+)(\s+p(?:age)?\.?\s*\d+(-\d+)?|[\s\d.:-]*)$/i;
 
 // Minimum pages before bookmark checks apply
 const MIN_PAGES_FOR_BOOKMARKS = 10;

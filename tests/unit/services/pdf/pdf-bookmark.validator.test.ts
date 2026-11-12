@@ -69,4 +69,24 @@ describe('PdfBookmarkValidator', () => {
     expect(generic).toBeTruthy();
     expect(generic!.pageNumber).toBe(7);
   });
+
+  it('flags "Section p.NN"-style titles -- the real shape found on Karsaklian_189165_9781606497623.pdf (67 bookmarks, every single one this exact pattern)', async () => {
+    const outline: PDFOutlineItem[] = [
+      { title: 'Section p.25', destination: 25, children: [] },
+      { title: 'Section p.138', destination: 138, children: [] },
+    ];
+    const issues = await pdfBookmarkValidator.validate(makeParsed(190, outline));
+
+    const generic = issues.filter(i => i.code === 'BOOKMARK-GENERIC-TEXT');
+    expect(generic).toHaveLength(2);
+  });
+
+  it('does not flag a real descriptive title just because it starts with a generic keyword', async () => {
+    const outline: PDFOutlineItem[] = [
+      { title: 'Chapter 5: Financial Risk Assessment', destination: 50, children: [] },
+    ];
+    const issues = await pdfBookmarkValidator.validate(makeParsed(190, outline));
+
+    expect(issues.find(i => i.code === 'BOOKMARK-GENERIC-TEXT')).toBeUndefined();
+  });
 });
