@@ -10,6 +10,7 @@ import { logger } from '../lib/logger';
 import { s3Service } from '../services/s3.service';
 import { isAuthenticated } from '../utils/auth';
 import { teamActivityReportService } from '../services/reports/team-activity-report.service';
+import { getLedExecutives } from '../utils/team-roster';
 
 /**
  * Represents the normalized structure of a job's output data.
@@ -277,6 +278,40 @@ export class JobController {
         },
         { includeReviewStatus: true }
       );
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
+   * The roster a Team Leader picks from when uploading a title and
+   * assigning it directly to one of their own Executives -- nothing
+   * before this returned a plain user roster at all (listTeamJobs/
+   * getTeamReviewActivity both resolve teammate ids internally but only
+   * ever return jobs or stats). TEAM_LEADER-only, unlike those two --
+   * a team-level VIEWER has read-only oversight, not the ability to
+   * assign work, so they don't get this list.
+   */
+  async listTeamExecutives(req: Request, res: Response, next: NextFunction) {
+    try {
+      if (!isAuthenticated(req)) {
+        throw AppError.unauthorized('Not authenticated');
+      }
+
+      const leadsAnyTeam = await prisma.teamMembership.findFirst({
+        where: { userId: req.user.id, teamRole: 'TEAM_LEADER' },
+        select: { teamId: true },
+      });
+
+      if (!leadsAnyTeam) {
+        throw AppError.forbidden(
+          'You must be a Team Leader on at least one team to view its Executive roster',
+          'NOT_TEAM_LEADER'
+        );
+      }
+
+      const executives = await getLedExecutives(req.user.id);
+      res.json({ success: true, data: { executives } });
     } catch (error) {
       next(error);
     }
