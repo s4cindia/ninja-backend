@@ -92,6 +92,11 @@ export class AuthService {
   async login(input: LoginInput) {
     const user = await prisma.user.findUnique({
       where: { email: input.email },
+      include: {
+        teamMemberships: {
+          select: { teamRole: true, team: { select: { id: true, name: true } } },
+        },
+      },
     });
 
     if (!user || user.deletedAt) {
@@ -119,6 +124,7 @@ export class AuthService {
         lastName: user.lastName,
         role: user.role,
         tenantId: user.tenantId,
+        teamMemberships: user.teamMemberships,
       },
       ...tokens,
     };
@@ -166,6 +172,9 @@ export class AuthService {
             name: true,
             slug: true,
           },
+        },
+        teamMemberships: {
+          select: { teamRole: true, team: { select: { id: true, name: true } } },
         },
         createdAt: true,
         updatedAt: true,
