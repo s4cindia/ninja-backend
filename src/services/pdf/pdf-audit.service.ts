@@ -31,6 +31,7 @@ import { pdfFigureCaptionTreeValidator } from './validators/pdf-figure-caption-t
 import { pdfInlineFigureTreeValidator } from './validators/pdf-inline-figure-tree.validator';
 import { pdfMcidPageMismatchValidator } from './validators/pdf-mcid-page-mismatch.validator';
 import { pdfRoleMapIntegrityValidator } from './validators/pdf-rolemap-integrity.validator';
+import { pdfHeaderFooterContentValidator } from './validators/pdf-header-footer-content.validator';
 import { pdfHeadingStyleMismatchValidator } from './validators/pdf-heading-style-mismatch.validator';
 import { pdfTableCellTreeValidator } from './validators/pdf-table-cell-tree.validator';
 import { pdfFontToUnicodeValidator } from './validators/pdf-font-tounicode.validator';
@@ -566,6 +567,32 @@ class PdfAuditService extends BaseAuditService<PdfParseResult, PdfValidationResu
             const errorMessage = error instanceof Error ? error.message : 'Unknown error';
             logger.error(`[PdfAudit] PdfHeadingStyleMismatchValidator failed:`, error);
             result.validatorErrors.push({ validator: 'PdfHeadingStyleMismatchValidator', error: errorMessage });
+          }
+        }
+
+        // 1i. Header/Footer Tagged-As-Content Validator (Matterhorn 01-001,
+        // DETECT-ONLY) -- confirmed real via an S4 Carlisle manual QC
+        // report: page-repeating decorative text (a running header/title,
+        // or a plain running page number) sometimes tagged as real content
+        // instead of /Artifact, polluting reading order and screen-reader
+        // output. See that validator's own header comment for the
+        // detection approach (artifact-marker.ts's own bands, reused
+        // verbatim with a Y-axis convention conversion) and why it is
+        // intentionally detect-only -- no dispatch wiring for its issue
+        // code exists in ai-analysis.service.ts, matching how
+        // ROLEMAP-INDEX-FLATTENED/ROLEMAP-FOOTNOTE-FLATTENED above are
+        // also left undispatched.
+        if (willRunStructure) {
+          try {
+            logger.info(`[PdfAudit] Running PdfHeaderFooterContentValidator...`);
+            const headerFooterIssues = await pdfHeaderFooterContentValidator.validate(parsed);
+            result.structureIssues.push(...headerFooterIssues);
+            result.issues.push(...headerFooterIssues);
+            logger.info(`[PdfAudit] PdfHeaderFooterContentValidator found ${headerFooterIssues.length} issue(s)`);
+          } catch (error) {
+            const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+            logger.error(`[PdfAudit] PdfHeaderFooterContentValidator failed:`, error);
+            result.validatorErrors.push({ validator: 'PdfHeaderFooterContentValidator', error: errorMessage });
           }
         }
       };
