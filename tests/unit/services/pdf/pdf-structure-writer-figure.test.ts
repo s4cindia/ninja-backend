@@ -67,6 +67,64 @@ async function buildDocWithTaggedTextAndUntaggedImage(): Promise<{
   return { doc, parsedPdf, xObjectName: xObjectName!, tmpPath };
 }
 
+/**
+ * Same shape as buildDocWithTaggedTextAndUntaggedImage but the image is
+ * REUSED: one Resources/XObject entry, invoked via `Do` TWICE at different
+ * positions/sizes -- the exact real-world shape confirmed as the root
+ * cause of S4 Carlisle's "Duplicate figure tags and alt text" defect.
+ * drawImage always allocates a fresh resource name per call (confirmed
+ * empirically -- even drawing the SAME embedded PDFImage object twice
+ * gives two DIFFERENT names, not a shared one), so the second invocation
+ * is built by hand: draw once normally, then append a second `cm`+`Do`
+ * sequence reusing that one resource's own name directly into the content
+ * stream. Both placements are left untagged.
+ */
+async function buildDocWithTaggedTextAndReusedImage(): Promise<{
+  doc: PDFDocument;
+  parsedPdf: Awaited<ReturnType<typeof pdfParserService.parse>>;
+  xObjectName: string;
+  tmpPath: string;
+}> {
+  const src = await PDFDocument.create();
+  const srcPage = src.addPage([400, 600]);
+  srcPage.drawText('Nearby paragraph text', { x: 50, y: 500, size: 14 });
+  const img = await src.embedPng(PNG);
+  srcPage.drawImage(img, { x: 50, y: 300, width: 40, height: 30 }); // first (and, so far, only) placement
+  const doc = await PDFDocument.load(await src.save());
+
+  const zones: OrderableZone[] = [
+    { pageNumber: 1, bbox: { x: 0, y: 0, w: 400, h: 600 }, zoneType: 'paragraph' },
+  ];
+  const built = buildStructTreeFromZones(doc, zones);
+  expect(built.elements).toBeGreaterThan(0);
+
+  const taggedContent = decodeContent(doc);
+  const xObjectName = taggedContent.match(/\/([\w.#+-]+)\s+Do\b/)?.[1]!;
+  expect(xObjectName).toBeTruthy();
+
+  // Manually append a SECOND invocation of the SAME XObject resource, at a
+  // different position/size -- drawImage always allocates a FRESH resource
+  // name per call (confirmed empirically: even reusing the same embedded
+  // PDFImage object across two drawImage calls gives two DIFFERENT names,
+  // not a shared one), so a genuinely reused XObject (one Resources/XObject
+  // entry, invoked via `Do` twice) has to be built this way instead.
+  // Position/size (x=200,y=100,w=60,h=50) matches what the test below
+  // passes as this second entry's own img.position.
+  writePageContent(doc, 1, `${taggedContent}\nq 60 0 0 50 200 100 cm /${xObjectName} Do Q\n`);
+
+  const content = decodeContent(doc);
+  const names = [...content.matchAll(/\/([\w.#+-]+)\s+Do\b/g)].map(m => m[1]);
+  expect(names.length).toBe(2);
+  expect(names[0]).toBe(names[1]); // same resource, two invocations -- confirms the reused-XObject shape
+
+  const buffer = Buffer.from(await doc.save());
+  const tmpPath = path.join(os.tmpdir(), `zzz-diag-figure-writer-reused-${Date.now()}-${Math.random().toString(36).slice(2)}.pdf`);
+  fs.writeFileSync(tmpPath, buffer);
+  const parsedPdf = await pdfParserService.parse(tmpPath);
+
+  return { doc, parsedPdf, xObjectName, tmpPath };
+}
+
 /** Finds the tagged paragraph's own ref + its parent's ref, walking from structRoot. */
 function findParaAndParent(doc: PDFDocument, root: PDFDict): { paraRef: PDFRef; parentRef: PDFRef } {
   let paraRef: PDFRef | null = null;
@@ -93,9 +151,12 @@ function findParaAndParent(doc: PDFDocument, root: PDFDict): { paraRef: PDFRef; 
  * untagged images, both nearest the SAME single tagged paragraph -- the
  * shared-anchor scenario Codex/CodeRabbit flagged on PR #555. Embeds the
  * PNG twice (not one embed drawn twice) so pdf-lib registers two DISTINCT
- * XObject resources -- locateXObjectInvocation bails on an ambiguous
- * (multiply-invoked) name, so this fixture needs two real, separately
- * named XObjects to exercise the per-image resolution at all.
+ * XObject resources, each invoked once -- this fixture is specifically for
+ * the shared-anchor/reading-order scenario, not the reused-XObject
+ * (same name invoked twice) scenario, which the occurrence-indexed
+ * fixtures below (buildDocWithTaggedTextAndReusedImage) cover instead now
+ * that locateXObjectInvocation/mcidForXObject accept an occurrence
+ * parameter and no longer have to bail on that ambiguity.
  */
 async function buildDocWithTaggedTextAndTwoUntaggedImages(): Promise<{
   doc: PDFDocument;
@@ -306,8 +367,13 @@ describe('PdfStructureWriterService.buildFigureFromImage', () => {
   it('preserves reading order when two images share the same nearest anchor, not reversing them', async () => {
     const { doc, parsedPdf, xObjectNameA, xObjectNameB, tmpPath } = await buildDocWithTaggedTextAndTwoUntaggedImages();
     try {
+      // Index 0 for BOTH -- xObjectNameA and xObjectNameB are two DISTINCT
+      // XObject resources, each invoked exactly once, so each is its own
+      // name's occurrence 0 (see ImageInfo's own doc comment in
+      // image-extractor.service.ts: the index is per-name, not a shared
+      // page-wide counter).
       const imageIdA = `img_p1_0_${xObjectNameA}`;
-      const imageIdB = `img_p1_1_${xObjectNameB}`;
+      const imageIdB = `img_p1_0_${xObjectNameB}`;
 
       const results = await pdfStructureWriterService.buildFigureFromImage(doc, parsedPdf, [
         { imageId: imageIdA, pageNumber: 1, position: { x: 50, y: 400, width: 20, height: 20 } },
@@ -335,6 +401,79 @@ describe('PdfStructureWriterService.buildFigureFromImage', () => {
       // drawn/positioned first) must match structure order -- NOT reversed.
       expect(firstAlt instanceof PDFString ? firstAlt.decodeText() : null).toBe('Image A');
       expect(secondAlt instanceof PDFString ? secondAlt.decodeText() : null).toBe('Image B');
+    } finally {
+      await pdfParserService.close(parsedPdf);
+      fs.unlinkSync(tmpPath);
+    }
+  }, 30_000);
+
+  /**
+   * Regression for the confirmed root cause of "alt text describes
+   * completely unrelated content" / S4 Carlisle's "Duplicate figure tags
+   * and alt text" defect (Karsaklian_189165_9781606497623.pdf): a REUSED
+   * XObject resource (the same embedded image invoked twice on one page,
+   * at different positions -- a normal, common authoring pattern) used to
+   * make locateXObjectInvocation bail entirely (ambiguous: more than one
+   * `/xobj Do` match, no way to know which one a caller meant), so
+   * buildFigureFromImage could never build a Figure for EITHER occurrence.
+   * Fixed via the occurrence parameter (locateXObjectInvocation,
+   * mcidForXObject) threaded through from ImageInfo.index -- see those
+   * functions' own doc comments. Two occurrences of the SAME xObjectName
+   * must now each get their OWN correctly-built, correctly-positioned
+   * Figure, not conflated into one and not swapped.
+   */
+  it('builds two independent, correctly-positioned Figures for two occurrences of a REUSED XObject, not conflating or swapping them', async () => {
+    const { doc, parsedPdf, xObjectName, tmpPath } = await buildDocWithTaggedTextAndReusedImage();
+    try {
+      const imageIdFirst = `img_p1_0_${xObjectName}`;
+      const imageIdSecond = `img_p1_1_${xObjectName}`;
+      const positionFirst = { x: 50, y: 300, width: 40, height: 30 };
+      const positionSecond = { x: 200, y: 100, width: 60, height: 50 };
+
+      const results = await pdfStructureWriterService.buildFigureFromImage(doc, parsedPdf, [
+        { imageId: imageIdFirst, pageNumber: 1, position: positionFirst },
+        { imageId: imageIdSecond, pageNumber: 1, position: positionSecond },
+      ]);
+      expect(results).toHaveLength(2);
+      expect(results.every(r => r.success)).toBe(true);
+
+      await pdfModifierService.setAltText(doc, imageIdFirst, 'First placement');
+      await pdfModifierService.setAltText(doc, imageIdSecond, 'Second placement');
+
+      const root = doc.context.lookup(doc.catalog.get(PDFName.of('StructTreeRoot'))) as PDFDict;
+      const figures: PDFDict[] = [];
+      const walk = (node: unknown): void => {
+        if (!(node instanceof PDFDict)) return;
+        if (tagOf(node) === 'Figure') figures.push(node);
+        const k = node.get(PDFName.of('K'));
+        const kids = k instanceof PDFArray ? k.asArray() : [k];
+        for (const kid of kids) if (kid instanceof PDFRef) walk(doc.context.lookup(kid));
+      };
+      walk(root);
+      // TWO distinct Figure struct elements, not one (conflated) and not
+      // more than two (duplicated).
+      expect(figures.length).toBe(2);
+
+      const altOf = (d: PDFDict): string => {
+        const a = d.get(PDFName.of('Alt'));
+        return a instanceof PDFString ? a.decodeText() : 'None';
+      };
+      const bboxOf = (d: PDFDict): number[] => {
+        const a = doc.context.lookup(d.get(PDFName.of('A'))) as PDFDict;
+        const bbox = doc.context.lookup(a.get(PDFName.of('BBox'))) as PDFArray;
+        return bbox.asArray().map(n => (n as PDFNumber).asNumber());
+      };
+
+      const byAlt = new Map(figures.map(f => [altOf(f), f]));
+      expect(byAlt.has('First placement')).toBe(true);
+      expect(byAlt.has('Second placement')).toBe(true);
+
+      // Each Figure's own /A/BBox matches ITS OWN invocation's real
+      // position, converted to bottom-left-origin PDF points -- not
+      // swapped, not both carrying the same (first) position.
+      // Page height 600: llx=x, lly=600-(y+h), urx=x+w, ury=600-y.
+      expect(bboxOf(byAlt.get('First placement')!)).toEqual([50, 270, 90, 300]);
+      expect(bboxOf(byAlt.get('Second placement')!)).toEqual([200, 450, 260, 500]);
     } finally {
       await pdfParserService.close(parsedPdf);
       fs.unlinkSync(tmpPath);

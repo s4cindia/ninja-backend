@@ -3,6 +3,7 @@ import { PDFDocument, PDFName, PDFString, PDFDict, PDFArray, PDFRef, PDFNumber, 
 import { pdfModifierService } from '../../../../src/services/pdf/pdf-modifier.service';
 import { buildStructTreeFromZones } from '../../../../src/services/zone-extractor/seam-c/struct-tree-builder';
 import type { OrderableZone } from '../../../../src/services/zone-extractor/seam-c/reading-order';
+import { decodePageContent, writePageContent } from '../../../../src/services/pdf/pdf-content-stream-io';
 
 // 1×1 PNG (base64 → bytes without Buffer, which isn't in the test tsconfig scope)
 const PNG = Uint8Array.from(
@@ -106,17 +107,19 @@ describe('setAltText — MCID-exact figure targeting', () => {
       });
     const figARef = doc.context.register(makeObjrFigure(xobjARef));
     const figBRef = doc.context.register(makeObjrFigure(xobjBRef));
-    // Deliberately reversed tree order relative to the target index below
-    // -- figuresOnPage[1] (the OLD positional fallback) now resolves to
-    // figA, the WRONG figure, so this can't pass by index coincidence the
-    // way the first draft of this test accidentally did (confirmed: it
-    // passed even with the OBJR fallback removed, in tree order [A, B]).
-    const docNode = doc.context.obj({ S: PDFName.of('Document'), K: [figBRef, figARef] });
+    // Tree order [A, B] -- xobjB is invoked exactly once, so its own
+    // imageId below is occurrence 0 (see ImageInfo's own doc comment in
+    // image-extractor.service.ts: the numeric slot is per-xObjectName
+    // occurrence, not a page-wide index), which makes figuresOnPage[0]
+    // (the OLD positional fallback) resolve to figA -- the WRONG figure --
+    // so this still can't pass by index coincidence: only the real OBJR
+    // match (ref identity, not tree position) can correctly land on figB.
+    const docNode = doc.context.obj({ S: PDFName.of('Document'), K: [figARef, figBRef] });
     const docRef = doc.context.register(docNode);
     const structTreeRootRef = doc.context.register(doc.context.obj({ Type: PDFName.of('StructTreeRoot'), K: [docRef] }));
     doc.catalog.set(PDFName.of('StructTreeRoot'), structTreeRootRef);
 
-    const res = await pdfModifierService.setAltText(doc, `img_p1_1_${xobjB}`, 'The second image, OBJR-tagged');
+    const res = await pdfModifierService.setAltText(doc, `img_p1_0_${xobjB}`, 'The second image, OBJR-tagged');
     expect(res.success).toBe(true);
 
     const altOf = (d: PDFDict): string => {
@@ -181,7 +184,10 @@ describe('setAltText — MCID-exact figure targeting', () => {
     const xobjB = contentB.match(doAfterBdc)?.[1];
     expect(xobjB).toBeTruthy();
 
-    const res = await pdfModifierService.setAltText(doc, `img_p1_1_${xobjB}`, 'The second image');
+    // Occurrence 0, not 1 -- xobjB is invoked exactly once, so its own
+    // numeric slot is its (only) occurrence of that name, not a page-wide
+    // index (see ImageInfo's own doc comment in image-extractor.service.ts).
+    const res = await pdfModifierService.setAltText(doc, `img_p1_0_${xobjB}`, 'The second image');
     expect(res.success).toBe(true);
 
     const altA = figureA.get(PDFName.of('Alt'));
@@ -640,6 +646,62 @@ describe('setAltText — MCID-exact figure targeting', () => {
     };
     walk(root);
     expect(actual).toBe('a red apple on a table');
+  });
+
+  /**
+   * Regression for the confirmed root cause of "alt text describes
+   * completely unrelated content" / S4 Carlisle's "Duplicate figure tags
+   * and alt text" defect (Karsaklian_189165_9781606497623.pdf): a reused
+   * XObject resource -- the SAME embedded image invoked twice on one page,
+   * at different positions, a normal and common authoring pattern -- used
+   * to make mcidForXObject return only the FIRST invocation's MCID no
+   * matter which Figure a caller actually meant, so setAltText could never
+   * correctly target the second (or later) placement's own, genuinely
+   * different Figure. Hand-builds the real shape a tagged-PDF authoring
+   * tool produces for two separately-tagged placements of one reused
+   * resource: the identical `/xobj Do` invocation appears twice, each
+   * wrapped in its own /Figure MCID span.
+   */
+  it('resolves the correct Figure for each occurrence of a reused XObject, not always the first', async () => {
+    const src = await PDFDocument.create();
+    const srcPage = src.addPage([400, 600]);
+    const img = await src.embedPng(PNG);
+    srcPage.drawImage(img, { x: 50, y: 400, width: 100, height: 100 });
+    srcPage.drawImage(img, { x: 250, y: 400, width: 100, height: 100 }); // SAME embedded image, second placement -- pdf-lib reuses the one XObject resource
+    const doc = await PDFDocument.load(await src.save());
+    const page = doc.getPage(0);
+
+    const xobj = decodePageContent(doc, 1)!.match(/\/([\w.#+-]+)\s+Do\b/)?.[1]!;
+    expect(xobj).toBeTruthy();
+
+    writePageContent(
+      doc,
+      1,
+      `/Figure <</MCID 0>> BDC\nq /${xobj} Do Q\nEMC\n` +
+      `/Figure <</MCID 1>> BDC\nq /${xobj} Do Q\nEMC\n`,
+    );
+
+    const figure0Ref = doc.context.register(doc.context.obj({ Type: 'StructElem', S: 'Figure', Pg: page.ref, K: PDFNumber.of(0) }));
+    const figure1Ref = doc.context.register(doc.context.obj({ Type: 'StructElem', S: 'Figure', Pg: page.ref, K: PDFNumber.of(1) }));
+    const docElemRef = doc.context.register(doc.context.obj({ Type: 'StructElem', S: 'Document', K: [figure0Ref, figure1Ref] }));
+    const structTreeRootRef = doc.context.register(doc.context.obj({ Type: 'StructTreeRoot', K: docElemRef }));
+    doc.catalog.set(PDFName.of('StructTreeRoot'), structTreeRootRef);
+
+    const resFirst = await pdfModifierService.setAltText(doc, `img_p1_0_${xobj}`, 'First placement');
+    expect(resFirst.success).toBe(true);
+    const resSecond = await pdfModifierService.setAltText(doc, `img_p1_1_${xobj}`, 'Second placement');
+    expect(resSecond.success).toBe(true);
+
+    const altOf = (ref: PDFRef): string => {
+      const d = doc.context.lookup(ref, PDFDict);
+      const a = d.get(PDFName.of('Alt'));
+      return a instanceof PDFString ? a.decodeText() : 'None';
+    };
+    // Each occurrence's imageId resolved to its OWN distinct Figure -- not
+    // both colliding onto the first one (the pre-fix behavior) and not
+    // swapped.
+    expect(altOf(figure0Ref)).toBe('First placement');
+    expect(altOf(figure1Ref)).toBe('Second placement');
   });
 
   it('resolves a Table element positionally (by index, not MCID) when several share a page', async () => {

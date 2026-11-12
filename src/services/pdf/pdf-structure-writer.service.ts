@@ -65,6 +65,7 @@ import { verifyStillNoDetectableInk } from './color-contrast-verification';
 import { tokenize } from '../zone-extractor/seam-c/content-stream';
 import { baseEncodingTable } from './font-encodings';
 import type { ParsedPDF } from './pdf-parser.service';
+import { classifyDegenerateRoleMapEntry } from './validators/pdf-rolemap-integrity.validator';
 import {
   findUrlOperatorRun,
   buildLinkCompletenessSplice,
@@ -984,6 +985,51 @@ export class PdfStructureWriterService {
     return { issueId: issue.id, success: true, before: `/Tabs ${before}`, after: '/Tabs /S' };
   }
 
+  /**
+   * Retargets a single /RoleMap entry (e.g. /H1A -> /P becomes /H1A -> /H1).
+   * Document-wide by nature: every element tagged with this custom style was
+   * deliberately applied by the original author, so correcting the ONE
+   * RoleMap entry fixes every instance at once for any RoleMap-resolving
+   * consumer (NVDA included). Only ever called for 'heading'/'caption'
+   * categories from pdf-rolemap-integrity.validator.ts's
+   * classifyDegenerateRoleMapEntry -- those are the only two with one
+   * unambiguous correct target; 'index'/'footnote' are detect-only and have
+   * no dispatch routing here (see that validator's own header comment for
+   * why).
+   */
+  fixDegenerateRoleMapEntry(doc: PDFDocument, issue: AuditIssue): FixResult {
+    const customTag = issue.element;
+    if (!customTag) {
+      return { issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error: 'Issue is missing element (the custom tag name)' };
+    }
+
+    const classification = classifyDegenerateRoleMapEntry(customTag);
+    if (!classification || (classification.category !== 'heading' && classification.category !== 'caption')) {
+      return {
+        issueId: issue.id, success: false, before: 'unknown', after: 'unknown',
+        error: `No safe, unambiguous RoleMap retarget for "${customTag}" (category: ${classification?.category ?? 'unrecognized'})`,
+      };
+    }
+
+    const structRoot = this.getStructTreeRoot(doc);
+    if (!structRoot) {
+      return { issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error: 'No structure tree root found' };
+    }
+
+    const rmRaw = structRoot.get(PDFName.of('RoleMap'));
+    const rm = rmRaw instanceof PDFRef ? doc.context.lookup(rmRaw) : rmRaw;
+    if (!(rm instanceof PDFDict)) {
+      return { issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error: 'No /RoleMap dict found on StructTreeRoot' };
+    }
+
+    const before = rm.get(PDFName.of(customTag))?.toString() ?? 'missing';
+    const targetType = classification.category === 'heading' ? `H${classification.headingLevel}` : 'Caption';
+    rm.set(PDFName.of(customTag), PDFName.of(targetType));
+
+    logger.info(`[StructureWriter] fixDegenerateRoleMapEntry: /RoleMap "/${customTag}" ${before} -> /${targetType}`);
+    return { issueId: issue.id, success: true, before: `/${customTag} -> ${before}`, after: `/${customTag} -> /${targetType}` };
+  }
+
   // ══════════════════════════════════════════════════════════════════════════
   // SECTION 6 — Composite: List Rewrap
   // ══════════════════════════════════════════════════════════════════════════
@@ -1325,7 +1371,13 @@ export class PdfStructureWriterService {
    * @param images - each a real, position-known image (imageId in
    *   img_p{page}_{index}_{xObjectName} form, matching image-extractor.service.ts's
    *   own ImageInfo.id/position) confirmed to have NO resolvable /Figure
-   *   today (e.g. via pdfModifierService.setAltText failing for it).
+   *   today (e.g. via pdfModifierService.setAltText failing for it). The
+   *   `index` slot is the occurrence ordinal (0-based) of this specific
+   *   invocation among every same-named XObject invocation on the page --
+   *   see ImageInfo's own doc comment -- used below to target the CORRECT
+   *   `/xObjectName Do` when the same resource is invoked more than once on
+   *   one page (a reused image, a normal authoring pattern), rather than
+   *   bailing on the ambiguity the way a plain name-only lookup must.
    */
   async buildFigureFromImage(
     doc: PDFDocument,
@@ -1392,14 +1444,24 @@ export class PdfStructureWriterService {
       };
       const validEntries: ValidEntry[] = [];
       for (const img of pageImages) {
-        const xObjectName = img.imageId.match(/^img_p\d+_\d+_(.+)$/)?.[1];
-        if (!xObjectName) {
+        // The `index` slot is the occurrence ordinal (0-based) of THIS
+        // specific invocation among every same-named XObject invocation on
+        // the page (see ImageInfo's own doc comment in
+        // image-extractor.service.ts), not just a disambiguation-free name --
+        // passed through to locateXObjectInvocation so a reused image
+        // resource (invoked more than once on one page, at different
+        // positions) resolves to the CORRECT invocation instead of bailing
+        // on the ambiguity a name-only lookup would hit.
+        const idMatch = img.imageId.match(/^img_p\d+_(\d+)_(.+)$/);
+        if (!idMatch) {
           results.push({ issueId: img.imageId, success: false, before: 'unknown', after: 'unknown', error: `Could not parse XObject name from imageId "${img.imageId}"` });
           continue;
         }
-        const range = locateXObjectInvocation(pageContent, xObjectName);
+        const occurrence = parseInt(idMatch[1], 10);
+        const xObjectName = idMatch[2];
+        const range = locateXObjectInvocation(pageContent, xObjectName, occurrence);
         if (!range) {
-          results.push({ issueId: img.imageId, success: false, before: 'unknown', after: 'unknown', error: `No unambiguous "/${xObjectName} Do" invocation found on page ${pageNumber}` });
+          results.push({ issueId: img.imageId, success: false, before: 'unknown', after: 'unknown', error: `No "/${xObjectName} Do" invocation found at occurrence ${occurrence} on page ${pageNumber}` });
           continue;
         }
         const nearest = await findNearestMcidForPosition(parsedPdf, pageNumber, img.position);
@@ -1531,9 +1593,9 @@ export class PdfStructureWriterService {
           // for all 4 Figures this method had created -- it never wrote /A
           // at all, even though img.position already carries the exact
           // geometry needed. position is top-left-origin (image-extractor
-          // .service.ts's own extractImagePlacements computes it as
-          // `viewport.height - f - height`, flipping native bottom-left PDF
-          // space) -- /BBox needs bottom-left-origin PDF points, same
+          // .service.ts's own extractImagePlacementsFromContent computes it
+          // as `viewport.height - f - height`, flipping native bottom-left
+          // PDF space) -- /BBox needs bottom-left-origin PDF points, same
           // pageHeight - y flip pdf-form.validator.ts's own buildBoundingBox
           // already uses for the identical conversion.
           const { x, y, width, height } = ve.img.position;

@@ -186,6 +186,11 @@ const HEADING_CODES = new Set(['HEADING-SKIP', 'HEADING-MULTIPLE-H1', 'HEADING-N
 const LANGUAGE_CODES = new Set(['MATTERHORN-11-001', 'LANGUAGE-MISSING']);
 const TAB_ORDER_CODES = new Set(['TAB-ORDER-NOT-STRUCTURE']);
 const MCID_PAGE_MISMATCH_CODES = new Set(['MCID-PAGE-MISMATCH']);
+// Only the two categories with one unambiguous correct RoleMap retarget --
+// see pdf-rolemap-integrity.validator.ts's own header comment for why
+// 'index'/'footnote' (ROLEMAP-INDEX-FLATTENED/ROLEMAP-FOOTNOTE-FLATTENED)
+// are deliberately NOT included here and fall through to manual review.
+const ROLEMAP_FLATTENED_CODES = new Set(['ROLEMAP-HEADING-FLATTENED', 'ROLEMAP-CAPTION-FLATTENED']);
 // Exported for pdf-ai-analysis.controller.ts's single-suggestion apply
 // endpoint, which needs the SAME sibling-issue set this file's own
 // applyApprovedSuggestions uses to correctly batch resolveColorContrastTargets
@@ -1686,6 +1691,22 @@ class AiAnalysisService {
         guidance: 'This MCID will be re-wrapped as an MCR dict declaring the page it actually exists on, matching its sibling entries.',
         confidence: 1.0,
         rationale: 'Mechanical PDF structural-consistency fix -- no content judgment required',
+        model: 'rule-based',
+        applyMode: 'apply-to-pdf',
+      };
+    }
+
+    if (ROLEMAP_FLATTENED_CODES.has(code)) {
+      // Document-wide and safe: every instance of this specific custom
+      // style was deliberately applied by the original author, so
+      // correcting the one /RoleMap entry fixes all of them at once with
+      // no risk of misclassifying unrelated content (see
+      // pdf-rolemap-integrity.validator.ts's own header comment).
+      return {
+        suggestionType: 'rolemap-target-fix',
+        guidance: "This custom style's /RoleMap entry will be retargeted to the correct standard structure type, fixing every instance of it document-wide.",
+        confidence: 1.0,
+        rationale: 'Mechanical PDF/UA fix -- the custom style name unambiguously implies its correct target',
         model: 'rule-based',
         applyMode: 'apply-to-pdf',
       };
@@ -3956,7 +3977,7 @@ class AiAnalysisService {
     // failures in a single round), never once reaching the real writer
     // calls (fixArtifactSwallowsContentComplex / retagPlacedPdfAsFigure)
     // below despite both being fully implemented, tested, and merged.
-    const STRUCTURE_WRITER_TYPES = new Set(['heading-fix', 'list-fix', 'table-header-fix', 'table-header-fix-column', 'table-header-scope-fix', 'table-artifact-fix', 'table-from-layout-fix', 'bookmark-generate', 'heading-multiple-h1-fix', 'pdfua-identifier', 'color-contrast-fix', 'alt-text-decorative', 'untagged-content-fix', 'invisible-text-artifact-fix', 'figure-caption-reattach-fix', 'inline-figure-reattach-fix', 'tagged-content-artifact-split-fix', 'table-cell-reattach-fix', 'table-row-reattach-fix', 'font-tounicode-synthesis-fix', 'font-tounicode-extend-fix', 'artifact-unwrap-complex-fix', 'placedpdf-retag-fix', 'link-missing-annotation-fix', 'artifact-actualtext-fix', 'actualtext-missing-mcid-fix', 'tab-order-fix', 'mcid-page-mismatch-fix', 'display-doc-title-fix']);
+    const STRUCTURE_WRITER_TYPES = new Set(['heading-fix', 'list-fix', 'table-header-fix', 'table-header-fix-column', 'table-header-scope-fix', 'table-artifact-fix', 'table-from-layout-fix', 'bookmark-generate', 'heading-multiple-h1-fix', 'pdfua-identifier', 'color-contrast-fix', 'alt-text-decorative', 'untagged-content-fix', 'invisible-text-artifact-fix', 'figure-caption-reattach-fix', 'inline-figure-reattach-fix', 'tagged-content-artifact-split-fix', 'table-cell-reattach-fix', 'table-row-reattach-fix', 'font-tounicode-synthesis-fix', 'font-tounicode-extend-fix', 'artifact-unwrap-complex-fix', 'placedpdf-retag-fix', 'link-missing-annotation-fix', 'artifact-actualtext-fix', 'actualtext-missing-mcid-fix', 'tab-order-fix', 'mcid-page-mismatch-fix', 'display-doc-title-fix', 'rolemap-target-fix']);
 
     let applied = 0;
     let failed = 0;
@@ -4081,6 +4102,9 @@ class AiAnalysisService {
           modification = { success: result.success, description: result.after, error: result.error };
         } else if (suggestionType === 'mcid-page-mismatch-fix') {
           const result = pdfStructureWriterService.fixMcidPageMismatch(doc, originalIssue);
+          modification = { success: result.success, description: result.after, error: result.error };
+        } else if (suggestionType === 'rolemap-target-fix') {
+          const result = pdfStructureWriterService.fixDegenerateRoleMapEntry(doc, originalIssue);
           modification = { success: result.success, description: result.after, error: result.error };
         } else if (suggestionType === 'untagged-content-fix') {
           const results = pdfStructureWriterService.fixUntaggedContent(doc, [originalIssue]);

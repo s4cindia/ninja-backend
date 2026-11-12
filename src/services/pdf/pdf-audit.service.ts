@@ -30,6 +30,7 @@ import { pdfFigureStructTreeValidator } from './validators/pdf-figure-structtree
 import { pdfFigureCaptionTreeValidator } from './validators/pdf-figure-caption-tree.validator';
 import { pdfInlineFigureTreeValidator } from './validators/pdf-inline-figure-tree.validator';
 import { pdfMcidPageMismatchValidator } from './validators/pdf-mcid-page-mismatch.validator';
+import { pdfRoleMapIntegrityValidator } from './validators/pdf-rolemap-integrity.validator';
 import { pdfTableCellTreeValidator } from './validators/pdf-table-cell-tree.validator';
 import { pdfFontToUnicodeValidator } from './validators/pdf-font-tounicode.validator';
 import { pdfTabOrderValidator } from './validators/pdf-tab-order.validator';
@@ -515,6 +516,32 @@ class PdfAuditService extends BaseAuditService<PdfParseResult, PdfValidationResu
             const errorMessage = error instanceof Error ? error.message : 'Unknown error';
             logger.error(`[PdfAudit] PdfMcidPageMismatchValidator failed:`, error);
             result.validatorErrors.push({ validator: 'PdfMcidPageMismatchValidator', error: errorMessage });
+          }
+        }
+
+        // 1g. RoleMap Integrity Validator (Matterhorn 01-006) -- see
+        // pdf-rolemap-integrity.validator.ts's own header comment for the
+        // real defect this catches: confirmed live via a direct S4 Carlisle
+        // manual QC report plus inspection of
+        // Karsaklian_189165_9781606497623.pdf's actual /RoleMap, which maps
+        // ~40 custom InDesign paragraph styles -- including heading, index,
+        // caption, and footnote ones -- to plain /P. This is exactly why
+        // that document scored 99/100 here while S4's own NVDA pass found
+        // nothing: headings/tables checkpoints below only roll up issues
+        // OTHER validators already flagged, and nothing before this checked
+        // whether a custom tag's own RoleMap target still matched what its
+        // name implies.
+        if (willRunStructure) {
+          try {
+            logger.info(`[PdfAudit] Running PdfRoleMapIntegrityValidator...`);
+            const roleMapResult = await pdfRoleMapIntegrityValidator.validate(parsedPdf);
+            result.structureIssues.push(...roleMapResult.issues);
+            result.issues.push(...roleMapResult.issues);
+            logger.info(`[PdfAudit] PdfRoleMapIntegrityValidator found ${roleMapResult.issues.length} issue(s)`);
+          } catch (error) {
+            const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+            logger.error(`[PdfAudit] PdfRoleMapIntegrityValidator failed:`, error);
+            result.validatorErrors.push({ validator: 'PdfRoleMapIntegrityValidator', error: errorMessage });
           }
         }
       };
@@ -1233,17 +1260,33 @@ class PdfAuditService extends BaseAuditService<PdfParseResult, PdfValidationResu
     // condition, '01-007', and is deliberately NOT included here: a suspect
     // tag structure is a document-level warning flag, not evidence the
     // document itself is untagged.
+    // '01-006' (Matterhorn: "structure type ... not semantically
+    // appropriate") added here for PdfRoleMapIntegrityValidator's
+    // ROLEMAP-*-FLATTENED issues -- a document can carry ONLY this kind
+    // (genuinely has real structure, just with some custom tags mapped to
+    // the wrong standard type) without any '01-004'/'01-005'/PDF-UNTAGGED
+    // issue at all, which the generic "Document is not tagged" wording
+    // below would badly mischaracterize -- confirmed live on
+    // Karsaklian_189165_9781606497623.pdf (2502 real structure elements,
+    // zero untagged-content issues, yet this exact gap).
     const untaggedIssues = validation.structureIssues.filter(
       i => i.code === 'PDF-UNTAGGED' || i.matterhornCheckpoint === '01-004' || i.matterhornCheckpoint === '01-005'
     );
-    const isTagged = untaggedIssues.length === 0;
+    const roleMapIssues = validation.structureIssues.filter(i => i.matterhornCheckpoint === '01-006');
+    const combinedIssues = [...untaggedIssues, ...roleMapIssues];
+    const isTagged = combinedIssues.length === 0;
+    const description = isTagged
+      ? 'Document is tagged'
+      : untaggedIssues.length > 0
+        ? 'Document is not tagged'
+        : `${roleMapIssues.length} custom tag mapping(s) resolve to a semantically inappropriate structure type (e.g. a heading or caption style mapped to a plain paragraph) -- content is tagged, but not correctly`;
     results.push({
       checkpointId: '01',
       passed: isTagged,
-      failureCount: untaggedIssues.length,
-      description: isTagged ? 'Document is tagged' : 'Document is not tagged',
+      failureCount: combinedIssues.length,
+      description,
       wcagMapping: ['1.3.1', '4.1.2'],
-      affectedPageRatio: this.calculateAffectedPageRatio(untaggedIssues, pageCount),
+      affectedPageRatio: this.calculateAffectedPageRatio(combinedIssues, pageCount),
     });
 
     // Matterhorn 07: Document metadata
@@ -1384,7 +1427,12 @@ class PdfAuditService extends BaseAuditService<PdfParseResult, PdfValidationResu
       } else {
         switch (checkpointId) {
           case '01':
-            return `✗ Document is not tagged. PDF/UA requires structure tags (headings, paragraphs, lists) so assistive technologies can navigate the content. ${result.failureCount} issue(s) found.`;
+            // Reuses the checkpoint's own description rather than a second,
+            // separately-hardcoded string here -- it already distinguishes
+            // a genuinely untagged document from one that's tagged but with
+            // some custom tag mapped to a semantically wrong type (see
+            // where checkpointId '01' is pushed, above).
+            return `✗ ${result.description}. ${result.failureCount} issue(s) found.`;
           case '04':
             return `✗ ${result.failureCount} list structure issue(s) found. Lists need proper markup (L, LI, Lbl, LBody tags) so screen readers can announce list boundaries and item counts.`;
           case '06':
