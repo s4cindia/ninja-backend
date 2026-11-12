@@ -360,6 +360,7 @@ const PLACEDPDF_NOT_TAGGED_CODES = new Set(['PLACEDPDF-NOT-TAGGED']);
 // minority of real cases -- most of the rest are safely declined for
 // well-understood reasons, not silently skipped).
 const LINK_MISSING_ANNOTATION_CODES = new Set(['LINK-MISSING-ANNOTATION']);
+const CROSS_REFERENCE_MISSING_LINK_CODES = new Set(['CROSS-REFERENCE-MISSING-LINK']);
 
 // Document-level codes always produce the same result for the whole document,
 // so the suggestion cache below keys them by code alone.
@@ -394,7 +395,8 @@ export function buildSuggestionCacheKey(issue: Pick<AuditIssue, 'code' | 'elemen
     CONTRAST_CODES.has(issue.code) ||
     LINK_CODES.has(issue.code) ||
     FORM_CODES.has(issue.code) ||
-    LINK_MISSING_ANNOTATION_CODES.has(issue.code)
+    LINK_MISSING_ANNOTATION_CODES.has(issue.code) ||
+    CROSS_REFERENCE_MISSING_LINK_CODES.has(issue.code)
   ) {
     // LINK_MISSING_ANNOTATION_CODES: same collision shape as contrast/
     // link/form-field above -- real data confirms a single page can carry
@@ -406,7 +408,9 @@ export function buildSuggestionCacheKey(issue: Pick<AuditIssue, 'code' | 'elemen
     // harmless right now -- but keying per-issue here costs nothing and
     // avoids silently reintroducing this exact bug class the moment the
     // suggestion ever becomes issue-specific (e.g. embedding the URL text
-    // into `guidance`).
+    // into `guidance`). CROSS_REFERENCE_MISSING_LINK_CODES: identical
+    // shape -- a page can carry several distinct "see Chapter N"/"see p.
+    // NN" references, same generic (not issue-specific) suggestion object.
     return `${issue.code}:${issue.id}`;
   }
   return `${issue.code}:${issue.element ?? issue.pageNumber ?? ''}`;
@@ -431,7 +435,12 @@ export function buildIssueFingerprint(
   issue: Pick<AuditIssue, 'code' | 'element' | 'pageNumber' | 'boundingBox'>
 ): string {
   if (DOC_LEVEL_CODES.has(issue.code)) return issue.code;
-  if (CONTRAST_CODES.has(issue.code) && issue.boundingBox) {
+  if ((CONTRAST_CODES.has(issue.code) || CROSS_REFERENCE_MISSING_LINK_CODES.has(issue.code)) && issue.boundingBox) {
+    // CROSS_REFERENCE_MISSING_LINK_CODES: same no-element shape as
+    // CONTRAST_CODES -- a page can carry several distinct cross-references
+    // (each with its own real boundingBox but no `element`), which would
+    // otherwise all collapse onto the same `${code}:${pageNumber}`
+    // fallback fingerprint below and spuriously match each other.
     const { x, y } = issue.boundingBox;
     return `${issue.code}:${issue.pageNumber ?? ''}:${Math.round(x)}:${Math.round(y)}`;
   }
@@ -1980,6 +1989,28 @@ class AiAnalysisService {
       };
     }
 
+    if (CROSS_REFERENCE_MISSING_LINK_CODES.has(code)) {
+      // Same "optimistic at dispatch, real gate at apply-time" shape as
+      // LINK_MISSING_ANNOTATION_CODES just above -- fixCrossReferenceLink's
+      // own resolveCrossReferenceDestination is the actual gate (declines
+      // on anything but an unambiguous single match), not this dispatch.
+      // Only chapter/section/page/pg/p have any resolution path at all
+      // (see that method's own doc comment) -- figure/fig/table fall
+      // through to null here, staying manual-review-only exactly as before
+      // this feature existed.
+      if (!issue.crossReferenceData) return null;
+      const { keyword } = issue.crossReferenceData;
+      if (!['chapter', 'section', 'page', 'pg', 'p'].includes(keyword)) return null;
+      return {
+        suggestionType: 'cross-reference-link-fix',
+        guidance: 'This text reads as a cross-reference with no underlying link -- a real internal Link annotation will be created if its target can be resolved unambiguously.',
+        confidence: 1.0,
+        rationale: 'Deterministic fix when resolvable -- the destination is found via this document\'s own real tagged headings or /PageLabels, never guessed; declines rather than guesses when more than one match exists or none at all',
+        model: 'rule-based',
+        applyMode: 'apply-to-pdf',
+      };
+    }
+
     if (TABLE_CELL_DISCONNECTED_CODES.has(code)) {
       return {
         suggestionType: 'table-cell-reattach-fix',
@@ -3065,6 +3096,26 @@ class AiAnalysisService {
     if (issue.code === 'BOOKMARK-GENERIC-TEXT') {
       const titleMatch = issue.context?.match(/Bookmark title: "([^"]*)"/);
       const bookmarkTitle = titleMatch?.[1] ?? '';
+
+      // Prefer the deterministic, no-AI-call writer over a Gemini guess
+      // whenever real tagged headings exist -- same gate/reasoning as
+      // BOOKMARK-MISSING/INSUFFICIENT's own 'bookmark-generate' branch
+      // below: regenerateGenericBookmarkTitles reads the bookmark's ACTUAL
+      // target heading's real extracted text (not a guess from nearby page
+      // content), bailing on its own if that page's heading is ambiguous or
+      // itself still a fallback/placeholder -- in which case this falls
+      // through to the AI guess below instead of returning nothing.
+      if (mode === 'apply-to-pdf' && parsed.pages.flatMap(p => p.headings).some(h => h.isFromTags)) {
+        return {
+          suggestionType: 'bookmark-title-regenerate',
+          guidance: `Bookmark "${bookmarkTitle}" will be renamed to its target section's real heading text.`,
+          confidence: 1.0,
+          rationale: 'PDF has tagged headings -- the bookmark\'s real target heading text can be read directly, no AI guess needed',
+          model: 'rule-based',
+          applyMode: mode,
+        };
+      }
+
       const destPage = issue.pageNumber ? parsed.pages[issue.pageNumber - 1] : undefined;
       const firstText = destPage?.content.slice(0, 5).map(c => c.text).join(' ') ?? '';
 
@@ -3977,7 +4028,7 @@ class AiAnalysisService {
     // failures in a single round), never once reaching the real writer
     // calls (fixArtifactSwallowsContentComplex / retagPlacedPdfAsFigure)
     // below despite both being fully implemented, tested, and merged.
-    const STRUCTURE_WRITER_TYPES = new Set(['heading-fix', 'list-fix', 'table-header-fix', 'table-header-fix-column', 'table-header-scope-fix', 'table-artifact-fix', 'table-from-layout-fix', 'bookmark-generate', 'heading-multiple-h1-fix', 'pdfua-identifier', 'color-contrast-fix', 'alt-text-decorative', 'untagged-content-fix', 'invisible-text-artifact-fix', 'figure-caption-reattach-fix', 'inline-figure-reattach-fix', 'tagged-content-artifact-split-fix', 'table-cell-reattach-fix', 'table-row-reattach-fix', 'font-tounicode-synthesis-fix', 'font-tounicode-extend-fix', 'artifact-unwrap-complex-fix', 'placedpdf-retag-fix', 'link-missing-annotation-fix', 'artifact-actualtext-fix', 'actualtext-missing-mcid-fix', 'tab-order-fix', 'mcid-page-mismatch-fix', 'display-doc-title-fix', 'rolemap-target-fix']);
+    const STRUCTURE_WRITER_TYPES = new Set(['heading-fix', 'list-fix', 'table-header-fix', 'table-header-fix-column', 'table-header-scope-fix', 'table-artifact-fix', 'table-from-layout-fix', 'bookmark-generate', 'heading-multiple-h1-fix', 'pdfua-identifier', 'color-contrast-fix', 'alt-text-decorative', 'untagged-content-fix', 'invisible-text-artifact-fix', 'figure-caption-reattach-fix', 'inline-figure-reattach-fix', 'tagged-content-artifact-split-fix', 'table-cell-reattach-fix', 'table-row-reattach-fix', 'font-tounicode-synthesis-fix', 'font-tounicode-extend-fix', 'artifact-unwrap-complex-fix', 'placedpdf-retag-fix', 'link-missing-annotation-fix', 'artifact-actualtext-fix', 'actualtext-missing-mcid-fix', 'tab-order-fix', 'mcid-page-mismatch-fix', 'display-doc-title-fix', 'rolemap-target-fix', 'bookmark-title-regenerate', 'cross-reference-link-fix']);
 
     let applied = 0;
     let failed = 0;
@@ -4094,6 +4145,19 @@ class AiAnalysisService {
             description: `Generated ${result.generated} bookmark(s)`,
             error: result.generated === 0 ? 'No headings found' : undefined,
           };
+        } else if (suggestionType === 'bookmark-title-regenerate') {
+          // Same bulk-apply shape as bookmark-generate above: this runs
+          // document-wide regardless of which specific BOOKMARK-GENERIC-TEXT
+          // issue triggered it, bailing per-bookmark on its own (ambiguous
+          // target page, or the target heading is itself still a
+          // fallback/placeholder) rather than guessing -- see
+          // regenerateGenericBookmarkTitles's own doc comment.
+          const result = pdfStructureWriterService.regenerateGenericBookmarkTitles(doc);
+          modification = {
+            success: result.updated > 0,
+            description: `Regenerated ${result.updated} bookmark title(s) from real heading text`,
+            error: result.updated === 0 ? 'No unambiguous tagged-heading match found for any generic bookmark' : undefined,
+          };
         } else if (suggestionType === 'heading-multiple-h1-fix') {
           const result = pdfStructureWriterService.fixMultipleH1(doc, originalIssue);
           modification = { success: result.success, description: result.after, error: result.error };
@@ -4194,6 +4258,16 @@ class AiAnalysisService {
           // a real annotation -- same pagesRewrittenSincePreResolve
           // tracking as artifact-unwrap-fix/tagged-content-artifact-
           // split-fix above, for the same reason.
+          if (r.success && originalIssue.pageNumber !== undefined) {
+            pagesRewrittenSincePreResolve.add(originalIssue.pageNumber);
+          }
+        } else if (suggestionType === 'cross-reference-link-fix') {
+          // Same buildLinkAnnotationFix core (and same content-stream-
+          // rewrite tracking need) as link-missing-annotation-fix above --
+          // see fixCrossReferenceLink's own doc comment for the
+          // destination-resolution gate this adds on top.
+          const r = pdfStructureWriterService.fixCrossReferenceLink(doc, originalIssue);
+          modification = { success: r.success, description: r.after, error: r.error };
           if (r.success && originalIssue.pageNumber !== undefined) {
             pagesRewrittenSincePreResolve.add(originalIssue.pageNumber);
           }
