@@ -188,9 +188,44 @@ const TAB_ORDER_CODES = new Set(['TAB-ORDER-NOT-STRUCTURE']);
 const MCID_PAGE_MISMATCH_CODES = new Set(['MCID-PAGE-MISMATCH']);
 // Only the two categories with one unambiguous correct RoleMap retarget --
 // see pdf-rolemap-integrity.validator.ts's own header comment for why
-// 'index'/'footnote' (ROLEMAP-INDEX-FLATTENED/ROLEMAP-FOOTNOTE-FLATTENED)
-// are deliberately NOT included here and fall through to manual review.
+// these are the only two whose /RoleMap entry alone has a single safe
+// target. 'index' (ROLEMAP-INDEX-FLATTENED) and 'footnote'
+// (ROLEMAP-FOOTNOTE-FLATTENED) EACH now have their own dedicated
+// structural fix instead -- see ROLEMAP_INDEX_CODES and
+// ROLEMAP_FOOTNOTE_CODES below, each a different dispatch branch entirely
+// since both build real structure around the flattened elements rather
+// than just retargeting a /RoleMap entry.
 const ROLEMAP_FLATTENED_CODES = new Set(['ROLEMAP-HEADING-FLATTENED', 'ROLEMAP-CAPTION-FLATTENED']);
+// ROLEMAP-INDEX-FLATTENED: pdfStructureWriterService.fixIndexStructure
+// builds a real /Index > /L > /LI > /LBody container around each
+// contiguous run of raw IDX1/IDX1F/IDX2/IDX3-tagged elements -- see that
+// method's own doc comment for the full defect and algorithm. Confidence
+// 0.9, not 1.0: the transform itself is a deterministic, rule-based
+// mechanical operation, but the internal /Index shape it builds has no
+// published normative requirement (ISO 32000-2 defines no required /Index
+// shape, and veraPDF enforces none across PDF/UA-1, PDF/UA-2, or
+// WTPDF-1.0) -- a real, if secondary, source of uncertainty a straight
+// /RoleMap retarget never has.
+const ROLEMAP_INDEX_CODES = new Set(['ROLEMAP-INDEX-FLATTENED']);
+// ROLEMAP-FOOTNOTE-FLATTENED: pdfStructureWriterService.fixFootnoteStructure
+// retargets the custom tag's /RoleMap entry to /FENote (confirmed, not
+// /Note -- PDF/UA-2 rule 8.2.5.14-1 prohibits bare /Note), sets a
+// NoteType=/Footnote attribute (owner /FENote, confirmed against veraPDF's
+// own rule 8.2.5.14-4 and the PDF Association's attribute reference) on
+// every raw-tagged instance, and best-effort splits a clean leading
+// numeric label into a new /Lbl+/LBody pair where the element's own /K
+// shape allows it without touching content-stream bytes -- see that
+// method's own doc comment for the full algorithm. Confidence 0.8, lower
+// than the plain retarget (1.0) AND the index rebuild (0.9): the /Lbl
+// split is a per-instance heuristic (a non-numeric or symbol marker, or a
+// single-MCID-run element, correctly declines it, by design, rather than
+// guessing), and -- more fundamentally -- this fix is KNOWN incomplete
+// relative to the full PDF/UA-2 checkpoint even when every instance
+// succeeds: rules 8.2.5.14-2/-3 (the bidirectional /Ref cross-reference
+// between an in-body /Reference marker and its /FENote) are deliberately
+// NOT attempted here, since this codebase has no in-body footnote-marker
+// detector for PDF content yet.
+const ROLEMAP_FOOTNOTE_CODES = new Set(['ROLEMAP-FOOTNOTE-FLATTENED']);
 // Exported for pdf-ai-analysis.controller.ts's single-suggestion apply
 // endpoint, which needs the SAME sibling-issue set this file's own
 // applyApprovedSuggestions uses to correctly batch resolveColorContrastTargets
@@ -1707,6 +1742,37 @@ class AiAnalysisService {
         guidance: "This custom style's /RoleMap entry will be retargeted to the correct standard structure type, fixing every instance of it document-wide.",
         confidence: 1.0,
         rationale: 'Mechanical PDF/UA fix -- the custom style name unambiguously implies its correct target',
+        model: 'rule-based',
+        applyMode: 'apply-to-pdf',
+      };
+    }
+
+    if (ROLEMAP_INDEX_CODES.has(code)) {
+      // Structural rebuild, not a /RoleMap retarget -- see
+      // pdfStructureWriterService.fixIndexStructure's own doc comment and
+      // ROLEMAP_INDEX_CODES' own comment above for why this is a separate
+      // dispatch branch from ROLEMAP_FLATTENED_CODES, and why confidence is
+      // 0.9 rather than that branch's 1.0.
+      return {
+        suggestionType: 'index-structure-fix',
+        guidance: 'Every contiguous run of this custom index style will be wrapped in a real /Index > /L > /LI structure, restoring real index/list semantics in place of flattened body-text paragraphs.',
+        confidence: 0.9,
+        rationale: 'Deterministic structural rebuild -- but the exact internal /Index shape has no published normative requirement, so this carries slightly less certainty than a straight /RoleMap retarget',
+        model: 'rule-based',
+        applyMode: 'apply-to-pdf',
+      };
+    }
+
+    if (ROLEMAP_FOOTNOTE_CODES.has(code)) {
+      // Structural rebuild, not a plain /RoleMap retarget -- see
+      // pdfStructureWriterService.fixFootnoteStructure's own doc comment
+      // and ROLEMAP_FOOTNOTE_CODES' own comment above for the full
+      // defect, the confirmed spec details, and why confidence is 0.8.
+      return {
+        suggestionType: 'footnote-structure-fix',
+        guidance: "This custom footnote style's /RoleMap entry will be retargeted to /FENote, a NoteType=/Footnote attribute will be set on every instance, and a clean leading footnote number will be split into its own /Lbl where the existing structure safely allows it.",
+        confidence: 0.8,
+        rationale: 'Deterministic structural fix for the retarget and attribute -- but the /Lbl split is a per-instance heuristic that intentionally declines rather than guesses, and the bidirectional /Ref cross-reference (PDF/UA-2 8.2.5.14-2/-3) is a documented, deliberate residual gap not attempted here',
         model: 'rule-based',
         applyMode: 'apply-to-pdf',
       };
@@ -3977,7 +4043,7 @@ class AiAnalysisService {
     // failures in a single round), never once reaching the real writer
     // calls (fixArtifactSwallowsContentComplex / retagPlacedPdfAsFigure)
     // below despite both being fully implemented, tested, and merged.
-    const STRUCTURE_WRITER_TYPES = new Set(['heading-fix', 'list-fix', 'table-header-fix', 'table-header-fix-column', 'table-header-scope-fix', 'table-artifact-fix', 'table-from-layout-fix', 'bookmark-generate', 'heading-multiple-h1-fix', 'pdfua-identifier', 'color-contrast-fix', 'alt-text-decorative', 'untagged-content-fix', 'invisible-text-artifact-fix', 'figure-caption-reattach-fix', 'inline-figure-reattach-fix', 'tagged-content-artifact-split-fix', 'table-cell-reattach-fix', 'table-row-reattach-fix', 'font-tounicode-synthesis-fix', 'font-tounicode-extend-fix', 'artifact-unwrap-complex-fix', 'placedpdf-retag-fix', 'link-missing-annotation-fix', 'artifact-actualtext-fix', 'actualtext-missing-mcid-fix', 'tab-order-fix', 'mcid-page-mismatch-fix', 'display-doc-title-fix', 'rolemap-target-fix']);
+    const STRUCTURE_WRITER_TYPES = new Set(['heading-fix', 'list-fix', 'table-header-fix', 'table-header-fix-column', 'table-header-scope-fix', 'table-artifact-fix', 'table-from-layout-fix', 'bookmark-generate', 'heading-multiple-h1-fix', 'pdfua-identifier', 'color-contrast-fix', 'alt-text-decorative', 'untagged-content-fix', 'invisible-text-artifact-fix', 'figure-caption-reattach-fix', 'inline-figure-reattach-fix', 'tagged-content-artifact-split-fix', 'table-cell-reattach-fix', 'table-row-reattach-fix', 'font-tounicode-synthesis-fix', 'font-tounicode-extend-fix', 'artifact-unwrap-complex-fix', 'placedpdf-retag-fix', 'link-missing-annotation-fix', 'artifact-actualtext-fix', 'actualtext-missing-mcid-fix', 'tab-order-fix', 'mcid-page-mismatch-fix', 'display-doc-title-fix', 'rolemap-target-fix', 'index-structure-fix', 'footnote-structure-fix']);
 
     let applied = 0;
     let failed = 0;
@@ -4105,6 +4171,18 @@ class AiAnalysisService {
           modification = { success: result.success, description: result.after, error: result.error };
         } else if (suggestionType === 'rolemap-target-fix') {
           const result = pdfStructureWriterService.fixDegenerateRoleMapEntry(doc, originalIssue);
+          modification = { success: result.success, description: result.after, error: result.error };
+        } else if (suggestionType === 'index-structure-fix') {
+          // Struct-tree-only (no content-stream bytes touched, no new MCIDs) --
+          // see fixIndexStructure's own doc comment for the full algorithm.
+          const result = pdfStructureWriterService.fixIndexStructure(doc, originalIssue);
+          modification = { success: result.success, description: result.after, error: result.error };
+        } else if (suggestionType === 'footnote-structure-fix') {
+          // Struct-tree-only (no content-stream bytes touched, no new MCIDs;
+          // the content stream is only ever READ to decide whether a /Lbl
+          // split is safe) -- see fixFootnoteStructure's own doc comment for
+          // the full algorithm and its documented /Ref-pairing residual gap.
+          const result = pdfStructureWriterService.fixFootnoteStructure(doc, originalIssue);
           modification = { success: result.success, description: result.after, error: result.error };
         } else if (suggestionType === 'untagged-content-fix') {
           const results = pdfStructureWriterService.fixUntaggedContent(doc, [originalIssue]);

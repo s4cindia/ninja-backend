@@ -86,6 +86,40 @@ export interface FixResult {
   error?: string;
 }
 
+// Extracts an index-entry nesting level from a RAW (pre-RoleMap) /S value --
+// level 1 for IDX1/IDX1F, 2 for IDX2, 3 for IDX3. Same INDEX_PATTERN
+// convention as pdf-rolemap-integrity.validator.ts's own
+// classifyDegenerateRoleMapEntry, just with the digit captured so
+// fixIndexStructure can tell nesting levels apart -- that validator only
+// ever needs to know "is this an index-shaped custom tag at all".
+const INDEX_LEVEL_PATTERN = /^IDX([1-3])/i;
+
+// A footnote struct element's own leading content run qualifies as an
+// /Lbl candidate only if it decodes to NOTHING but a bare number plus an
+// optional trailing '.' or ')' -- e.g. "3", "3.", "12)" -- see
+// fixFootnoteStructure/attemptFootnoteLblSplit. Deliberately strict: any
+// extra character (a following space, the start of the body sentence)
+// fails the match, which is exactly the desired "bail rather than guess"
+// outcome rather than a wrong split.
+const FOOTNOTE_LABEL_PATTERN = /^\d+[.)]?$/;
+
+// One raw-tagged IDX1/IDX1F/IDX2/IDX3 struct element within a contiguous
+// run -- see fixIndexStructure/findIndexRuns.
+interface IndexRunItem {
+  ref: PDFRef;
+  dict: PDFDict;
+  level: number;
+  rawTag: string;
+}
+
+// One maximal contiguous run of IndexRunItems sharing a common parent --
+// see fixIndexStructure/findIndexRuns.
+interface IndexRun {
+  parentRef: PDFRef;
+  parentDict: PDFDict;
+  items: IndexRunItem[];
+}
+
 // ─── Service ─────────────────────────────────────────────────────────────────
 
 export class PdfStructureWriterService {
@@ -1028,6 +1062,775 @@ export class PdfStructureWriterService {
 
     logger.info(`[StructureWriter] fixDegenerateRoleMapEntry: /RoleMap "/${customTag}" ${before} -> /${targetType}`);
     return { issueId: issue.id, success: true, before: `/${customTag} -> ${before}`, after: `/${customTag} -> /${targetType}` };
+  }
+
+  /**
+   * ROLEMAP-INDEX-FLATTENED fix. Builds a real PDF/UA-shaped index container
+   * where pdf-rolemap-integrity.validator.ts's own header comment explains
+   * fixDegenerateRoleMapEntry's heading/caption retarget can't help: an
+   * index entry's defect isn't just the wrong /S value, it's the complete
+   * ABSENCE of any list/container structure around a whole run of
+   * InDesign's own custom /IDX1-/IDX3 paragraph styles -- a single /RoleMap
+   * entry change still leaves every entry a flat, unrelated paragraph with
+   * no index semantics at all. ISO 32000-2 publishes /Index as a real
+   * grouping structure type ("lists terms or topics along with references
+   * to their occurrences") but -- confirmed via this session's own prior
+   * research against the PDF Association's Tagged PDF School reference and
+   * veraPDF's real rule source, not re-run here -- publishes NO normative
+   * required internal shape for it, and veraPDF enforces ZERO rules against
+   * /Index across PDF/UA-1, PDF/UA-2, or WTPDF-1.0. This ships a reasonable,
+   * spec-consistent v1 shape rather than a canonically "correct" one --
+   * hence this suggestion's own 0.9 (not 1.0) confidence at the
+   * ai-analysis.service.ts dispatch layer: mechanically deterministic, but
+   * the interpretation itself isn't normatively guaranteed to satisfy every
+   * human QC reviewer.
+   *
+   * Scans the WHOLE document for every MAXIMAL CONTIGUOUS run of raw-tagged
+   * /IDX1(F)?, /IDX2, /IDX3 siblings under one parent (findIndexRuns) and
+   * fixes each run independently:
+   *
+   *   - Extracts each item's nesting level via INDEX_LEVEL_PATTERN (1 for
+   *     IDX1/IDX1F, 2 for IDX2, 3 for IDX3).
+   *   - Walks the flat, level-annotated sequence with a level-tracking
+   *     stack -- the SAME shape as buildOutlineTree's own heading-nesting
+   *     stack (pop until an ancestor with a strictly lower level is found),
+   *     adapted to build real /L/LI/LBody structure elements instead of
+   *     /Outlines dict entries. A nested /L is created LAZILY, the first
+   *     time a level actually needs one under a given parent /LI, and
+   *     reused for every later sibling at that same level under that same
+   *     parent -- exactly the standard Tagged-PDF nested-list shape (an
+   *     outer /LI holds both its own /LBody and a nested /L alongside it).
+   *   - Each item's own struct element dict is renamed /S -> /LBody
+   *     (renameElement -- this file's own MCID-safe guarantee: only /S
+   *     changes) and reparented (reparentElement) to be the new /LI's SOLE
+   *     child. Deliberately NO /Lbl sibling: there's no natural index
+   *     numbering to attach, and adding an unused /Lbl would trip
+   *     Matterhorn/veraPDF rule 8.2.5.25-1 (an /Lbl requires its owning
+   *     /L's own /ListNumbering attribute) for no real benefit -- simplest
+   *     honest way to avoid that trap is to just not use /Lbl where nothing
+   *     needs it.
+   *   - No new MCIDs are ever fabricated and no content-stream byte is ever
+   *     touched: each item keeps its EXACT existing dict object (same
+   *     object number), so /ParentTree's own MCID -> struct-element mapping
+   *     stays automatically correct with zero extra bookkeeping -- the same
+   *     physical object simply ends up with a different /S and /P.
+   *   - The whole new /Index -> /L -> ... subtree is built WITHOUT touching
+   *     the original parent's own /K until it's complete, then spliced in
+   *     at exactly the position the run itself occupied (anchored on the
+   *     run's own immediate next sibling, if any) -- a deliberate
+   *     improvement over rewrapListItems' own simpler end-of-parent append,
+   *     since this file's own fixArtifactSwallowsContent/Slice-2d lineage
+   *     already established that "appended at the very end" can silently
+   *     wreck reading order on a document whose body sits under one large,
+   *     flat container. The parent's /K is then rewritten authoritatively
+   *     from its OWN CURRENT state (filtering out every run item by object
+   *     number) rather than trusting reparentElement's own removeFromKids
+   *     side effect alone -- that shared helper only clears an
+   *     ARRAY-shaped /K (see its own doc comment), so a parent whose /K was
+   *     a bare scalar pointing at a single-item run would otherwise be left
+   *     with a stale, now-duplicated reference to it.
+   *
+   * Declines (bail rather than guess, same convention as this file's other
+   * composite fixers -- see locateXObjectInvocation's and
+   * findPrecedingColor's own doc comments): a run whose first level-2+ item
+   * has no immediate level-(n-1) ancestor earlier in THIS SAME run (e.g. an
+   * IDX2 with no preceding IDX1, or an IDX3 with no preceding IDX2) is
+   * genuinely ambiguous nesting. Validated up front for the WHOLE run
+   * (validateIndexRunLevels), in a separate, non-mutating pass before that
+   * run's own build begins -- so a decline never requires unwinding a
+   * partially-built subtree.
+   *
+   * Every run is fixed independently (its own try/catch, its own rollback
+   * restoring the affected parent's /K and every mutated item's /S + /P,
+   * deleting every newly created element -- same "orphaned, not dangling"
+   * deleteElement discipline fixLinkMissingAnnotation/
+   * buildLinkAnnotationFix already use) -- one run's unexpected failure
+   * never blocks fixing the others. Aggregated into a SINGLE FixResult per
+   * this method's own signature (mirroring fixDegenerateRoleMapEntry, one
+   * call for one document-wide issue): success only if at least one run
+   * was fixed and none declined or errored.
+   */
+  fixIndexStructure(doc: PDFDocument, issue: AuditIssue): FixResult {
+    const structRoot = this.getStructTreeRoot(doc);
+    if (!structRoot) {
+      return { issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error: 'No structure tree root found' };
+    }
+
+    const catalogStructTreeRootRaw = doc.catalog.get(PDFName.of('StructTreeRoot'));
+    const structRootRef = catalogStructTreeRootRaw instanceof PDFRef ? catalogStructTreeRootRaw : null;
+
+    const runs = this.findIndexRuns(doc, structRoot, structRootRef);
+    if (runs.length === 0) {
+      return {
+        issueId: issue.id, success: false, before: 'unknown', after: 'unknown',
+        error: 'No contiguous run of raw /IDX1, /IDX1F, /IDX2, or /IDX3-tagged elements found in the structure tree -- ' +
+          'already fixed, or the flagged custom tag is declared in /RoleMap but never actually used',
+      };
+    }
+
+    let runsFixed = 0;
+    let itemsFixed = 0;
+    const declines: string[] = [];
+
+    for (const run of runs) {
+      const result = this.applyIndexRunFix(doc, run);
+      if (result.ok) {
+        runsFixed++;
+        itemsFixed += run.items.length;
+      } else {
+        declines.push(`run of ${run.items.length} starting with /${run.items[0].rawTag}: ${result.reason}`);
+      }
+    }
+
+    const totalItems = runs.reduce((sum, r) => sum + r.items.length, 0);
+    const success = runsFixed > 0 && declines.length === 0;
+
+    return {
+      issueId: issue.id,
+      success,
+      before: `${totalItems} /RoleMap-flattened index entr${totalItems === 1 ? 'y' : 'ies'} across ${runs.length} ` +
+        'contiguous run(s), with no real list/Index structure',
+      after: success
+        ? `Built ${runsFixed} new /Index > /L > /LI > /LBody container(s) covering ${itemsFixed} entries`
+        : `${runsFixed}/${runs.length} run(s) fixed (${itemsFixed} entries); ${declines.length} run(s) declined`,
+      error: declines.length > 0 ? declines.join('; ') : undefined,
+    };
+  }
+
+  /** One maximal contiguous run of raw IDX-tagged siblings under one parent -- see findIndexRuns. */
+  private findIndexRunItemLevel(dict: PDFDict): { level: number; rawTag: string } | null {
+    const sRaw = dict.get(PDFName.of('S'));
+    if (!sRaw) return null;
+    const rawTag = sRaw.toString().replace(/^\//, '');
+    const m = INDEX_LEVEL_PATTERN.exec(rawTag);
+    if (!m) return null;
+    return { level: Number(m[1]), rawTag };
+  }
+
+  /**
+   * Normalizes a struct element's own /K into a flat list for run-scanning
+   * purposes: an array stays as-is, a bare scalar becomes its own
+   * single-entry list, and anything that isn't a resolvable PDFDict (a bare
+   * MCID integer, an unresolvable ref, an inline non-dict value) becomes
+   * `null` -- a deliberate run BREAK, never crashes, same "bail rather than
+   * guess" posture as the rest of this file.
+   */
+  private normalizeKidsForIndexScan(doc: PDFDocument, kRaw: PDFObject | undefined): Array<{ ref: PDFRef; dict: PDFDict } | null> {
+    if (kRaw === undefined) return [];
+    const arr = kRaw instanceof PDFArray ? kRaw.asArray() : [kRaw as PDFObject];
+    return arr.map((item) => {
+      if (!(item instanceof PDFRef)) return null;
+      const obj = doc.context.lookup(item);
+      return obj instanceof PDFDict ? { ref: item, dict: obj } : null;
+    });
+  }
+
+  /**
+   * Finds every maximal contiguous run of raw /IDX1(F)?, /IDX2, /IDX3-
+   * tagged direct children, under ANY parent anywhere in the structure
+   * tree -- a document-wide scan, matching pdf-rolemap-integrity.
+   * validator.ts's own document-wide detection (a single real index
+   * section can legitimately span more than one parent container, e.g. one
+   * per page or per column, each becoming its own run with its own /Index
+   * wrapper). A non-IDX sibling (any other tag, a bare MCID integer, an
+   * unresolvable ref) breaks a run. Read-only -- never mutates the
+   * document.
+   */
+  private findIndexRuns(
+    doc: PDFDocument,
+    structRoot: PDFDict,
+    structRootRef: PDFRef | null,
+  ): IndexRun[] {
+    const runs: IndexRun[] = [];
+
+    this.traverseStructTree(doc, structRoot, (node, ref) => {
+      const parentRef = ref ?? structRootRef;
+      if (!parentRef) return; // structure-tree root itself with no own addressable ref -- nothing to splice an /Index into, skip
+
+      const kids = this.normalizeKidsForIndexScan(doc, node.get(PDFName.of('K')));
+      let current: IndexRunItem[] = [];
+      const flush = () => {
+        if (current.length > 0) {
+          runs.push({ parentRef, parentDict: node, items: current });
+        }
+        current = [];
+      };
+
+      for (const kid of kids) {
+        const classified = kid ? this.findIndexRunItemLevel(kid.dict) : null;
+        if (kid && classified) {
+          current.push({ ref: kid.ref, dict: kid.dict, level: classified.level, rawTag: classified.rawTag });
+        } else {
+          flush();
+        }
+      }
+      flush();
+    });
+
+    return runs;
+  }
+
+  /**
+   * Pure, non-mutating dry run of fixIndexStructure's own level-tracking
+   * stack (same pop-until-lower-level shape as buildOutlineTree): confirms
+   * every item in a run has an immediate level-(n-1) ancestor earlier in
+   * THIS SAME run before applyIndexRunFix creates or renames a single
+   * element. Guarantees a decline is always detected before any mutation,
+   * so applyIndexRunFix's own build loop never needs to unwind a partially
+   * built subtree for an ambiguous-nesting decline specifically (only for
+   * a genuinely unexpected failure, e.g. the final reachability check).
+   */
+  private validateIndexRunLevels(items: IndexRunItem[]): { ok: true } | { ok: false; reason: string } {
+    const stackLevels: number[] = [0];
+    for (const item of items) {
+      while (stackLevels.length > 1 && stackLevels[stackLevels.length - 1] >= item.level) stackLevels.pop();
+      const parentLevel = stackLevels[stackLevels.length - 1];
+      if (parentLevel !== item.level - 1) {
+        return {
+          ok: false,
+          reason: `"/${item.rawTag}" (level ${item.level}) has no immediate level-${item.level - 1} ancestor earlier ` +
+            'in this same run -- ambiguous nesting, declining rather than guessing',
+        };
+      }
+      stackLevels.push(item.level);
+    }
+    return { ok: true };
+  }
+
+  /**
+   * Builds one run's own /Index > /L > /LI > /LBody subtree and splices it
+   * into the run's original parent, replacing the run in place. See
+   * fixIndexStructure's own doc comment for the full algorithm and why each
+   * step is shaped the way it is; this is the composable per-run unit that
+   * method loops over.
+   */
+  private applyIndexRunFix(doc: PDFDocument, run: IndexRun): { ok: true } | { ok: false; reason: string } {
+    const { parentRef, parentDict, items } = run;
+
+    const validation = this.validateIndexRunLevels(items);
+    if (!validation.ok) return { ok: false, reason: validation.reason };
+
+    const originalParentK = parentDict.get(PDFName.of('K'));
+    const originalEntries = originalParentK instanceof PDFArray
+      ? originalParentK.asArray()
+      : originalParentK !== undefined ? [originalParentK as PDFObject] : [];
+    const lastItemRef = items[items.length - 1].ref;
+    const lastIdx = originalEntries.findIndex((e) => e instanceof PDFRef && e.objectNumber === lastItemRef.objectNumber);
+    const afterRefRaw = lastIdx !== -1 && lastIdx + 1 < originalEntries.length ? originalEntries[lastIdx + 1] : undefined;
+    const afterRef = afterRefRaw instanceof PDFRef ? afterRefRaw : undefined;
+
+    const pageRef = this.resolveElementPageRef(doc, items[0].dict);
+
+    const createdRefs: PDFRef[] = [];
+    const mutatedItems: IndexRunItem[] = [];
+
+    try {
+      const indexDict = doc.context.obj({
+        Type: PDFName.of('StructElem'),
+        S: PDFName.of('Index'),
+        P: parentRef,
+        ...(pageRef ? { Pg: pageRef } : {}),
+      }) as PDFDict;
+      const indexRef = doc.context.register(indexDict);
+      createdRefs.push(indexRef);
+
+      const topLRef = this.createElement(doc, 'L', indexRef, pageRef);
+      createdRefs.push(topLRef);
+
+      // Stack entry per open nesting level: `lRef` is the /L new /LI
+      // siblings at THIS level get appended into (null until the first
+      // child at the NEXT level forces one into existence under `liRef`);
+      // level 0 is the root sentinel, whose /L is always topLRef.
+      type StackEntry = { level: number; liRef: PDFRef | null; lRef: PDFRef | null };
+      const stack: StackEntry[] = [{ level: 0, liRef: null, lRef: topLRef }];
+
+      for (const item of items) {
+        while (stack.length > 1 && stack[stack.length - 1].level >= item.level) stack.pop();
+        const parentEntry = stack[stack.length - 1];
+        // validateIndexRunLevels already proved parentEntry.level === item.level - 1 for every item in this run.
+
+        let lRef = parentEntry.lRef;
+        if (lRef === null) {
+          lRef = this.createElement(doc, 'L', parentEntry.liRef as PDFRef, pageRef);
+          createdRefs.push(lRef);
+          parentEntry.lRef = lRef;
+        }
+
+        const liRef = this.createElement(doc, 'LI', lRef, pageRef);
+        createdRefs.push(liRef);
+
+        this.renameElement(doc, item.ref, 'LBody');
+        this.reparentElement(doc, item.ref, liRef);
+        mutatedItems.push(item);
+
+        stack.push({ level: item.level, liRef, lRef: null });
+      }
+
+      // Authoritative rewrite of the ORIGINAL parent's own /K -- see this
+      // method's own doc comment (fixIndexStructure) for why this doesn't
+      // just trust reparentElement's own removeFromKids side effect.
+      const runRefNumbers = new Set(items.map((i) => i.ref.objectNumber));
+      const currentKRaw = parentDict.get(PDFName.of('K'));
+      const currentEntries = currentKRaw instanceof PDFArray
+        ? currentKRaw.asArray()
+        : currentKRaw !== undefined ? [currentKRaw as PDFObject] : [];
+      const withoutRunItems = currentEntries.filter((e) => !(e instanceof PDFRef && runRefNumbers.has(e.objectNumber)));
+      let spliceIdx = withoutRunItems.length;
+      if (afterRef) {
+        const idx = withoutRunItems.findIndex((e) => e instanceof PDFRef && e.objectNumber === afterRef.objectNumber);
+        if (idx !== -1) spliceIdx = idx;
+      }
+      withoutRunItems.splice(spliceIdx, 0, indexRef);
+      parentDict.set(PDFName.of('K'), doc.context.obj(withoutRunItems));
+
+      if (!this.isReachableFromRoot(doc, indexRef)) {
+        throw new Error('New /Index element is not reachable from the structure tree root after splicing -- not committing');
+      }
+
+      return { ok: true };
+    } catch (err) {
+      for (const item of mutatedItems) {
+        item.dict.set(PDFName.of('S'), PDFName.of(item.rawTag));
+        item.dict.set(PDFName.of('P'), parentRef);
+      }
+      if (originalParentK !== undefined) parentDict.set(PDFName.of('K'), originalParentK);
+      else parentDict.delete(PDFName.of('K'));
+      for (const ref of createdRefs) this.deleteElement(doc, ref);
+      return { ok: false, reason: err instanceof Error ? err.message : String(err) };
+    }
+  }
+
+  /**
+   * ROLEMAP-FOOTNOTE-FLATTENED fix -- Matterhorn 01-006 / PDF/UA-2 (ISO
+   * 14289-2:2024) SS8.2.5.14 "Footnotes and Endnotes (FENote)". S4 Carlisle's
+   * own manual QC report flagged footnotes as structurally non-conformant;
+   * pdf-rolemap-integrity.validator.ts's own header comment explains why
+   * this was left detect-only until now. This closes the SAFE, mechanically
+   * groundable part of that gap -- see the "NOT attempted" paragraph below
+   * for what deliberately remains open.
+   *
+   * Confirmed directly against veraPDF's own PDF/UA-2 validation-profile
+   * rule source (verapdf-validation-profiles, PDF_UA/2/8.2 Logical
+   * structure/8.2.5 .../8.2.5.14 Footnotes and Endnotes (FENote)/), not
+   * guessed:
+   *   - Rule 8.2.5.14-1 ("object=SENote", test "false"): "The Note standard
+   *     structure type shall not be present in conforming documents unless
+   *     role mapped to a structure element in the PDF 2.0 namespace" --
+   *     i.e. bare /Note is an outright, unconditional failure under
+   *     PDF/UA-2 for a document whose StructTreeRoot /Namespaces are
+   *     PDF-2.0-rooted (true of every document this platform produces/
+   *     remediates). /FENote -- PDF 2.0's own replacement for /Note,
+   *     ISO 32000-2 SS14.8.4.1 -- carries no such prohibition. This is why
+   *     the retarget below is /FENote, never /Note.
+   *   - Rule 8.2.5.14-4 ("object=SEFENote"): "The value of the NoteType
+   *     attribute of the FENote structure element shall be Footnote,
+   *     Endnote or None" (test: `NoteType == 'Footnote' || NoteType ==
+   *     'Endnote' || NoteType == 'None'`). The PDF Association's Tagged PDF
+   *     School attribute reference (independently cross-checked, same
+   *     answer both times) gives NoteType's owner as /FENote itself --
+   *     i.e. the attribute dict is `<< /O /FENote /NoteType /Footnote >>`,
+   *     NOT `/O /PDF2` or any other generic/dedicated owner name. Getting
+   *     this owner key wrong would make the attribute invisible to any
+   *     validator checking for it, per this task's own explicit warning --
+   *     confirmed, not guessed. Value used here is /Footnote (not
+   *     /Endnote): every raw-tagged instance this fix touches is an
+   *     in-body footnote by construction (that's what TFN/"Trailing FootNote"-
+   *     shaped custom styles are for in InDesign exports).
+   *   - Rules 8.2.5.14-2 and -3 ("object=SEFENote", both marked
+   *     `deferred="true"` in veraPDF's OWN profile XML -- i.e. not even
+   *     veraPDF itself auto-checks these without extra tooling) require a
+   *     BIDIRECTIONAL /Ref cross-reference: the in-body citing marker (a
+   *     /Reference element) must /Ref the /FENote, and the /FENote must
+   *     /Ref every /Reference that cites it. This codebase has NO in-body
+   *     footnote-marker detector (the EPUB-only footnote-id-parity-
+   *     validator.ts works on a completely different, non-PDF
+   *     representation) -- building one is explicitly OUT OF SCOPE here.
+   *     NOT ATTEMPTED, deliberately: no /Reference element is created, no
+   *     /Ref entry is written anywhere. A document fixed by this method
+   *     alone will still fail 8.2.5.14-2/-3 under a full PDF/UA-2 audit --
+   *     a real, documented residual gap for a future, harder follow-on,
+   *     not a bug in this one.
+   *
+   * Two independent mutations, both document-wide-safe by construction:
+   *
+   *   1. /RoleMap retarget (customTag -> /FENote): structurally identical
+   *      in shape to fixDegenerateRoleMapEntry's own heading/caption
+   *      retarget above -- ONE dict entry, same safety argument (every
+   *      instance of this specific custom style was deliberately applied
+   *      by the original author, so any RoleMap-resolving consumer now
+   *      sees /FENote instead of /P wherever this style appears).
+   *      Deliberately a SEPARATE method from fixDegenerateRoleMapEntry
+   *      rather than extending its own category gate -- that method's own
+   *      existing test ("refuses to fix a footnote-named custom tag") must
+   *      keep failing for exactly the reason it already does (no single
+   *      safe target existed before this method shipped); this is new,
+   *      additional capability, not a loosening of that one's contract.
+   *
+   *   2. Per-instance NoteType attribute + best-effort /Lbl+/LBody split,
+   *      for EVERY struct element found with a raw (pre-RoleMap) /S equal
+   *      to the flagged custom tag, found document-wide via
+   *      findRawTaggedElements:
+   *        - writeNoteTypeAttribute always runs, unconditionally -- a
+   *          RoleMap entry has nowhere to carry a structure ATTRIBUTE
+   *          (only a type retarget), so this has to happen per-element
+   *          regardless of whether the /Lbl split below succeeds.
+   *        - attemptFootnoteLblSplit is best-effort, per-element,
+   *          independently rolled back on its own failure (same "one
+   *          element's problem never blocks the others" discipline as
+   *          applyIndexRunFix above) -- NOT a prerequisite for this
+   *          method's own overall success. It requires the element's own
+   *          /K to be a MULTI-ENTRY array (>=2 top-level entries): real
+   *          InDesign-tagged-PDF export typically puts an entire footnote
+   *          paragraph -- number AND body -- in ONE marked-content run
+   *          (one BDC/EMC span, one /K entry) unless a character-style
+   *          break (e.g. the number set in a different run) forced a
+   *          separate span. A single-entry /K is therefore the EXPECTED,
+   *          common real-world shape, not an edge case -- and per this
+   *          method's own MCID-safety contract (no new MCIDs, no
+   *          content-stream byte ever written), that shape has NO
+   *          structural split point available at all, so it's a real,
+   *          accepted reason to decline the /Lbl wrap for that instance
+   *          and fall back to RoleMap-retarget + NoteType only. When /K
+   *          DOES have >=2 entries, the leading entry's own text is
+   *          decoded (read-only -- findBdcTagSpanForMcid + a local
+   *          BDC/EMC-depth-tracked scan over tokenize's own tokens to find
+   *          the matching EMC, then extractArtifactTextRuns over exactly
+   *          that span; falls back to extractTextFromStructElem +
+   *          collectLeafMcids for a nested-struct-shaped entry -- see
+   *          decodeFootnoteEntryText) and tested against
+   *          FOOTNOTE_LABEL_PATTERN; a match splits entries[0] into a new
+   *          /Lbl and the remaining entries into a new /LBody, both
+   *          direct children of the (RoleMap-resolves-to-/FENote) element
+   *          itself -- spec-allowed without an enclosing /L/LI (unlike
+   *          this file's own rewrapListItems/fixIndexStructure list
+   *          shapes, a footnote's /Lbl+/LBody pair is NOT inside an
+   *          /L/LI). No match (decode failure, or the text isn't a bare
+   *          number) declines cleanly, same "bail rather than guess"
+   *          posture as locateXObjectInvocation's and findPrecedingColor's
+   *          own doc comments.
+   */
+  fixFootnoteStructure(doc: PDFDocument, issue: AuditIssue): FixResult {
+    const customTag = issue.element;
+    if (!customTag) {
+      return { issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error: 'Issue is missing element (the custom tag name)' };
+    }
+
+    const classification = classifyDegenerateRoleMapEntry(customTag);
+    if (!classification || classification.category !== 'footnote') {
+      return {
+        issueId: issue.id, success: false, before: 'unknown', after: 'unknown',
+        error: `Not a footnote-shaped custom tag (category: ${classification?.category ?? 'unrecognized'})`,
+      };
+    }
+
+    const structRoot = this.getStructTreeRoot(doc);
+    if (!structRoot) {
+      return { issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error: 'No structure tree root found' };
+    }
+
+    const rmRaw = structRoot.get(PDFName.of('RoleMap'));
+    const rm = rmRaw instanceof PDFRef ? doc.context.lookup(rmRaw) : rmRaw;
+    if (!(rm instanceof PDFDict)) {
+      return { issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error: 'No /RoleMap dict found on StructTreeRoot' };
+    }
+
+    const elements = this.findRawTaggedElements(doc, structRoot, customTag);
+    if (elements.length === 0) {
+      return {
+        issueId: issue.id, success: false, before: 'unknown', after: 'unknown',
+        error: `No raw "/${customTag}"-tagged elements found in the structure tree -- /RoleMap declares it but no ` +
+          'instance actually uses it (already fixed, or this issue is stale)',
+      };
+    }
+
+    const before = rm.get(PDFName.of(customTag))?.toString() ?? 'missing';
+    rm.set(PDFName.of(customTag), PDFName.of('FENote'));
+
+    const pageByRef = new Map<string, number>();
+    doc.getPages().forEach((p, i) => pageByRef.set(p.ref.toString(), i + 1));
+    const contentCache = new Map<number, string>();
+
+    let lblWrapped = 0;
+    const declines: string[] = [];
+    for (const { ref, dict } of elements) {
+      this.writeNoteTypeAttribute(doc, ref);
+      const splitResult = this.attemptFootnoteLblSplit(doc, ref, dict, pageByRef, contentCache);
+      if (splitResult.ok) lblWrapped++;
+      else declines.push(splitResult.reason);
+    }
+
+    logger.info(
+      `[StructureWriter] fixFootnoteStructure: /RoleMap "/${customTag}" ${before} -> /FENote; ` +
+      `${elements.length} element(s), NoteType set on all, ${lblWrapped} /Lbl-wrapped`
+    );
+
+    return {
+      issueId: issue.id,
+      success: true,
+      before: `/${customTag} -> ${before}, ${elements.length} raw-tagged element(s) with no /FENote type, no NoteType attribute, no /Lbl/LBody structure`,
+      after: `/${customTag} -> /FENote; NoteType=/Footnote (/O /FENote) set on all ${elements.length} element(s); ` +
+        `${lblWrapped}/${elements.length} also split into /Lbl + /LBody` +
+        (declines.length > 0
+          ? `; ${declines.length} retarget-+-NoteType-only (${declines[0]}${declines.length > 1 ? `, +${declines.length - 1} more` : ''})`
+          : ''),
+    };
+  }
+
+  /** Every struct element anywhere in the tree whose OWN raw /S (before RoleMap resolution) equals `rawTag` exactly -- same exact, case-sensitive key match fixDegenerateRoleMapEntry/the /RoleMap dict itself already use for this custom tag. */
+  private findRawTaggedElements(doc: PDFDocument, structRoot: PDFDict, rawTag: string): Array<{ ref: PDFRef; dict: PDFDict }> {
+    const found: Array<{ ref: PDFRef; dict: PDFDict }> = [];
+    this.traverseStructTree(doc, structRoot, (node, ref) => {
+      if (!ref) return;
+      const sRaw = node.get(PDFName.of('S'));
+      if (!sRaw) return;
+      if (sRaw.toString().replace(/^\//, '') === rawTag) found.push({ ref, dict: node });
+    });
+    return found;
+  }
+
+  /**
+   * Writes `<< /O /FENote /NoteType /Footnote >>` into the element's own
+   * /A (attributes). Same established shape as writeScopeAttribute/
+   * makeTableAttrDict above (owner /Table, field /Scope) -- find-or-append
+   * into whatever /A already holds (absent, a single dict ref, or an
+   * array), never blindly overwriting an unrelated owner's attributes.
+   */
+  private writeNoteTypeAttribute(doc: PDFDocument, elementRef: PDFRef): void {
+    const elem = doc.context.lookup(elementRef);
+    if (!(elem instanceof PDFDict)) return;
+
+    const makeAttrDict = (): PDFRef =>
+      doc.context.register(doc.context.obj({ O: PDFName.of('FENote'), NoteType: PDFName.of('Footnote') }));
+
+    const aRaw = elem.get(PDFName.of('A'));
+    if (!aRaw) {
+      elem.set(PDFName.of('A'), doc.context.obj([makeAttrDict()]));
+      return;
+    }
+    if (aRaw instanceof PDFArray) {
+      for (const item of aRaw.asArray()) {
+        const obj = item instanceof PDFRef ? doc.context.lookup(item) : item;
+        if (obj instanceof PDFDict && obj.get(PDFName.of('O'))?.toString() === '/FENote') {
+          obj.set(PDFName.of('NoteType'), PDFName.of('Footnote'));
+          return;
+        }
+      }
+      aRaw.push(makeAttrDict());
+      return;
+    }
+    if (aRaw instanceof PDFRef) {
+      const aObj = doc.context.lookup(aRaw);
+      if (aObj instanceof PDFDict && aObj.get(PDFName.of('O'))?.toString() === '/FENote') {
+        aObj.set(PDFName.of('NoteType'), PDFName.of('Footnote'));
+        return;
+      }
+      elem.set(PDFName.of('A'), doc.context.obj([aRaw, makeAttrDict()]));
+      return;
+    }
+    elem.set(PDFName.of('A'), doc.context.obj([makeAttrDict()]));
+  }
+
+  /**
+   * Best-effort, per-element /Lbl+/LBody split for one raw-tagged footnote
+   * element -- see fixFootnoteStructure's own doc comment for the full
+   * algorithm and why a single-entry /K is a real, accepted decline rather
+   * than an edge case. Own try/catch + rollback (restores /K and any
+   * reparented child's own /P, deletes every newly created element) so one
+   * element's unexpected failure can never corrupt another's, nor leave
+   * this one half-mutated -- same discipline as applyIndexRunFix above.
+   */
+  private attemptFootnoteLblSplit(
+    doc: PDFDocument,
+    elemRef: PDFRef,
+    elem: PDFDict,
+    pageByRef: Map<string, number>,
+    contentCache: Map<number, string>,
+  ): { ok: true } | { ok: false; reason: string } {
+    const originalK = elem.get(PDFName.of('K'));
+    const entries = originalK instanceof PDFArray
+      ? originalK.asArray()
+      : originalK !== undefined ? [originalK as PDFObject] : [];
+
+    if (entries.length < 2) {
+      return { ok: false, reason: 'single MCID/content run -- no structural split point without touching content-stream bytes' };
+    }
+
+    const pageRef = this.resolveElementPageRef(doc, elem);
+    const labelText = this.decodeFootnoteEntryText(doc, entries[0], pageRef, pageByRef, contentCache);
+    if (labelText === null) {
+      return { ok: false, reason: "could not decode the leading content run's own text without content-stream evidence" };
+    }
+    const trimmed = labelText.trim();
+    if (!FOOTNOTE_LABEL_PATTERN.test(trimmed)) {
+      return { ok: false, reason: `leading content run ("${trimmed}") is not a bare numeric label -- declining rather than guessing` };
+    }
+
+    const createdRefs: PDFRef[] = [];
+    const reparented: Array<{ dict: PDFDict; originalP: PDFObject | undefined }> = [];
+
+    try {
+      const lblEntries: Record<string, PDFObject> = { Type: PDFName.of('StructElem'), S: PDFName.of('Lbl'), P: elemRef };
+      if (pageRef) lblEntries['Pg'] = pageRef;
+      const lblRef = doc.context.register(doc.context.obj(lblEntries));
+      createdRefs.push(lblRef);
+
+      const lbodyEntries: Record<string, PDFObject> = { Type: PDFName.of('StructElem'), S: PDFName.of('LBody'), P: elemRef };
+      if (pageRef) lbodyEntries['Pg'] = pageRef;
+      const lbodyRef = doc.context.register(doc.context.obj(lbodyEntries));
+      createdRefs.push(lbodyRef);
+
+      const reparentIfStructChild = (raw: PDFObject, newParentRef: PDFRef): void => {
+        const resolved = raw instanceof PDFRef ? doc.context.lookup(raw) : raw;
+        if (resolved instanceof PDFDict && resolved.get(PDFName.of('S')) !== undefined) {
+          reparented.push({ dict: resolved, originalP: resolved.get(PDFName.of('P')) });
+          resolved.set(PDFName.of('P'), newParentRef);
+        }
+      };
+
+      const bodyEntries = entries.slice(1);
+      reparentIfStructChild(entries[0], lblRef);
+      for (const e of bodyEntries) reparentIfStructChild(e, lbodyRef);
+
+      doc.context.lookup(lblRef, PDFDict).set(PDFName.of('K'), entries[0]);
+      doc.context.lookup(lbodyRef, PDFDict).set(
+        PDFName.of('K'),
+        bodyEntries.length === 1 ? bodyEntries[0] : doc.context.obj(bodyEntries),
+      );
+      elem.set(PDFName.of('K'), doc.context.obj([lblRef, lbodyRef]));
+
+      if (!this.isReachableFromRoot(doc, lblRef) || !this.isReachableFromRoot(doc, lbodyRef)) {
+        throw new Error('New /Lbl or /LBody element is not reachable from the structure tree root after splicing -- not committing');
+      }
+
+      return { ok: true };
+    } catch (err) {
+      if (originalK !== undefined) elem.set(PDFName.of('K'), originalK);
+      else elem.delete(PDFName.of('K'));
+      for (const { dict, originalP } of reparented) {
+        if (originalP !== undefined) dict.set(PDFName.of('P'), originalP);
+        else dict.delete(PDFName.of('P'));
+      }
+      for (const ref of createdRefs) this.deleteElement(doc, ref);
+      return { ok: false, reason: err instanceof Error ? err.message : String(err) };
+    }
+  }
+
+  /**
+   * Decodes one top-level /K entry's own text, read-only, never touching
+   * content-stream bytes. Three shapes, in the order real documents
+   * actually produce them:
+   *   - a bare MCID integer -- decoded straight from the page's content
+   *     stream (decodeMcidText) using the ELEMENT's own page.
+   *   - an MCR dict (/MCID + optionally its own /Pg, no /S) -- same
+   *     content-stream decode, using the MCR's own /Pg if present
+   *     (overriding the element's), per spec allowance for a per-MCR page.
+   *   - a nested struct element (has its own /S) -- tries
+   *     extractTextFromStructElem first (cheap: /ActualText, /Alt, or a
+   *     further-nested child already carrying one of those), and only
+   *     falls back to decoding its own leaf MCIDs directly from the
+   *     content stream (collectLeafMcids) when that comes back empty --
+   *     i.e. composes from this file's two existing text-recovery
+   *     strategies rather than inventing a third.
+   * Returns null wherever no text could be recovered at all (never guesses
+   * a value).
+   */
+  private decodeFootnoteEntryText(
+    doc: PDFDocument,
+    entryRaw: PDFObject,
+    fallbackPageRef: PDFRef | undefined,
+    pageByRef: Map<string, number>,
+    contentCache: Map<number, string>,
+  ): string | null {
+    const resolved = entryRaw instanceof PDFRef ? doc.context.lookup(entryRaw) : entryRaw;
+
+    if (resolved instanceof PDFNumber) {
+      if (!fallbackPageRef) return null;
+      return this.decodeMcidText(doc, resolved.asNumber(), fallbackPageRef, pageByRef, contentCache);
+    }
+
+    if (resolved instanceof PDFDict) {
+      const mcidAttr = resolved.get(PDFName.of('MCID'));
+      if (mcidAttr instanceof PDFNumber) {
+        const pgRaw = resolved.get(PDFName.of('Pg'));
+        const pageRef = pgRaw instanceof PDFRef ? pgRaw : fallbackPageRef;
+        if (!pageRef) return null;
+        return this.decodeMcidText(doc, mcidAttr.asNumber(), pageRef, pageByRef, contentCache);
+      }
+
+      // Nested struct element (has its own /S, no /MCID of its own).
+      const viaAttr = this.extractTextFromStructElem(doc, resolved);
+      if (viaAttr) return viaAttr;
+
+      const nestedPageRef = this.resolveElementPageRef(doc, resolved) ?? fallbackPageRef;
+      if (!nestedPageRef) return null;
+      const mcids = this.collectLeafMcids(doc, resolved);
+      if (mcids.length === 0) return null;
+      const parts = mcids.map((m) => this.decodeMcidText(doc, m, nestedPageRef, pageByRef, contentCache) ?? '');
+      return parts.join('');
+    }
+
+    return null;
+  }
+
+  /**
+   * Decodes the actual shown text of one MCID's own marked-content span,
+   * purely by reading the page's content stream -- never writes to it.
+   * Composed entirely from this file's own already-imported primitives:
+   * findBdcTagSpanForMcid locates the BDC opening; findMatchingEmcEnd (a
+   * thin depth-tracked scan over tokenize's own tokens, mirroring
+   * findRealTextSegmentsInSpan's own depth-counting shape for a different
+   * purpose) locates the matching EMC; extractArtifactTextRuns decodes
+   * every text-show operator strictly between the two. Per-page content
+   * is decoded at most once (contentCache).
+   */
+  private decodeMcidText(
+    doc: PDFDocument,
+    mcid: number,
+    pageRef: PDFRef,
+    pageByRef: Map<string, number>,
+    contentCache: Map<number, string>,
+  ): string | null {
+    const pageNumber = pageByRef.get(pageRef.toString());
+    if (!pageNumber) return null;
+
+    let content = contentCache.get(pageNumber);
+    if (content === undefined) {
+      content = decodePageContent(doc, pageNumber) ?? '';
+      contentCache.set(pageNumber, content);
+    }
+    if (!content) return null;
+
+    const span = findBdcTagSpanForMcid(content, mcid);
+    if (!span) return null;
+
+    const emcEnd = this.findMatchingEmcEnd(content, span.end);
+    const runs = extractArtifactTextRuns(content, span.end, emcEnd);
+    const text = runs.map((r) => r.text).join('');
+    return text || null;
+  }
+
+  /**
+   * Scans forward from `contentStart` (the first byte right after a BDC's
+   * own opening sequence, i.e. findBdcTagSpanForMcid's own `end`) for the
+   * EMC that closes it, tracking BDC/BMC-vs-EMC nesting depth over
+   * tokenize's own tokens so a nested marked-content sequence inside this
+   * one doesn't prematurely end the scan. Read-only -- the returned offset
+   * is only ever used to BOUND a decode (extractArtifactTextRuns), never
+   * to splice anything. Falls back to the end of the content string on an
+   * unbalanced/malformed stream rather than guessing or throwing.
+   */
+  private findMatchingEmcEnd(content: string, contentStart: number): number {
+    const tokens = tokenize(content.slice(contentStart));
+    let depth = 1;
+    for (const tk of tokens) {
+      if (tk.t !== 'op') continue;
+      if (tk.v === 'BDC' || tk.v === 'BMC') depth++;
+      else if (tk.v === 'EMC') {
+        depth--;
+        if (depth === 0) return contentStart + tk.start;
+      }
+    }
+    return content.length;
   }
 
   // ══════════════════════════════════════════════════════════════════════════
