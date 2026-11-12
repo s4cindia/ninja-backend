@@ -65,7 +65,9 @@ import { verifyStillNoDetectableInk } from './color-contrast-verification';
 import { tokenize } from '../zone-extractor/seam-c/content-stream';
 import { baseEncodingTable } from './font-encodings';
 import type { ParsedPDF } from './pdf-parser.service';
+import { pdfParserService } from './pdf-parser.service';
 import { classifyDegenerateRoleMapEntry } from './validators/pdf-rolemap-integrity.validator';
+import { GENERIC_TITLE_RE } from './validators/pdf-bookmark.validator';
 import {
   findUrlOperatorRun,
   buildLinkCompletenessSplice,
@@ -4792,6 +4794,126 @@ export class PdfStructureWriterService {
     return count;
   }
 
+  /**
+   * Regenerates a bookmark's title from its target heading's REAL text, for
+   * any EXISTING bookmark whose current title matches pdf-bookmark.validator
+   * .ts's own GENERIC_TITLE_RE (the same regex that validator uses to flag
+   * BOOKMARK-GENERIC-TEXT) -- confirmed real via all 67 bookmarks on
+   * Karsaklian_189165_9781606497623.pdf, every single one literally
+   * "Section p.25" / "Section p.26" / etc. (InDesign's own fallback when it
+   * couldn't resolve real heading text at export time, itself downstream of
+   * the RoleMap-flattening bug the related PdfRoleMapIntegrityValidator
+   * fixes -- once that fix retargets a heading style to a real /Hn type,
+   * extractTextFromStructElem can resolve real text for it where it
+   * couldn't before).
+   *
+   * Unlike generateBookmarksFromHeadings (which builds a BRAND NEW /Outlines
+   * tree from scratch), this walks the EXISTING outline tree and only
+   * touches a bookmark's /Title -- structure, nesting, and every other
+   * bookmark's title are left untouched. Bails (does not touch that
+   * bookmark) rather than guessing whenever:
+   *   - the current title isn't actually generic (nothing to fix)
+   *   - the bookmark's own /Dest (or /A's GoTo /D) doesn't resolve to a real
+   *     page in this document (named destinations are not resolved here)
+   *   - more than one real, non-fallback heading shares that exact page --
+   *     ambiguous, no way to know which one this bookmark was meant for
+   *   - no tagged heading on that page has REAL (non-fallback) extracted
+   *     text at all
+   * This codebase's established "bail rather than guess" convention (see
+   * findPrecedingColor, locateXObjectInvocation, generateBookmarksFromHeadings
+   * itself) applies identically here: a bookmark pointed at the wrong
+   * section is worse than one left with its current, merely-unhelpful title.
+   */
+  regenerateGenericBookmarkTitles(doc: PDFDocument): { updated: number } {
+    const structRoot = this.getStructTreeRoot(doc);
+    if (!structRoot) return { updated: 0 };
+
+    const outlinesRaw = doc.catalog.get(PDFName.of('Outlines'));
+    const outlines = outlinesRaw instanceof PDFRef ? doc.context.lookup(outlinesRaw) : outlinesRaw;
+    if (!(outlines instanceof PDFDict)) return { updated: 0 };
+
+    const pages = doc.getPages();
+    const pageRefToIndex = new Map<number, number>();
+    pages.forEach((p, idx) => pageRefToIndex.set(p.ref.objectNumber, idx));
+
+    const roleMap = this.buildRoleMap(doc, structRoot);
+
+    // Only a page with EXACTLY ONE real-text heading is unambiguous enough
+    // to safely match a bookmark to -- a page with zero or multiple such
+    // headings is left alone (null marks "ambiguous", not "none seen yet").
+    const headingTextByPage = new Map<number, string | null>();
+    this.traverseStructTree(doc, structRoot, (node, ref) => {
+      if (!ref) return;
+      const rawTag = node.get(PDFName.of('S'))?.toString().replace(/^\//, '');
+      if (!rawTag) return;
+      const sTag = this.resolveRoleMapChain(roleMap, rawTag);
+      if (!/^H[1-9]$/.test(sTag)) return;
+
+      const pgRaw = node.get(PDFName.of('Pg'));
+      if (!(pgRaw instanceof PDFRef)) return;
+      const pageIndex = pageRefToIndex.get(pgRaw.objectNumber);
+      if (pageIndex === undefined) return;
+
+      const extracted = this.extractTextFromStructElem(doc, node);
+      // Also bails when the extracted text is ITSELF generic-shaped (e.g. a
+      // heading whose real tagged text literally reads "Section 3", not a
+      // placeholder but not a helpful bookmark title either) -- never worth
+      // replacing one unhelpful title with another.
+      if (!extracted || GENERIC_TITLE_RE.test(extracted.trim())) return;
+
+      const existing = headingTextByPage.get(pageIndex);
+      headingTextByPage.set(pageIndex, existing === undefined ? extracted.slice(0, 200) : null);
+    });
+
+    let updated = 0;
+    const visitOutlineItem = (itemRef: PDFRef): void => {
+      const item = doc.context.lookup(itemRef);
+      if (!(item instanceof PDFDict)) return;
+
+      const titleRaw = item.get(PDFName.of('Title'));
+      const currentTitle =
+        titleRaw instanceof PDFHexString || titleRaw instanceof PDFString ? titleRaw.decodeText().trim() : '';
+
+      if (currentTitle && GENERIC_TITLE_RE.test(currentTitle)) {
+        const pageIndex = this.resolveOutlineItemPageIndex(doc, item, pageRefToIndex);
+        const newTitle = pageIndex !== null ? headingTextByPage.get(pageIndex) : undefined;
+        if (newTitle) {
+          item.set(PDFName.of('Title'), PDFHexString.fromText(newTitle));
+          updated++;
+        }
+      }
+
+      const firstChild = item.get(PDFName.of('First'));
+      if (firstChild instanceof PDFRef) visitOutlineItem(firstChild);
+      const next = item.get(PDFName.of('Next'));
+      if (next instanceof PDFRef) visitOutlineItem(next);
+    };
+
+    const firstTopLevel = outlines.get(PDFName.of('First'));
+    if (firstTopLevel instanceof PDFRef) visitOutlineItem(firstTopLevel);
+
+    logger.info(`[StructureWriter] regenerateGenericBookmarkTitles: ${updated} title(s) regenerated`);
+    return { updated };
+  }
+
+  /** Resolves an outline item's target page index via /Dest (direct array
+   *  form) or /A's GoTo /D -- returns null for a named destination (string/
+   *  name, requiring a /Names /Dests lookup this method doesn't attempt) or
+   *  any other unresolvable shape, rather than guessing. */
+  private resolveOutlineItemPageIndex(doc: PDFDocument, item: PDFDict, pageRefToIndex: Map<number, number>): number | null {
+    let destRaw: PDFObject | undefined = item.get(PDFName.of('Dest'));
+    if (destRaw === undefined) {
+      const actionRaw = item.get(PDFName.of('A'));
+      const action = actionRaw instanceof PDFRef ? doc.context.lookup(actionRaw) : actionRaw;
+      if (action instanceof PDFDict) destRaw = action.get(PDFName.of('D'));
+    }
+    const dest = destRaw instanceof PDFRef ? doc.context.lookup(destRaw) : destRaw;
+    if (!(dest instanceof PDFArray) || dest.size() === 0) return null;
+    const pageRef = dest.get(0);
+    if (!(pageRef instanceof PDFRef)) return null;
+    return pageRefToIndex.get(pageRef.objectNumber) ?? null;
+  }
+
   // ══════════════════════════════════════════════════════════════════════════
   // SECTION 9 — Text Extraction (for titles and extractFirstH1Text)
   // ══════════════════════════════════════════════════════════════════════════
@@ -8344,72 +8466,30 @@ export class PdfStructureWriterService {
   }
 
   /**
-   * LINK-MISSING-ANNOTATION fix (Matterhorn 28-011), Slice 3 -- wires
-   * slices 1-2's pure content-stream splice (pdf-link-completeness-
-   * writer.ts's findUrlOperatorRun/buildLinkCompletenessSplice), AND the
-   * same-operand URL splitter (findUrlSubstringRun/buildUrlSubstringSplice,
-   * tried as a fallback when the clean path declines), into a real
-   * PDFDocument: creates the /Link annotation PAC/veraPDF actually look
-   * for, a matching /Link structure element carrying both the URL's own
-   * text (via its fresh MCID) and an OBJR back to the annotation, splices
-   * that new element into the enclosing paragraph's own /K (replacing its
-   * single bare MCID with [original, new /Link, remainder] -- see
-   * buildLinkCompletenessSplice's own doc comment for why a remainder MCID
-   * is needed at all), and extends BOTH ParentTree mechanisms this needs:
-   * the page's own MCID-indexed array (for linkMcid and, if present, the
-   * remainder's fresh MCID) via the existing extendParentTree, and the
-   * document-wide standalone-object key space (for the annotation's own
-   * /StructParent) via the new appendAnnotationParentTreeEntry above.
-   *
-   * Scoped to real, measured data: a full sweep of
-   * Curiel_187961_CSHP.pdf's own 209 real LINK-MISSING-ANNOTATION issues
-   * found the URL arrives as a clean, findUrlOperatorRun-locatable run in
-   * 135/209 (64.6%) of cases, and findUrlSubstringRun locates a run (with a
-   * real, verified-exact splice) for the remaining 74/209 (35.4%) --
-   * confirmed live, every one of those 74 produced a /Link span whose own
-   * content, precisely re-decoded, is exactly the target URL. Both
-   * functions still decline (return null) on a genuinely unsafe shape --
-   * a non-simple (CID/Type0) font at a cut point, or a target position
-   * landing strictly inside a ligature's own multi-character expansion --
-   * rather than guess; see pdf-link-completeness-writer.ts's own header
-   * comment for the full breakdown. Also declines when the enclosing
-   * content has no MCID of its own (a bare /Artifact) -- no natural
-   * struct-tree parent to attach the new /Link under, the same
-   * "ambiguous, no natural parent" shape this file already declines
-   * elsewhere (reattachTableCell, retagPlacedPdfAsFigure) rather than
-   * invent one; not hit by any of the 135 real clean matches above (every
-   * one sits inside a real, MCID-bound /P).
-   *
-   * Everything from the enclosing-tag resolution onward is IDENTICAL
-   * regardless of which path produced `splice` -- LinkCompletenessSplice
-   * and UrlSubstringSplice are structurally identical
-   * ({edits, linkMcid, remainderMcid, enclosingTag, enclosingMcid}), by
-   * design, so the rest of this method never needs to know which one ran.
-   *
-   * Rollback on any failure restores the page's original content bytes,
-   * /Annots, and the enclosing element's /K, and clears every newly
-   * registered object's /K and /P (deleteElement) -- same discipline as
-   * fixArtifactSwallowsContent. One accepted, documented residual: if
-   * extendParentTree or appendAnnotationParentTreeEntry (the unconditional
-   * last two statements, after everything else has already succeeded)
-   * throws, the OTHER of the two may have already committed its own
-   * insertion with nothing to explicitly undo it -- left as-is rather than
-   * hand-rolling an undo for a tree insert at a known position, since any
-   * leftover entry would point at content this rollback already deletes
-   * (an inert, never-looked-up trailing slot, not a corruption) and this
-   * matches every other fix method in this file, each of which treats its
-   * own single extendParentTree call as the true last, no-further-rollback
-   * statement in its own try block.
+   * Shared core for LINK-MISSING-ANNOTATION (Matterhorn 28-011) and
+   * CROSS-REFERENCE-MISSING-LINK's fixers -- everything from locating
+   * `searchText` as a content-stream run through annotation/struct-element
+   * creation and rollback is identical regardless of which produced it;
+   * only the Action dict attached to the annotation differs (a URI action
+   * for a literal URL vs. a GoTo action for an internal destination). See
+   * fixLinkMissingAnnotation's own doc comment (below) for the full
+   * rationale behind every step -- this extraction changes none of it,
+   * only parameterizes `url`/`A` so fixCrossReferenceLink can reuse the
+   * exact same, already-proven splicing/ParentTree/rollback logic rather
+   * than duplicating it.
    */
-  fixLinkMissingAnnotation(doc: PDFDocument, issue: AuditIssue): FixResult {
+  private buildLinkAnnotationFix(
+    doc: PDFDocument,
+    issue: AuditIssue,
+    searchText: string,
+    bbox: NonNullable<AuditIssue['boundingBox']>,
+    action: { S: PDFName; URI?: PDFString; D?: PDFArray },
+    resultAfterLabel: string,
+  ): FixResult {
     const fail = (error: string): FixResult => ({ issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error });
 
     if (!issue.pageNumber) return fail('Issue has no pageNumber');
-    if (!issue.linkCompletenessData?.url) return fail('Issue has no linkCompletenessData.url');
-    if (!issue.boundingBox) return fail('Issue has no boundingBox -- cannot place a Link annotation without one');
     const pageNumber = issue.pageNumber;
-    const url = issue.linkCompletenessData.url;
-    const bbox = issue.boundingBox;
 
     let originalContent: string | null;
     try {
@@ -8426,15 +8506,15 @@ export class PdfStructureWriterService {
     let splice: LinkCompletenessSplice | UrlSubstringSplice | null = null;
     let method: 'clean' | 'substring' = 'clean';
 
-    const run = findUrlOperatorRun(originalContent, 0, originalContent.length, url, resolveGlyphText);
+    const run = findUrlOperatorRun(originalContent, 0, originalContent.length, searchText, resolveGlyphText);
     if (run) {
       splice = buildLinkCompletenessSplice(originalContent, run, nextMcid);
     } else {
-      // Fallback: the URL shares its own text-show operand with other
+      // Fallback: the text shares its own text-show operand with other
       // prose (the 35.4% bucket the clean path above declines on by
       // design) -- try the same-operand splitter before giving up.
       const isSimpleFont = this.buildSimpleFontChecker(doc, pageNumber);
-      const substringRun = findUrlSubstringRun(originalContent, 0, originalContent.length, url, resolveGlyphText, isSimpleFont);
+      const substringRun = findUrlSubstringRun(originalContent, 0, originalContent.length, searchText, resolveGlyphText, isSimpleFont);
       if (substringRun) {
         method = 'substring';
         splice = buildUrlSubstringSplice(originalContent, substringRun, nextMcid);
@@ -8443,7 +8523,7 @@ export class PdfStructureWriterService {
 
     if (!splice) {
       return fail(
-        'Could not locate this URL as a clean run of text-show operators, or safely carve it out of an operand it ' +
+        'Could not locate this text as a clean run of text-show operators, or safely carve it out of an operand it ' +
         'shares with other prose, on this page -- either already fixed, or a genuinely unsafe shape (a non-simple ' +
         'font at the needed cut point, or a position landing inside a ligature\'s own multi-character expansion) ' +
         'that this fixer declines rather than guesses on -- see pdf-link-completeness-writer.ts'
@@ -8566,7 +8646,7 @@ export class PdfStructureWriterService {
         Subtype: PDFName.of('Link'),
         Rect: rect,
         Border: [0, 0, 0],
-        A: { S: PDFName.of('URI'), URI: PDFString.of(this.escapeLinkPdfString(url)) },
+        A: action,
       }) as PDFDict;
       const annotRef = doc.context.register(annotDict);
       createdRefs.push(annotRef);
@@ -8635,10 +8715,187 @@ export class PdfStructureWriterService {
     return {
       issueId: issue.id,
       success: true,
-      before: 'URL-shaped text with no Link annotation',
-      after: `Created a /Link annotation + structure element for "${url.slice(0, 80)}"` +
-        (method === 'substring' ? ' (carved out of a shared operand via the same-operand splitter)' : ''),
+      before: 'Text with no Link annotation',
+      after: resultAfterLabel + (method === 'substring' ? ' (carved out of a shared operand via the same-operand splitter)' : ''),
     };
+  }
+
+  /**
+   * LINK-MISSING-ANNOTATION fix (Matterhorn 28-011), Slice 3 -- wires
+   * slices 1-2's pure content-stream splice (pdf-link-completeness-
+   * writer.ts's findUrlOperatorRun/buildLinkCompletenessSplice), AND the
+   * same-operand URL splitter (findUrlSubstringRun/buildUrlSubstringSplice,
+   * tried as a fallback when the clean path declines), into a real
+   * PDFDocument via buildLinkAnnotationFix (shared core, see its own doc
+   * comment -- this method is now a thin wrapper supplying the URL as both
+   * the content-stream search text and the Action's own URI target).
+   *
+   * Scoped to real, measured data: a full sweep of
+   * Curiel_187961_CSHP.pdf's own 209 real LINK-MISSING-ANNOTATION issues
+   * found the URL arrives as a clean, findUrlOperatorRun-locatable run in
+   * 135/209 (64.6%) of cases, and findUrlSubstringRun locates a run (with a
+   * real, verified-exact splice) for the remaining 74/209 (35.4%) --
+   * confirmed live, every one of those 74 produced a /Link span whose own
+   * content, precisely re-decoded, is exactly the target URL. Both
+   * functions still decline (return null) on a genuinely unsafe shape --
+   * a non-simple (CID/Type0) font at a cut point, or a target position
+   * landing strictly inside a ligature's own multi-character expansion --
+   * rather than guess; see pdf-link-completeness-writer.ts's own header
+   * comment for the full breakdown. Also declines when the enclosing
+   * content has no MCID of its own (a bare /Artifact) -- no natural
+   * struct-tree parent to attach the new /Link under, the same
+   * "ambiguous, no natural parent" shape this file already declines
+   * elsewhere (reattachTableCell, retagPlacedPdfAsFigure) rather than
+   * invent one; not hit by any of the 135 real clean matches above (every
+   * one sits inside a real, MCID-bound /P).
+   *
+   * Rollback on any failure (inside buildLinkAnnotationFix) restores the
+   * page's original content bytes, /Annots, and the enclosing element's
+   * /K, and clears every newly registered object's /K and /P
+   * (deleteElement) -- same discipline as fixArtifactSwallowsContent. One
+   * accepted, documented residual: if extendParentTree or
+   * appendAnnotationParentTreeEntry (the unconditional last two
+   * statements, after everything else has already succeeded) throws, the
+   * OTHER of the two may have already committed its own insertion with
+   * nothing to explicitly undo it -- left as-is rather than hand-rolling
+   * an undo for a tree insert at a known position, since any leftover
+   * entry would point at content this rollback already deletes (an inert,
+   * never-looked-up trailing slot, not a corruption) and this matches
+   * every other fix method in this file, each of which treats its own
+   * single extendParentTree call as the true last, no-further-rollback
+   * statement in its own try block.
+   */
+  fixLinkMissingAnnotation(doc: PDFDocument, issue: AuditIssue): FixResult {
+    if (!issue.linkCompletenessData?.url) {
+      return { issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error: 'Issue has no linkCompletenessData.url' };
+    }
+    if (!issue.boundingBox) {
+      return { issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error: 'Issue has no boundingBox -- cannot place a Link annotation without one' };
+    }
+    const url = issue.linkCompletenessData.url;
+    return this.buildLinkAnnotationFix(
+      doc, issue, url, issue.boundingBox,
+      { S: PDFName.of('URI'), URI: PDFString.of(this.escapeLinkPdfString(url)) },
+      `Created a /Link annotation + structure element for "${url.slice(0, 80)}"`,
+    );
+  }
+
+  /**
+   * CROSS-REFERENCE-MISSING-LINK fix -- builds a real internal link (a
+   * /Link annotation with a GoTo action, same annotation+struct-element
+   * machinery as fixLinkMissingAnnotation/buildLinkAnnotationFix above) for
+   * a prose cross-reference ("see Chapter 3", "see p. 45") ONLY when its
+   * target can be resolved UNAMBIGUOUSLY -- see
+   * resolveCrossReferenceDestination's own doc comment for exactly what
+   * "unambiguous" means for each reference shape. Declines (does not even
+   * attempt the content-stream splice) rather than build a confidently
+   * WRONG link: per this feature's own design investigation, a /GoTo
+   * pointing an AT user at the wrong page is worse than no link at all,
+   * since nothing signals the destination might be unreliable -- this
+   * codebase's established "bail rather than guess" convention
+   * (findPrecedingColor, locateXObjectInvocation, generateBookmarksFromHeadings)
+   * applies identically here.
+   */
+  fixCrossReferenceLink(doc: PDFDocument, issue: AuditIssue): FixResult {
+    const fail = (error: string): FixResult => ({ issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error });
+
+    if (!issue.crossReferenceData) return fail('Issue has no crossReferenceData');
+    if (!issue.boundingBox) return fail('Issue has no boundingBox -- cannot place a Link annotation without one');
+
+    const dest = this.resolveCrossReferenceDestination(doc, issue.crossReferenceData);
+    if (!dest) {
+      return fail(
+        `Could not unambiguously resolve "${issue.crossReferenceData.fullText}" to a single real destination -- ` +
+        'declining rather than guessing (see resolveCrossReferenceDestination\'s own doc comment for what counts as unambiguous)'
+      );
+    }
+
+    return this.buildLinkAnnotationFix(
+      doc, issue, issue.crossReferenceData.fullText, issue.boundingBox,
+      { S: PDFName.of('GoTo'), D: dest },
+      `Created a /Link annotation + structure element pointing at the resolved destination for "${issue.crossReferenceData.fullText}"`,
+    );
+  }
+
+  /**
+   * Resolves a cross-reference's target page to a real /Dest array
+   * ([pageRef /XYZ null null null], same format buildOutlineTree already
+   * uses), or null when the match isn't unambiguous enough to trust --
+   * see fixCrossReferenceLink's own doc comment for why ambiguity means
+   * decline, not a best-effort guess. Two independent resolution paths,
+   * gated per this feature's own design investigation:
+   *
+   * - "page"/"pg"/"p" + a number: resolves via the document's real
+   *   /PageLabels (pdfParserService.extractPageLabels, the SAME number-
+   *   tree/roman-numeral parsing pdf-parser.service.ts's own parse() already
+   *   uses -- not duplicated here). Requires /PageLabels to actually be
+   *   present (most real documents have none at all, and a bare arabic-
+   *   digit guess against page INDEX would be wrong for any document with
+   *   unlabeled front matter) AND the label to match EXACTLY ONE page.
+   * - "chapter"/"section" + a number: resolves via this document's own
+   *   tagged heading text (same RoleMap-aware structure-tree walk
+   *   generateBookmarksFromHeadings/regenerateGenericBookmarkTitles already
+   *   use), matching "keyword number" as a case-insensitive prefix of a
+   *   real (non-fallback) heading's extracted text. Requires EXACTLY ONE
+   *   heading to match.
+   * - "figure"/"fig"/"table": no resolution path exists yet (matching
+   *   "Figure 2" to a specific numbered Figure struct element wasn't
+   *   investigated) -- always returns null, same as any other unresolvable
+   *   case.
+   */
+  private resolveCrossReferenceDestination(
+    doc: PDFDocument,
+    data: NonNullable<AuditIssue['crossReferenceData']>,
+  ): PDFArray | null {
+    const pages = doc.getPages();
+    const { keyword, number } = data;
+
+    if (keyword === 'page' || keyword === 'pg' || keyword === 'p') {
+      const pageLabels = pdfParserService.extractPageLabels(doc, pages.length);
+      if (!pageLabels) return null; // no /PageLabels -- a blind arabic-index guess is the dominant real-world failure mode, decline
+      const matchingIndices = pageLabels.reduce<number[]>((acc, label, i) => {
+        if (label === number) acc.push(i);
+        return acc;
+      }, []);
+      if (matchingIndices.length !== 1) return null;
+      return doc.context.obj([pages[matchingIndices[0]].ref, PDFName.of('XYZ'), null, null, null]) as PDFArray;
+    }
+
+    if (keyword === 'chapter' || keyword === 'section') {
+      const structRoot = this.getStructTreeRoot(doc);
+      if (!structRoot) return null;
+      const roleMap = this.buildRoleMap(doc, structRoot);
+      const pageRefToIndex = new Map<number, number>();
+      pages.forEach((p, idx) => pageRefToIndex.set(p.ref.objectNumber, idx));
+
+      // Case-insensitive, requires the heading text to actually start with
+      // "keyword number" (e.g. "Chapter 3: Financial Risk Assessment"
+      // matches "see Chapter 3") -- a heading that merely CONTAINS "3"
+      // somewhere unrelated must not match.
+      const needle = `${keyword} ${number}`.toLowerCase();
+      const matches: number[] = [];
+      this.traverseStructTree(doc, structRoot, (node, ref) => {
+        if (!ref) return;
+        const rawTag = node.get(PDFName.of('S'))?.toString().replace(/^\//, '');
+        if (!rawTag) return;
+        const sTag = this.resolveRoleMapChain(roleMap, rawTag);
+        if (!/^H[1-9]$/.test(sTag)) return;
+
+        const pgRaw = node.get(PDFName.of('Pg'));
+        if (!(pgRaw instanceof PDFRef)) return;
+        const pageIndex = pageRefToIndex.get(pgRaw.objectNumber);
+        if (pageIndex === undefined) return;
+
+        const extracted = this.extractTextFromStructElem(doc, node);
+        if (!extracted) return;
+        if (extracted.trim().toLowerCase().startsWith(needle)) matches.push(pageIndex);
+      });
+
+      if (matches.length !== 1) return null;
+      return doc.context.obj([pages[matches[0]].ref, PDFName.of('XYZ'), null, null, null]) as PDFArray;
+    }
+
+    return null; // figure/fig/table -- no resolution path yet, decline
   }
 }
 

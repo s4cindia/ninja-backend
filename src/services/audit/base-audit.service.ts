@@ -90,6 +90,20 @@ export interface AuditIssue {
   linkCompletenessData?: {
     url: string;
   };
+  /**
+   * Populated only by PdfLinkCompletenessValidator for CROSS-REFERENCE-
+   * MISSING-LINK issues. `keyword` is the matched reference word
+   * (chapter/section/figure/fig/table/page/pg/p, lowercased), `number` is
+   * the matched numeral (may include a decimal, e.g. "2.3"), `fullText` is
+   * the complete matched span (e.g. "see Chapter 3") -- the exact text a
+   * fixer needs to relocate in the content stream, same role
+   * linkCompletenessData.url plays for a URL.
+   */
+  crossReferenceData?: {
+    keyword: string;
+    number: string;
+    fullText: string;
+  };
 }
 
 /**

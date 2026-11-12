@@ -194,7 +194,12 @@ class PDFParserService {
     };
   }
 
-  private extractPageLabels(pdfLibDoc: PDFDocument, pageCount: number): string[] | undefined {
+  /** Public (was private) so pdf-structure-writer.service.ts's
+   *  fixCrossReferenceLink can reverse-resolve a printed "page NN" cross-
+   *  reference to a real page index via the SAME label parsing this file's
+   *  own parse() already uses, rather than duplicating this number-tree/
+   *  roman-numeral logic a second time. */
+  extractPageLabels(pdfLibDoc: PDFDocument, pageCount: number): string[] | undefined {
     try {
       const catalog = pdfLibDoc.context.lookup(pdfLibDoc.context.trailerInfo.Root);
       if (!(catalog instanceof PDFDict)) return undefined;

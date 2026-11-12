@@ -165,6 +165,7 @@ describe('PdfLinkCompletenessValidator -- cross-reference detection', () => {
     expect(issues[0].context).toContain('see Chapter 3');
     expect(issues[0].category).toBe('links');
     expect(issues[0].severity).toBe('moderate');
+    expect(issues[0].crossReferenceData).toEqual({ keyword: 'chapter', number: '3', fullText: 'see Chapter 3' });
   });
 
   it('flags "see p. N" and "see page N" abbreviated forms', async () => {

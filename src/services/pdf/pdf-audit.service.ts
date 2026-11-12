@@ -32,6 +32,7 @@ import { pdfInlineFigureTreeValidator } from './validators/pdf-inline-figure-tre
 import { pdfMcidPageMismatchValidator } from './validators/pdf-mcid-page-mismatch.validator';
 import { pdfRoleMapIntegrityValidator } from './validators/pdf-rolemap-integrity.validator';
 import { pdfHeaderFooterContentValidator } from './validators/pdf-header-footer-content.validator';
+import { pdfHeadingStyleMismatchValidator } from './validators/pdf-heading-style-mismatch.validator';
 import { pdfTableCellTreeValidator } from './validators/pdf-table-cell-tree.validator';
 import { pdfFontToUnicodeValidator } from './validators/pdf-font-tounicode.validator';
 import { pdfTabOrderValidator } from './validators/pdf-tab-order.validator';
@@ -546,7 +547,30 @@ class PdfAuditService extends BaseAuditService<PdfParseResult, PdfValidationResu
           }
         }
 
-        // 1h. Header/Footer Tagged-As-Content Validator (Matterhorn 01-001,
+        // 1h. Heading-Style Mismatch Validator (Matterhorn 01-006) -- see
+        // pdf-heading-style-mismatch.validator.ts's own header comment for
+        // the real defect this catches: the OTHER shape S4 Carlisle's
+        // manual QC report found that PdfRoleMapIntegrityValidator above
+        // explicitly cannot -- one specific paragraph visually styled as a
+        // heading but tagged with an unrelated, name-ambiguous style ("<H1>
+        // ... tagged as <TPT>"), among thousands of legitimately /P-tagged
+        // body paragraphs sharing that same style. Detect-only by design;
+        // no auto-fix dispatch exists for this code.
+        if (willRunStructure) {
+          try {
+            logger.info(`[PdfAudit] Running PdfHeadingStyleMismatchValidator...`);
+            const headingStyleResult = await pdfHeadingStyleMismatchValidator.validate(parsedPdf);
+            result.structureIssues.push(...headingStyleResult.issues);
+            result.issues.push(...headingStyleResult.issues);
+            logger.info(`[PdfAudit] PdfHeadingStyleMismatchValidator found ${headingStyleResult.issues.length} issue(s)`);
+          } catch (error) {
+            const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+            logger.error(`[PdfAudit] PdfHeadingStyleMismatchValidator failed:`, error);
+            result.validatorErrors.push({ validator: 'PdfHeadingStyleMismatchValidator', error: errorMessage });
+          }
+        }
+
+        // 1i. Header/Footer Tagged-As-Content Validator (Matterhorn 01-001,
         // DETECT-ONLY) -- confirmed real via an S4 Carlisle manual QC
         // report: page-repeating decorative text (a running header/title,
         // or a plain running page number) sometimes tagged as real content
