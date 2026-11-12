@@ -1,6 +1,7 @@
 import prisma from '../../lib/prisma';
 import { logger } from '../../lib/logger';
 import { notificationService } from '../notification/notification.service';
+import { emailService } from '../email/email.service';
 import { FeedbackType, FeedbackStatus, FeedbackSeverity, Feedback as PrismaFeedback } from '@prisma/client';
 
 type FeedbackWithUser = PrismaFeedback & {
@@ -137,7 +138,74 @@ class FeedbackService {
     });
 
     logger.info(`Feedback created: ${feedback.id} (${feedback.type})`);
+
+    // Notifies every ADMIN in the submitting tenant that new feedback was
+    // filed, so UAT bug reports/issues actually get seen instead of relying
+    // on someone remembering to check the dashboard. Same "nice-to-have,
+    // never the critical path" contract as every other fire-and-forget
+    // notification in this file (see updateFeedbackStatus below): a failure
+    // here must never fail feedback submission itself. Zero ADMIN users in
+    // the tenant is a normal no-op, not an error.
+    this.notifyAdminsOfNewFeedback(feedback).catch((notifyErr) => {
+      logger.error(
+        `[Feedback] Failed to notify admins of new feedback ${feedback.id}: ${notifyErr instanceof Error ? notifyErr.message : String(notifyErr)}`
+      );
+    });
+
     return feedback;
+  }
+
+  private async notifyAdminsOfNewFeedback(feedback: PrismaFeedback): Promise<void> {
+    const admins = await prisma.user.findMany({
+      where: { tenantId: feedback.tenantId, role: 'ADMIN', deletedAt: null },
+      select: { id: true, email: true, firstName: true, lastName: true },
+    });
+
+    if (admins.length === 0) {
+      return;
+    }
+
+    const typeLabel = feedback.type.replace(/_/g, ' ').toLowerCase();
+    const commentPreview = feedback.comment.length > 160
+      ? `${feedback.comment.slice(0, 160)}...`
+      : feedback.comment;
+
+    for (const admin of admins) {
+      // In-app and email are independently fire-and-forget -- one admin's
+      // failed email must never block another admin's notification, and
+      // neither channel is allowed to fail feedback submission itself.
+      notificationService
+        .createNotification({
+          userId: admin.id,
+          tenantId: feedback.tenantId,
+          type: 'FEEDBACK_SUBMITTED',
+          title: 'New feedback submitted',
+          message: `A new "${typeLabel}" feedback was submitted: ${commentPreview}`,
+          data: { feedbackId: feedback.id },
+          link: '/feedback',
+        })
+        .catch((notifyErr) => {
+          logger.error(
+            `[Feedback] Failed to create new-feedback notification for admin ${admin.id} (feedback ${feedback.id}): ${notifyErr instanceof Error ? notifyErr.message : String(notifyErr)}`
+          );
+        });
+
+      emailService
+        .sendFeedbackSubmittedEmail({
+          adminName: `${admin.firstName} ${admin.lastName}`.trim(),
+          adminEmail: admin.email,
+          feedbackType: typeLabel,
+          severity: feedback.severity ?? undefined,
+          commentPreview,
+          submitterEmail: feedback.userEmail ?? undefined,
+          feedbackUrl: `${process.env.APP_URL || ''}/feedback`,
+        })
+        .catch((emailErr) => {
+          logger.error(
+            `[Feedback] Failed to send new-feedback email to admin ${admin.id} (feedback ${feedback.id}): ${emailErr instanceof Error ? emailErr.message : String(emailErr)}`
+          );
+        });
+    }
   }
 
   async getFeedback(id: string, tenantId?: string): Promise<FeedbackWithUser | null> {

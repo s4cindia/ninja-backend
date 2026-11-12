@@ -37,6 +37,17 @@ interface BatchHITLEmailData {
   reviewUrl: string;
 }
 
+interface FeedbackSubmittedEmailData {
+  adminName: string;
+  adminEmail: string;
+  feedbackType: string;
+  severity?: string;
+  commentPreview: string;
+  submitterName?: string;
+  submitterEmail?: string;
+  feedbackUrl: string;
+}
+
 class EmailService {
   private transporter: nodemailer.Transporter;
   private from: string;
@@ -98,6 +109,17 @@ class EmailService {
       html: this.buildFailureHtml(data),
     });
     logger.info(`[Email] Batch failure email sent to ${data.userEmail} for batch ${data.batchId}`);
+  }
+
+  async sendFeedbackSubmittedEmail(data: FeedbackSubmittedEmailData): Promise<void> {
+    await this.transporter.sendMail({
+      from: `"Ninja Platform" <${this.from}>`,
+      to: data.adminEmail,
+      subject: `New Feedback Submitted - ${data.feedbackType}`,
+      text: this.buildFeedbackSubmittedText(data),
+      html: this.buildFeedbackSubmittedHtml(data),
+    });
+    logger.info(`[Email] Feedback-submitted email sent to ${data.adminEmail}`);
   }
 
   private buildCompletionHtml(data: BatchCompletionEmailData): string {
@@ -271,6 +293,68 @@ Error: ${data.errorMessage}
 View Batch Details: ${data.resultsUrl}
 
 Please review the batch and try again. If the problem persists, contact support.
+
+---
+This is an automated notification from Ninja Platform.`;
+  }
+
+  private buildFeedbackSubmittedHtml(data: FeedbackSubmittedEmailData): string {
+    const submittedByLine = data.submitterName || data.submitterEmail
+      ? `<tr><td style="padding: 10px 0; font-weight: 600; color: #6b7280; border-bottom: 1px solid #e5e7eb;">Submitted By</td><td style="padding: 10px 0; font-weight: 700; color: #111827; text-align: right; border-bottom: 1px solid #e5e7eb;">${data.submitterName || data.submitterEmail}</td></tr>`
+      : '';
+    const severityRow = data.severity
+      ? `<tr><td style="padding: 10px 0; font-weight: 600; color: #6b7280; border-bottom: 1px solid #e5e7eb;">Severity</td><td style="padding: 10px 0; font-weight: 700; color: #111827; text-align: right; border-bottom: 1px solid #e5e7eb;">${data.severity}</td></tr>`
+      : '';
+
+    return `<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+</head>
+<body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; padding: 20px;">
+  <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 30px; text-align: center; border-radius: 8px 8px 0 0;">
+    <h1 style="margin: 0;">New Feedback Submitted</h1>
+  </div>
+  <div style="background: #f9fafb; padding: 30px; border: 1px solid #e5e7eb; border-top: none;">
+    <p>Hi ${data.adminName},</p>
+    <p>A new <strong>"${data.feedbackType}"</strong> feedback item was just submitted and needs a look.</p>
+    <div style="background: white; padding: 20px; border-radius: 8px; margin: 20px 0; box-shadow: 0 1px 3px rgba(0,0,0,0.1);">
+      <h3 style="margin-top: 0; color: #111827;">Details</h3>
+      <table style="width: 100%; border-collapse: collapse;">
+        <tr><td style="padding: 10px 0; font-weight: 600; color: #6b7280; border-bottom: 1px solid #e5e7eb;">Type</td><td style="padding: 10px 0; font-weight: 700; color: #111827; text-align: right; border-bottom: 1px solid #e5e7eb;">${data.feedbackType}</td></tr>
+        ${severityRow}
+        ${submittedByLine}
+      </table>
+      <p style="margin: 15px 0 0; color: #374151;"><strong>Comment:</strong> ${data.commentPreview}</p>
+    </div>
+    <p style="text-align: center;">
+      <a href="${data.feedbackUrl}" style="display: inline-block; background: #667eea; color: white; padding: 14px 28px; text-decoration: none; border-radius: 6px; font-weight: 600;">View Feedback</a>
+    </p>
+  </div>
+  <div style="text-align: center; padding: 20px; color: #6b7280; font-size: 14px;">
+    <p>This is an automated notification from Ninja Platform.</p>
+  </div>
+</body>
+</html>`;
+  }
+
+  private buildFeedbackSubmittedText(data: FeedbackSubmittedEmailData): string {
+    const submittedByLine = data.submitterName || data.submitterEmail
+      ? `\nSubmitted By: ${data.submitterName || data.submitterEmail}`
+      : '';
+    const severityLine = data.severity ? `\nSeverity: ${data.severity}` : '';
+
+    return `New Feedback Submitted
+
+Hi ${data.adminName},
+
+A new "${data.feedbackType}" feedback item was just submitted and needs a look.
+
+Type: ${data.feedbackType}${severityLine}${submittedByLine}
+Comment: ${data.commentPreview}
+
+View Feedback: ${data.feedbackUrl}
 
 ---
 This is an automated notification from Ninja Platform.`;
