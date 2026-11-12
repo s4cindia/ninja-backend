@@ -408,6 +408,7 @@ describe('PdfReauditService', () => {
         undefined,
         expect.any(Function),
         expect.any(Function),
+        expect.any(Function),
         expect.any(Function)
       );
     });
@@ -473,6 +474,64 @@ describe('PdfReauditService', () => {
       expect(progressWrites).toContainEqual(
         expect.objectContaining({ altTextImageProgress: { completed: 1200, total: 3843 } })
       );
+    });
+
+    it('writes contrast re-verification progress into job.output.postRemediationProgress (real gap fixed 2026-11-13)', async () => {
+      // Real incident: NAEMT_EPC_German_187412_9781284284386_FULL_Interactiv.pdf
+      // (321 pages, 618 high-contrast issues) -- this call site never passed
+      // the 9th runAuditFromBuffer argument at all, so contrast
+      // re-verification reported zero progress to withAuditTimeout's
+      // resetTimeout, and a legitimately-slow-but-working contrast pass got
+      // killed by the 15-minute no-progress watchdog and misreported as
+      // "the parser or a validator likely hung." Same class of gap as the
+      // Alt Text one above, just for a callback added to runAuditFromBuffer
+      // later and never mirrored to this second call site.
+      vi.mocked(prisma.job.findUnique).mockResolvedValue({
+        id: mockJobId,
+        output: { auditReport: mockOriginalAuditReport },
+      } as any);
+      vi.mocked(prisma.job.update).mockResolvedValue({} as any);
+      vi.mocked(fileStorageService.saveRemediatedFile).mockResolvedValue('/path/to/remediated.pdf');
+
+      vi.mocked(pdfAuditService.runAuditFromBuffer).mockImplementation(
+        async (_buffer, _jobId, _fileName, _scanLevel, _customValidators, _onProgress, _onValidatorComplete, _onAltTextImageProgress, onContrastPageProgress) => {
+          await onContrastPageProgress?.(412, 618);
+          return { ...mockOriginalAuditReport, jobId: `${mockJobId}-reaudit`, issues: [] };
+        }
+      );
+
+      await pdfReauditService.reauditAndCompare(mockJobId, mockBuffer, mockFileName);
+
+      const progressWrites = vi.mocked(prisma.job.update).mock.calls
+        .map(([args]) => (args.data as any).output?.postRemediationProgress)
+        .filter(Boolean);
+
+      expect(progressWrites).toContainEqual(
+        expect.objectContaining({ contrastPageProgress: { completed: 412, total: 618 } })
+      );
+    });
+
+    it('resets contrastPageProgress to null at the start of a new round, same reasoning as altTextImageProgress (PR #625)', async () => {
+      vi.mocked(prisma.job.findUnique).mockResolvedValue({
+        id: mockJobId,
+        output: {
+          auditReport: mockOriginalAuditReport,
+          // Stale value left over from a completed prior round.
+          postRemediationProgress: { contrastPageProgress: { completed: 618, total: 618 } },
+        },
+      } as any);
+      vi.mocked(prisma.job.update).mockResolvedValue({} as any);
+      vi.mocked(fileStorageService.saveRemediatedFile).mockResolvedValue('/path/to/remediated.pdf');
+      vi.mocked(pdfAuditService.runAuditFromBuffer).mockResolvedValue({
+        ...mockOriginalAuditReport,
+        jobId: `${mockJobId}-reaudit`,
+        issues: [],
+      });
+
+      await pdfReauditService.reauditAndCompare(mockJobId, mockBuffer, mockFileName);
+
+      const firstProgressWrite = vi.mocked(prisma.job.update).mock.calls[0][0].data as any;
+      expect(firstProgressWrite.output.postRemediationProgress.contrastPageProgress).toBeNull();
     });
 
     it('resets altTextImageProgress to null at the start of a new round (CodeRabbit catch, PR #625)', async () => {
