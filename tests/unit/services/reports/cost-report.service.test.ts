@@ -103,6 +103,36 @@ describe('CostReportService.getReport', () => {
     expect(report.capHitFrequency).toEqual({ budget_limit: 2, not_stopped: 1 });
   });
 
+  it('surfaces completedAt as autoStoppedAt, falling back to autoStartedAt, then null', async () => {
+    (prisma.comparisonTrial.findMany as any).mockResolvedValue([
+      {
+        ninjaJobId: 'job-1',
+        autoCostSpentUsd: 0,
+        autoStopReason: 'converged',
+        autoStartedAt: new Date('2026-10-05T00:00:00Z'),
+        autoStoppedAt: new Date('2026-10-05T01:00:00Z'),
+        job: { output: null },
+      },
+      {
+        ninjaJobId: 'job-2',
+        autoCostSpentUsd: 0,
+        autoStopReason: 'stalled',
+        autoStartedAt: new Date('2026-10-06T00:00:00Z'),
+        autoStoppedAt: null,
+        job: { output: null },
+      },
+    ]);
+    (prisma.pdfAutoRemediationRun.findMany as any).mockResolvedValue([
+      { jobId: 'job-3', autoCostSpentUsd: 0, autoStopReason: 'error', autoStartedAt: null, autoStoppedAt: null, job: { output: null } },
+    ]);
+
+    const report = await costReportService.getReport({ tenantId: 't-1', from: FROM, to: TO });
+
+    expect(report.spendByRun.find((r) => r.jobId === 'job-1')?.completedAt).toBe('2026-10-05T01:00:00.000Z');
+    expect(report.spendByRun.find((r) => r.jobId === 'job-2')?.completedAt).toBe('2026-10-06T00:00:00.000Z');
+    expect(report.spendByRun.find((r) => r.jobId === 'job-3')?.completedAt).toBeNull();
+  });
+
   it('scopes both driver-table queries to the job relation tenantId/date range', async () => {
     await costReportService.getReport({ tenantId: 't-1', from: FROM, to: TO });
 

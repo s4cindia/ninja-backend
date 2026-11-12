@@ -26,6 +26,7 @@ export interface SpendEntry {
   costUsd: number;
   stopReason: string | null;
   pageCount: number | null;
+  completedAt: string | null;
 }
 
 export interface CostReport {
@@ -62,6 +63,8 @@ class CostReportService {
           ninjaJobId: true,
           autoCostSpentUsd: true,
           autoStopReason: true,
+          autoStartedAt: true,
+          autoStoppedAt: true,
           job: { select: { input: true, output: true } },
         },
       }),
@@ -71,6 +74,8 @@ class CostReportService {
           jobId: true,
           autoCostSpentUsd: true,
           autoStopReason: true,
+          autoStartedAt: true,
+          autoStoppedAt: true,
           job: { select: { input: true, output: true } },
         },
       }),
@@ -86,6 +91,7 @@ class CostReportService {
           costUsd: t.autoCostSpentUsd,
           stopReason: t.autoStopReason,
           pageCount: pageCountFrom(t.job?.output),
+          completedAt: (t.autoStoppedAt ?? t.autoStartedAt)?.toISOString() ?? null,
         })),
       ...runs.map((r) => ({
         jobId: r.jobId,
@@ -94,6 +100,7 @@ class CostReportService {
         costUsd: r.autoCostSpentUsd,
         stopReason: r.autoStopReason,
         pageCount: pageCountFrom(r.job?.output),
+        completedAt: (r.autoStoppedAt ?? r.autoStartedAt)?.toISOString() ?? null,
       })),
     ];
 
