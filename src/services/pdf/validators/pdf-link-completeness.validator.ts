@@ -61,12 +61,14 @@ const MIN_LINK_TEXT_LENGTH = 10;
 // destination to link to, and guessing one would be worse than not
 // flagging it at all (same "bail rather than guess" convention as
 // URL_IN_TEXT_GLOBAL_RE's own deliberate non-handling of line-wrapped
-// URLs, above). DETECT-ONLY by design: unlike a literal URL (whose link
-// target is the text itself), building the actual /GoTo destination here
-// requires resolving WHICH chapter/page/figure the reference means, a
-// semantic judgment call this validator does not attempt -- see this
-// code's dispatch (or rather, deliberate lack of one) in
-// ai-analysis.service.ts.
+// URLs, above). This validator only DETECTS and captures keyword+number
+// (crossReferenceData, below) -- resolving WHICH chapter/page this means,
+// and deciding whether that resolution is unambiguous enough to trust, is
+// ai-analysis.service.ts's dispatch gate / pdf-structure-writer.service
+// .ts's fixCrossReferenceLink's job, not this validator's. "figure"/"fig"/
+// "table" keywords are captured the same way but have no resolution path
+// wired up yet (matching "Figure 2" to a specific numbered Figure struct
+// element wasn't investigated) -- they stay manual-review-only today.
 const CROSS_REFERENCE_RE = /\bsee\s+(chapter|section|figure|fig|table|page|pg|p)\.?\s+(\d+(?:\.\d+)*)\b/gi;
 
 interface Box {
@@ -83,6 +85,8 @@ interface UrlSpan {
 
 interface CrossRefSpan {
   text: string;
+  keyword: string;
+  number: string;
   box: Box;
 }
 
@@ -235,9 +239,11 @@ class PdfLinkCompletenessValidator {
     for (const item of items) {
       for (const match of item.str.matchAll(CROSS_REFERENCE_RE)) {
         const text = match[0];
+        const keyword = match[1].toLowerCase();
+        const number = match[2];
         const box = this.itemBox(item, viewport);
         if (this.hasNearbyLinkAnnotation(box, existingLinks)) continue;
-        spans.push({ text, box });
+        spans.push({ text, keyword, number, box });
       }
     }
     return spans;
@@ -286,6 +292,7 @@ class PdfLinkCompletenessValidator {
       suggestion:
         'Manual review recommended -- identify the actual chapter/section/page/figure/table this reference points to and add a real internal link (a Link annotation with a GoTo action) to it.',
       context: `Cross-reference text: "${span.text}"`,
+      crossReferenceData: { keyword: span.keyword, number: span.number, fullText: span.text },
       pageNumber,
       boundingBox: {
         x: span.box.x,

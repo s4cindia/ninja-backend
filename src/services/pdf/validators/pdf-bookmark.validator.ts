@@ -20,7 +20,10 @@ import { logger } from '../../../lib/logger';
 // for a bookmark. The original [\s\d.:-]* branch alone doesn't match these
 // (the literal "p" isn't in that character class), a real false negative
 // this exact document slipped through.
-const GENERIC_TITLE_RE = /^(section|chapter|untitled|bookmark|\d+)(\s+p(?:age)?\.?\s*\d+(-\d+)?|[\s\d.:-]*)$/i;
+// Exported so pdf-structure-writer.service.ts's regenerateGenericBookmarkTitles
+// can detect the SAME "this title is a placeholder" condition this validator
+// flags, rather than risking drift between two independently-maintained copies.
+export const GENERIC_TITLE_RE = /^(section|chapter|untitled|bookmark|\d+)(\s+p(?:age)?\.?\s*\d+(-\d+)?|[\s\d.:-]*)$/i;
 
 // Minimum pages before bookmark checks apply
 const MIN_PAGES_FOR_BOOKMARKS = 10;

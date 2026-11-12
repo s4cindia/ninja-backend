@@ -278,12 +278,12 @@ interface StructTreeApiStats {
 }
 
 /** Maps content ID → max font size seen in that content run. */
-type ContentIdFontMap = Map<string, number>;
+export type ContentIdFontMap = Map<string, number>;
 
 /** Maps content ID → accumulated text strings. */
-type ContentIdTextMap = Map<string, string[]>;
+export type ContentIdTextMap = Map<string, string[]>;
 
-interface ContentIdMaps {
+export interface ContentIdMaps {
   bboxMap: ContentIdBBoxMap;
   fontMap: ContentIdFontMap;
   textMap: ContentIdTextMap;
@@ -293,8 +293,15 @@ interface ContentIdMaps {
  * Build content-ID → bbox map (and font size map) from getTextContent().
  * Uses full pdfjs content IDs (e.g., "p44R_mc5") to correctly handle
  * MCIDs from both page content streams AND Form XObjects.
+ *
+ * Exported so pdf-heading-style-mismatch.validator.ts can reuse this SAME
+ * font-size computation for an entirely different purpose (flagging an
+ * anomalously-large, short /P element as a possible mistagged heading) --
+ * see that validator's own header comment. Deliberately not duplicated: this
+ * is the only place in the codebase that derives a per-content-ID font size
+ * from a page's real getTextContent() text runs.
  */
-async function buildContentIdBBoxMap(
+export async function buildContentIdBBoxMap(
   page: pdfjsLib.PDFPageProxy,
 ): Promise<ContentIdMaps> {
   const viewport = page.getViewport({ scale: 1 });

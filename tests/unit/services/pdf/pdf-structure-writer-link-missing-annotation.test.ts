@@ -180,7 +180,7 @@ describe('fixLinkMissingAnnotation', () => {
     const { doc } = await buildDoc(PAGE_CONTENT);
     const result = pdfStructureWriterService.fixLinkMissingAnnotation(doc, issueFor(1, 'https://not-on-this-page.example.com'));
     expect(result.success).toBe(false);
-    expect(result.error).toContain('Could not locate this URL');
+    expect(result.error).toContain('Could not locate this text');
   });
 
   it('declines when the enclosing content has no MCID of its own (a bare /Artifact)', async () => {
@@ -319,7 +319,7 @@ describe('fixLinkMissingAnnotation', () => {
 
     const result = pdfStructureWriterService.fixLinkMissingAnnotation(doc, issueFor(1, url));
     expect(result.success).toBe(false);
-    expect(result.error).toContain('Could not locate this URL');
+    expect(result.error).toContain('Could not locate this text');
   });
 
   // Paragraph-ceiling follow-on (2026-11-06): real, live-confirmed finding
