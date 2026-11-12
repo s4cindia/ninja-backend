@@ -1242,6 +1242,12 @@ class AutoRemediationLoopService {
       data: { status: 'approved', approvedBy: AUTO_MODE_ACTOR },
     });
 
+    // Captured BEFORE applyApprovedSuggestions, which commits each
+    // suggestion's 'applied' status immediately and durably -- see
+    // pdfReauditService.revertUnpersistedApplies's own doc comment for why
+    // this timestamp is what lets the revert below scope itself to exactly
+    // this apply pass's own rows.
+    const applyStartedAt = new Date();
     const result = await aiAnalysisService.applyApprovedSuggestions(jobId, cycleNumber, AUTO_MODE_ACTOR, 'auto_loop');
     // Captured now, before the reaudit call below, and used at every return
     // point in this function from here on -- `result.applied` is the only
@@ -1297,6 +1303,15 @@ class AutoRemediationLoopService {
     });
 
     if (!comparison.success) {
+      // The file this round's fixes were applied to never actually made it
+      // to persistent storage -- reauditAndCompare's own Step 5 (the save)
+      // only runs once the fresh audit itself has already succeeded, and
+      // it never got that far here. See
+      // pdfReauditService.revertUnpersistedApplies's own doc comment for
+      // the full incident this fixes. Reverting BEFORE throwing so a
+      // resumed/next round correctly retries these against the file that's
+      // actually in storage, instead of skipping them as already-done.
+      await pdfReauditService.revertUnpersistedApplies(jobId, applyStartedAt);
       throw new Error(comparison.error ?? 'Re-audit failed during auto-remediation round');
     }
 
