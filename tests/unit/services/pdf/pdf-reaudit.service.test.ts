@@ -21,6 +21,9 @@ vi.mock('../../../../src/lib/prisma', () => ({
       findUnique: vi.fn(),
       update: vi.fn(),
     },
+    aiAnalysis: {
+      updateMany: vi.fn(),
+    },
   },
 }));
 
@@ -582,6 +585,48 @@ describe('PdfReauditService', () => {
 
       expect(result.success).toBe(false);
       expect(result.error).toContain('Re-audit failed');
+    });
+  });
+
+  describe('revertUnpersistedApplies', () => {
+    // Real incident (2026-11-13): applyApprovedSuggestions commits each
+    // suggestion's 'applied' status durably and immediately, well before
+    // reauditAndCompare's own file-save step ever runs -- when that re-audit
+    // then fails, the database is left claiming those rows are done while
+    // the actual file never got the fixes. This reverts exactly the rows
+    // this specific apply pass touched back to 'approved' so a resumed
+    // round correctly retries them.
+    beforeEach(() => {
+      vi.mocked(prisma.aiAnalysis.updateMany).mockReset();
+    });
+
+    it('reverts applied rows updated at or after applyStartedAt, scoped to this job', async () => {
+      vi.mocked(prisma.aiAnalysis.updateMany).mockResolvedValue({ count: 569 } as any);
+      const applyStartedAt = new Date('2026-11-13T01:17:36.000Z');
+
+      const reverted = await pdfReauditService.revertUnpersistedApplies(mockJobId, applyStartedAt);
+
+      expect(reverted).toBe(569);
+      expect(prisma.aiAnalysis.updateMany).toHaveBeenCalledWith({
+        where: { jobId: mockJobId, status: 'applied', updatedAt: { gte: applyStartedAt } },
+        data: { status: 'approved' },
+      });
+    });
+
+    it('returns 0 without error when nothing matches (the common, successful-round case)', async () => {
+      vi.mocked(prisma.aiAnalysis.updateMany).mockResolvedValue({ count: 0 } as any);
+
+      const reverted = await pdfReauditService.revertUnpersistedApplies(mockJobId, new Date());
+
+      expect(reverted).toBe(0);
+    });
+
+    it('is best-effort -- a database error is swallowed and reported as 0 reverted, never thrown', async () => {
+      vi.mocked(prisma.aiAnalysis.updateMany).mockRejectedValue(new Error('connection reset'));
+
+      const reverted = await pdfReauditService.revertUnpersistedApplies(mockJobId, new Date());
+
+      expect(reverted).toBe(0);
     });
   });
 

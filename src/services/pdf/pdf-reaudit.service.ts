@@ -251,6 +251,67 @@ class PdfReauditService {
   }
 
   /**
+   * Reverts AiAnalysis rows that got marked 'applied' during an apply pass
+   * whose remediated PDF never actually made it to persistent storage.
+   *
+   * Real incident (2026-11-13): applyApprovedSuggestions commits each
+   * suggestion's 'applied' status to the database immediately and
+   * durably, synchronously as it processes each one -- well BEFORE this
+   * function's own Step 5 (saveRemediatedFile) ever runs, since that save
+   * only happens after a fresh audit of the modified buffer has already
+   * succeeded. Both of reauditAndCompare's callers (auto-remediation-
+   * loop.service.ts's runRound, and pdf-ai-analysis.controller.ts's manual
+   * Apply All handler) call applyApprovedSuggestions first, then pass its
+   * in-memory modifiedBuffer into reauditAndCompare -- so whenever THAT
+   * call returns success: false (for any reason: the fresh audit itself
+   * failing to execute, as happened here, or any other internal failure),
+   * the database is left claiming those suggestions are durably done while
+   * the actual file on disk/S3 still doesn't reflect them at all -- on
+   * NAEMT_EPC_German_187412_9781284284386_FULL_Interactiv.pdf, this left
+   * 569 rows stuck at 'applied' against the ORIGINAL, unfixed file, which
+   * a resumed round would have silently skipped re-trying. Deliberately
+   * scoped to `!comparison.success` only, not also a success-but-no-
+   * remediatedFileUrl case -- Step 5's own save failure is caught and
+   * merely logged, never observed to actually happen, and checking for it
+   * here too turned out to break a wide swath of existing tests whose
+   * mocks don't bother setting remediatedFileUrl on an otherwise-successful
+   * comparison; not worth hardening against a theoretical gap with no
+   * confirmed incident behind it.
+   *
+   * Scoped by `updatedAt >= applyStartedAt` rather than by a list of
+   * specific suggestion ids -- applyApprovedSuggestions's own return type
+   * only exposes counts, not which rows it touched, and every 'applied'
+   * transition already stamps a fresh updatedAt (see
+   * aiAnalysisService.applyApprovedSuggestions), so this cleanly captures
+   * exactly the rows this specific apply pass touched without ever
+   * touching an older, already-and-correctly-applied row from a prior,
+   * successfully-persisted round.
+   *
+   * Best-effort -- a failure here must never mask or replace the caller's
+   * own real re-audit-failure handling (the error/notification the
+   * operator actually needs to see); it only ever makes a bad situation
+   * less bad, never worse.
+   */
+  async revertUnpersistedApplies(jobId: string, applyStartedAt: Date): Promise<number> {
+    try {
+      const result = await prisma.aiAnalysis.updateMany({
+        where: { jobId, status: 'applied', updatedAt: { gte: applyStartedAt } },
+        data: { status: 'approved' },
+      });
+      if (result.count > 0) {
+        logger.warn(
+          `[PdfReaudit] Reverted ${result.count} AiAnalysis row(s) from 'applied' back to 'approved' for job ${jobId} ` +
+          `-- the re-audit that would have persisted their fixes to storage did not succeed, so the stored file does not actually reflect them yet`
+        );
+      }
+      return result.count;
+    } catch (err) {
+      logger.warn(`[PdfReaudit] Failed to revert unpersisted applies for job ${jobId} (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
+      return 0;
+    }
+  }
+
+  /**
    * Compare two audit results and categorize differences
    *
    * Issue Matching Algorithm:

@@ -781,6 +781,16 @@ export class PdfAiAnalysisController {
         // Fire-and-forget: re-audit after saves complete
         pdfReauditService.reauditAndCompare(jobId, modifiedBuffer, fileName)
           .then(async (comparison) => {
+            if (!comparison.success) {
+              // applyApprovedSuggestions already committed every applied
+              // suggestion's status durably, well before this re-audit (and
+              // the file save inside it) ever ran -- if the re-audit didn't
+              // succeed, the file never actually made it to storage, so
+              // those rows must not be left claiming otherwise. See
+              // pdfReauditService.revertUnpersistedApplies's own doc
+              // comment for the real incident this fixes.
+              await pdfReauditService.revertUnpersistedApplies(jobId, cycleStartedAt);
+            }
             const latestJob = await prisma.job.findUnique({ where: { id: jobId } });
             const latestOutput = (latestJob?.output ?? {}) as Record<string, unknown>;
             const { resolvedCount, remainingCount, regressionCount, resolutionRate } = comparison.metrics;
@@ -838,6 +848,13 @@ export class PdfAiAnalysisController {
           .catch(async (err) => {
             const message = err instanceof Error ? err.message : String(err);
             logger.warn(`[ApplyAll] Post-remediation re-audit failed (non-fatal): ${message}`);
+            // reauditAndCompare is designed to never reject (it catches
+            // everything internally and resolves with success: false
+            // instead) -- reaching this branch at all means something
+            // truly unexpected happened, so the file is certainly not
+            // saved. Same revert as the .then() branch's own handled-
+            // failure case above.
+            await pdfReauditService.revertUnpersistedApplies(jobId, cycleStartedAt);
             try {
               const latestJob = await prisma.job.findUnique({ where: { id: jobId } });
               const latestOutput = (latestJob?.output ?? {}) as Record<string, unknown>;
