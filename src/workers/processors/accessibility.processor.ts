@@ -7,6 +7,8 @@ import { pdfAuditService } from '../../services/pdf/pdf-audit.service';
 import { autoTagIfNeeded } from '../../services/pdf/pdf-auto-tag-orchestrator.service';
 import { createAuditProgressCallbacks } from '../../services/pdf/pdf-audit-progress-tracker';
 import { aiAnalysisService } from '../../services/pdf/ai-analysis.service';
+import { getEffectiveAiRemediationConfig } from '../../services/pdf/ai-remediation-tenant-config.service';
+import { resolveFullAutoMode, enqueueOrRunAutoLoop, JobAutoRemediationDriver } from '../../services/pdf/auto-remediation-loop.service';
 import { pdfModifierService } from '../../services/pdf/pdf-modifier.service';
 import { pdfStructureWriterService } from '../../services/pdf/pdf-structure-writer.service';
 import { fileStorageService } from '../../services/storage/file-storage.service';
@@ -413,9 +415,10 @@ async function processPdfAccessibility(
 
         // Operator notification: the audit + AI analysis is the FIRST
         // "come back and decide what's next" moment after upload (Auto
-        // Mode is never auto-started from here -- it's always a separate,
-        // later, explicit action, so there's no risk of this firing right
-        // before Auto Mode immediately consumes the same suggestions).
+        // Mode is not auto-started from here for every job -- only when
+        // Full Auto Mode resolves true for this one, see below -- so
+        // there's no risk of this firing right before Auto Mode immediately
+        // consumes the same suggestions on a normal, non-Full-Auto job).
         // Fire-and-forget, same convention as every other notification
         // call in this codebase.
         notificationService.createNotification({
@@ -430,6 +433,34 @@ async function processPdfAccessibility(
         }).catch((notifyErr) => {
           logger.error(`[PDF Worker] Failed to create audit-complete notification for job ${dbJobId}: ${notifyErr instanceof Error ? notifyErr.message : String(notifyErr)}`);
         });
+
+        // Full Auto Mode: skip the manual "Start Auto Remediation" click
+        // entirely when the effective flag (Job.fullAutoMode override, or
+        // the tenant's aiRemediation.fullAutoModeDefault) resolves true.
+        // This is the right moment -- the initial audit AND its AI
+        // analysis have both just completed, matching exactly what an
+        // operator would wait for before clicking the button themselves.
+        // Never let a failure here affect the job otherwise completing
+        // normally (the audit + AI analysis already succeeded).
+        if (!serviceDegraded) {
+          (async () => {
+            const [job, aiRemediationConfig] = await Promise.all([
+              prisma.job.findUnique({ where: { id: dbJobId }, select: { fullAutoMode: true } }),
+              getEffectiveAiRemediationConfig(tenantId),
+            ]);
+            if (!resolveFullAutoMode(job?.fullAutoMode ?? null, aiRemediationConfig.fullAutoModeDefault)) return;
+
+            const run = await prisma.pdfAutoRemediationRun.upsert({
+              where: { jobId: dbJobId },
+              create: { jobId: dbJobId },
+              update: {},
+            });
+            logger.info(`[PDF Worker] Full Auto Mode: auto-starting Auto Mode loop for job ${dbJobId} (run ${run.id})`);
+            enqueueOrRunAutoLoop('jobRun', run.id, new JobAutoRemediationDriver(run.id));
+          })().catch((fullAutoErr) => {
+            logger.error(`[PDF Worker] Full Auto Mode trigger failed for job ${dbJobId} (non-fatal -- job's own audit already completed normally): ${fullAutoErr instanceof Error ? fullAutoErr.message : String(fullAutoErr)}`);
+          });
+        }
         // Estimate token usage: ~700 tokens per analyzed issue (Gemini Flash + Claude Haiku mix)
         const tokensUsed = analyzed * 700;
         const estimatedCostUsd = parseFloat((tokensUsed * 0.000000375).toFixed(4));

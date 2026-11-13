@@ -202,6 +202,14 @@ model Job {
   assignedById String?
   assignedAt   DateTime?
 
+  // Full Auto Mode override, set at upload time -- null means "inherit the
+  // tenant's own aiRemediation.fullAutoModeDefault setting" (see
+  // resolveFullAutoMode in auto-remediation-loop.service.ts). When the
+  // effective value is true, the worker auto-starts the existing Auto Mode
+  // loop itself once the INITIAL audit completes, instead of waiting for an
+  // operator to click "Start Auto Remediation" (pdf-audit.worker.ts).
+  fullAutoMode Boolean?
+
   // Remediation-cycle concurrency lock -- prevents two overlapping "apply
   // fixes -> re-audit -> re-run AI analysis" cycles on the same job from
   // interleaving their job.output writes with no ordering guarantee (the
