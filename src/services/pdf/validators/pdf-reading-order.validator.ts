@@ -26,15 +26,48 @@
  * document's own /K order. A screen reader reading this document in order
  * reads the WHOLE main story first, then jumps back up the page to read
  * content that visually came first -- exactly the human QC finding's own
- * description. Real examples (device-space, top-down, points):
- *   - Page 15: main story's last /P ends at y514-600; the sidebar /P
- *     ("Some organizations view marketing purely as...") sits at y146-172,
- *     in the gap between the page's own heading and the main story's
- *     first paragraph -- tagged dead last instead of there.
- *   - Page 72: main story continues through y486-617; a /Figure + caption
- *     ("Figure 5.1 The negotiator's five dilemmas") sits at y108-373,
- *     occupying the visually EARLIER top half of the same page -- tagged
- *     AFTER the story that visually follows it.
+ * description.
+ *
+ * CRITICAL IMPLEMENTATION NOTE (2026-11-13, post-ship bug fix): this file's
+ * FIRST shipped version walked /StructTreeRoot's /K array directly via
+ * pdf-lib (a top-down walk) and compared GLOBALLY-adjacent flattened
+ * blocks, gated to "same page". Re-running that exact shipped class against
+ * the real file (not a new script) returned flagged: 0 -- a real,
+ * confirmed implementation bug, not a correction to the "16 real
+ * instances" finding. Root cause, confirmed by dumping the shipped
+ * private methods' own intermediate state: on the real document, the
+ * sidebar/callout "second story" for a given page is NOT a sibling of that
+ * page's main story anywhere near it in the GLOBAL /K order -- InDesign
+ * exports each THREADED STORY as its own contiguous run, so ALL of the
+ * document's sidebar boxes are grouped together as one long separate run,
+ * hundreds of struct elements away from the page they visually belong to
+ * (confirmed: page 15's sidebar block landed at global flattened index 828,
+ * while that same page's main-story blocks were at indices 73-78). A
+ * "compare globally-adjacent entries, filtered to same page" loop can never
+ * find this pair. A SECOND, independent bug compounded this: the content-
+ * stream-only geometry primitive used (mcid-bounding-box.ts's
+ * locateMcidBoundingBoxes) gives a Tj/TJ text run only its ANCHOR POINT
+ * (not real glyph-width extent -- see that module's own documented
+ * limitation), so a plain paragraph with no accompanying clip rect
+ * collapsed to a zero-width box, which would have failed the X-overlap
+ * check even with adjacency fixed.
+ *
+ * Both bugs are fixed by using pdfjs's own per-page page.getStructTree()
+ * (RoleMap-resolved, and internally reconstructed bottom-up via each page's
+ * own /ParentTree + /P parent links -- see pdfjs-dist's StructTreePage,
+ * confirmed by reading its own source) instead of a raw top-down pdf-lib
+ * /K walk: it already presents each page's own relevant elements in their
+ * correct PAGE-LOCAL relative order, regardless of how far apart they sit
+ * in the document's global /K array. Paired with tagged-pdf-extractor.ts's
+ * own buildContentIdBBoxMap, which derives each content run's bbox from
+ * pdfjs's real getTextContent() (font-metrics-aware glyph width, not a bare
+ * anchor point), this is the SAME proven architecture
+ * pdf-heading-style-mismatch.validator.ts already uses, and the SAME
+ * architecture the original standalone investigation script (which found
+ * the real 16 violations) used -- this rewrite makes the shipped validator
+ * match that already-proven logic instead of a materially different
+ * reimplementation that was never round-tripped against the real file
+ * after being finalized.
  *
  * Research (2026-11-13): confirmed via this project's own catalog data
  * (src/data/matterhorn-1.1.data.ts, 09-001: how: 'H') AND independently via
@@ -63,23 +96,16 @@
  * ai-analysis.service.ts, and pdf-structure-writer.service.ts gets no new
  * fixer for it.
  *
- * Detection heuristic: walks the real /StructTreeRoot directly via pdf-lib
- * (RoleMap-resolved, same duplicated-per-file convention pdf-rolemap-
- * integrity.validator.ts's own buildRoleMap uses, rather than pdfjs's own
- * getStructTree() -- this lets the validator's own tests build a fixture
- * with a deliberately WRONG /K order directly, which Seam-C's own
- * buildStructTreeFromZones can never produce: it always synthesizes a
- * geometrically-correct order via synthesizeReadingOrder, regardless of
- * input order). Flattens the tree into an ordered sequence of block-level
- * zones (same ZONE_TAGS/CONTAINER_TAGS split tagged-pdf-extractor.ts's own
- * mapStructTag uses, duplicated here rather than imported -- isolated
- * per-feature structure-tree helpers are this project's established
- * preference over cross-module coupling), computes each zone's own device-
- * space bounding box via mcid-bounding-box.ts's locateMcidBoundingBoxes
- * (content-stream-based; Form-XObject-invoked Figures resolved via
- * pdf-figure-structtree.validator.ts's own buildFormXObjectResolver, the
- * same already-bug-hardened resolver other callers share), then flags an
- * ADJACENT pair (i, i+1) in that flattened, same-page sequence only when
+ * Detection heuristic, per page: flattens that page's own struct (sub)tree
+ * into an ordered sequence of block-level zones (mapStructTag's own
+ * ZONE_TAGS/CONTAINER_TAGS split, reused directly rather than duplicated --
+ * unlike most structure-tree helpers in this codebase, this one is already
+ * exported specifically for a second caller's reuse, see
+ * pdf-heading-style-mismatch.validator.ts's own header comment), excluding
+ * header/footer zones (owned by pdf-header-footer-content.validator.ts),
+ * computes each zone's own top-down device-space bounding box (union of
+ * its descendant content IDs' bboxes, via buildContentIdBBoxMap), then
+ * flags an ADJACENT pair (i, i+1) in that page-local sequence only when
  * BOTH:
  *   - block i+1's bounding box is ENTIRELY above block i's (a clean,
  *     non-overlapping vertical gap -- not just "starts higher", which would
@@ -96,15 +122,17 @@
  * measures a NEGATIVE x-overlap (columns are disjoint in X, as expected)
  * and is correctly NOT flagged, while all 16 real violations found measure
  * xOverlapFraction === 1.00 (same column width, confirmed real, not a
- * theoretical edge case this threshold happens to also cover).
+ * theoretical edge case this threshold happens to also cover). Re-verified
+ * after this rewrite: the shipped class, run against the real file,
+ * now reproduces all 16 real violations (confirmed via a direct re-run,
+ * not just unit-test fixtures).
  */
 
-import { PDFDict, PDFName, PDFRef, PDFArray, PDFNumber, PDFDocument } from 'pdf-lib';
 import { AuditIssue } from '../../audit/base-audit.service';
 import { ParsedPDF } from '../pdf-parser.service';
-import { decodePageContent, findBdcTagSpanForMcid } from '../pdf-content-stream-io';
-import { locateMcidBoundingBoxes, DeviceBoundingBox } from '../mcid-bounding-box';
-import { buildFormXObjectResolver } from './pdf-figure-structtree.validator';
+import { buildContentIdBBoxMap, mapStructTag } from '../../zone-extractor/tagged-pdf-extractor';
+import type { ContentIdTextMap } from '../../zone-extractor/tagged-pdf-extractor';
+import type { BBox, CanonicalZoneType } from '../../zone-extractor/types';
 import { logger } from '../../../lib/logger';
 
 export interface ReadingOrderValidationResult {
@@ -116,43 +144,11 @@ export interface ReadingOrderValidationResult {
   };
 }
 
-// Block-level tags whose own subtree is treated as ONE flattenable
-// reading-order unit -- collects every descendant MCID across the whole
-// subtree, then stops recursing (its own internal order, e.g. a table's
-// rows/cells, is a different checkpoint's concern). Same membership as
-// tagged-pdf-extractor.ts's own ZONE_TAGS, minus Header/Footer/Hdr/FTR/
-// THead/TFoot (running heads/feet aren't part of the page's own content
-// reading sequence this checkpoint cares about -- see
-// pdf-header-footer-content.validator.ts for that territory).
-const ZONE_TAGS = new Set([
-  'P', 'BlockQuote', 'Code', 'BibEntry', 'Formula',
-  'H', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'H7', 'Title',
-  'Table', 'Figure', 'Form', 'Caption', 'Note', 'NT', 'FENote',
-  'LI', 'TOCI',
-]);
-
-// Transparent containers -- recurse into children in document order,
-// without emitting a block of their own. Same membership as tagged-pdf-
-// extractor.ts's own CONTAINER_TAGS (minus Root/StructTreeRoot/
-// DocumentFragment, which this file's own walk never recurses INTO via
-// this set -- the walk starts one level below StructTreeRoot already).
-const CONTAINER_TAGS = new Set([
-  'Document', 'Part', 'Div', 'Sect', 'Art', 'Aside', 'Index',
-  'L', 'LBody', 'TOC', 'TR', 'TBody', 'NonStruct', 'Private',
-]);
-
-// Inline-only tags, and running heads/feet -- explicitly SKIPPED (neither
-// flattened as a block nor recursed into). Almost always already absorbed
-// into an ancestor ZONE_TAGS block's own collected MCIDs; a bare top-level
-// occurrence (unusual) is deliberately not treated as its own reading-order
-// unit, to avoid noisy false positives from e.g. a hyperlink's anchor text
-// sitting mid-paragraph.
-const SKIPPED_TAGS = new Set([
-  'Span', 'Quote', 'Em', 'Strong', 'Sub', 'Lbl',
-  'Annot', 'Link', 'Reference',
-  'Ruby', 'RB', 'RT', 'RP', 'Warichu', 'WT', 'WP',
-  'Hdr', 'FTR', 'Header', 'Footer', 'THead', 'TFoot',
-]);
+// Zone types excluded from this checkpoint's own comparison -- running
+// heads/feet aren't part of the page's own content reading sequence this
+// checkpoint cares about (see pdf-header-footer-content.validator.ts for
+// that territory).
+const EXCLUDED_ZONE_TYPES = new Set<CanonicalZoneType>(['header', 'footer']);
 
 // See this file's own header comment ("Detection heuristic") for why each
 // of these two thresholds was chosen and how they were validated against
@@ -160,15 +156,29 @@ const SKIPPED_TAGS = new Set([
 const MIN_X_OVERLAP_FRACTION = 0.5;
 const MIN_VERTICAL_GAP_PT = 5;
 
-interface FlatBlock {
-  pageIdx: number; // 0-based
+// Minimal local typing for pdfjs's own getStructTree() result shape -- same
+// convention pdf-heading-style-mismatch.validator.ts's own file uses
+// (casts through `as unknown as` rather than importing pdfjs-dist's own
+// StructTreeNode/StructTreeContent types).
+interface StructNode {
   role: string;
-  mcids: Set<number>;
+  children: (StructNode | StructContent)[];
 }
 
-interface CollectedMcid {
-  pageIdx: number;
-  mcid: number;
+interface StructContent {
+  type: string;
+  id: string;
+}
+
+function isStructContent(child: StructNode | StructContent): child is StructContent {
+  return !('role' in child);
+}
+
+interface PageBlock {
+  zoneType: CanonicalZoneType;
+  role: string;
+  box: BBox; // top-down (y grows downward), same convention buildContentIdBBoxMap produces
+  text: string;
 }
 
 class PdfReadingOrderValidator {
@@ -187,140 +197,134 @@ class PdfReadingOrderValidator {
     // struct-tree-builder.ts's synthesizeReadingOrder).
     if (!parsedPdf.structure?.metadata?.isTagged) return empty;
 
-    const doc = parsedPdf.pdfLibDoc;
-    const structTreeRootRef = doc.catalog.get(PDFName.of('StructTreeRoot'));
-    if (!structTreeRootRef) return empty;
-    const structTreeRoot = doc.context.lookup(structTreeRootRef);
-    if (!(structTreeRoot instanceof PDFDict)) return empty;
+    const pdfjsDoc = parsedPdf.pdfjsDoc;
+    if (!pdfjsDoc) return empty;
 
-    const roleMap = this.buildRoleMap(doc, structTreeRoot);
+    const issues: AuditIssue[] = [];
+    let pagesAnalyzed = 0;
+    let blocksAnalyzed = 0;
 
-    const pages = doc.getPages();
-    const pageIndexByRef = new Map<string, number>();
-    pages.forEach((p, i) => pageIndexByRef.set(p.ref.toString(), i));
+    for (let pageNum = 1; pageNum <= pdfjsDoc.numPages; pageNum++) {
+      let tree: StructNode | null = null;
+      let textMap: ContentIdTextMap;
+      let bboxMap: Map<string, BBox>;
+      let pageWidth = 0;
+      let pageHeight = 0;
 
-    const flat: FlatBlock[] = [];
-    const rootK = structTreeRoot.get(PDFName.of('K'));
-    if (rootK !== undefined) {
-      this.flattenBlocks(doc, rootK, roleMap, null, pageIndexByRef, flat, 0);
-    }
-
-    const byPage = new Map<number, number[]>(); // pageIdx -> indices into flat[]
-    flat.forEach((b, i) => {
-      const arr = byPage.get(b.pageIdx);
-      if (arr) arr.push(i);
-      else byPage.set(b.pageIdx, [i]);
-    });
-
-    if (flat.length < 2) {
-      return { issues: [], metadata: { pagesAnalyzed: byPage.size, blocksAnalyzed: flat.length, flagged: 0 } };
-    }
-
-    // Resolve each block's own device-space (bottom-left origin) bounding
-    // box, one locateMcidBoundingBoxes call per page covering every block
-    // on it together (matches this codebase's established "batch per page"
-    // convention elsewhere, e.g. pdf-figure-structtree.validator.ts).
-    const bboxByBlockIndex = new Map<number, DeviceBoundingBox>();
-    for (const [pageIdx, indices] of byPage) {
-      let content: string | null;
       try {
-        content = decodePageContent(doc, pageIdx + 1);
-      } catch {
-        content = null;
-      }
-      if (!content) continue;
+        const page = await pdfjsDoc.getPage(pageNum);
+        const rawTree = await page.getStructTree();
+        if (!rawTree?.children?.length) continue;
+        tree = rawTree as unknown as StructNode;
 
-      const allMcids = new Set<number>();
-      for (const idx of indices) for (const m of flat[idx].mcids) allMcids.add(m);
-      if (allMcids.size === 0) continue;
+        const maps = await buildContentIdBBoxMap(page);
+        bboxMap = maps.bboxMap;
+        textMap = maps.textMap;
 
-      let perMcid: Map<number, DeviceBoundingBox>;
-      try {
-        perMcid = locateMcidBoundingBoxes(content, allMcids, {
-          allowSinglePointBoxes: true,
-          resolveFormXObject: buildFormXObjectResolver(doc, pageIdx + 1),
-        });
+        const viewport = page.getViewport({ scale: 1 });
+        pageWidth = viewport.width;
+        pageHeight = viewport.height;
       } catch (err) {
-        logger.debug(`[PdfReadingOrderValidator] Could not compute bounding boxes on page ${pageIdx + 1}: ${err instanceof Error ? err.message : String(err)}`);
+        logger.debug(
+          `[PdfReadingOrderValidator] Could not read page ${pageNum}: ${err instanceof Error ? err.message : String(err)}`,
+        );
         continue;
       }
 
-      for (const idx of indices) {
-        let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
-        for (const m of flat[idx].mcids) {
-          const b = perMcid.get(m);
-          if (!b) continue;
-          minX = Math.min(minX, b.minX);
-          maxX = Math.max(maxX, b.maxX);
-          minY = Math.min(minY, b.minY);
-          maxY = Math.max(maxY, b.maxY);
+      const blocks: PageBlock[] = [];
+      this.collectPageBlocks(tree, bboxMap, textMap, blocks);
+      if (blocks.length === 0) continue;
+
+      pagesAnalyzed++;
+      blocksAnalyzed += blocks.length;
+
+      for (let i = 0; i < blocks.length - 1; i++) {
+        const a = blocks[i];
+        const b = blocks[i + 1];
+
+        const overlapX = Math.min(a.box.x + a.box.w, b.box.x + b.box.w) - Math.max(a.box.x, b.box.x);
+        const minWidth = Math.min(a.box.w, b.box.w);
+        const xOverlapFraction = minWidth > 0 ? overlapX / minWidth : 0;
+
+        // Top-down (y grows downward): a SMALLER y is higher up the page.
+        // "b entirely above a" means b's own bottom edge clears a's own top
+        // edge (a.box.y) by more than the gap tolerance.
+        const verticalGap = a.box.y - (b.box.y + b.box.h);
+
+        if (xOverlapFraction > MIN_X_OVERLAP_FRACTION && verticalGap > MIN_VERTICAL_GAP_PT) {
+          issues.push(this.buildIssue(a, b, pageWidth, pageHeight, pageNum));
         }
-        if (minX !== Infinity) bboxByBlockIndex.set(idx, { minX, minY, maxX, maxY });
-      }
-    }
-
-    const issues: AuditIssue[] = [];
-    for (let i = 0; i < flat.length - 1; i++) {
-      const a = flat[i];
-      const b = flat[i + 1];
-      if (a.pageIdx !== b.pageIdx) continue; // only a same-page sequence is this checkpoint's target shape
-
-      const boxA = bboxByBlockIndex.get(i);
-      const boxB = bboxByBlockIndex.get(i + 1);
-      if (!boxA || !boxB) continue;
-
-      const overlapX = Math.min(boxA.maxX, boxB.maxX) - Math.max(boxA.minX, boxB.minX);
-      const minWidth = Math.min(boxA.maxX - boxA.minX, boxB.maxX - boxB.minX);
-      const xOverlapFraction = minWidth > 0 ? overlapX / minWidth : 0;
-
-      // Bottom-left (PDF user-space) origin: a LARGER y is higher up the
-      // page. "b entirely above a" means b's own bottom edge (minY) clears
-      // a's own top edge (maxY) by more than the gap tolerance.
-      const verticalGap = boxB.minY - boxA.maxY;
-
-      if (xOverlapFraction > MIN_X_OVERLAP_FRACTION && verticalGap > MIN_VERTICAL_GAP_PT) {
-        issues.push(
-          this.buildIssue(a, b, boxA, boxB, pages[a.pageIdx].getWidth(), pages[a.pageIdx].getHeight(), a.pageIdx + 1, doc),
-        );
       }
     }
 
     logger.info(
-      `[PdfReadingOrderValidator] ${flat.length} block(s) across ${byPage.size} page(s) analyzed, ${issues.length} candidate reading-order violation(s) flagged`
+      `[PdfReadingOrderValidator] ${blocksAnalyzed} block(s) across ${pagesAnalyzed} page(s) analyzed, ${issues.length} candidate reading-order violation(s) flagged`,
     );
 
     return {
       issues,
-      metadata: { pagesAnalyzed: byPage.size, blocksAnalyzed: flat.length, flagged: issues.length },
+      metadata: { pagesAnalyzed, blocksAnalyzed, flagged: issues.length },
     };
   }
 
-  private buildIssue(
-    a: FlatBlock,
-    b: FlatBlock,
-    boxA: DeviceBoundingBox,
-    boxB: DeviceBoundingBox,
-    pageWidth: number,
-    pageHeight: number,
-    pageNumber: number,
-    doc: PDFDocument,
-  ): AuditIssue {
-    // Top-down (y grows downward) for human-readable "distance from top of
-    // page" phrasing and for AuditIssue.boundingBox's own documented
-    // convention.
-    const aTop = pageHeight - boxA.maxY;
-    const aBottom = pageHeight - boxA.minY;
-    const bTop = pageHeight - boxB.maxY;
-    const bBottom = pageHeight - boxB.minY;
+  /**
+   * Recursively walks a page's own pdfjs struct tree (already pruned to
+   * that page's own relevant elements, in their correct page-local relative
+   * order -- see this file's own header comment on why that matters),
+   * flattening every block-level zone (mapStructTag's own non-null,
+   * non-excluded result) into `out`, in document order. A container
+   * (mapStructTag returns null) is recursed into transparently; a zone is
+   * packaged as one block (its own full descendant bbox + text) and NOT
+   * recursed into further -- its own internal order (e.g. a table's rows)
+   * is a different checkpoint's concern.
+   */
+  private collectPageBlocks(
+    node: StructNode,
+    bboxMap: Map<string, BBox>,
+    textMap: ContentIdTextMap,
+    out: PageBlock[],
+  ): void {
+    for (const child of node.children ?? []) {
+      if (isStructContent(child)) continue; // bare content directly under a container -- not this validator's concern
+      const zoneType = mapStructTag(child.role);
+      if (zoneType === null) {
+        this.collectPageBlocks(child, bboxMap, textMap, out);
+        continue;
+      }
+      if (EXCLUDED_ZONE_TYPES.has(zoneType)) continue;
 
-    const firstMcidOfB = Math.min(...b.mcids);
-    let content: string | null = null;
-    try {
-      content = decodePageContent(doc, pageNumber);
-    } catch {
-      content = null;
+      let box: BBox | null = null;
+      const texts: string[] = [];
+      const collect = (n: StructNode | StructContent): void => {
+        if (isStructContent(n)) {
+          const b = bboxMap.get(n.id);
+          if (b) box = box ? this.unionBBox(box, b) : { ...b };
+          const t = textMap.get(n.id);
+          if (t) texts.push(...t);
+        } else {
+          for (const c of n.children ?? []) collect(c);
+        }
+      };
+      collect(child);
+
+      if (box) out.push({ zoneType, role: child.role, box, text: texts.join('').trim() });
     }
-    const textSample = content ? this.bestEffortTextSample(content, firstMcidOfB) : '';
+  }
+
+  private unionBBox(a: BBox, b: BBox): BBox {
+    const x2 = Math.max(a.x + a.w, b.x + b.w);
+    const y2 = Math.max(a.y + a.h, b.y + b.h);
+    const x = Math.min(a.x, b.x);
+    const y = Math.min(a.y, b.y);
+    return { x, y, w: x2 - x, h: y2 - y };
+  }
+
+  private buildIssue(a: PageBlock, b: PageBlock, pageWidth: number, pageHeight: number, pageNumber: number): AuditIssue {
+    const aTop = a.box.y;
+    const aBottom = a.box.y + a.box.h;
+    const bTop = b.box.y;
+    const bBottom = b.box.y + b.box.h;
+    const textSample = b.text.slice(0, 80);
 
     return {
       id: `reading-order-${++this.issueCounter}`,
@@ -346,195 +350,14 @@ class PdfReadingOrderValidator {
       matterhornCheckpoint: '09-001',
       matterhornHow: 'H',
       boundingBox: {
-        x: boxB.minX,
+        x: b.box.x,
         y: bTop,
-        width: boxB.maxX - boxB.minX,
-        height: boxB.maxY - boxB.minY,
+        width: b.box.w,
+        height: b.box.h,
         pageWidth,
         pageHeight,
       },
     };
-  }
-
-  /**
-   * Best-effort literal-string extraction for a human-readable message
-   * snippet only -- NOT used for the actual order comparison. Reuses
-   * pdf-content-stream-io.ts's own already-tested findBdcTagSpanForMcid to
-   * locate the MCID's own BDC, then greps literal `(...)` strings out of a
-   * fixed window right after it. Doesn't handle octal escapes or nested
-   * unbalanced parens perfectly -- fine for a display-only sample, never
-   * relied on for correctness.
-   */
-  private bestEffortTextSample(content: string, mcid: number): string {
-    const span = findBdcTagSpanForMcid(content, mcid);
-    if (!span) return '';
-    const window = content.slice(span.end, span.end + 400);
-    const matches = window.match(/\(((?:\\.|[^()\\])*)\)/g) ?? [];
-    const text = matches
-      .map((m) => m.slice(1, -1).replace(/\\(.)/g, '$1'))
-      .join('')
-      .replace(/\s+/g, ' ')
-      .trim();
-    return text.slice(0, 80);
-  }
-
-  /** Same pattern as pdf-structure-writer.service.ts's own buildRoleMap -- duplicated per this project's established preference for isolated per-feature structure-tree helpers over cross-module coupling (see pdf-rolemap-integrity.validator.ts's own identical comment). */
-  private buildRoleMap(doc: PDFDocument, structTreeRoot: PDFDict): Map<string, string> {
-    const roleMap = new Map<string, string>();
-    const rmRaw = structTreeRoot.get(PDFName.of('RoleMap'));
-    const rm = rmRaw instanceof PDFRef ? doc.context.lookup(rmRaw) : rmRaw;
-    if (!(rm instanceof PDFDict)) return roleMap;
-
-    for (const [key, value] of rm.entries()) {
-      const customTag = key.toString().replace(/^\//, '');
-      const stdTag = value instanceof PDFName ? value.toString().replace(/^\//, '') : null;
-      if (stdTag) roleMap.set(customTag, stdTag);
-    }
-    return roleMap;
-  }
-
-  private resolveRoleMapChain(roleMap: Map<string, string>, rawType: string): string {
-    const visited = new Set<string>();
-    let current = rawType;
-    while (roleMap.has(current) && !visited.has(current)) {
-      visited.add(current);
-      current = roleMap.get(current)!;
-    }
-    return current;
-  }
-
-  /**
-   * Walks a /K value (a bare ref, an array, or a leaf) in document order,
-   * classifying each real StructElem by its own (RoleMap-resolved) /S:
-   *   - ZONE_TAGS: package its whole subtree as one flattened block (all
-   *     descendant MCIDs, grouped by the page they actually resolve to --
-   *     see collectMcidsForPage), then stop recursing.
-   *   - CONTAINER_TAGS, or any unrecognized tag (never silently dropped,
-   *     same "default to visible" convention tagged-pdf-extractor.ts's own
-   *     mapStructTag uses): recurse into children, preserving order.
-   *   - SKIPPED_TAGS: neither flattened nor recursed into.
-   * /Pg is inherited down the tree per PDF32000-1:2008 SS14.7.4.3 until a
-   * descendant declares its own.
-   */
-  private flattenBlocks(
-    doc: PDFDocument,
-    node: unknown,
-    roleMap: Map<string, string>,
-    inheritedPageRef: PDFRef | null,
-    pageIndexByRef: Map<string, number>,
-    out: FlatBlock[],
-    depth: number,
-  ): void {
-    if (depth > 200) return; // defensive -- malformed/cyclic trees shouldn't hang this
-    const resolved = node instanceof PDFRef ? doc.context.lookup(node) : node;
-
-    if (resolved instanceof PDFArray) {
-      for (const item of resolved.asArray()) {
-        this.flattenBlocks(doc, item, roleMap, inheritedPageRef, pageIndexByRef, out, depth + 1);
-      }
-      return;
-    }
-    if (!(resolved instanceof PDFDict)) return;
-
-    const typeName = resolved.get(PDFName.of('Type'))?.toString();
-    if (typeName === '/MCR' || typeName === '/OBJR') return; // a content/object reference, not a StructElem
-
-    const pgRaw = resolved.get(PDFName.of('Pg'));
-    const ownPageRef = pgRaw instanceof PDFRef ? pgRaw : inheritedPageRef;
-    const kRaw = resolved.get(PDFName.of('K'));
-
-    const sRaw = resolved.get(PDFName.of('S'));
-    if (sRaw === undefined) {
-      // No /S of its own (e.g. a malformed node) -- stay transparent.
-      if (kRaw !== undefined) this.flattenBlocks(doc, kRaw, roleMap, ownPageRef, pageIndexByRef, out, depth + 1);
-      return;
-    }
-
-    const rawTag = sRaw.toString().replace(/^\//, '');
-    const resolvedTag = this.resolveRoleMapChain(roleMap, rawTag);
-
-    if (SKIPPED_TAGS.has(resolvedTag)) return;
-
-    if (!ZONE_TAGS.has(resolvedTag) || CONTAINER_TAGS.has(resolvedTag)) {
-      // CONTAINER_TAGS, or a tag that's neither a known zone nor container
-      // (e.g. a custom RoleMap target that didn't resolve to anything this
-      // file recognizes) -- recurse, never silently drop real content.
-      if (kRaw !== undefined) this.flattenBlocks(doc, kRaw, roleMap, ownPageRef, pageIndexByRef, out, depth + 1);
-      return;
-    }
-
-    const collected: CollectedMcid[] = [];
-    if (kRaw !== undefined) this.collectMcidsForPage(doc, kRaw, ownPageRef, pageIndexByRef, collected, new Set(), 0);
-    if (collected.length === 0) return; // an empty zone has no geometry to compare
-
-    // All of a single block's content is expected on one page -- use the
-    // FIRST page found (document order) as this block's page, and keep
-    // only the MCIDs that actually resolve to it. A block that genuinely
-    // spans a page break is a rare edge case this best-effort heuristic
-    // doesn't need to handle precisely: the comparison below only ever
-    // fires between two blocks already confirmed to share a page.
-    const primaryPageIdx = collected[0].pageIdx;
-    const mcids = new Set(collected.filter((c) => c.pageIdx === primaryPageIdx).map((c) => c.mcid));
-    out.push({ pageIdx: primaryPageIdx, role: resolvedTag, mcids });
-  }
-
-  /**
-   * Collects every MCID reachable under a zone's own /K, tagged with the
-   * page it resolves to (honoring /Pg inheritance -- see flattenBlocks's
-   * own doc comment). Handles a bare MCID integer, an array of either, a
-   * nested StructElem (recurses into ITS /K, inheriting the current page),
-   * and an /MCR marked-content-reference dict (used for content inside a
-   * Form XObject) -- an /OBJR (annotation reference) carries no content
-   * geometry and is skipped.
-   */
-  private collectMcidsForPage(
-    doc: PDFDocument,
-    node: unknown,
-    inheritedPageRef: PDFRef | null,
-    pageIndexByRef: Map<string, number>,
-    out: CollectedMcid[],
-    visited: Set<string>,
-    depth: number,
-  ): void {
-    if (depth > 200) return;
-    if (node instanceof PDFRef) {
-      const key = node.toString();
-      if (visited.has(key)) return;
-      visited.add(key);
-    }
-    const resolved = node instanceof PDFRef ? doc.context.lookup(node) : node;
-
-    if (resolved instanceof PDFArray) {
-      for (const item of resolved.asArray()) {
-        this.collectMcidsForPage(doc, item, inheritedPageRef, pageIndexByRef, out, visited, depth + 1);
-      }
-      return;
-    }
-    if (resolved instanceof PDFNumber) {
-      if (inheritedPageRef) {
-        const pageIdx = pageIndexByRef.get(inheritedPageRef.toString());
-        if (pageIdx !== undefined) out.push({ pageIdx, mcid: resolved.asNumber() });
-      }
-      return;
-    }
-    if (!(resolved instanceof PDFDict)) return;
-
-    const typeName = resolved.get(PDFName.of('Type'))?.toString();
-    const pgRaw = resolved.get(PDFName.of('Pg'));
-    const ownPageRef = pgRaw instanceof PDFRef ? pgRaw : inheritedPageRef;
-
-    if (typeName === '/MCR') {
-      const mcidRaw = resolved.get(PDFName.of('MCID'));
-      if (mcidRaw instanceof PDFNumber && ownPageRef) {
-        const pageIdx = pageIndexByRef.get(ownPageRef.toString());
-        if (pageIdx !== undefined) out.push({ pageIdx, mcid: mcidRaw.asNumber() });
-      }
-      return;
-    }
-    if (typeName === '/OBJR') return;
-
-    const kRaw = resolved.get(PDFName.of('K'));
-    if (kRaw !== undefined) this.collectMcidsForPage(doc, kRaw, ownPageRef, pageIndexByRef, out, visited, depth + 1);
   }
 }
 
