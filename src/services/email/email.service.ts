@@ -48,6 +48,14 @@ interface FeedbackSubmittedEmailData {
   feedbackUrl: string;
 }
 
+interface JobAssignedEmailData {
+  assigneeName: string;
+  assigneeEmail: string;
+  assignedByName?: string;
+  fileName: string;
+  jobUrl: string;
+}
+
 class EmailService {
   private transporter: nodemailer.Transporter;
   private from: string;
@@ -120,6 +128,17 @@ class EmailService {
       html: this.buildFeedbackSubmittedHtml(data),
     });
     logger.info(`[Email] Feedback-submitted email sent to ${data.adminEmail}`);
+  }
+
+  async sendJobAssignedEmail(data: JobAssignedEmailData): Promise<void> {
+    await this.transporter.sendMail({
+      from: `"Ninja Platform" <${this.from}>`,
+      to: data.assigneeEmail,
+      subject: `New Title Assigned - ${data.fileName}`,
+      text: this.buildJobAssignedText(data),
+      html: this.buildJobAssignedHtml(data),
+    });
+    logger.info(`[Email] Job-assigned email sent to ${data.assigneeEmail}`);
   }
 
   private buildCompletionHtml(data: BatchCompletionEmailData): string {
@@ -355,6 +374,59 @@ Type: ${data.feedbackType}${severityLine}${submittedByLine}
 Comment: ${data.commentPreview}
 
 View Feedback: ${data.feedbackUrl}
+
+---
+This is an automated notification from Ninja Platform.`;
+  }
+
+  private buildJobAssignedHtml(data: JobAssignedEmailData): string {
+    const assignedByLine = data.assignedByName
+      ? `<tr><td style="padding: 10px 0; font-weight: 600; color: #6b7280; border-bottom: 1px solid #e5e7eb;">Assigned By</td><td style="padding: 10px 0; font-weight: 700; color: #111827; text-align: right; border-bottom: 1px solid #e5e7eb;">${data.assignedByName}</td></tr>`
+      : '';
+
+    return `<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+</head>
+<body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; padding: 20px;">
+  <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 30px; text-align: center; border-radius: 8px 8px 0 0;">
+    <h1 style="margin: 0;">New Title Assigned</h1>
+  </div>
+  <div style="background: #f9fafb; padding: 30px; border: 1px solid #e5e7eb; border-top: none;">
+    <p>Hi ${data.assigneeName},</p>
+    <p>A new title has been assigned to you and is now being audited.</p>
+    <div style="background: white; padding: 20px; border-radius: 8px; margin: 20px 0; box-shadow: 0 1px 3px rgba(0,0,0,0.1);">
+      <h3 style="margin-top: 0; color: #111827;">Details</h3>
+      <table style="width: 100%; border-collapse: collapse;">
+        <tr><td style="padding: 10px 0; font-weight: 600; color: #6b7280; border-bottom: 1px solid #e5e7eb;">File</td><td style="padding: 10px 0; font-weight: 700; color: #111827; text-align: right; border-bottom: 1px solid #e5e7eb;">${data.fileName}</td></tr>
+        ${assignedByLine}
+      </table>
+    </div>
+    <p style="text-align: center;">
+      <a href="${data.jobUrl}" style="display: inline-block; background: #667eea; color: white; padding: 14px 28px; text-decoration: none; border-radius: 6px; font-weight: 600;">View Title</a>
+    </p>
+  </div>
+  <div style="text-align: center; padding: 20px; color: #6b7280; font-size: 14px;">
+    <p>This is an automated notification from Ninja Platform.</p>
+  </div>
+</body>
+</html>`;
+  }
+
+  private buildJobAssignedText(data: JobAssignedEmailData): string {
+    const assignedByLine = data.assignedByName ? `\nAssigned By: ${data.assignedByName}` : '';
+
+    return `New Title Assigned
+
+Hi ${data.assigneeName},
+
+A new title has been assigned to you and is now being audited.
+
+File: ${data.fileName}${assignedByLine}
+
+View Title: ${data.jobUrl}
 
 ---
 This is an automated notification from Ninja Platform.`;

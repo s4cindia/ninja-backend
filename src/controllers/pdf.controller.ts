@@ -18,22 +18,26 @@ import { AuthenticatedRequest } from '../types/authenticated-request';
 import { reScanJobSchema } from '../schemas/pdf.schemas';
 import { resolveAssignedOwner, JobOwnerAssignment } from '../utils/team-roster';
 import { notificationService } from '../services/notification/notification.service';
+import { emailService } from '../services/email/email.service';
 import { AppError } from '../utils/app-error';
 
 /**
- * Fires the "you've been assigned a new title" notification -- a no-op
- * for the overwhelming majority of uploads (plain self-uploads, where
- * resolveAssignedOwner's assignedById is null). The same link shape
- * team-review.routes.ts's own jobLink() uses for its notifications
- * (one URL regardless of status -- the results page itself already
- * branches on processing/complete/failed), hardcoded to the PDF route
- * here since both call sites that use this are PDF-only upload paths.
- * Fire-and-forget, same "nice-to-have, never the critical path"
- * contract as every other notification call in this codebase -- a
- * failure here must never fail the upload itself.
+ * Fires the "you've been assigned a new title" notification (in-app +
+ * email) -- a no-op for the overwhelming majority of uploads (plain
+ * self-uploads, where resolveAssignedOwner's assignedById is null). The
+ * same link shape team-review.routes.ts's own jobLink() uses for its
+ * notifications (one URL regardless of status -- the results page
+ * itself already branches on processing/complete/failed), hardcoded to
+ * the PDF route here since both call sites that use this are PDF-only
+ * upload paths. Both channels are independently fire-and-forget, same
+ * "nice-to-have, never the critical path" contract as every other
+ * notification call in this codebase -- a failure in either (or both)
+ * must never fail the upload itself, and one channel's failure must
+ * never block the other.
  */
-function notifyJobAssignment(assignment: JobOwnerAssignment, tenantId: string, jobId: string, fileName: string): void {
+export function notifyJobAssignment(assignment: JobOwnerAssignment, tenantId: string, jobId: string, fileName: string): void {
   if (!assignment.assignedById) return;
+
   notificationService
     .createNotification({
       userId: assignment.ownerId,
@@ -47,6 +51,23 @@ function notifyJobAssignment(assignment: JobOwnerAssignment, tenantId: string, j
     .catch((err) => {
       logger.error(`[PDF] Failed to create JOB_ASSIGNED notification for job ${jobId}: ${err instanceof Error ? err.message : String(err)}`);
     });
+
+  (async () => {
+    const [assignee, assignedBy] = await Promise.all([
+      prisma.user.findUnique({ where: { id: assignment.ownerId }, select: { email: true, firstName: true, lastName: true } }),
+      prisma.user.findUnique({ where: { id: assignment.assignedById! }, select: { firstName: true, lastName: true } }),
+    ]);
+    if (!assignee) return;
+    await emailService.sendJobAssignedEmail({
+      assigneeName: `${assignee.firstName} ${assignee.lastName}`.trim(),
+      assigneeEmail: assignee.email,
+      assignedByName: assignedBy ? `${assignedBy.firstName} ${assignedBy.lastName}`.trim() : undefined,
+      fileName,
+      jobUrl: `${process.env.APP_URL || ''}/pdf/audit/${jobId}`,
+    });
+  })().catch((err) => {
+    logger.error(`[PDF] Failed to send JOB_ASSIGNED email for job ${jobId}: ${err instanceof Error ? err.message : String(err)}`);
+  });
 }
 
 export class PdfController {
