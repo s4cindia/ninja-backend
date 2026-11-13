@@ -33,6 +33,7 @@ import { pdfMcidPageMismatchValidator } from './validators/pdf-mcid-page-mismatc
 import { pdfRoleMapIntegrityValidator } from './validators/pdf-rolemap-integrity.validator';
 import { pdfHeaderFooterContentValidator } from './validators/pdf-header-footer-content.validator';
 import { pdfReadingOrderFloatValidator } from './validators/pdf-reading-order-float.validator';
+import { pdfStructureParentMismatchValidator } from './validators/pdf-structure-parent-mismatch.validator';
 import { pdfHeadingStyleMismatchValidator } from './validators/pdf-heading-style-mismatch.validator';
 import { pdfTableCellTreeValidator } from './validators/pdf-table-cell-tree.validator';
 import { pdfFontToUnicodeValidator } from './validators/pdf-font-tounicode.validator';
@@ -623,6 +624,28 @@ class PdfAuditService extends BaseAuditService<PdfParseResult, PdfValidationResu
             const errorMessage = error instanceof Error ? error.message : 'Unknown error';
             logger.error(`[PdfAudit] PdfReadingOrderFloatValidator failed:`, error);
             result.validatorErrors.push({ validator: 'PdfReadingOrderFloatValidator', error: errorMessage });
+          }
+        }
+
+        // 1k. Structure-Element-Wrong-Parent Validator -- confirmed real
+        // via an independent PAC/veraPDF re-check (Karsaklian_189165's own
+        // round-15 remediation): struct elements whose own /P disagrees
+        // with their real, current /K-tree parent, root-caused to
+        // fixReadingOrderFloatInterruption's own missing /P update (fixed
+        // at the source, but this detector also heals any document already
+        // affected, and catches any future reparenting bug the same way).
+        // See structure-parent-mismatch.ts's own header comment.
+        if (willRunStructure) {
+          try {
+            logger.info(`[PdfAudit] Running PdfStructureParentMismatchValidator...`);
+            const parentMismatchResult = await pdfStructureParentMismatchValidator.validate(parsedPdf);
+            result.structureIssues.push(...parentMismatchResult.issues);
+            result.issues.push(...parentMismatchResult.issues);
+            logger.info(`[PdfAudit] PdfStructureParentMismatchValidator found ${parentMismatchResult.issues.length} issue(s)`);
+          } catch (error) {
+            const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+            logger.error(`[PdfAudit] PdfStructureParentMismatchValidator failed:`, error);
+            result.validatorErrors.push({ validator: 'PdfStructureParentMismatchValidator', error: errorMessage });
           }
         }
       };
