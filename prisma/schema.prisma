@@ -193,6 +193,15 @@ model Job {
   batchSourceJobIds String[]  @default([])
   isBatchAcr        Boolean   @default(false)
 
+  // Set only when a Team Leader uploaded this job and assigned it directly
+  // to an Executive at creation time (userId is the Executive, not the
+  // Team Leader who triggered the upload) -- see team-roster.ts's
+  // resolveAssignedOwner. Null for every normal self-upload, which is the
+  // overwhelming majority of jobs; userId alone still answers "who owns/
+  // works this" exactly as it always has.
+  assignedById String?
+  assignedAt   DateTime?
+
   // Remediation-cycle concurrency lock -- prevents two overlapping "apply
   // fixes -> re-audit -> re-run AI analysis" cycles on the same job from
   // interleaving their job.output writes with no ordering guarantee (the
@@ -690,6 +699,7 @@ enum NotificationType {
   TEAM_REVIEW_RESUBMIT_REQUESTED
   FEEDBACK_STATUS_CHANGED
   FEEDBACK_SUBMITTED
+  JOB_ASSIGNED
 }
 
 model Notification {

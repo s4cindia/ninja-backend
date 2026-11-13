@@ -16,6 +16,59 @@ import prisma from '../lib/prisma';
 import { logger } from '../lib/logger';
 import { AuthenticatedRequest } from '../types/authenticated-request';
 import { reScanJobSchema } from '../schemas/pdf.schemas';
+import { resolveAssignedOwner, JobOwnerAssignment } from '../utils/team-roster';
+import { notificationService } from '../services/notification/notification.service';
+import { emailService } from '../services/email/email.service';
+import { AppError } from '../utils/app-error';
+
+/**
+ * Fires the "you've been assigned a new title" notification (in-app +
+ * email) -- a no-op for the overwhelming majority of uploads (plain
+ * self-uploads, where resolveAssignedOwner's assignedById is null). The
+ * same link shape team-review.routes.ts's own jobLink() uses for its
+ * notifications (one URL regardless of status -- the results page
+ * itself already branches on processing/complete/failed), hardcoded to
+ * the PDF route here since both call sites that use this are PDF-only
+ * upload paths. Both channels are independently fire-and-forget, same
+ * "nice-to-have, never the critical path" contract as every other
+ * notification call in this codebase -- a failure in either (or both)
+ * must never fail the upload itself, and one channel's failure must
+ * never block the other.
+ */
+export function notifyJobAssignment(assignment: JobOwnerAssignment, tenantId: string, jobId: string, fileName: string): void {
+  if (!assignment.assignedById) return;
+
+  notificationService
+    .createNotification({
+      userId: assignment.ownerId,
+      tenantId,
+      type: 'JOB_ASSIGNED',
+      title: 'New title assigned to you',
+      message: `"${fileName}" was assigned to you by your Team Leader and is now being audited.`,
+      data: { jobId },
+      link: `/pdf/audit/${jobId}`,
+    })
+    .catch((err) => {
+      logger.error(`[PDF] Failed to create JOB_ASSIGNED notification for job ${jobId}: ${err instanceof Error ? err.message : String(err)}`);
+    });
+
+  (async () => {
+    const [assignee, assignedBy] = await Promise.all([
+      prisma.user.findUnique({ where: { id: assignment.ownerId }, select: { email: true, firstName: true, lastName: true } }),
+      prisma.user.findUnique({ where: { id: assignment.assignedById! }, select: { firstName: true, lastName: true } }),
+    ]);
+    if (!assignee) return;
+    await emailService.sendJobAssignedEmail({
+      assigneeName: `${assignee.firstName} ${assignee.lastName}`.trim(),
+      assigneeEmail: assignee.email,
+      assignedByName: assignedBy ? `${assignedBy.firstName} ${assignedBy.lastName}`.trim() : undefined,
+      fileName,
+      jobUrl: `${process.env.APP_URL || ''}/pdf/audit/${jobId}`,
+    });
+  })().catch((err) => {
+    logger.error(`[PDF] Failed to send JOB_ASSIGNED email for job ${jobId}: ${err instanceof Error ? err.message : String(err)}`);
+  });
+}
 
 export class PdfController {
   async parse(req: Request, res: Response, next: NextFunction) {
@@ -532,8 +585,23 @@ export class PdfController {
         });
       }
 
-      const { jobId: newJobId } = await createAndEnqueuePdfAuditJob(req.file, tenantId, userId);
+      let assignment: JobOwnerAssignment;
+      try {
+        assignment = await resolveAssignedOwner(userId, req.body?.assigneeUserId);
+      } catch (assignError) {
+        if (assignError instanceof AppError) {
+          return res.status(assignError.statusCode).json({
+            success: false,
+            data: {},
+            error: { code: assignError.code, message: assignError.message },
+          });
+        }
+        throw assignError;
+      }
+
+      const { jobId: newJobId } = await createAndEnqueuePdfAuditJob(req.file, tenantId, userId, { assignment });
       jobId = newJobId;
+      notifyJobAssignment(assignment, tenantId, jobId, req.file.originalname);
 
       return res.status(202).json({
         success: true,
@@ -960,6 +1028,20 @@ export class PdfController {
 
       previousFileStatus = FileStatus.UPLOADED;
 
+      let assignment: JobOwnerAssignment;
+      try {
+        assignment = await resolveAssignedOwner(userId, req.body?.assigneeUserId);
+      } catch (assignError) {
+        if (assignError instanceof AppError) {
+          await prisma.file.update({ where: { id: fileId }, data: { status: FileStatus.UPLOADED } }).catch(() => {});
+          return res.status(assignError.statusCode).json({
+            success: false,
+            error: assignError.message,
+          });
+        }
+        throw assignError;
+      }
+
       const fileRecord = await prisma.file.findUnique({
         where: { id: fileId },
       });
@@ -979,7 +1061,9 @@ export class PdfController {
         data: {
           id: nanoid(),
           tenantId,
-          userId,
+          userId: assignment.ownerId,
+          assignedById: assignment.assignedById,
+          assignedAt: assignment.assignedAt,
           type: 'PDF_ACCESSIBILITY',
           status: 'QUEUED',
           input: {
@@ -1015,11 +1099,15 @@ export class PdfController {
           message: 'Audit job queued. Poll GET /api/v1/jobs/:jobId for status.',
         },
       });
+      notifyJobAssignment(assignment, tenantId, job.id, fileRecord.originalName);
 
       // Route through the same BullMQ pipeline as direct-buffer uploads
       // (auditFromBuffer) so both upload paths get identical processing —
-      // auto-tagging (Seam-C/Adobe), AI analysis, everything.
-      enqueuePdfAuditFromFile(job.id, fileRecord, tenantId, userId).catch(async (error) => {
+      // auto-tagging (Seam-C/Adobe), AI analysis, everything. Passes
+      // assignment.ownerId (not the raw caller userId) -- the worker's own
+      // eventual JOB_COMPLETED notification must go to whoever actually
+      // owns this job now, not whoever triggered the upload.
+      enqueuePdfAuditFromFile(job.id, fileRecord, tenantId, assignment.ownerId).catch(async (error) => {
         logger.error(`[PDF] Failed to enqueue audit for job ${job.id} (fileId ${fileId}): ${error instanceof Error ? error.message : 'Unknown error'}`);
         await prisma.job.update({
           where: { id: job.id },
@@ -1113,14 +1201,21 @@ export async function createAndEnqueuePdfAuditJob(
   file: { originalname: string; mimetype: string; size: number; buffer?: Buffer },
   tenantId: string,
   userId: string,
-  jobOptions?: { forceAutoTag?: boolean; sourceS3Key?: string }
+  jobOptions?: { forceAutoTag?: boolean; sourceS3Key?: string; assignment?: JobOwnerAssignment }
 ): Promise<{ jobId: string }> {
+  // assignment absent (every caller except auditFromBuffer's own
+  // Team-Leader-assigns-at-upload path) is a plain self-upload -- ownerId
+  // falls back to the caller's own userId, exactly as this always worked.
+  const ownerId = jobOptions?.assignment?.ownerId ?? userId;
+
   // Create job as QUEUED — audit runs asynchronously
   const job = await prisma.job.create({
     data: {
       id: nanoid(),
       tenantId,
-      userId,
+      userId: ownerId,
+      assignedById: jobOptions?.assignment?.assignedById ?? null,
+      assignedAt: jobOptions?.assignment?.assignedAt ?? null,
       type: 'PDF_ACCESSIBILITY',
       status: 'QUEUED',
       input: {
@@ -1160,7 +1255,7 @@ export async function createAndEnqueuePdfAuditJob(
       {
         type: JOB_TYPES.PDF_ACCESSIBILITY,
         tenantId,
-        userId,
+        userId: ownerId,
         options: {
           dbJobId: jobId,
           fileName: file.originalname,
@@ -1184,7 +1279,7 @@ export async function createAndEnqueuePdfAuditJob(
       const fallbackJobId = jobId;
       const fallbackFileName = file.originalname;
       const fallbackTenantId = tenantId;
-      const fallbackUserId = userId;
+      const fallbackUserId = ownerId;
       setTimeout(async () => {
         try {
           const dbJob = await prisma.job.findUnique({
@@ -1220,7 +1315,7 @@ export async function createAndEnqueuePdfAuditJob(
     (file.buffer ? Promise.resolve(file.buffer) : fileStorageService.getFile(jobId, file.originalname))
       .then((buffer) => {
         if (!buffer) throw new Error(`file not found in storage for job ${jobId}`);
-        return processAuditFromBufferBackground(jobId, buffer, file.originalname, tenantId, userId);
+        return processAuditFromBufferBackground(jobId, buffer, file.originalname, tenantId, ownerId);
       })
       .catch(async (err: unknown) => {
         // processAuditFromBufferBackground always resolves -- it catches its

@@ -18,7 +18,7 @@ import { Request, Response } from 'express';
 vi.mock('../../../src/lib/prisma', () => ({
   default: {
     job: { findMany: vi.fn(), count: vi.fn() },
-    teamMembership: { findMany: vi.fn() },
+    teamMembership: { findMany: vi.fn(), findFirst: vi.fn() },
     teamReview: { findMany: vi.fn() },
   },
 }));
@@ -326,6 +326,55 @@ describe('JobController', () => {
       await jobController.listTeamJobs(makeReq({ user: { id: 'leader-1', tenantId: 'tenant-1' } } as any), res, next);
 
       expect(prisma.teamReview.findMany).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('listTeamExecutives() -- GET /jobs/team/executives (Team Leader upload-assignment roster)', () => {
+    it('rejects a caller who does not lead any team at all (plain EXECUTIVE, VIEWER, or no team)', async () => {
+      (prisma.teamMembership.findFirst as any).mockResolvedValueOnce(null);
+
+      const res = makeRes();
+      await jobController.listTeamExecutives(makeReq({ user: { id: 'exec-1', tenantId: 'tenant-1' } } as any), res, next);
+
+      expect(next).toHaveBeenCalledTimes(1);
+      const error = (next as any).mock.calls[0][0];
+      expect(error.statusCode).toBe(403);
+      expect(error.code).toBe('NOT_TEAM_LEADER');
+      // Short-circuits before ever querying the roster itself.
+      expect(prisma.teamMembership.findMany).not.toHaveBeenCalled();
+    });
+
+    it('a team-level VIEWER (read-only oversight) does NOT get this roster, unlike listTeamJobs/getTeamReviewActivity', async () => {
+      // findFirst is scoped to teamRole: 'TEAM_LEADER' only -- a VIEWER's
+      // own membership row never matches it, so this resolves null exactly
+      // like "no team at all" above.
+      (prisma.teamMembership.findFirst as any).mockResolvedValueOnce(null);
+
+      const res = makeRes();
+      await jobController.listTeamExecutives(makeReq({ user: { id: 'viewer-1', tenantId: 'tenant-1' } } as any), res, next);
+
+      expect(next).toHaveBeenCalledTimes(1);
+      expect((next as any).mock.calls[0][0].code).toBe('NOT_TEAM_LEADER');
+    });
+
+    it('returns every Executive across every team this caller leads, with team name attached', async () => {
+      (prisma.teamMembership.findFirst as any).mockResolvedValueOnce({ teamId: 'team-1' });
+      (prisma.teamMembership.findMany as any)
+        .mockResolvedValueOnce([{ teamId: 'team-1' }, { teamId: 'team-2' }]) // getLedExecutives' own ledTeams lookup
+        .mockResolvedValueOnce([
+          { teamId: 'team-1', team: { name: 'Cell A' }, user: { id: 'exec-1', firstName: 'Ada', lastName: 'Lovelace', email: 'ada@example.com' } },
+          { teamId: 'team-2', team: { name: 'Cell B' }, user: { id: 'exec-2', firstName: 'Grace', lastName: 'Hopper', email: 'grace@example.com' } },
+        ]);
+
+      const res = makeRes();
+      await jobController.listTeamExecutives(makeReq({ user: { id: 'leader-1', tenantId: 'tenant-1' } } as any), res, next);
+
+      expect(next).not.toHaveBeenCalled();
+      const executives = (res.json as any).mock.calls[0][0].data.executives;
+      expect(executives).toEqual([
+        { userId: 'exec-1', firstName: 'Ada', lastName: 'Lovelace', email: 'ada@example.com', teamId: 'team-1', teamName: 'Cell A' },
+        { userId: 'exec-2', firstName: 'Grace', lastName: 'Hopper', email: 'grace@example.com', teamId: 'team-2', teamName: 'Cell B' },
+      ]);
     });
   });
 
