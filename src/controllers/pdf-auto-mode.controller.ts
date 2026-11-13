@@ -27,61 +27,17 @@
 
 import { Request, Response, NextFunction } from 'express';
 import prisma from '../lib/prisma';
-import { logger } from '../lib/logger';
 import { AppError } from '../utils/app-error';
 import {
   autoRemediationLoopService,
   resolveColorContrastMode,
   resolveAltTextMode,
+  enqueueOrRunAutoLoop,
   ComparisonTrialAutoRemediationDriver,
   JobAutoRemediationDriver,
 } from '../services/pdf/auto-remediation-loop.service';
-import type { AutoRemediationDriver } from '../services/pdf/auto-remediation-loop.service';
-import { areQueuesAvailable, getAutoRemediationQueue } from '../queues';
 import { estimateBudgetForJob } from '../services/pdf/auto-mode-budget-estimate.service';
 import type { StartAutoModeBody } from '../schemas/pdf-auto-mode.schemas';
-
-/**
- * Routes a run through the auto-remediation BullMQ queue (worker process --
- * isolated from the ALB health checks that evicted the web task mid-round on
- * 2026-10-13, see auto-remediation.processor.ts) when queues are available,
- * falling back to the original direct in-process call otherwise -- keeps
- * local dev without Redis configured working exactly as before this change.
- *
- * Dispatch id is `${id}-${Date.now()}`, NOT the bare trial/run id. Real
- * incident, 2026-10-14: a worker-service deploy SIGKILLed the task mid-round,
- * which never let BullMQ observe a clean complete/fail for that job -- so
- * its entry under jobId `id` stayed stuck, and every subsequent start click
- * silently re-added/re-used that same wedged entry (202 response, but the
- * worker never logged picking it up again). The "free dedup against a
- * second concurrent start" a stable jobId was meant to buy is already fully
- * covered, correctly, by the autoStatus === 'running' check in both callers
- * below plus remediationCycleLockService's own atomic lock -- so there is no
- * actual loss from making the BullMQ id unique per attempt instead.
- */
-function enqueueOrRunAutoLoop(kind: 'trial' | 'jobRun', id: string, driver: AutoRemediationDriver): void {
-  if (areQueuesAvailable()) {
-    const queue = getAutoRemediationQueue();
-    if (queue) {
-      queue.add(`auto-remediation-${id}`, { kind, id }, { jobId: `${id}-${Date.now()}` }).catch((err) => {
-        logger.error(
-          `[PdfAutoMode] Failed to enqueue auto loop for ${kind} ${id}, falling back to in-process: ${err instanceof Error ? err.message : String(err)}`
-        );
-        autoRemediationLoopService.startAutoLoop(driver).catch((err2) => {
-          logger.error(
-            `[PdfAutoMode] Unexpected error starting auto loop for ${kind} ${id}: ${err2 instanceof Error ? err2.message : String(err2)}`
-          );
-        });
-      });
-      return;
-    }
-  }
-  autoRemediationLoopService.startAutoLoop(driver).catch((err) => {
-    logger.error(
-      `[PdfAutoMode] Unexpected error starting auto loop for ${kind} ${id}: ${err instanceof Error ? err.message : String(err)}`
-    );
-  });
-}
 
 export class PdfAutoModeController {
   /**

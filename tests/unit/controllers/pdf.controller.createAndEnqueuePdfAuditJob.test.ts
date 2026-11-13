@@ -50,13 +50,27 @@ describe('createAndEnqueuePdfAuditJob', () => {
 
     expect(prisma.job.create).toHaveBeenCalledWith(
       expect.objectContaining({
-        data: expect.objectContaining({ userId: 'caller-1', assignedById: null, assignedAt: null }),
+        data: expect.objectContaining({ userId: 'caller-1', assignedById: null, assignedAt: null, fullAutoMode: null }),
       })
     );
     expect(queueAddMock).toHaveBeenCalledWith(
       'pdf-audit',
       expect.objectContaining({ userId: 'caller-1' }),
       expect.anything()
+    );
+  });
+
+  it('persists Job.fullAutoMode as given (true/false), and null when no override is passed at all', async () => {
+    (prisma.job.create as any).mockResolvedValue({ id: 'job-4' });
+    await createAndEnqueuePdfAuditJob(FILE, 'tenant-1', 'caller-1', { fullAutoMode: true });
+    expect(prisma.job.create).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ fullAutoMode: true }) })
+    );
+
+    (prisma.job.create as any).mockResolvedValue({ id: 'job-5' });
+    await createAndEnqueuePdfAuditJob(FILE, 'tenant-1', 'caller-1', { fullAutoMode: false });
+    expect(prisma.job.create).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ fullAutoMode: false }) })
     );
   });
 

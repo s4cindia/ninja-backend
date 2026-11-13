@@ -23,14 +23,21 @@ vi.mock('../../../src/lib/prisma', () => ({
 // mocking.
 vi.mock('../../../src/services/pdf/auto-remediation-loop.service', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../../src/services/pdf/auto-remediation-loop.service')>();
-  return {
-    ...actual,
-    autoRemediationLoopService: {
-      startAutoLoop: vi.fn(),
-      reconcileIfOrphaned: vi.fn().mockResolvedValue(undefined),
-      reconcileIfOrphanedJobRun: vi.fn().mockResolvedValue(undefined),
-    },
-  };
+  // Mutates the REAL singleton's methods in place (Object.assign onto the
+  // same object `actual` already holds) rather than replacing
+  // autoRemediationLoopService with a fresh plain object. The real,
+  // unmocked enqueueOrRunAutoLoop (spread in via `...actual`) calls
+  // `autoRemediationLoopService.startAutoLoop(...)` via a same-module
+  // closure over this exact singleton -- replacing the export binding with
+  // a new object would be invisible to that internal call (vi.mock only
+  // rebinds what OTHER modules see on import, not a module's own
+  // self-references), so the stub has to land on the same instance instead.
+  Object.assign(actual.autoRemediationLoopService, {
+    startAutoLoop: vi.fn(),
+    reconcileIfOrphaned: vi.fn().mockResolvedValue(undefined),
+    reconcileIfOrphanedJobRun: vi.fn().mockResolvedValue(undefined),
+  });
+  return actual;
 });
 // Queue availability -- the controller enqueues onto the worker process's
 // auto-remediation queue when Redis/BullMQ is available, falling back to

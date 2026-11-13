@@ -70,6 +70,21 @@ export function notifyJobAssignment(assignment: JobOwnerAssignment, tenantId: st
   });
 }
 
+/**
+ * Parses an optional boolean request-field that may arrive as a real
+ * boolean (a plain JSON POST) or as the string 'true'/'false' (a
+ * multipart/form-data field -- multer never produces real booleans for
+ * non-file fields). Anything else (undefined, '', a typo) is treated as
+ * "not given" -- null, not false -- so the caller still inherits whatever
+ * tenant/job default applies, rather than silently forcing it off.
+ */
+function parseBooleanField(raw: unknown): boolean | null {
+  if (typeof raw === 'boolean') return raw;
+  if (raw === 'true') return true;
+  if (raw === 'false') return false;
+  return null;
+}
+
 export class PdfController {
   async parse(req: Request, res: Response, next: NextFunction) {
     try {
@@ -599,7 +614,15 @@ export class PdfController {
         throw assignError;
       }
 
-      const { jobId: newJobId } = await createAndEnqueuePdfAuditJob(req.file, tenantId, userId, { assignment });
+      // Full Auto Mode upload-time override. This route is multipart/
+      // form-data (multer) -- every non-file field, including this one,
+      // arrives in req.body as a STRING ('true'/'false'), never a real
+      // boolean, so parseBooleanField below handles both forms (the
+      // fileId-based /audit-file route below is plain JSON and gets a real
+      // boolean already, but is parsed the same lenient way for safety).
+      const fullAutoMode = parseBooleanField(req.body?.fullAutoMode);
+
+      const { jobId: newJobId } = await createAndEnqueuePdfAuditJob(req.file, tenantId, userId, { assignment, fullAutoMode });
       jobId = newJobId;
       notifyJobAssignment(assignment, tenantId, jobId, req.file.originalname);
 
@@ -1028,6 +1051,14 @@ export class PdfController {
 
       previousFileStatus = FileStatus.UPLOADED;
 
+      // Full Auto Mode upload-time override -- null/omitted inherits the
+      // tenant's own aiRemediation.fullAutoModeDefault setting (resolved
+      // lazily by accessibility.processor.ts once the initial audit + AI
+      // analysis complete, not frozen here). Same lightweight
+      // inline-validation precedent as forceAutoTag elsewhere in this file
+      // -- not worth a dedicated Zod schema for one optional boolean.
+      const fullAutoMode = parseBooleanField(req.body?.fullAutoMode);
+
       let assignment: JobOwnerAssignment;
       try {
         assignment = await resolveAssignedOwner(userId, req.body?.assigneeUserId);
@@ -1064,6 +1095,7 @@ export class PdfController {
           userId: assignment.ownerId,
           assignedById: assignment.assignedById,
           assignedAt: assignment.assignedAt,
+          fullAutoMode,
           type: 'PDF_ACCESSIBILITY',
           status: 'QUEUED',
           input: {
@@ -1201,7 +1233,7 @@ export async function createAndEnqueuePdfAuditJob(
   file: { originalname: string; mimetype: string; size: number; buffer?: Buffer },
   tenantId: string,
   userId: string,
-  jobOptions?: { forceAutoTag?: boolean; sourceS3Key?: string; assignment?: JobOwnerAssignment }
+  jobOptions?: { forceAutoTag?: boolean; sourceS3Key?: string; assignment?: JobOwnerAssignment; fullAutoMode?: boolean | null }
 ): Promise<{ jobId: string }> {
   // assignment absent (every caller except auditFromBuffer's own
   // Team-Leader-assigns-at-upload path) is a plain self-upload -- ownerId
@@ -1216,6 +1248,7 @@ export async function createAndEnqueuePdfAuditJob(
       userId: ownerId,
       assignedById: jobOptions?.assignment?.assignedById ?? null,
       assignedAt: jobOptions?.assignment?.assignedAt ?? null,
+      fullAutoMode: jobOptions?.fullAutoMode ?? null,
       type: 'PDF_ACCESSIBILITY',
       status: 'QUEUED',
       input: {

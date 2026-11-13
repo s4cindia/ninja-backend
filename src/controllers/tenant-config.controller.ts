@@ -9,6 +9,7 @@ import type { ExplanationSource } from '../services/acr/explanation-catalog.serv
 import { getPrhConfig, updatePrhConfig } from '../services/prh/prh-config.service';
 import { getAxes4TenantConfig, updateAxes4TenantConfig } from '../services/pdf/axes4-tenant-config.service';
 import { getComplianceTenantConfig, updateComplianceTenantConfig } from '../services/pdf/compliance-tenant-config.service';
+import { DEFAULT_AI_REMEDIATION_CONFIG, getEffectiveAiRemediationConfig } from '../services/pdf/ai-remediation-tenant-config.service';
 
 /**
  * Zod schema for workflow configuration updates.
@@ -81,20 +82,13 @@ const aiRemediationConfigUpdateSchema = z.object({
   bookmarkMode: z.enum(['guidance-only', 'disabled', 'apply-to-pdf']).optional(),
   confidenceThreshold: z.number().min(0.5).max(0.95).optional(),
   autoApplyHighConfidence: z.boolean().optional(),
+  // Tenant-wide default for "Full Auto Mode" -- when true, a newly uploaded
+  // job (with no Job.fullAutoMode override) auto-starts the existing Auto
+  // Mode loop itself once its initial audit completes, instead of waiting
+  // for an operator to click "Start Auto Remediation". See
+  // resolveFullAutoMode in auto-remediation-loop.service.ts.
+  fullAutoModeDefault: z.boolean().optional(),
 }).strict();
-
-export const DEFAULT_AI_REMEDIATION_CONFIG = {
-  tableFixMode: 'summaries-to-pdf-headers-as-guidance' as const,
-  altTextMode: 'apply-to-pdf' as const,
-  listMode: 'auto-resolve-decorative' as const,
-  languageMode: 'apply-to-pdf' as const,
-  colorContrastMode: 'guidance-only' as const,
-  linkTextMode: 'guidance-only' as const,
-  formFieldMode: 'guidance-only' as const,
-  bookmarkMode: 'guidance-only' as const,
-  confidenceThreshold: 0.75,
-  autoApplyHighConfidence: false,
-};
 
 const workflowConfigUpdateSchema = z.object({
   enabled: z.boolean().optional(),
@@ -480,25 +474,7 @@ export class TenantConfigController {
     try {
       if (!req.user) throw AppError.unauthorized('Not authenticated');
 
-      const tenant = await prisma.tenant.findUnique({
-        where: { id: req.user.tenantId },
-        select: { settings: true },
-      });
-
-      if (!tenant) throw AppError.notFound('Tenant not found');
-
-      const settings = (tenant.settings && typeof tenant.settings === 'object')
-        ? (tenant.settings as Record<string, unknown>)
-        : {};
-
-      const stored = (settings.aiRemediation && typeof settings.aiRemediation === 'object')
-        ? (settings.aiRemediation as Record<string, unknown>)
-        : {};
-
-      const config = {
-        ...DEFAULT_AI_REMEDIATION_CONFIG,
-        ...stored,
-      };
+      const config = await getEffectiveAiRemediationConfig(req.user.tenantId);
 
       res.json({ success: true, data: config });
     } catch (error) {
