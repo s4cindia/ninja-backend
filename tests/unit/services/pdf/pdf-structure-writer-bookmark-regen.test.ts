@@ -1,10 +1,14 @@
 /**
  * Tests for PdfStructureWriterService.regenerateGenericBookmarkTitles --
  * confirmed real via all 67 bookmarks on Karsaklian_189165_9781606497623.pdf,
- * every single one literally "Section p.25" / "Section p.26" / etc. Unlike
- * generateBookmarksFromHeadings (builds a brand-new /Outlines tree from
- * scratch), this walks an EXISTING outline and only touches a bookmark's
- * /Title when it can unambiguously match it to a real-text heading.
+ * every single one literally "Section — p.25" / "Section — p.26" /
+ * etc. (a real em dash between the label and the page number -- a live
+ * fresh-run check on 2026-11-13 found GENERIC_TITLE_RE matched 0 of 42 real
+ * titles because the regex at the time only accounted for the plain-ASCII
+ * "Section p.25" shape). Unlike generateBookmarksFromHeadings (builds a
+ * brand-new /Outlines tree from scratch), this walks an EXISTING outline
+ * and only touches a bookmark's /Title when it can unambiguously match it
+ * to a real-text heading.
  */
 
 import { describe, it, expect } from 'vitest';
@@ -77,6 +81,16 @@ describe('PdfStructureWriterService.regenerateGenericBookmarkTitles', () => {
   it('regenerates a generic bookmark title from its target page\'s real, unambiguous heading text', async () => {
     const doc = await buildDocWithHeadings(1, [{ pageIndex: 0, actualText: 'Chapter 3: Financial Risk Assessment' }]);
     const bookmarkRef = addBookmark(doc, 'Section p.1', 0);
+
+    const result = pdfStructureWriterService.regenerateGenericBookmarkTitles(doc);
+
+    expect(result.updated).toBe(1);
+    expect(titleOf(doc, bookmarkRef)).toBe('Chapter 3: Financial Risk Assessment');
+  });
+
+  it('regenerates a title using the real em-dash shape ("Section — p.1"), not just the plain-ASCII one', async () => {
+    const doc = await buildDocWithHeadings(1, [{ pageIndex: 0, actualText: 'Chapter 3: Financial Risk Assessment' }]);
+    const bookmarkRef = addBookmark(doc, 'Section — p.1', 0);
 
     const result = pdfStructureWriterService.regenerateGenericBookmarkTitles(doc);
 
