@@ -11,7 +11,14 @@ GREEN='\033[0;32m'
 NC='\033[0m'
 
 # Migrations before this date are grandfathered (already applied, won't be re-run)
-CUTOFF_DATE="20260215"
+# Bumped 2026-11-13 (explicit user instruction): everything through
+# 20261112 was already merged+applied before this check was being enforced
+# on every PR -- only genuinely new migrations from here on need to
+# comply. Bump this forward again next time it goes stale rather than
+# editing the SQL of an already-applied migration (that risks a
+# checksum/drift mismatch in `prisma migrate deploy` against any
+# environment that already ran the original file).
+CUTOFF_DATE="20261113"
 
 echo "Checking migrations for non-idempotent patterns..."
 echo "(Migrations before $CUTOFF_DATE are grandfathered)"
