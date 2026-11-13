@@ -104,6 +104,27 @@ export interface AuditIssue {
     number: string;
     fullText: string;
   };
+  /**
+   * Populated only by PdfTocValidator for TOC-LINK-MISSING issues. `mcid`
+   * is the TOC entry's own trailing page-number/roman-numeral label span --
+   * already a completely isolated bare-MCID structure element in every real
+   * case seen (confirmed via Karsaklian_189165_9781606497623.pdf's own
+   * InDesign-exported content stream: a TOC row is three flat sibling /P
+   * spans -- title, dot-leader, label -- never one shared span), so the
+   * fixer locates it directly via findBdcTagSpanForMcid rather than
+   * re-deriving it from `label`/text search. `targetPageIndex` is the
+   * already-resolved, already-unique 0-based page index this label matched
+   * against this document's own real /PageLabels (pdfParserService.
+   * extractPageLabels) -- resolution ambiguity is the validator's own gate,
+   * not the fixer's, same "optimistic at dispatch" split as
+   * crossReferenceData above.
+   */
+  tocLinkData?: {
+    mcid: number;
+    label: string;
+    targetPageIndex: number;
+    entryText: string;
+  };
 }
 
 /**

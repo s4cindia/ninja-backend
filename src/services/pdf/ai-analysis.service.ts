@@ -396,6 +396,12 @@ const PLACEDPDF_NOT_TAGGED_CODES = new Set(['PLACEDPDF-NOT-TAGGED']);
 // well-understood reasons, not silently skipped).
 const LINK_MISSING_ANNOTATION_CODES = new Set(['LINK-MISSING-ANNOTATION']);
 const CROSS_REFERENCE_MISSING_LINK_CODES = new Set(['CROSS-REFERENCE-MISSING-LINK']);
+// pdf-toc.validator.ts: a TOC entry's own trailing page-number/roman-numeral
+// label has no Link annotation to its resolved target page. Deterministic,
+// no AI judgment needed -- the validator already resolved the target page
+// unambiguously via this document's own /PageLabels before ever producing
+// this issue; see fixTocEntryLink's own doc comment for the apply-time gate.
+const TOC_LINK_MISSING_CODES = new Set(['TOC-LINK-MISSING']);
 
 // Document-level codes always produce the same result for the whole document,
 // so the suggestion cache below keys them by code alone.
@@ -2072,6 +2078,18 @@ class AiAnalysisService {
         guidance: 'This text reads as a cross-reference with no underlying link -- a real internal Link annotation will be created if its target can be resolved unambiguously.',
         confidence: 1.0,
         rationale: 'Deterministic fix when resolvable -- the destination is found via this document\'s own real tagged headings or /PageLabels, never guessed; declines rather than guesses when more than one match exists or none at all',
+        model: 'rule-based',
+        applyMode: 'apply-to-pdf',
+      };
+    }
+
+    if (TOC_LINK_MISSING_CODES.has(code)) {
+      if (!issue.tocLinkData) return null;
+      return {
+        suggestionType: 'toc-link-fix',
+        guidance: `This TOC entry has no link to its target section -- a real internal Link annotation will be created to page ${issue.tocLinkData.targetPageIndex + 1}.`,
+        confidence: 1.0,
+        rationale: 'Deterministic fix -- the validator already resolved this entry\'s own page-number label to exactly one real page via this document\'s own /PageLabels, and already identified the exact, already-isolated MCID span to wrap; no AI judgment needed',
         model: 'rule-based',
         applyMode: 'apply-to-pdf',
       };
@@ -4345,6 +4363,16 @@ class AiAnalysisService {
           // see fixCrossReferenceLink's own doc comment for the
           // destination-resolution gate this adds on top.
           const r = pdfStructureWriterService.fixCrossReferenceLink(doc, originalIssue);
+          modification = { success: r.success, description: r.after, error: r.error };
+          if (r.success && originalIssue.pageNumber !== undefined) {
+            pagesRewrittenSincePreResolve.add(originalIssue.pageNumber);
+          }
+        } else if (suggestionType === 'toc-link-fix') {
+          // Same buildLinkAnnotationFix/applyLinkSplice core (and same
+          // content-stream-rewrite tracking need) as cross-reference-link-fix
+          // above -- see fixTocEntryLink's own doc comment for why it skips
+          // the text-search step entirely (the target MCID is already known).
+          const r = pdfStructureWriterService.fixTocEntryLink(doc, originalIssue);
           modification = { success: r.success, description: r.after, error: r.error };
           if (r.success && originalIssue.pageNumber !== undefined) {
             pagesRewrittenSincePreResolve.add(originalIssue.pageNumber);

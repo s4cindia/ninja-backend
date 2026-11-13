@@ -73,9 +73,11 @@ import {
   buildLinkCompletenessSplice,
   findUrlSubstringRun,
   buildUrlSubstringSplice,
+  findEnclosingTagSpan,
   type GlyphTextResolver,
   type LinkCompletenessSplice,
   type UrlSubstringSplice,
+  type UrlOperatorRun,
 } from './pdf-link-completeness-writer';
 
 // ─── Public Types ─────────────────────────────────────────────────────────────
@@ -8529,6 +8531,36 @@ export class PdfStructureWriterService {
         'that this fixer declines rather than guesses on -- see pdf-link-completeness-writer.ts'
       );
     }
+
+    return this.applyLinkSplice(
+      doc, issue, pageNumber, originalContent, splice, bbox, action,
+      resultAfterLabel + (method === 'substring' ? ' (carved out of a shared operand via the same-operand splitter)' : ''),
+    );
+  }
+
+  /**
+   * Shared tail of buildLinkAnnotationFix -- extracted so fixTocEntryLink
+   * (below) can reuse the EXACT same annotation/struct-element creation and
+   * rollback logic via a direct-MCID splice (it already knows exactly
+   * which MCID to target, via the structure tree rather than a text
+   * search -- see fixTocEntryLink's own doc comment), without duplicating
+   * ~190 lines of proven, already-shipped splicing code. Pure mechanical
+   * extraction: every statement below is unchanged from buildLinkAnnotationFix's
+   * own previous single-function body, just taking `pageNumber`/
+   * `originalContent`/`splice` as parameters instead of closure locals.
+   */
+  private applyLinkSplice(
+    doc: PDFDocument,
+    issue: AuditIssue,
+    pageNumber: number,
+    originalContent: string,
+    splice: LinkCompletenessSplice | UrlSubstringSplice,
+    bbox: NonNullable<AuditIssue['boundingBox']>,
+    action: { S: PDFName; URI?: PDFString; D?: PDFArray },
+    resultAfterLabel: string,
+  ): FixResult {
+    const fail = (error: string): FixResult => ({ issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error });
+
     if (splice.enclosingMcid === null) {
       return fail(
         'Enclosing content is an untagged /Artifact span (no MCID of its own) -- no natural structure-tree parent ' +
@@ -8716,7 +8748,7 @@ export class PdfStructureWriterService {
       issueId: issue.id,
       success: true,
       before: 'Text with no Link annotation',
-      after: resultAfterLabel + (method === 'substring' ? ' (carved out of a shared operand via the same-operand splitter)' : ''),
+      after: resultAfterLabel,
     };
   }
 
@@ -8896,6 +8928,86 @@ export class PdfStructureWriterService {
     }
 
     return null; // figure/fig/table -- no resolution path yet, decline
+  }
+
+  /**
+   * TOC-LINK-MISSING fix -- builds a real internal link (a /Link annotation
+   * with a GoTo action, same annotation+struct-element machinery as
+   * fixLinkMissingAnnotation/fixCrossReferenceLink above, via the shared
+   * applyLinkSplice tail) from a TOC entry's own trailing page-number/
+   * roman-numeral label to its resolved target page.
+   *
+   * Unlike fixLinkMissingAnnotation/fixCrossReferenceLink, this does NOT
+   * call findUrlOperatorRun/findUrlSubstringRun to LOCATE the span to
+   * splice -- pdf-toc.validator.ts's own tocLinkData.mcid already names the
+   * exact MCID (toc-entry-extractor.ts's own extractTocRowCandidates found
+   * it directly via the structure tree, not a text search), and every real
+   * sample confirms that MCID's own span is ALREADY completely isolated
+   * (nothing else shares it -- see toc-entry-extractor.ts's own header
+   * comment), so the "whole enclosing span IS the run" shape
+   * buildLinkCompletenessSplice already supports natively (no text search
+   * needed to discover start/end when they're already known to equal the
+   * enclosing span's own contentStart/closeOpStart). findBdcTagSpanForMcid
+   * + findEnclosingTagSpan together resolve that span's exact byte range
+   * from the MCID alone.
+   *
+   * Declines (rather than guesses) when: the MCID's own BDC can no longer
+   * be found (page already rewritten by an earlier fix in a way that moved
+   * it -- shouldn't happen within one apply batch, but checked anyway,
+   * same discipline as every other fixer in this file); the span found at
+   * that position doesn't actually carry this exact MCID (defensive -- see
+   * findEnclosingTagSpan's own doc comment for why this should be
+   * impossible by construction, not just unlikely); or
+   * buildLinkCompletenessSplice itself declines (e.g. the span's own
+   * content somehow extends past its enclosing tag's close -- a shape this
+   * method's own callers never produce, but not assumed away here either).
+   */
+  fixTocEntryLink(doc: PDFDocument, issue: AuditIssue): FixResult {
+    const fail = (error: string): FixResult => ({ issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error });
+
+    if (!issue.tocLinkData) return fail('Issue has no tocLinkData');
+    if (!issue.boundingBox) return fail('Issue has no boundingBox -- cannot place a Link annotation without one');
+    if (!issue.pageNumber) return fail('Issue has no pageNumber');
+    const pageNumber = issue.pageNumber;
+    const { mcid, label, targetPageIndex } = issue.tocLinkData;
+
+    let originalContent: string | null;
+    try {
+      originalContent = decodePageContent(doc, pageNumber);
+    } catch (err) {
+      return fail(`Could not decode page ${pageNumber}: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    if (!originalContent) return fail(`Page ${pageNumber} has no content stream`);
+
+    const bdcSpan = findBdcTagSpanForMcid(originalContent, mcid);
+    if (!bdcSpan) {
+      return fail(`No BDC opens MCID ${mcid} on page ${pageNumber} -- already changed, or this MCID no longer exists`);
+    }
+    const enclosing = findEnclosingTagSpan(originalContent, bdcSpan.end);
+    if (!enclosing || !enclosing.tag || enclosing.mcid !== mcid) {
+      return fail(`Could not resolve a clean, isolated span for MCID ${mcid} on page ${pageNumber} -- declining rather than guessing`);
+    }
+
+    const run: UrlOperatorRun = { start: enclosing.contentStart, end: enclosing.closeOpStart, matchedText: label };
+    const existingMcids = pageContentMcids(doc, pageNumber) ?? new Set<number>();
+    const nextMcid = existingMcids.size > 0 ? Math.max(...existingMcids) + 1 : 0;
+
+    const splice = buildLinkCompletenessSplice(originalContent, run, nextMcid);
+    if (!splice) {
+      return fail(`Could not build a content-stream splice for MCID ${mcid} on page ${pageNumber} -- declining rather than guessing`);
+    }
+
+    const pages = doc.getPages();
+    if (targetPageIndex < 0 || targetPageIndex >= pages.length) {
+      return fail(`Resolved target page index ${targetPageIndex} is out of range (document has ${pages.length} pages)`);
+    }
+    const dest = doc.context.obj([pages[targetPageIndex].ref, PDFName.of('XYZ'), null, null, null]) as PDFArray;
+
+    return this.applyLinkSplice(
+      doc, issue, pageNumber, originalContent, splice, issue.boundingBox,
+      { S: PDFName.of('GoTo'), D: dest },
+      `Created a /Link annotation + structure element from this TOC entry's own page-number label ("${label}") to its resolved target page (page ${targetPageIndex + 1})`,
+    );
   }
 }
 
