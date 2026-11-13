@@ -40,6 +40,7 @@ import { pdfTableHeaderScopeValidator } from './validators/pdf-table-header-scop
 import { pdfStructureValidator } from './validators/pdf-structure.validator';
 import { pdfLinkValidator } from './validators/pdf-link.validator';
 import { pdfLinkCompletenessValidator } from './validators/pdf-link-completeness.validator';
+import { pdfTocValidator } from './validators/pdf-toc.validator';
 import { pdfFormValidator } from './validators/pdf-form.validator';
 import { pdfBookmarkValidator } from './validators/pdf-bookmark.validator';
 import { pdfSupplementalValidator } from './validators/pdf-supplemental.validator';
@@ -780,6 +781,24 @@ class PdfAuditService extends BaseAuditService<PdfParseResult, PdfValidationResu
             const errorMessage = error instanceof Error ? error.message : 'Unknown error';
             logger.error(`[PdfAudit] PdfLinkCompletenessValidator failed:`, error);
             result.validatorErrors.push({ validator: 'PdfLinkCompletenessValidator', error: errorMessage });
+          }
+
+          // 5c. TOC Validator -- a TOC page's own entries tagged as plain
+          // paragraphs instead of /TOC/TOCI (detect-only), and each entry's
+          // own trailing page-number label missing a Link to its target
+          // section (auto-fixable where the label resolves unambiguously
+          // via this document's own /PageLabels). Same no-onValidatorComplete
+          // convention as 5b above.
+          try {
+            logger.info(`[PdfAudit] Running PdfTocValidator...`);
+            const tocIssues = await pdfTocValidator.validate(parsed);
+            result.linkIssues.push(...tocIssues);
+            result.issues.push(...tocIssues);
+            logger.info(`[PdfAudit] PdfTocValidator found ${tocIssues.length} issues`);
+          } catch (error) {
+            const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+            logger.error(`[PdfAudit] PdfTocValidator failed:`, error);
+            result.validatorErrors.push({ validator: 'PdfTocValidator', error: errorMessage });
           }
         }
       };
