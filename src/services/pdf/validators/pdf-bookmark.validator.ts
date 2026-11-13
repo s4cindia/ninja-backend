@@ -15,15 +15,28 @@ import { logger } from '../../../lib/logger';
 
 // Matches generic/auto-generated bookmark titles. The "p(age)?" branch is
 // confirmed real via Karsaklian_189165_9781606497623.pdf's actual bookmarks
-// (67 of them, every single one literally "Section p.25", "Section p.26",
+// (67 of them, every single one literally "Section — p.25", "Section — p.26",
 // etc.) -- InDesign's own fallback when it can't resolve real heading text
 // for a bookmark. The original [\s\d.:-]* branch alone doesn't match these
 // (the literal "p" isn't in that character class), a real false negative
 // this exact document slipped through.
+//
+// The dash is a real U+2014 EM DASH, not a hyphen -- confirmed byte-for-byte
+// via this codebase's own pdf-lib decode on a fresh live run (2026-11-13).
+// An earlier version of this regex (and its own tests) assumed the plain-
+// ASCII-looking "Section p.25" from eyeballing the rendered PDF, which
+// silently swallows the em dash -- that version matched ZERO of the 42 real
+// titles, so BOOKMARK-GENERIC-TEXT never fired and regenerateGenericBookmarkTitles
+// (which shares this exact regex) never got a chance to run on this document,
+// even after the fix that introduced the "p(age)?" branch had shipped and
+// deployed. The dash class below covers hyphen and the common Unicode dash
+// variants (en dash, em dash, figure dash, horizontal bar) and is optional/
+// repeatable so "Section p.25", "Section-p.25", and "Section — p.25" all match.
 // Exported so pdf-structure-writer.service.ts's regenerateGenericBookmarkTitles
 // can detect the SAME "this title is a placeholder" condition this validator
 // flags, rather than risking drift between two independently-maintained copies.
-export const GENERIC_TITLE_RE = /^(section|chapter|untitled|bookmark|\d+)(\s+p(?:age)?\.?\s*\d+(-\d+)?|[\s\d.:-]*)$/i;
+export const GENERIC_TITLE_RE =
+  /^(section|chapter|untitled|bookmark|\d+)((?:\s|[‐-―])*p(?:age)?\.?\s*\d+(-\d+)?|[\s\d.:‐-―-]*)$/i;
 
 // Minimum pages before bookmark checks apply
 const MIN_PAGES_FOR_BOOKMARKS = 10;

@@ -4800,7 +4800,9 @@ export class PdfStructureWriterService {
    * .ts's own GENERIC_TITLE_RE (the same regex that validator uses to flag
    * BOOKMARK-GENERIC-TEXT) -- confirmed real via all 67 bookmarks on
    * Karsaklian_189165_9781606497623.pdf, every single one literally
-   * "Section p.25" / "Section p.26" / etc. (InDesign's own fallback when it
+   * "Section — p.25" / "Section — p.26" / etc. (a real em dash
+   * between the label and the page number -- see GENERIC_TITLE_RE's own
+   * comment for the live-run regression this caused) (InDesign's own fallback when it
    * couldn't resolve real heading text at export time, itself downstream of
    * the RoleMap-flattening bug the related PdfRoleMapIntegrityValidator
    * fixes -- once that fix retargets a heading style to a real /Hn type,
