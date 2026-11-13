@@ -193,6 +193,11 @@ const MCID_PAGE_MISMATCH_CODES = new Set(['MCID-PAGE-MISMATCH']);
 // a real-but-harder-to-safely-auto-fix case. See
 // pdf-reading-order-float.validator.ts's own header comment.
 const READING_ORDER_FLOAT_CODES = new Set(['READING-ORDER-FLOAT-INTERRUPTION']);
+// STRUCTURE-ELEMENT-WRONG-PARENT: always unambiguous (exactly one correct
+// /P value -- whatever dict's own /K array actually contains the element),
+// unlike most of this file's other structural codes. See
+// structure-parent-mismatch.ts's own header comment for the real incident.
+const STRUCTURE_PARENT_MISMATCH_CODES = new Set(['STRUCTURE-ELEMENT-WRONG-PARENT']);
 // Only the two categories with one unambiguous correct RoleMap retarget --
 // see pdf-rolemap-integrity.validator.ts's own header comment for why
 // these are the only two whose /RoleMap entry alone has a single safe
@@ -1783,6 +1788,21 @@ class AiAnalysisService {
         guidance: 'This element will be relocated into the document\'s main flow container, immediately after its confirmed neighbor there, matching its own page/content position.',
         confidence: 1.0,
         rationale: 'Mechanical struct-tree reposition -- no content judgment required',
+        model: 'rule-based',
+        applyMode: 'apply-to-pdf',
+      };
+    }
+
+    if (STRUCTURE_PARENT_MISMATCH_CODES.has(code)) {
+      // Purely mechanical (re-confirmed fresh at apply time against the
+      // same single source of truth, findStructureParentMismatches -- see
+      // its own doc comment) -- always exactly one correct /P value, no
+      // judgment call at all, unlike reading-order-float-fix above.
+      return {
+        suggestionType: 'structure-parent-mismatch-fix',
+        guidance: 'This element\'s /P will be corrected to match its real, current parent in the structure tree.',
+        confidence: 1.0,
+        rationale: 'Mechanical structure-tree consistency fix -- no content judgment required',
         model: 'rule-based',
         applyMode: 'apply-to-pdf',
       };
@@ -4180,7 +4200,11 @@ class AiAnalysisService {
     // suggestion in the batch failed with this exact error, never reaching
     // fixReadingOrderFloatInterruption/fixTocEntryLink/fixCitationLink
     // below despite all three being fully implemented, tested, and merged.
-    const STRUCTURE_WRITER_TYPES = new Set(['heading-fix', 'list-fix', 'table-header-fix', 'table-header-fix-column', 'table-header-scope-fix', 'table-artifact-fix', 'table-from-layout-fix', 'bookmark-generate', 'heading-multiple-h1-fix', 'pdfua-identifier', 'color-contrast-fix', 'alt-text-decorative', 'untagged-content-fix', 'invisible-text-artifact-fix', 'figure-caption-reattach-fix', 'inline-figure-reattach-fix', 'tagged-content-artifact-split-fix', 'table-cell-reattach-fix', 'table-row-reattach-fix', 'font-tounicode-synthesis-fix', 'font-tounicode-extend-fix', 'artifact-unwrap-complex-fix', 'placedpdf-retag-fix', 'link-missing-annotation-fix', 'artifact-actualtext-fix', 'actualtext-missing-mcid-fix', 'tab-order-fix', 'mcid-page-mismatch-fix', 'display-doc-title-fix', 'rolemap-target-fix', 'index-structure-fix', 'footnote-structure-fix', 'bookmark-title-regenerate', 'cross-reference-link-fix', 'reading-order-float-fix', 'toc-link-fix', 'citation-link-fix']);
+    // 'structure-parent-mismatch-fix' added here at the SAME time its own
+    // dispatch branch was added (not as a later catch-up) -- the exact
+    // discipline the #747/#748/#821 incidents this comment already
+    // documents were all missing.
+    const STRUCTURE_WRITER_TYPES = new Set(['heading-fix', 'list-fix', 'table-header-fix', 'table-header-fix-column', 'table-header-scope-fix', 'table-artifact-fix', 'table-from-layout-fix', 'bookmark-generate', 'heading-multiple-h1-fix', 'pdfua-identifier', 'color-contrast-fix', 'alt-text-decorative', 'untagged-content-fix', 'invisible-text-artifact-fix', 'figure-caption-reattach-fix', 'inline-figure-reattach-fix', 'tagged-content-artifact-split-fix', 'table-cell-reattach-fix', 'table-row-reattach-fix', 'font-tounicode-synthesis-fix', 'font-tounicode-extend-fix', 'artifact-unwrap-complex-fix', 'placedpdf-retag-fix', 'link-missing-annotation-fix', 'artifact-actualtext-fix', 'actualtext-missing-mcid-fix', 'tab-order-fix', 'mcid-page-mismatch-fix', 'display-doc-title-fix', 'rolemap-target-fix', 'index-structure-fix', 'footnote-structure-fix', 'bookmark-title-regenerate', 'cross-reference-link-fix', 'reading-order-float-fix', 'toc-link-fix', 'citation-link-fix', 'structure-parent-mismatch-fix']);
 
     let applied = 0;
     let failed = 0;
@@ -4324,6 +4348,11 @@ class AiAnalysisService {
           // renumbering, no /ParentTree change needed) -- see
           // fixReadingOrderFloatInterruption's own doc comment.
           const result = pdfStructureWriterService.fixReadingOrderFloatInterruption(doc, originalIssue);
+          modification = { success: result.success, description: result.after, error: result.error };
+        } else if (suggestionType === 'structure-parent-mismatch-fix') {
+          // Struct-tree-only, single /P write -- see
+          // fixStructureElementWrongParent's own doc comment.
+          const result = pdfStructureWriterService.fixStructureElementWrongParent(doc, originalIssue);
           modification = { success: result.success, description: result.after, error: result.error };
         } else if (suggestionType === 'rolemap-target-fix') {
           const result = pdfStructureWriterService.fixDegenerateRoleMapEntry(doc, originalIssue);

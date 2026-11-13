@@ -90,6 +90,12 @@ describe('PdfStructureWriterService.fixReadingOrderFloatInterruption', () => {
     const epiDict = doc.context.lookup(epiRef) as PDFDict;
     expect(epiDict.get(PDFName.of('S'))?.toString()).toBe('/EPI');
     expect(epiDict.get(PDFName.of('K'))?.toString()).toBe('2');
+
+    // Real regression (Karsaklian_189165_9781606497623.pdf round 15, caught
+    // by an independent PAC/veraPDF re-check): the /K move above happened
+    // correctly, but the wrapper's own /P was never updated to match --
+    // locking that in here.
+    expect((wrapperDict.get(PDFName.of('P')) as PDFRef).objectNumber).toBe(flowRef.objectNumber);
   });
 
   it('is idempotent -- re-running after a successful fix finds nothing left to fix', async () => {

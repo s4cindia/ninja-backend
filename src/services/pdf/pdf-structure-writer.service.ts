@@ -37,6 +37,7 @@ import { pageContentMcids, orderedPageContentMcids, findBdcTagSpanForMcid, decod
 import { locateMcidBoundingBoxes, locateByteRangeBoundingBox, type DeviceBoundingBox } from './mcid-bounding-box';
 import { findMcidPageMismatches } from './mcid-page-mismatch';
 import { findFloatInterruptions } from './reading-order-float';
+import { findStructureParentMismatches } from './structure-parent-mismatch';
 import { buildFormXObjectResolver } from './validators/pdf-figure-structtree.validator';
 import {
   tagUntaggedPaintedPaths,
@@ -2564,11 +2565,22 @@ export class PdfStructureWriterService {
    * renumbering, no /ParentTree change needed (a struct element's
    * /ParentTree reachability is by object reference, not by where in the
    * /K tree it's nested, so relocating it within the tree doesn't affect
-   * ParentTree validity at all). The only mutation is removing
-   * misplacedRef from its current parent's /K array and inserting it into
-   * containerRef's /K array immediately after the confirmed anchor
-   * sibling -- exactly insertIntoKidsAfter's own established shape,
-   * reused verbatim rather than duplicated.
+   * ParentTree validity at all). The mutation is removing misplacedRef
+   * from its current parent's /K array, inserting it into containerRef's
+   * /K array immediately after the confirmed anchor sibling -- exactly
+   * insertIntoKidsAfter's own established shape, reused verbatim rather
+   * than duplicated -- and updating misplacedRef's own /P to containerRef,
+   * matching every other insertIntoKidsAfter call site in this file.
+   *
+   * The /P update was missing from the first shipped version -- real,
+   * confirmed-live regression (Karsaklian_189165_9781606497623.pdf's own
+   * PAC re-run after this fix applied): veraPDF's "Structure element
+   * refers to a different parent than the actual parent" checkpoint
+   * flagged exactly the 49 relocated elements (Story/Figure/TX/H2/TXL),
+   * each still carrying its PRE-relocation /P even though its real
+   * position in the /K tree had moved. Confirmed independently via a
+   * direct tree walk of the real remediated file: 49 of 49 mismatches,
+   * all on objects this fix had moved.
    */
   fixReadingOrderFloatInterruption(doc: PDFDocument, issue: AuditIssue): FixResult {
     const match = issue.element ? /^float-interruption_r(\d+)$/.exec(issue.element) : null;
@@ -2595,6 +2607,10 @@ export class PdfStructureWriterService {
     try {
       this.removeFromKids(doc, target.parentRef, target.misplacedRef);
       this.insertIntoKidsAfter(doc, target.containerRef, target.anchor.afterRef, target.misplacedRef);
+      const misplacedDict = doc.context.lookup(target.misplacedRef);
+      if (misplacedDict instanceof PDFDict) {
+        misplacedDict.set(PDFName.of('P'), target.containerRef);
+      }
     } catch (err) {
       return { issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error: err instanceof Error ? err.message : String(err) };
     }
@@ -2604,6 +2620,45 @@ export class PdfStructureWriterService {
       success: true,
       before: `/${target.misplacedS} (page${target.minPage === target.maxPage ? ` ${target.minPage}` : `s ${target.minPage}-${target.maxPage}`}) was a top-level sibling positioned after /${target.containerS}'s entire remaining span`,
       after: `Relocated into /${target.containerS}'s own /K array, immediately after its confirmed neighbor there`,
+    };
+  }
+
+  /**
+   * STRUCTURE-ELEMENT-WRONG-PARENT -- see structure-parent-mismatch.ts's own
+   * doc comment for the full real incident. Always unambiguous: sets the
+   * element's /P to whatever dict's own /K array actually, currently
+   * contains it, re-confirmed fresh against the CURRENT document rather
+   * than trusting a stale analysis-time result -- same convention as
+   * fixReadingOrderFloatInterruption above (a prior fix in the same batch
+   * may have already moved this exact element again, or fixed it).
+   */
+  fixStructureElementWrongParent(doc: PDFDocument, issue: AuditIssue): FixResult {
+    const match = issue.element ? /^parent-mismatch_r(\d+)$/.exec(issue.element) : null;
+    if (!match) {
+      return { issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error: `Unrecognized element id "${issue.element}"` };
+    }
+    const objectNumber = parseInt(match[1], 10);
+
+    const mismatches = findStructureParentMismatches(doc);
+    const target = mismatches.find(m => m.ref.objectNumber === objectNumber);
+    if (!target) {
+      return {
+        issueId: issue.id, success: false, before: 'unknown', after: 'unknown',
+        error: `Could not re-confirm a /P mismatch for object ${objectNumber} -- may already be fixed, or the document changed`,
+      };
+    }
+
+    const dict = doc.context.lookup(target.ref);
+    if (!(dict instanceof PDFDict)) {
+      return { issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error: `Object ${objectNumber} does not resolve to a dictionary` };
+    }
+    dict.set(PDFName.of('P'), target.actualParentRef);
+
+    return {
+      issueId: issue.id,
+      success: true,
+      before: `/${target.tag}'s own /P pointed at object ${target.declaredParentRef.objectNumber}`,
+      after: `/P corrected to object ${target.actualParentRef.objectNumber} (/${target.actualParentS}), matching its real structure-tree position`,
     };
   }
 
