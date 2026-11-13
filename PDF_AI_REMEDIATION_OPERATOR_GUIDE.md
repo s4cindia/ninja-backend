@@ -74,6 +74,12 @@ Read this once before your first job — these terms appear everywhere in the re
 
 **Remediation cycle lock** — only one remediation action (a manual Apply, a bulk Apply, an Auto Mode round, a manual-fix re-audit upload) can run on a given job at a time. If you see a control greyed out with a message naming who/what currently holds the lock, that's why — wait for it to clear, don't fight it.
 
+**Platform role vs. team role** — every account carries **two independent roles** that answer two different questions, not one combined permission level:
+- **Platform role** (`ADMIN` / `OPERATOR` / `USER` / `VIEWER`) — what you can do platform-wide. An **Admin** can access any job in their own tenant (not just their own) and reaches the Admin section (Operational Reports — Part 9, tenant settings — Part 10); every other platform role is scoped to their own work. Note: "operator" in this guide's title is a description of the job, not necessarily the exact `OPERATOR` platform role — check with your own admin which platform role your account actually has if you're unsure.
+- **Team role** (`TEAM_LEADER` / `EXECUTIVE` / team-level `VIEWER`) — your standing within a production **Team** (a "cell": one Team Leader plus a handful of Executives), completely independent of platform role. An **Executive** owns and works their own jobs end-to-end. A **Team Leader** additionally gets read-only review access to their team's jobs — this is what powers the QC Shipment Gate immediately below — a spot-check capability, not a grant to edit or act on someone else's work. A team-level **Viewer** gets that same read-only review access without the Team Leader's other responsibilities. Not everyone has a team membership at all — it's optional, unlike platform role which every account has.
+
+Both roles are shown together next to your name in the top-right header — if you're ever unsure which permissions apply to you, look there first. If you're a Team Leader, see the separate **Team Leader Guide** for your own workflow (assigning titles to your Executives, My Team, spot-checking via the QC Shipment Gate below, and Team Activity reporting) — this guide covers the hands-on audit/remediation workflow, not team oversight.
+
 **QC Shipment Gate (Team Review)** — a Team Leader can leave a spot-check verdict (**OK** or **Needs Correction**, plus notes) on a teammate's job via the Team Review panel on that job's Audit Results page, or from **My Team**. The job's **most recent** verdict actually gates shipment: a **Needs Correction** blocks **Download AI-Fixed PDF** (and the equivalent EPUB export) with a clear "blocked" message, until a follow-up review records **OK**. A job nobody has reviewed yet still ships normally — review isn't mandatory, only an active rejection blocks. The owning Executive is notified automatically when flagged, sees the reviewer's note plus a **Request re-review** action once they've addressed it, and the Team Leader is notified back when that happens. This is a real gate now, not just an audit trail — see Part 4 (Step 10) and Part 5.2's toolbar reference for where the block itself shows up, and Part 9 (Team Activity) for the reviewer's-eye view.
 
 ---
@@ -136,6 +142,8 @@ From the sidebar, go to **PDF Accessibility** and upload the document. This kick
 
 If the document arrives with no real structure tags at all, you'll see the **"Auto-tagged: Seam-C (YOLO)"** badge next to the file name — Ninja built the structure tree from scratch. If it already had real tags (e.g. a clean InDesign export), you'll see **"Already tagged"** instead.
 
+**Or, the title may already be waiting for you.** A Team Leader can upload a document and assign it directly to you instead of you uploading it yourself — you'll get a notification the moment this happens, and clicking it takes you straight to this same Audit Results page, whether the initial audit is still running or already complete. From here, the workflow below is identical either way. See the Team Leader Guide for how assignment itself works.
+
 ### Step 2 — Decide: does the client supply their own alt text for this job?
 
 This is a per-job decision that shapes every alt-text setting for the rest of the workflow. There are two paths:
@@ -177,7 +185,7 @@ Same shape as round limit, but it ran out of money instead of rounds. If real pr
 The last couple of rounds made no measurable progress at all — Ninja stopped itself rather than keep burning rounds/budget for nothing. This is your clearest, most direct signal that remaining items need a human, not another automated round. Proceed to **Step 6**, then expect to end up at **Step 9 (Acrobat Pro)** sooner rather than later for whatever's left.
 
 **🔴 Error — "Auto Mode stopped on error."**
-A real, unexpected failure (shown with its own error message). This is not a normal stop reason — note the exact error text and escalate to engineering/support if retrying doesn't resolve it. Don't treat this as "mostly done, move on."
+A real, unexpected failure (shown with its own error message). This is not a normal stop reason — note the exact error text and escalate to engineering/support if retrying doesn't resolve it. Don't treat this as "mostly done, move on." One safety net worth knowing about: if the error happened after some fixes were applied but before they could be verified by the follow-up re-audit, those suggestions are automatically reverted back to "approved" rather than left incorrectly marked as done — so retrying this same job won't silently skip re-trying them.
 
 ### Step 5 *(skip this — folded into Step 4 above; kept here only so the numbering matches the stop-reason count)*
 
@@ -361,7 +369,7 @@ Each step shows one of: **Not started** (hollow gray circle), **In progress** (s
 
 1. **Initial audit complete** — always Done (the page's own precondition for existing).
 2. **Run AI Analysis** — Done once the first pass has ever completed.
-3. **Apply AI-suggested fixes** — Done once every still-applicable suggestion is gone; Partially applied once at least one has landed with others remaining.
+3. **Apply AI-suggested fixes** — In progress (with live counts — "N/M processed · X applied · Y failed") while an Apply Fixes action or an Auto Mode round is actively applying right now; Partially applied once some have landed with others remaining but nothing is currently running; Done once every still-applicable suggestion is gone.
 4. **Re-audit to verify** — Done once a re-audit has run since fixes were applied (automatic post-fix pass or a manual Re-run Audit both count).
 5. **Re-run AI Analysis (final check)** — Done once AI Analysis has re-run since that verification audit. If new fixable suggestions turn up, a note suggests revisiting step 3.
 6. **Resolve guidance-only items** — Done once no guidance-only suggestions remain pending. If some remain, a text field + **"Acknowledge &amp; skip"** button lets you record a reason (e.g. "client will supply alt text separately") and mark them reviewed-and-left-as-is (status becomes Acknowledged, showing the note + who/when). A new guidance-only item appearing later re-flags this step as stale.
@@ -462,6 +470,11 @@ These categories were root-caused and fixed against real PAC reports during this
 3. **Figure missing bounding box** — newly-created Figure elements now get a proper layout `/BBox` computed from the image's own position.
 4. **Figure missing/empty alt text (decorative case)** — an explicitly empty Alt is retagged as a true PDF/UA Artifact instead, which is what actually satisfies the check (an empty Alt string doesn't).
 5. **MCID missing from page / "Entry for given MCID missing"** — a bare MCID whose real page differs from its struct element's own declared page gets repaired, but only when a sibling on the same element already declares the correct page explicitly; genuinely ambiguous or unresolvable cases are left alone rather than guessed.
+6. **Heading/caption custom styles flattened via RoleMap** (`ROLEMAP-HEADING-FLATTENED` / `ROLEMAP-CAPTION-FLATTENED`) — an InDesign custom paragraph style mapped to a generic type (e.g. `/P`) in `/RoleMap` is retargeted to its real heading level or `/Caption`. Confidence 1.0.
+7. **Generic/auto-generated bookmark titles** (`BOOKMARK-GENERIC-TEXT`) — a bookmark reading something like "Section p.25" is regenerated with the real heading text from its target page, when exactly one unambiguous heading exists there.
+8. **"See Chapter 3"-style prose cross-references with no real link** (`CROSS-REFERENCE-MISSING-LINK`) — detected and auto-linked to the actual target heading/page where it can be resolved unambiguously; declines rather than guesses for figure/table references (no resolution path exists for those yet) or an ambiguous match.
+9. **Index entries flattened to generic body paragraphs** (`ROLEMAP-INDEX-FLATTENED`) — a contiguous run of custom index-style paragraphs is rebuilt into a real `/Index` &gt; `/L` &gt; `/LI` &gt; `/LBody` structure.
+10. **Footnotes flattened to generic body paragraphs** (`ROLEMAP-FOOTNOTE-FLATTENED`) — retargeted to the real `/FENote` type with a `NoteType` attribute set, and the leading footnote number split into its own `/Lbl` where the structure safely allows it. This does **not** yet build the bidirectional link between the footnote and its in-body reference marker — see Part 12.
 
 ### Reading the round-by-round "Regressions" column
 
@@ -475,6 +488,9 @@ Auto Remediation's round-by-round history computes "Regressions" as *any issue i
 - **Bulk client-supplied alt text:** no mechanism to ingest many custom descriptions at once — per-image manual edit-then-apply only (Part 4, Step 2).
 - **MCID-page-mismatch fixer scope:** only catches the "bare MCID whose real page is already declared by a sibling MCR in the same element" pattern; a dangling MCID with no sibling-declared page, or ambiguous across multiple sibling pages, is intentionally left unfixed.
 - **External PAC Report vs. Compliance phase:** these are two separate things that share the name "PAC report" — see the callout in Part 5.9 and Part 4, Step 15. Worth double-checking with your own team that this distinction hasn't caused confusion on past jobs.
+- **Heading visually styled but tagged with an unrelated style name** (`HEADING-STYLE-MISMATCH`) — detect-only; flags a paragraph that looks like a heading (larger font, short text) but is tagged with a generic/unrelated style also shared by ordinary body text, so no automated retarget is safe. Needs a human judgment call — same bucket as any other guidance-only item.
+- **Running headers/footers tagged as real content** (`HEADER-FOOTER-TAGGED-AS-CONTENT`) — detect-only; flags page-repeating header/footer text (a running title, or a plain page number) that's tagged as real content instead of a decorative Artifact. Known limitation: a per-chapter-changing running header (same position, different text each chapter) won't be caught by this check.
+- **Footnote bidirectional reference linking:** the footnote structure fix (Part 11, #10) retargets the type and splits the label, but doesn't yet build the required link between a footnote and its in-body citing marker — there's no in-body footnote-marker detector yet. If that specific check matters for your compliance target, a flagged footnote still needs a human to confirm the citation link itself.
 
 ---
 
@@ -505,6 +521,8 @@ Everything filed is visible to the whole team at **Admin → Feedback** (or the 
 - A full, filterable/sortable list (by Type, Status, Severity, and Rating) — click any row to open its full detail, change its status (New → Reviewed → In Progress → Resolved → Dismissed), adjust its severity, add attachments after the fact, or read/add a response
 
 **You'll be notified automatically** (the same notification bell used elsewhere on the platform) whenever something you filed changes status — you don't need to keep checking back on it yourself.
+
+**Admins are notified too, the moment it's filed.** Every tenant admin gets both an in-app notification and an email as soon as new feedback is submitted — not just when its status later changes. You don't need to separately flag your admin that you filed something; it's already reached them.
 
 ### When to use this vs. something else
 
