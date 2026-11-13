@@ -73,6 +73,7 @@ import {
   buildLinkCompletenessSplice,
   findUrlSubstringRun,
   buildUrlSubstringSplice,
+  extractDecodedTextInRange,
   type GlyphTextResolver,
   type LinkCompletenessSplice,
   type UrlSubstringSplice,
@@ -8896,6 +8897,193 @@ export class PdfStructureWriterService {
     }
 
     return null; // figure/fig/table -- no resolution path yet, decline
+  }
+
+  /**
+   * Same content-stream decode shape as decodeMcidText (locate the MCID's
+   * own BDC via findBdcTagSpanForMcid, bound the scan with
+   * findMatchingEmcEnd, per-page content cached once) but through
+   * extractDecodedTextInRange's GLYPH-AWARE decoder instead of pdf-
+   * artifact-tagger.ts's plain extractArtifactTextRuns -- see
+   * resolveCitationDestination's own doc comment for why CITATION-MISSING-
+   * LINK's own matching need (recovering a /REF entry's real author-name
+   * text, ligatures included) can't tolerate decodeMcidText's existing
+   * non-font-aware decode. A separate method, not a behavior change to
+   * decodeMcidText itself, since decodeFootnoteEntryText already depends
+   * on decodeMcidText's current (undecoded-ligature) output and changing
+   * that shared method's own text out from under it is outside this
+   * feature's scope.
+   */
+  private decodeMcidTextWithGlyphs(
+    doc: PDFDocument,
+    mcid: number,
+    pageRef: PDFRef,
+    pageByRef: Map<string, number>,
+    contentCache: Map<number, string>,
+    resolveGlyphText?: GlyphTextResolver,
+  ): string | null {
+    const pageNumber = pageByRef.get(pageRef.toString());
+    if (!pageNumber) return null;
+
+    let content = contentCache.get(pageNumber);
+    if (content === undefined) {
+      content = decodePageContent(doc, pageNumber) ?? '';
+      contentCache.set(pageNumber, content);
+    }
+    if (!content) return null;
+
+    const span = findBdcTagSpanForMcid(content, mcid);
+    if (!span) return null;
+
+    const emcEnd = this.findMatchingEmcEnd(content, span.end);
+    const text = extractDecodedTextInRange(content, span.end, emcEnd, resolveGlyphText);
+    return text || null;
+  }
+
+  /**
+   * CITATION-MISSING-LINK fix -- builds a real internal link (the same
+   * /Link annotation + structure element machinery as
+   * fixLinkMissingAnnotation/fixCrossReferenceLink, via
+   * buildLinkAnnotationFix) for an in-text citation ("(Karsaklian 2017)")
+   * ONLY when it matches EXACTLY ONE raw /REF-tagged bibliography entry,
+   * document-wide -- same "bail rather than guess" posture as
+   * fixCrossReferenceLink: a citation whose own author+year matches zero
+   * or more than one reference-list entry is declined, never guessed.
+   */
+  fixCitationLink(doc: PDFDocument, issue: AuditIssue): FixResult {
+    const fail = (error: string): FixResult => ({ issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error });
+
+    if (!issue.citationData) return fail('Issue has no citationData');
+    if (!issue.boundingBox) return fail('Issue has no boundingBox -- cannot place a Link annotation without one');
+
+    const dest = this.resolveCitationDestination(doc, issue.citationData);
+    if (!dest) {
+      return fail(
+        `Could not unambiguously resolve "${issue.citationData.fullText}" to a single real reference-list entry -- ` +
+        'declining rather than guessing'
+      );
+    }
+
+    return this.buildLinkAnnotationFix(
+      doc, issue, issue.citationData.fullText, issue.boundingBox,
+      { S: PDFName.of('GoTo'), D: dest },
+      `Created a /Link annotation + structure element pointing at the resolved reference-list entry for "${issue.citationData.fullText}"`,
+    );
+  }
+
+  /**
+   * Resolves a citation's target reference-list entry to a real /Dest
+   * array ([pageRef /XYZ null null null], same format
+   * resolveCrossReferenceDestination/buildOutlineTree already use), or
+   * null when the match isn't unambiguous enough to trust.
+   *
+   * Finds every raw /REF-tagged struct element document-wide
+   * (findRawTaggedElements -- the same InDesign custom-style convention
+   * pdf-rolemap-integrity.validator.ts's own classifyDegenerateRoleMapEntry
+   * already recognizes for a bibliography entry), recovers each one's own
+   * text (extractTextFromStructElem's cheap /ActualText/Alt path first,
+   * since this document -- like essentially every real body paragraph --
+   * carries neither on an ordinary reference entry, that path routinely
+   * returns null and this falls back to decodeMcidTextWithGlyphs over the
+   * entry's own leaf MCIDs, collectLeafMcids), and checks it against
+   * referenceEntryMatches. Declines (returns null) whenever zero or more
+   * than one /REF entry matches -- confirmed live on
+   * Karsaklian_189165_9781606497623.pdf's own real bibliography that EVERY
+   * one of its 20 real citations matches exactly one entry this way (its
+   * own ~7 "Karsaklian" entries are disambiguated by year alone, no two
+   * sharing one), but this method still treats a collision as a genuine
+   * decline, not an assumption that can't happen on some OTHER document.
+   */
+  private resolveCitationDestination(
+    doc: PDFDocument,
+    data: NonNullable<AuditIssue['citationData']>,
+  ): PDFArray | null {
+    const structRoot = this.getStructTreeRoot(doc);
+    if (!structRoot) return null;
+
+    const firstAuthorLastName = data.authorText.split(/\s+(?:and|&)\s+/)[0];
+    const yearMatch = data.year.match(/^(\d{4})([a-z]?)$/);
+    if (!yearMatch) return null;
+    const yearBase = yearMatch[1];
+    const yearSuffix = yearMatch[2] ?? '';
+
+    const refElements = this.findRawTaggedElements(doc, structRoot, 'REF');
+    if (refElements.length === 0) return null;
+
+    const pageByRef = new Map<string, number>();
+    doc.getPages().forEach((p, idx) => pageByRef.set(p.ref.toString(), idx + 1));
+    const contentCache = new Map<number, string>();
+    const resolverCache = new Map<number, GlyphTextResolver>();
+    const getResolver = (pageNumber: number): GlyphTextResolver => {
+      let resolver = resolverCache.get(pageNumber);
+      if (!resolver) {
+        resolver = this.buildGlyphTextResolver(doc, pageNumber);
+        resolverCache.set(pageNumber, resolver);
+      }
+      return resolver;
+    };
+
+    // Counts MATCHING ENTRIES, not distinct pages -- two different /REF
+    // entries routinely sit on the SAME page (confirmed real: Karsaklian_
+    // 189165_9781606497623.pdf's own bibliography averages ~15 entries per
+    // page), so an earlier version of this method that deduped on page
+    // number alone would have treated "2 different entries both matched,
+    // both happen to live on page 182" as a single, unambiguous match --
+    // wrong: that is exactly the genuine-collision shape this method must
+    // decline, not silently resolve via whichever entry happened to be
+    // visited last.
+    let matchCount = 0;
+    let matchedPageNumber: number | null = null;
+    for (const { dict } of refElements) {
+      const pageRef = this.resolveElementPageRef(doc, dict);
+      if (!pageRef) continue;
+      const pageNumber = pageByRef.get(pageRef.toString());
+      if (!pageNumber) continue;
+
+      let text = this.extractTextFromStructElem(doc, dict);
+      if (!text) {
+        const mcids = this.collectLeafMcids(doc, dict);
+        if (mcids.length === 0) continue;
+        const resolver = getResolver(pageNumber);
+        const parts = mcids.map(
+          (m) => this.decodeMcidTextWithGlyphs(doc, m, pageRef, pageByRef, contentCache, resolver) ?? ''
+        );
+        text = parts.join('');
+      }
+      if (!text) continue;
+
+      if (this.referenceEntryMatches(text, firstAuthorLastName, yearBase, yearSuffix)) {
+        matchCount++;
+        matchedPageNumber = pageNumber;
+      }
+    }
+
+    if (matchCount !== 1 || matchedPageNumber === null) return null;
+
+    const pages = doc.getPages();
+    const pageIndex = matchedPageNumber - 1;
+    if (pageIndex < 0 || pageIndex >= pages.length) return null;
+    return doc.context.obj([pages[pageIndex].ref, PDFName.of('XYZ'), null, null, null]) as PDFArray;
+  }
+
+  /**
+   * True when `entryText` (one /REF element's own decoded text) is the
+   * reference-list entry a citation naming `firstAuthorLastName` +
+   * `yearBase`/`yearSuffix` refers to. Requires the entry's own text to
+   * START with the author's last name immediately followed by a word
+   * boundary (never a longer name that merely CONTAINS this one as a
+   * substring) AND to contain that exact year with that exact suffix (or
+   * no suffix at all when the citation carried none -- a bare "(Karsaklian
+   * 2025)" must not match a "2025b"/"2025a"-suffixed entry, since the
+   * citation itself gave no way to pick which one is meant).
+   */
+  private referenceEntryMatches(entryText: string, firstAuthorLastName: string, yearBase: string, yearSuffix: string): boolean {
+    const trimmed = entryText.trim();
+    const escapedName = firstAuthorLastName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    if (!new RegExp(`^${escapedName}\\b`).test(trimmed)) return false;
+
+    const escapedYear = `${yearBase}${yearSuffix}`;
+    return new RegExp(`\\b${escapedYear}\\b`).test(trimmed);
   }
 }
 

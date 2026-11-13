@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { findUrlOperatorRun, findEnclosingTagSpan, buildLinkCompletenessSplice } from '../../../../src/services/pdf/pdf-link-completeness-writer';
+import { findUrlOperatorRun, findEnclosingTagSpan, buildLinkCompletenessSplice, extractDecodedTextInRange } from '../../../../src/services/pdf/pdf-link-completeness-writer';
 
 // Real, live-confirmed shapes from Curiel_187961_CSHP.pdf (2026-11-05) -- a
 // reference-list document with zero /Annots anywhere, where citation URLs
@@ -269,5 +269,66 @@ describe('buildLinkCompletenessSplice', () => {
     const emcEnd = content.indexOf('EMC') + 3;
     const run = { start: emcEnd - 2, end: emcEnd + 5, matchedText: 'C\n[(ht' };
     expect(buildLinkCompletenessSplice(content, run, 500)).toBeNull();
+  });
+});
+
+// CITATION-MISSING-LINK's own real need (see pdf-structure-writer.
+// service.ts's resolveCitationDestination): recovering a /REF bibliography
+// entry's own text CORRECTLY, ligatures included -- unlike pdf-artifact-
+// tagger.ts's extractArtifactTextRuns (plain decodePdfStringLiteral, no
+// font/ligature resolution, string literals only), this must resolve a
+// ligature byte through the active font's own /ToUnicode CMap, same as
+// findUrlOperatorRun's own decode already does for the "ligature-byte-in-
+// a-URL" shape.
+describe('extractDecodedTextInRange', () => {
+  it('concatenates every text-show operator strictly within the given range', () => {
+    const content = `(before)Tj\n0 -12 Td\n(middle one)Tj\n0 -12 Td\n(middle two)Tj\n0 -12 Td\n(after)Tj\n`;
+    const rangeStart = content.indexOf('(middle one)');
+    const rangeEnd = content.indexOf('(after)');
+    const text = extractDecodedTextInRange(content, rangeStart, rangeEnd);
+    expect(text).toBe('middle onemiddle two');
+  });
+
+  it('resolves a ligature byte through the active font\'s own /ToUnicode CMap', () => {
+    const resolver = (fontTag: string, byteCode: number): string | null => {
+      if (fontTag === '/T1_0' && byteCode === 0x01) return 'ff';
+      return null;
+    };
+    const content = `/T1_0 1 Tf\n(Ho\x01man, D.)Tj\n`;
+    const text = extractDecodedTextInRange(content, 0, content.length, resolver);
+    expect(text).toBe('Hoffman, D.');
+  });
+
+  it('falls back to the raw byte when no resolver is given, or the byte is unmapped', () => {
+    const content = `/T1_0 1 Tf\n(Ho\x01man)Tj\n`;
+    const text = extractDecodedTextInRange(content, 0, content.length);
+    expect(text).toBe('Ho\x01man');
+  });
+
+  it('tracks which font was active at each text-show op, even mid-range font switches', () => {
+    const resolver = (fontTag: string, byteCode: number): string | null => {
+      if (fontTag === '/T1_0' && byteCode === 0x01) return 'ff';
+      if (fontTag === '/T1_1' && byteCode === 0x01) return 'fi';
+      return null;
+    };
+    const content = `/T1_0 1 Tf\n(Ho\x01man)Tj\n/T1_1 1 Tf\n(de\x01les)Tj\n`;
+    const text = extractDecodedTextInRange(content, 0, content.length, resolver);
+    expect(text).toBe('Hoffmandefiles');
+  });
+
+  it('knows the font selected BEFORE the range starts (whole-stream scan, same as extractArtifactTextRuns\' own CTM tracking)', () => {
+    const resolver = (fontTag: string, byteCode: number): string | null =>
+      fontTag === '/T1_0' && byteCode === 0x01 ? 'ff' : null;
+    const content = `/T1_0 1 Tf\n(prefix)Tj\n(Ho\x01man)Tj\n`;
+    const rangeStart = content.lastIndexOf('(Ho');
+    const text = extractDecodedTextInRange(content, rangeStart, content.length, resolver);
+    expect(text).toBe('Hoffman');
+  });
+
+  it('returns an empty string when the range contains no text-show operators', () => {
+    const content = `0 -12 Td\n(outside)Tj\n`;
+    const rangeStart = 0;
+    const rangeEnd = content.indexOf('Td');
+    expect(extractDecodedTextInRange(content, rangeStart, rangeEnd)).toBe('');
   });
 });
