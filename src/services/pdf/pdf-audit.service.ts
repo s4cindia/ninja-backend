@@ -36,6 +36,7 @@ import { pdfHeadingStyleMismatchValidator } from './validators/pdf-heading-style
 import { pdfTableCellTreeValidator } from './validators/pdf-table-cell-tree.validator';
 import { pdfFontToUnicodeValidator } from './validators/pdf-font-tounicode.validator';
 import { pdfTabOrderValidator } from './validators/pdf-tab-order.validator';
+import { pdfReadingOrderValidator } from './validators/pdf-reading-order.validator';
 import { pdfTableHeaderScopeValidator } from './validators/pdf-table-header-scope.validator';
 import { pdfStructureValidator } from './validators/pdf-structure.validator';
 import { pdfLinkValidator } from './validators/pdf-link.validator';
@@ -593,6 +594,36 @@ class PdfAuditService extends BaseAuditService<PdfParseResult, PdfValidationResu
             const errorMessage = error instanceof Error ? error.message : 'Unknown error';
             logger.error(`[PdfAudit] PdfHeaderFooterContentValidator failed:`, error);
             result.validatorErrors.push({ validator: 'PdfHeaderFooterContentValidator', error: errorMessage });
+          }
+        }
+
+        // 1j. Reading-Order Validator (Matterhorn 09-001, DETECT-ONLY) --
+        // see pdf-reading-order.validator.ts's own header comment for the
+        // real, confirmed defect this catches: the same S4 Carlisle manual
+        // QC report's Round-2 item #5 ("the reading order of the document
+        // content was not maintained properly"), a different checkpoint
+        // from PdfTabOrderValidator above (28-008/28-009 only covers the
+        // page-level /Tabs key for annotation navigation). Confirmed real
+        // 16 times on Karsaklian_189165_9781606497623.pdf via direct
+        // structure-tree + content-stream geometry inspection. Intentionally
+        // detect-only -- confirmed via veraPDF's own real PDF/UA-1 rule
+        // source that this checkpoint has zero automated/machine rule, and
+        // even this validator's own narrow, repeatedly-confirmed real shape
+        // has no single safe auto-fix target (sometimes the out-of-place
+        // block belongs entirely before the surrounding flow, sometimes
+        // mid-flow in a specific gap) -- no dispatch wiring for its issue
+        // code exists in ai-analysis.service.ts.
+        if (willRunStructure) {
+          try {
+            logger.info(`[PdfAudit] Running PdfReadingOrderValidator...`);
+            const readingOrderResult = await pdfReadingOrderValidator.validate(parsedPdf);
+            result.structureIssues.push(...readingOrderResult.issues);
+            result.issues.push(...readingOrderResult.issues);
+            logger.info(`[PdfAudit] PdfReadingOrderValidator found ${readingOrderResult.issues.length} issue(s)`);
+          } catch (error) {
+            const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+            logger.error(`[PdfAudit] PdfReadingOrderValidator failed:`, error);
+            result.validatorErrors.push({ validator: 'PdfReadingOrderValidator', error: errorMessage });
           }
         }
       };
