@@ -104,6 +104,21 @@ export interface AuditIssue {
     number: string;
     fullText: string;
   };
+  /**
+   * Populated only by PdfLinkCompletenessValidator for CITATION-MISSING-
+   * LINK issues. `authorText` is the matched author portion (may include
+   * "and"/"&" for a multi-author citation, e.g. "Hirschman and Holbrook"),
+   * `year` is the matched year (may carry a disambiguating suffix letter,
+   * e.g. "2025b"), `fullText` is the complete matched parenthetical (e.g.
+   * "(Karsaklian 2017)") -- same "exact text a fixer needs to relocate in
+   * the content stream" role crossReferenceData.fullText/
+   * linkCompletenessData.url already play for their own codes.
+   */
+  citationData?: {
+    authorText: string;
+    year: string;
+    fullText: string;
+  };
 }
 
 /**

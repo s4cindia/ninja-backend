@@ -396,6 +396,17 @@ const PLACEDPDF_NOT_TAGGED_CODES = new Set(['PLACEDPDF-NOT-TAGGED']);
 // well-understood reasons, not silently skipped).
 const LINK_MISSING_ANNOTATION_CODES = new Set(['LINK-MISSING-ANNOTATION']);
 const CROSS_REFERENCE_MISSING_LINK_CODES = new Set(['CROSS-REFERENCE-MISSING-LINK']);
+// CITATION-MISSING-LINK: pdfStructureWriterService.fixCitationLink --
+// same deterministic-but-declines-most-real-cases shape as the two codes
+// above (resolveCitationDestination is the real gate: unambiguous single
+// /REF-entry match only). INDEX-ENTRY-MISSING-PAGE-LINK (the third new
+// code pdf-link-completeness.validator.ts's own index-pageref check
+// produces) is deliberately NOT given a set/dispatch branch here -- it is
+// genuinely detect-only (see that check's own doc comment for the real,
+// confirmed page-wide digit-substring collision that rules out a safe
+// auto-fix), so it falls through to this file's existing generic
+// guidance-only default, same as every other un-special-cased code.
+const CITATION_MISSING_LINK_CODES = new Set(['CITATION-MISSING-LINK']);
 
 // Document-level codes always produce the same result for the whole document,
 // so the suggestion cache below keys them by code alone.
@@ -431,7 +442,8 @@ export function buildSuggestionCacheKey(issue: Pick<AuditIssue, 'code' | 'elemen
     LINK_CODES.has(issue.code) ||
     FORM_CODES.has(issue.code) ||
     LINK_MISSING_ANNOTATION_CODES.has(issue.code) ||
-    CROSS_REFERENCE_MISSING_LINK_CODES.has(issue.code)
+    CROSS_REFERENCE_MISSING_LINK_CODES.has(issue.code) ||
+    CITATION_MISSING_LINK_CODES.has(issue.code)
   ) {
     // LINK_MISSING_ANNOTATION_CODES: same collision shape as contrast/
     // link/form-field above -- real data confirms a single page can carry
@@ -470,12 +482,18 @@ export function buildIssueFingerprint(
   issue: Pick<AuditIssue, 'code' | 'element' | 'pageNumber' | 'boundingBox'>
 ): string {
   if (DOC_LEVEL_CODES.has(issue.code)) return issue.code;
-  if ((CONTRAST_CODES.has(issue.code) || CROSS_REFERENCE_MISSING_LINK_CODES.has(issue.code)) && issue.boundingBox) {
-    // CROSS_REFERENCE_MISSING_LINK_CODES: same no-element shape as
-    // CONTRAST_CODES -- a page can carry several distinct cross-references
-    // (each with its own real boundingBox but no `element`), which would
-    // otherwise all collapse onto the same `${code}:${pageNumber}`
-    // fallback fingerprint below and spuriously match each other.
+  if (
+    (CONTRAST_CODES.has(issue.code) ||
+      CROSS_REFERENCE_MISSING_LINK_CODES.has(issue.code) ||
+      CITATION_MISSING_LINK_CODES.has(issue.code)) &&
+    issue.boundingBox
+  ) {
+    // CROSS_REFERENCE_MISSING_LINK_CODES/CITATION_MISSING_LINK_CODES: same
+    // no-element shape as CONTRAST_CODES -- a page can carry several
+    // distinct cross-references or citations (each with its own real
+    // boundingBox but no `element`), which would otherwise all collapse
+    // onto the same `${code}:${pageNumber}` fallback fingerprint below and
+    // spuriously match each other.
     const { x, y } = issue.boundingBox;
     return `${issue.code}:${issue.pageNumber ?? ''}:${Math.round(x)}:${Math.round(y)}`;
   }
@@ -2072,6 +2090,23 @@ class AiAnalysisService {
         guidance: 'This text reads as a cross-reference with no underlying link -- a real internal Link annotation will be created if its target can be resolved unambiguously.',
         confidence: 1.0,
         rationale: 'Deterministic fix when resolvable -- the destination is found via this document\'s own real tagged headings or /PageLabels, never guessed; declines rather than guesses when more than one match exists or none at all',
+        model: 'rule-based',
+        applyMode: 'apply-to-pdf',
+      };
+    }
+
+    if (CITATION_MISSING_LINK_CODES.has(code)) {
+      // Same "optimistic at dispatch, real gate at apply-time" shape as
+      // LINK_MISSING_ANNOTATION_CODES/CROSS_REFERENCE_MISSING_LINK_CODES
+      // above -- fixCitationLink's own resolveCitationDestination is the
+      // actual gate (declines on anything but an unambiguous single
+      // /REF-entry match), not this dispatch.
+      if (!issue.citationData) return null;
+      return {
+        suggestionType: 'citation-link-fix',
+        guidance: 'This text reads as an in-text citation with no underlying link -- a real internal Link annotation will be created if its reference-list entry can be resolved unambiguously.',
+        confidence: 1.0,
+        rationale: 'Deterministic fix when resolvable -- the destination is found via this document\'s own real tagged /REF reference-list entries, matched on author surname + year (with any disambiguating suffix letter); declines rather than guesses when more than one entry matches or none at all',
         model: 'rule-based',
         applyMode: 'apply-to-pdf',
       };
@@ -4345,6 +4380,17 @@ class AiAnalysisService {
           // see fixCrossReferenceLink's own doc comment for the
           // destination-resolution gate this adds on top.
           const r = pdfStructureWriterService.fixCrossReferenceLink(doc, originalIssue);
+          modification = { success: r.success, description: r.after, error: r.error };
+          if (r.success && originalIssue.pageNumber !== undefined) {
+            pagesRewrittenSincePreResolve.add(originalIssue.pageNumber);
+          }
+        } else if (suggestionType === 'citation-link-fix') {
+          // Same buildLinkAnnotationFix core (and same content-stream-
+          // rewrite tracking need) as link-missing-annotation-fix/
+          // cross-reference-link-fix above -- see fixCitationLink's own
+          // doc comment for the reference-list-entry resolution gate this
+          // adds on top.
+          const r = pdfStructureWriterService.fixCitationLink(doc, originalIssue);
           modification = { success: r.success, description: r.after, error: r.error };
           if (r.success && originalIssue.pageNumber !== undefined) {
             pagesRewrittenSincePreResolve.add(originalIssue.pageNumber);

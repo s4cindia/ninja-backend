@@ -864,3 +864,60 @@ export function buildUrlSubstringSplice(
 
   return { edits, linkMcid, remainderMcid, enclosingTag: enclosing.tag, enclosingMcid: enclosing.mcid };
 }
+
+// ─── Glyph-aware range text decoder (CITATION-MISSING-LINK's own real ───
+// ─── need: recovering a /REF bibliography entry's own text correctly) ───
+//
+// pdf-artifact-tagger.ts's own extractArtifactTextRuns already decodes every
+// text-show operator in a byte range, but ONLY via decodePdfStringLiteral --
+// no font/ligature resolution at all, and it skips hex-string ('h') operands
+// entirely (built for a different original job: finding Y-position boundary
+// CANDIDATES for artifact-span splitting, where a raw, occasionally-wrong
+// ligature byte never changed the answer). Matching a citation's own author
+// surname against this document's real /REF entries needs the OPPOSITE
+// trade-off -- confirmed live on Karsaklian_189165_9781606497623.pdf's own
+// real bibliography: "Hoffman, D., and T. Novak 2018" decodes as
+// "Ho\u001bman" (the "ff" ligature collapsed to a single raw byte) without a
+// resolver, which would silently break matching citation text "Hoffman" --
+// so this reuses the SAME decodeTextShowOperands/applyGlyphResolver/
+// GlyphTextResolver primitives findUrlOperatorRun already proved correct for
+// exactly this ligature-byte problem, rather than a fresh decode path.
+
+/**
+ * Concatenates the decoded text of every text-show operator (`Tj`/`TJ`/`'`/
+ * `"`) whose own operator offset falls within `[rangeStart, rangeEnd)`,
+ * resolving each operand through `resolveGlyphText` under whichever font
+ * (`Tf`) was active at that operator -- same per-operator font tracking as
+ * findUrlOperatorRun/findUrlSubstringRun above. Always tokenizes the WHOLE
+ * `content` string (not just the range) so a `Tf` selected before
+ * `rangeStart` is still correctly known by the time the range begins --
+ * same reasoning as extractArtifactTextRuns' own whole-stream CTM tracking,
+ * just for font state instead of the text matrix. Read-only; never used to
+ * locate a splice point, only to recover what a span of marked content
+ * actually says.
+ */
+export function extractDecodedTextInRange(
+  content: string,
+  rangeStart: number,
+  rangeEnd: number,
+  resolveGlyphText?: GlyphTextResolver
+): string {
+  const tokens = tokenize(content);
+  const operands: Token[] = [];
+  let currentFontTag: string | null = null;
+  let out = '';
+
+  for (const tk of tokens) {
+    if (tk.t !== 'op') { operands.push(tk); continue; }
+    if (TEXT_SHOW_OPS.has(tk.v)) {
+      if (tk.start >= rangeStart && tk.start < rangeEnd) {
+        out += decodeTextShowOperands(operands, currentFontTag, resolveGlyphText);
+      }
+    } else if (tk.v === FONT_SELECT_OP) {
+      currentFontTag = operands[0]?.t === 'name' ? operands[0].v : currentFontTag;
+    }
+    operands.length = 0;
+  }
+
+  return out;
+}
