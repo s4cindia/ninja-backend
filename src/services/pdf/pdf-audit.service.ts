@@ -32,6 +32,7 @@ import { pdfInlineFigureTreeValidator } from './validators/pdf-inline-figure-tre
 import { pdfMcidPageMismatchValidator } from './validators/pdf-mcid-page-mismatch.validator';
 import { pdfRoleMapIntegrityValidator } from './validators/pdf-rolemap-integrity.validator';
 import { pdfHeaderFooterContentValidator } from './validators/pdf-header-footer-content.validator';
+import { pdfReadingOrderFloatValidator } from './validators/pdf-reading-order-float.validator';
 import { pdfHeadingStyleMismatchValidator } from './validators/pdf-heading-style-mismatch.validator';
 import { pdfTableCellTreeValidator } from './validators/pdf-table-cell-tree.validator';
 import { pdfFontToUnicodeValidator } from './validators/pdf-font-tounicode.validator';
@@ -593,6 +594,34 @@ class PdfAuditService extends BaseAuditService<PdfParseResult, PdfValidationResu
             const errorMessage = error instanceof Error ? error.message : 'Unknown error';
             logger.error(`[PdfAudit] PdfHeaderFooterContentValidator failed:`, error);
             result.validatorErrors.push({ validator: 'PdfHeaderFooterContentValidator', error: errorMessage });
+          }
+        }
+
+        // 1j. Reading-Order Float-Interruption Validator (Matterhorn
+        // 09-001) -- confirmed real via a live S4 Carlisle manual QC
+        // report (Round 2, item #2, informally described as "highlight
+        // tags... grouped at the end of the document"): top-level
+        // struct-tree siblings (epigraph pull-quotes, standalone tables,
+        // floated figure+caption groups) whose own content range falls
+        // entirely inside the document's main flow container's own span,
+        // yet are array-positioned AFTER it, so a reader walking the
+        // structure tree in order reads the ENTIRE remaining flow before
+        // ever reaching them. See that validator's own header comment and
+        // reading-order-float.ts's for the full detection algorithm and
+        // why this is split into an auto-fixable code (an unambiguous
+        // MCID-interpolated splice point exists) and a detect-only
+        // MANUAL code (it doesn't).
+        if (willRunStructure) {
+          try {
+            logger.info(`[PdfAudit] Running PdfReadingOrderFloatValidator...`);
+            const floatResult = await pdfReadingOrderFloatValidator.validate(parsedPdf);
+            result.structureIssues.push(...floatResult.issues);
+            result.issues.push(...floatResult.issues);
+            logger.info(`[PdfAudit] PdfReadingOrderFloatValidator found ${floatResult.issues.length} issue(s)`);
+          } catch (error) {
+            const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+            logger.error(`[PdfAudit] PdfReadingOrderFloatValidator failed:`, error);
+            result.validatorErrors.push({ validator: 'PdfReadingOrderFloatValidator', error: errorMessage });
           }
         }
       };

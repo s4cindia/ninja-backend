@@ -36,6 +36,7 @@ import { pdfModifierService } from './pdf-modifier.service';
 import { pageContentMcids, orderedPageContentMcids, findBdcTagSpanForMcid, decodePageContent, writePageContent } from './pdf-content-stream-io';
 import { locateMcidBoundingBoxes, locateByteRangeBoundingBox, type DeviceBoundingBox } from './mcid-bounding-box';
 import { findMcidPageMismatches } from './mcid-page-mismatch';
+import { findFloatInterruptions } from './reading-order-float';
 import { buildFormXObjectResolver } from './validators/pdf-figure-structtree.validator';
 import {
   tagUntaggedPaintedPaths,
@@ -2536,6 +2537,70 @@ export class PdfStructureWriterService {
       success: true,
       before: `Bare MCID ${mcid} implicitly on page ${wrongPage} (doesn't exist in that page's content)`,
       after: `Wrapped as an MCR dict pointing to page ${target.correctPage} (where MCID ${mcid} actually exists)`,
+    };
+  }
+
+  /**
+   * Relocates a top-level struct-tree sibling that is array-positioned
+   * AFTER the document's own main flow container despite its own content
+   * range falling entirely inside that container's span -- see
+   * reading-order-float.ts's own header comment for the full real
+   * incident (Karsaklian_189165_9781606497623.pdf, S4 Carlisle manual QC
+   * Round 2 item #2, informally described as "highlight tags... grouped
+   * at the end of the document") and exact detection algorithm.
+   *
+   * Re-runs findFloatInterruptions fresh (never trusts the issue's own
+   * analysis-time snapshot) and only mutates if the EXACT same misplaced
+   * element -- matched by its own indirect object number, encoded in
+   * issue.element -- still resolves to a confirmed interruption WITH an
+   * anchor. Matches this file's "always re-confirm at apply time"
+   * discipline elsewhere (fixMcidPageMismatch, findTargetTable,
+   * resolveFigureForImage).
+   *
+   * Struct-tree-only: no content-stream bytes touched, no MCID
+   * renumbering, no /ParentTree change needed (a struct element's
+   * /ParentTree reachability is by object reference, not by where in the
+   * /K tree it's nested, so relocating it within the tree doesn't affect
+   * ParentTree validity at all). The only mutation is removing
+   * misplacedRef from its current parent's /K array and inserting it into
+   * containerRef's /K array immediately after the confirmed anchor
+   * sibling -- exactly insertIntoKidsAfter's own established shape,
+   * reused verbatim rather than duplicated.
+   */
+  fixReadingOrderFloatInterruption(doc: PDFDocument, issue: AuditIssue): FixResult {
+    const match = issue.element ? /^float-interruption_r(\d+)$/.exec(issue.element) : null;
+    if (!match) {
+      return { issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error: `Unrecognized element id "${issue.element}"` };
+    }
+    const objectNumber = parseInt(match[1], 10);
+
+    const interruptions = findFloatInterruptions(doc);
+    const target = interruptions.find(f => f.misplacedRef.objectNumber === objectNumber);
+    if (!target) {
+      return {
+        issueId: issue.id, success: false, before: 'unknown', after: 'unknown',
+        error: `Could not re-confirm a float interruption for object ${objectNumber} -- may already be fixed, or the document changed`,
+      };
+    }
+    if (!target.anchor) {
+      return {
+        issueId: issue.id, success: false, before: 'unknown', after: 'unknown',
+        error: `No unambiguous splice point for object ${objectNumber} -- its range doesn't fall cleanly between two of the main flow container's own direct children`,
+      };
+    }
+
+    try {
+      this.removeFromKids(doc, target.parentRef, target.misplacedRef);
+      this.insertIntoKidsAfter(doc, target.containerRef, target.anchor.afterRef, target.misplacedRef);
+    } catch (err) {
+      return { issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error: err instanceof Error ? err.message : String(err) };
+    }
+
+    return {
+      issueId: issue.id,
+      success: true,
+      before: `/${target.misplacedS} (page${target.minPage === target.maxPage ? ` ${target.minPage}` : `s ${target.minPage}-${target.maxPage}`}) was a top-level sibling positioned after /${target.containerS}'s entire remaining span`,
+      after: `Relocated into /${target.containerS}'s own /K array, immediately after its confirmed neighbor there`,
     };
   }
 

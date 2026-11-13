@@ -186,6 +186,13 @@ const HEADING_CODES = new Set(['HEADING-SKIP', 'HEADING-MULTIPLE-H1', 'HEADING-N
 const LANGUAGE_CODES = new Set(['MATTERHORN-11-001', 'LANGUAGE-MISSING']);
 const TAB_ORDER_CODES = new Set(['TAB-ORDER-NOT-STRUCTURE']);
 const MCID_PAGE_MISMATCH_CODES = new Set(['MCID-PAGE-MISMATCH']);
+// Only the auto-fixable code (an unambiguous MCID-interpolated splice
+// point exists) is dispatched here -- READING-ORDER-FLOAT-INTERRUPTION-MANUAL
+// deliberately has no dispatch wiring, matching
+// pdf-header-footer-content.validator.ts's own established convention for
+// a real-but-harder-to-safely-auto-fix case. See
+// pdf-reading-order-float.validator.ts's own header comment.
+const READING_ORDER_FLOAT_CODES = new Set(['READING-ORDER-FLOAT-INTERRUPTION']);
 // Only the two categories with one unambiguous correct RoleMap retarget --
 // see pdf-rolemap-integrity.validator.ts's own header comment for why
 // these are the only two whose /RoleMap entry alone has a single safe
@@ -1735,6 +1742,23 @@ class AiAnalysisService {
         guidance: 'This MCID will be re-wrapped as an MCR dict declaring the page it actually exists on, matching its sibling entries.',
         confidence: 1.0,
         rationale: 'Mechanical PDF structural-consistency fix -- no content judgment required',
+        model: 'rule-based',
+        applyMode: 'apply-to-pdf',
+      };
+    }
+
+    if (READING_ORDER_FLOAT_CODES.has(code)) {
+      // Purely mechanical (re-confirmed fresh at apply time against the
+      // same single source of truth, findFloatInterruptions -- see its
+      // own doc comment) -- same confidence/rule-based treatment as
+      // mcid-page-mismatch-fix above. Only ever generated for the
+      // auto-fixable code (an unambiguous splice point already confirmed
+      // at analysis time); the MANUAL code never reaches this branch.
+      return {
+        suggestionType: 'reading-order-float-fix',
+        guidance: 'This element will be relocated into the document\'s main flow container, immediately after its confirmed neighbor there, matching its own page/content position.',
+        confidence: 1.0,
+        rationale: 'Mechanical struct-tree reposition -- no content judgment required',
         model: 'rule-based',
         applyMode: 'apply-to-pdf',
       };
@@ -4232,6 +4256,12 @@ class AiAnalysisService {
           modification = { success: result.success, description: result.after, error: result.error };
         } else if (suggestionType === 'mcid-page-mismatch-fix') {
           const result = pdfStructureWriterService.fixMcidPageMismatch(doc, originalIssue);
+          modification = { success: result.success, description: result.after, error: result.error };
+        } else if (suggestionType === 'reading-order-float-fix') {
+          // Struct-tree-only (no content-stream bytes touched, no MCID
+          // renumbering, no /ParentTree change needed) -- see
+          // fixReadingOrderFloatInterruption's own doc comment.
+          const result = pdfStructureWriterService.fixReadingOrderFloatInterruption(doc, originalIssue);
           modification = { success: result.success, description: result.after, error: result.error };
         } else if (suggestionType === 'rolemap-target-fix') {
           const result = pdfStructureWriterService.fixDegenerateRoleMapEntry(doc, originalIssue);
