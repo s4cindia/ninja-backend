@@ -49,10 +49,17 @@ vi.mock('../../../src/queues', () => ({
 vi.mock('../../../src/services/pdf/auto-mode-budget-estimate.service', () => ({
   estimateBudgetForJob: vi.fn(),
 }));
+// getStatus resolves `pendingFullAutoMode` (whether Full Auto Mode is still
+// expected to auto-start this job) whenever no run has started yet -- mock
+// this instead of letting it hit the real tenant-settings Prisma read.
+vi.mock('../../../src/services/pdf/ai-remediation-tenant-config.service', () => ({
+  getEffectiveAiRemediationConfig: vi.fn(),
+}));
 
 import prisma from '../../../src/lib/prisma';
 import { pdfAutoModeController } from '../../../src/controllers/pdf-auto-mode.controller';
 import { autoRemediationLoopService, ComparisonTrialAutoRemediationDriver } from '../../../src/services/pdf/auto-remediation-loop.service';
+import { getEffectiveAiRemediationConfig } from '../../../src/services/pdf/ai-remediation-tenant-config.service';
 import { areQueuesAvailable, getAutoRemediationQueue } from '../../../src/queues';
 import { estimateBudgetForJob } from '../../../src/services/pdf/auto-mode-budget-estimate.service';
 
@@ -69,7 +76,7 @@ function makeReq(overrides: Partial<Request> = {}): Request {
   return {
     params: { jobId: 'job-1' },
     user: { id: 'user-1', tenantId: 'tenant-1' },
-    job: { id: 'job-1' },
+    job: { id: 'job-1', tenantId: 'tenant-1', fullAutoMode: null },
     body: {},
     ...overrides,
   } as unknown as Request;
@@ -317,6 +324,7 @@ describe('PdfAutoModeController', () => {
   describe('getStatus -- job-native (no trial) path', () => {
     beforeEach(() => {
       vi.mocked(prisma.comparisonTrial.findUnique).mockResolvedValue(null as any);
+      vi.mocked(getEffectiveAiRemediationConfig).mockResolvedValue({ fullAutoModeDefault: false } as any);
     });
 
     it('reports "never run" defaults (200, not 404) when no run row exists yet -- the expected common state for a job nobody has started Auto Mode on', async () => {
@@ -326,6 +334,7 @@ describe('PdfAutoModeController', () => {
       await pdfAutoModeController.getStatus(makeReq(), res, next);
 
       expect(next).not.toHaveBeenCalled();
+      expect(getEffectiveAiRemediationConfig).toHaveBeenCalledWith('tenant-1');
       expect(res.json).toHaveBeenCalledWith({
         success: true,
         data: {
@@ -339,8 +348,86 @@ describe('PdfAutoModeController', () => {
           autoCostLimitUsd: 2.0,
           autoColorContrastMode: null,
           autoAltTextMode: null,
+          pendingFullAutoMode: false,
         },
       });
+    });
+
+    it('reports pendingFullAutoMode: true when this job\'s own upload-time override is true, even with the tenant default off', async () => {
+      vi.mocked(prisma.pdfAutoRemediationRun.findUnique).mockResolvedValue(null as any);
+      const res = makeRes();
+
+      await pdfAutoModeController.getStatus(makeReq({ job: { id: 'job-1', tenantId: 'tenant-1', fullAutoMode: true } as any }), res, next);
+
+      expect(res.json).toHaveBeenCalledWith(
+        expect.objectContaining({ data: expect.objectContaining({ pendingFullAutoMode: true }) })
+      );
+    });
+
+    it('reports pendingFullAutoMode: true when the tenant default is on and this job has no override', async () => {
+      vi.mocked(prisma.pdfAutoRemediationRun.findUnique).mockResolvedValue(null as any);
+      vi.mocked(getEffectiveAiRemediationConfig).mockResolvedValue({ fullAutoModeDefault: true } as any);
+      const res = makeRes();
+
+      await pdfAutoModeController.getStatus(makeReq(), res, next);
+
+      expect(res.json).toHaveBeenCalledWith(
+        expect.objectContaining({ data: expect.objectContaining({ pendingFullAutoMode: true }) })
+      );
+    });
+
+    it('reports pendingFullAutoMode once a run row exists but hasn\'t started yet (autoStatus still null), using the row\'s own stored overrides rather than hardcoded defaults', async () => {
+      vi.mocked(prisma.pdfAutoRemediationRun.findUnique).mockResolvedValue({
+        autoStatus: null,
+        autoStopReason: null,
+        autoStartedAt: null,
+        autoRoundsCompleted: 0,
+        autoMaxRounds: 7,
+        autoCostSpentUsd: 0,
+        autoCostLimitUsd: 1.5,
+        autoColorContrastMode: null,
+      } as any);
+      vi.mocked(getEffectiveAiRemediationConfig).mockResolvedValue({ fullAutoModeDefault: true } as any);
+      const res = makeRes();
+
+      await pdfAutoModeController.getStatus(makeReq(), res, next);
+
+      expect(res.json).toHaveBeenCalledWith({
+        success: true,
+        data: {
+          mode: 'auto',
+          autoStatus: null,
+          autoStopReason: null,
+          autoStartedAt: null,
+          autoRoundsCompleted: 0,
+          autoMaxRounds: 7,
+          autoCostSpentUsd: 0,
+          autoCostLimitUsd: 1.5,
+          autoColorContrastMode: null,
+          autoAltTextMode: null,
+          pendingFullAutoMode: true,
+        },
+      });
+    });
+
+    it('does not compute pendingFullAutoMode once a run has actually started or stopped', async () => {
+      vi.mocked(prisma.pdfAutoRemediationRun.findUnique).mockResolvedValue({
+        autoStatus: 'stopped',
+        autoStopReason: 'converged',
+        autoRoundsCompleted: 3,
+        autoMaxRounds: 10,
+        autoCostSpentUsd: 0.2,
+        autoCostLimitUsd: 2.0,
+        autoColorContrastMode: null,
+      } as any);
+      const res = makeRes();
+
+      await pdfAutoModeController.getStatus(makeReq(), res, next);
+
+      expect(getEffectiveAiRemediationConfig).not.toHaveBeenCalled();
+      expect(res.json).toHaveBeenCalledWith(
+        expect.objectContaining({ data: expect.not.objectContaining({ pendingFullAutoMode: expect.anything() }) })
+      );
     });
 
     it('returns the run\'s auto-mode fields once a run exists', async () => {

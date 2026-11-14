@@ -32,10 +32,12 @@ import {
   autoRemediationLoopService,
   resolveColorContrastMode,
   resolveAltTextMode,
+  resolveFullAutoMode,
   enqueueOrRunAutoLoop,
   ComparisonTrialAutoRemediationDriver,
   JobAutoRemediationDriver,
 } from '../services/pdf/auto-remediation-loop.service';
+import { getEffectiveAiRemediationConfig } from '../services/pdf/ai-remediation-tenant-config.service';
 import { estimateBudgetForJob } from '../services/pdf/auto-mode-budget-estimate.service';
 import type { StartAutoModeBody } from '../schemas/pdf-auto-mode.schemas';
 
@@ -172,20 +174,39 @@ export class PdfAutoModeController {
       // trial path) this is the expected, common state for a job nobody has
       // opted into Auto Mode for yet.
       let run = await prisma.pdfAutoRemediationRun.findUnique({ where: { jobId } });
-      if (!run) {
+
+      // autoStatus is null both when no row exists yet and when one does
+      // but the loop hasn't made its first write yet (schema: 'running' |
+      // 'stopped' | null -- "never started"). Either way, Full Auto Mode
+      // may still auto-start this job on its own once the initial audit +
+      // AI analysis complete (accessibility.processor.ts) -- resolve it the
+      // same way that trigger does and report it as `pendingFullAutoMode`,
+      // so ninja-frontend's useAutoModeStatus (whose refetchInterval
+      // otherwise stops polling for good the instant it sees ANY
+      // non-'running' snapshot) knows to keep polling for a transition
+      // nothing on the client ever requested. Real bug, caught live
+      // (2026-11-14): a page left open since upload never saw a
+      // Full-Auto-Mode run start OR finish, because its very first fetch --
+      // taken right after upload, long before the trigger fires -- always
+      // raced ahead of it and disabled the interval permanently.
+      if (!run || run.autoStatus === null) {
+        const aiRemediationConfig = await getEffectiveAiRemediationConfig(req.job!.tenantId);
+        const pendingFullAutoMode = resolveFullAutoMode(req.job!.fullAutoMode, aiRemediationConfig.fullAutoModeDefault);
+
         res.json({
           success: true,
           data: {
-            mode: 'manual',
+            mode: run ? 'auto' : 'manual',
             autoStatus: null,
-            autoStopReason: null,
-            autoStartedAt: null,
-            autoRoundsCompleted: 0,
-            autoMaxRounds: 10,
-            autoCostSpentUsd: 0,
-            autoCostLimitUsd: 2.0,
-            autoColorContrastMode: null,
-            autoAltTextMode: null,
+            autoStopReason: run?.autoStopReason ?? null,
+            autoStartedAt: run?.autoStartedAt ?? null,
+            autoRoundsCompleted: run?.autoRoundsCompleted ?? 0,
+            autoMaxRounds: run?.autoMaxRounds ?? 10,
+            autoCostSpentUsd: run?.autoCostSpentUsd ?? 0,
+            autoCostLimitUsd: run?.autoCostLimitUsd ?? 2.0,
+            autoColorContrastMode: run ? resolveColorContrastMode(run.autoColorContrastMode) ?? null : null,
+            autoAltTextMode: run ? resolveAltTextMode(run.autoAltTextMode) ?? null : null,
+            pendingFullAutoMode,
           },
         });
         return;
