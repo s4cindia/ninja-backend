@@ -1027,6 +1027,10 @@ class AutoRemediationLoopService {
     let consecutiveStalls = 0;
     let stopErrorMessage: string | undefined;
     let escalatedThisRun = false;
+    // Set the one time escalatedThisRun's grace round (below) is actually
+    // consumed, so the grace is granted at most once even though
+    // escalatedThisRun itself stays true for the rest of the run.
+    let escalationGraceUsed = false;
 
     try {
       while (true) {
@@ -1055,8 +1059,25 @@ class AutoRemediationLoopService {
           break;
         }
         if (roundsCompleted >= state.autoMaxRounds) {
-          stopReason = 'round_limit';
-          break;
+          // Without this carve-out, a stall detected on what's ALSO the last
+          // round the cap allows would escalate (flipping colorContrastMode/
+          // linkTextMode/bookmarkMode to apply-to-pdf and persisting
+          // autoStallEscalated: true) and then immediately hit this same
+          // check again on the very next iteration -- before a single round
+          // ever ran under the escalated modes. Real incident
+          // (Karsaklian_189165, 2026-11-16): the run reported stopReason
+          // 'round_limit' having done zero work with contrast/link-text/
+          // bookmark already apply-to-pdf, which from the operator's side
+          // looked exactly like "escalation never kicked in" even though it
+          // had. Grant exactly one grace round past the cap, once, so the
+          // escalation this run already paid STALL_ROUND_LIMIT stalled
+          // rounds to unlock actually gets used before stopping for real.
+          if (escalatedThisRun && !escalationGraceUsed) {
+            escalationGraceUsed = true;
+          } else {
+            stopReason = 'round_limit';
+            break;
+          }
         }
         if (costSpentUsd >= state.autoCostLimitUsd) {
           stopReason = 'budget_limit';
