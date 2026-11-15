@@ -74,6 +74,26 @@ describe('createAndEnqueuePdfAuditJob', () => {
     );
   });
 
+  it('persists Job.autoEscalateOnStall as given (true/false), and null when no override is passed at all', async () => {
+    (prisma.job.create as any).mockResolvedValue({ id: 'job-6' });
+    await createAndEnqueuePdfAuditJob(FILE, 'tenant-1', 'caller-1', { autoEscalateOnStall: true });
+    expect(prisma.job.create).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ autoEscalateOnStall: true }) })
+    );
+
+    (prisma.job.create as any).mockResolvedValue({ id: 'job-7' });
+    await createAndEnqueuePdfAuditJob(FILE, 'tenant-1', 'caller-1', { autoEscalateOnStall: false });
+    expect(prisma.job.create).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ autoEscalateOnStall: false }) })
+    );
+
+    (prisma.job.create as any).mockResolvedValue({ id: 'job-8' });
+    await createAndEnqueuePdfAuditJob(FILE, 'tenant-1', 'caller-1');
+    expect(prisma.job.create).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ autoEscalateOnStall: null }) })
+    );
+  });
+
   it('owns the job as the assignee, stamping assignedById/assignedAt, when a real assignment is passed', async () => {
     (prisma.job.create as any).mockResolvedValue({ id: 'job-2' });
     const assignedAt = new Date('2026-11-13T00:00:00.000Z');
