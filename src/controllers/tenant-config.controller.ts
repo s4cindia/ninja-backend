@@ -88,6 +88,9 @@ const aiRemediationConfigUpdateSchema = z.object({
   // for an operator to click "Start Auto Remediation". See
   // resolveFullAutoMode in auto-remediation-loop.service.ts.
   fullAutoModeDefault: z.boolean().optional(),
+  // Tenant-wide default for "auto-escalate on stall" -- see
+  // resolveEscalateOnStall in auto-remediation-loop.service.ts.
+  autoEscalateOnStallDefault: z.boolean().optional(),
 }).strict();
 
 const workflowConfigUpdateSchema = z.object({

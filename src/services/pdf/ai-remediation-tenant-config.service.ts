@@ -29,6 +29,12 @@ export const DEFAULT_AI_REMEDIATION_CONFIG = {
   // of waiting for an operator to click "Start Auto Remediation". See
   // resolveFullAutoMode in auto-remediation-loop.service.ts.
   fullAutoModeDefault: false,
+  // Tenant-wide default for "auto-escalate on stall" -- when true, an Auto
+  // Mode run (manual or Full-Auto-triggered) that would otherwise stop
+  // 'stalled' escalates guidance-only colorContrastMode/linkTextMode to
+  // apply-to-pdf for one more pass before actually stopping. See
+  // resolveEscalateOnStall in auto-remediation-loop.service.ts.
+  autoEscalateOnStallDefault: false,
 };
 
 /**

@@ -14,6 +14,7 @@ vi.mock('../../../src/lib/prisma', () => ({
   default: {
     comparisonTrial: { findUnique: vi.fn(), update: vi.fn() },
     pdfAutoRemediationRun: { findUnique: vi.fn(), update: vi.fn(), upsert: vi.fn() },
+    job: { findUnique: vi.fn(), update: vi.fn() },
   },
 }));
 // resolveColorContrastMode is a pure function the controller uses to
@@ -76,7 +77,7 @@ function makeReq(overrides: Partial<Request> = {}): Request {
   return {
     params: { jobId: 'job-1' },
     user: { id: 'user-1', tenantId: 'tenant-1' },
-    job: { id: 'job-1', tenantId: 'tenant-1', fullAutoMode: null },
+    job: { id: 'job-1', tenantId: 'tenant-1', fullAutoMode: null, autoEscalateOnStall: null },
     body: {},
     ...overrides,
   } as unknown as Request;
@@ -219,6 +220,46 @@ describe('PdfAutoModeController', () => {
       expect(res.status).toHaveBeenCalledWith(202);
     });
 
+    it('passes a validated autoLinkTextMode body override through to the upsert -- previously had no per-run override at all', async () => {
+      vi.mocked(prisma.pdfAutoRemediationRun.findUnique).mockResolvedValue(null as any);
+      vi.mocked(prisma.pdfAutoRemediationRun.upsert).mockResolvedValue({ id: 'run-1', jobId: 'job-1' } as any);
+      vi.mocked(autoRemediationLoopService.startAutoLoop).mockResolvedValue(undefined);
+      const res = makeRes();
+
+      await pdfAutoModeController.start(
+        makeReq({ body: { autoLinkTextMode: 'apply-to-pdf' } as any }),
+        res,
+        next
+      );
+
+      expect(prisma.pdfAutoRemediationRun.upsert).toHaveBeenCalledWith({
+        where: { jobId: 'job-1' },
+        create: { jobId: 'job-1', autoLinkTextMode: 'apply-to-pdf' },
+        update: { autoLinkTextMode: 'apply-to-pdf' },
+      });
+      expect(res.status).toHaveBeenCalledWith(202);
+    });
+
+    it('passes a validated autoBookmarkMode body override through to the upsert -- regenerateGenericBookmarkTitles is a real, proven fixer that had no per-run override either', async () => {
+      vi.mocked(prisma.pdfAutoRemediationRun.findUnique).mockResolvedValue(null as any);
+      vi.mocked(prisma.pdfAutoRemediationRun.upsert).mockResolvedValue({ id: 'run-1', jobId: 'job-1' } as any);
+      vi.mocked(autoRemediationLoopService.startAutoLoop).mockResolvedValue(undefined);
+      const res = makeRes();
+
+      await pdfAutoModeController.start(
+        makeReq({ body: { autoBookmarkMode: 'apply-to-pdf' } as any }),
+        res,
+        next
+      );
+
+      expect(prisma.pdfAutoRemediationRun.upsert).toHaveBeenCalledWith({
+        where: { jobId: 'job-1' },
+        create: { jobId: 'job-1', autoBookmarkMode: 'apply-to-pdf' },
+        update: { autoBookmarkMode: 'apply-to-pdf' },
+      });
+      expect(res.status).toHaveBeenCalledWith(202);
+    });
+
     it('rejects with 409 when auto mode is already running for this job', async () => {
       vi.mocked(prisma.pdfAutoRemediationRun.findUnique).mockResolvedValue({ id: 'run-1', jobId: 'job-1', autoStatus: 'running' } as any);
 
@@ -348,6 +389,9 @@ describe('PdfAutoModeController', () => {
           autoCostLimitUsd: 2.0,
           autoColorContrastMode: null,
           autoAltTextMode: null,
+          autoLinkTextMode: null,
+          autoBookmarkMode: null,
+          autoStallEscalated: false,
           pendingFullAutoMode: false,
         },
       });
@@ -386,6 +430,9 @@ describe('PdfAutoModeController', () => {
         autoCostSpentUsd: 0,
         autoCostLimitUsd: 1.5,
         autoColorContrastMode: null,
+        autoLinkTextMode: null,
+        autoBookmarkMode: null,
+        autoStallEscalated: false,
       } as any);
       vi.mocked(getEffectiveAiRemediationConfig).mockResolvedValue({ fullAutoModeDefault: true } as any);
       const res = makeRes();
@@ -405,6 +452,9 @@ describe('PdfAutoModeController', () => {
           autoCostLimitUsd: 1.5,
           autoColorContrastMode: null,
           autoAltTextMode: null,
+          autoLinkTextMode: null,
+          autoBookmarkMode: null,
+          autoStallEscalated: false,
           pendingFullAutoMode: true,
         },
       });
@@ -441,6 +491,9 @@ describe('PdfAutoModeController', () => {
         autoCostSpentUsd: 0.1,
         autoCostLimitUsd: 1.5,
         autoColorContrastMode: 'disabled',
+        autoLinkTextMode: 'apply-to-pdf',
+        autoBookmarkMode: 'guidance-only',
+        autoStallEscalated: true,
       } as any);
       const res = makeRes();
 
@@ -459,6 +512,9 @@ describe('PdfAutoModeController', () => {
           autoCostLimitUsd: 1.5,
           autoColorContrastMode: 'disabled',
           autoAltTextMode: null,
+          autoLinkTextMode: 'apply-to-pdf',
+          autoBookmarkMode: 'guidance-only',
+          autoStallEscalated: true,
         },
       });
     });
@@ -581,6 +637,106 @@ describe('PdfAutoModeController', () => {
       const res = makeRes();
 
       await pdfAutoModeController.getBudgetEstimate(makeReq(), res, next);
+
+      expect(next).toHaveBeenCalledWith(error);
+    });
+  });
+
+  describe('getJobSettings / updateJobSettings', () => {
+    beforeEach(() => {
+      vi.mocked(getEffectiveAiRemediationConfig).mockResolvedValue({
+        fullAutoModeDefault: false,
+        autoEscalateOnStallDefault: false,
+      } as any);
+    });
+
+    it('getJobSettings reports override/tenantDefault/effective for both per-job overrides', async () => {
+      vi.mocked(prisma.job.findUnique).mockResolvedValue({ fullAutoMode: true, autoEscalateOnStall: null } as any);
+      const res = makeRes();
+
+      await pdfAutoModeController.getJobSettings(makeReq(), res, next);
+
+      expect(res.json).toHaveBeenCalledWith({
+        success: true,
+        data: {
+          fullAutoMode: { override: true, tenantDefault: false, effective: true },
+          autoEscalateOnStall: { override: null, tenantDefault: false, effective: false },
+        },
+      });
+    });
+
+    it('getJobSettings resolves a null override against the tenant default', async () => {
+      vi.mocked(prisma.job.findUnique).mockResolvedValue({ fullAutoMode: null, autoEscalateOnStall: null } as any);
+      vi.mocked(getEffectiveAiRemediationConfig).mockResolvedValue({
+        fullAutoModeDefault: true,
+        autoEscalateOnStallDefault: true,
+      } as any);
+      const res = makeRes();
+
+      await pdfAutoModeController.getJobSettings(makeReq(), res, next);
+
+      expect(res.json).toHaveBeenCalledWith({
+        success: true,
+        data: {
+          fullAutoMode: { override: null, tenantDefault: true, effective: true },
+          autoEscalateOnStall: { override: null, tenantDefault: true, effective: true },
+        },
+      });
+    });
+
+    it('getJobSettings forwards a not-found job to next() as a 404 AppError', async () => {
+      vi.mocked(prisma.job.findUnique).mockResolvedValue(null as any);
+      const res = makeRes();
+
+      await pdfAutoModeController.getJobSettings(makeReq(), res, next);
+
+      expect(next).toHaveBeenCalledWith(expect.objectContaining({ statusCode: 404 }));
+      expect(res.json).not.toHaveBeenCalled();
+    });
+
+    it('updateJobSettings persists only the fields present in the body, leaving the other untouched', async () => {
+      vi.mocked(prisma.job.update).mockResolvedValue({ fullAutoMode: true, autoEscalateOnStall: null } as any);
+      const res = makeRes();
+
+      await pdfAutoModeController.updateJobSettings(makeReq({ body: { fullAutoMode: true } as any }), res, next);
+
+      expect(prisma.job.update).toHaveBeenCalledWith({
+        where: { id: 'job-1' },
+        data: { fullAutoMode: true },
+        select: { fullAutoMode: true, autoEscalateOnStall: true },
+      });
+      expect(res.json).toHaveBeenCalledWith({
+        success: true,
+        data: {
+          fullAutoMode: { override: true, tenantDefault: false, effective: true },
+          autoEscalateOnStall: { override: null, tenantDefault: false, effective: false },
+        },
+      });
+    });
+
+    it('updateJobSettings can explicitly reset an override back to null (inherit tenant default), distinct from omitting it', async () => {
+      vi.mocked(prisma.job.update).mockResolvedValue({ fullAutoMode: null, autoEscalateOnStall: true } as any);
+      const res = makeRes();
+
+      await pdfAutoModeController.updateJobSettings(
+        makeReq({ body: { fullAutoMode: null, autoEscalateOnStall: true } as any }),
+        res,
+        next
+      );
+
+      expect(prisma.job.update).toHaveBeenCalledWith({
+        where: { id: 'job-1' },
+        data: { fullAutoMode: null, autoEscalateOnStall: true },
+        select: { fullAutoMode: true, autoEscalateOnStall: true },
+      });
+    });
+
+    it('updateJobSettings forwards a db error to next() rather than throwing', async () => {
+      const error = new Error('db down');
+      vi.mocked(prisma.job.update).mockRejectedValue(error);
+      const res = makeRes();
+
+      await pdfAutoModeController.updateJobSettings(makeReq({ body: {} as any }), res, next);
 
       expect(next).toHaveBeenCalledWith(error);
     });

@@ -38,6 +38,7 @@ import { locateMcidBoundingBoxes, locateByteRangeBoundingBox, type DeviceBoundin
 import { findMcidPageMismatches } from './mcid-page-mismatch';
 import { findFloatInterruptions } from './reading-order-float';
 import { findStructureParentMismatches } from './structure-parent-mismatch';
+import { parseIssueElement as parseHeadingStyleMismatchIssueElement } from './heading-style-classifier';
 import { buildFormXObjectResolver } from './validators/pdf-figure-structtree.validator';
 import {
   tagUntaggedPaintedPaths,
@@ -998,6 +999,150 @@ export class PdfStructureWriterService {
       before: `${h1Indices.length} H1 headings`,
       after: `Demoted ${demoted} H1(s) to H2; shifted ${cascaded} sub-heading(s) down by one level`,
     };
+  }
+
+  /**
+   * Resolves a struct element by (page, MCID) using only the REAL, current
+   * forward /K structure -- never any element's own /P back-pointer. That
+   * distinction matters here specifically: this codebase already shipped a
+   * real bug (STRUCTURE-ELEMENT-WRONG-PARENT, see structure-parent-mismatch.ts's
+   * own header comment) where a /P back-pointer went stale after a
+   * relocation, so trusting /P here would risk repeating that exact class
+   * of mistake for a brand-new feature. A top-down walk, by construction,
+   * can never be wrong about the tree's own current shape.
+   *
+   * Finds the nearest ancestor whose RoleMap-resolved role is 'P' such that
+   * ITS OWN subtree reaches the target (page, mcid) -- i.e. the real /P
+   * struct element analyzeHeadingStyleMismatch's caller flagged, whether
+   * the MCID sits directly under it or nested beneath an inline Span-like
+   * child (collectContentIds in heading-style-classifier.ts already handles
+   * that same nesting at detection time).
+   *
+   * Returns null (decline) rather than guessing when no match is found --
+   * same "refuse to guess" discipline as findUrlOperatorRun/
+   * locateXObjectInvocation elsewhere in this file.
+   */
+  resolveParagraphElementForMcid(doc: PDFDocument, pageNumber: number, mcid: number): PDFRef | null {
+    const structRoot = this.getStructTreeRoot(doc);
+    if (!structRoot) return null;
+    let page;
+    try {
+      page = doc.getPage(pageNumber - 1);
+    } catch {
+      return null;
+    }
+    const pageRef = page.ref;
+    const roleMap = this.buildRoleMap(doc, structRoot);
+
+    let found: PDFRef | null = null;
+    this.traverseStructTree(doc, structRoot, (node, ref) => {
+      if (found || !ref) return;
+      const sTag = node.get(PDFName.of('S'));
+      if (!sTag) return;
+      const rawType = sTag.toString().replace(/^\//, '');
+      const resolvedType = this.resolveRoleMapChain(roleMap, rawType);
+      if (resolvedType !== 'P') return;
+      if (this.subtreeContainsMcid(doc, node, pageRef, mcid, undefined)) {
+        found = ref;
+        return true;
+      }
+    });
+    return found;
+  }
+
+  /**
+   * Recursively checks whether `dict`'s own /K subtree reaches the target
+   * (page, mcid) -- a bare PDFNumber in /K inherits whichever page the
+   * nearest ancestor's own /Pg resolved to (tracked via `inheritedPageRef`,
+   * updated whenever a dict along the way declares its own /Pg), an MCR
+   * dict carries its page explicitly. MCIDs restart per page, so matching
+   * the bare-number case WITHOUT this page tracking would risk matching the
+   * same-numbered MCID on a completely different page.
+   */
+  private subtreeContainsMcid(
+    doc: PDFDocument,
+    dict: PDFDict,
+    targetPageRef: PDFRef,
+    targetMcid: number,
+    inheritedPageRef: PDFRef | undefined,
+    depth = 0,
+  ): boolean {
+    if (depth > 30) return false;
+    const ownPgRaw = dict.get(PDFName.of('Pg'));
+    const ownPageRef = ownPgRaw instanceof PDFRef ? ownPgRaw : inheritedPageRef;
+
+    const kRaw = dict.get(PDFName.of('K'));
+    const kResolved = kRaw instanceof PDFRef ? doc.context.lookup(kRaw) : kRaw;
+    const items: PDFObject[] = kResolved instanceof PDFArray ? kResolved.asArray() : kResolved !== undefined ? [kResolved] : [];
+
+    for (const item of items) {
+      if (item instanceof PDFNumber) {
+        if (item.asNumber() === targetMcid && ownPageRef?.objectNumber === targetPageRef.objectNumber) return true;
+        continue;
+      }
+      if (item instanceof PDFRef) {
+        const childDict = doc.context.lookup(item);
+        if (!(childDict instanceof PDFDict)) continue;
+        // An MCR dict (Type /MCR, /Pg, /MCID) -- a marked-content reference,
+        // not a nested struct element. Checked by shape (own /MCID entry),
+        // not by requiring a literal /Type, since /Type is optional on MCR
+        // per PDF32000-1:2008 §14.7.5.3 and this codebase's own writers
+        // don't always set it (see this file's own createElement usage).
+        const mcidVal = childDict.get(PDFName.of('MCID'));
+        if (mcidVal instanceof PDFNumber) {
+          const pgVal = childDict.get(PDFName.of('Pg'));
+          const effectivePageRef = pgVal instanceof PDFRef ? pgVal : ownPageRef;
+          if (mcidVal.asNumber() === targetMcid && effectivePageRef?.objectNumber === targetPageRef.objectNumber) return true;
+          continue;
+        }
+        // A nested struct element (has its own /S) -- recurse.
+        if (childDict.get(PDFName.of('S')) !== undefined) {
+          if (this.subtreeContainsMcid(doc, childDict, targetPageRef, targetMcid, ownPageRef, depth + 1)) return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  /**
+   * HEADING-STYLE-MISMATCH auto-fix ("heading-promote-fix" suggestionType,
+   * dispatched from ai-analysis.service.ts's analyzeHeadingStyleMismatch --
+   * see heading-style-classifier.ts and the "Heading-Style-Mismatch
+   * Classifier Design" doc, https://claude.ai/artifact/4CwarLbLEjpTgALdFgnUBD).
+   *
+   * Promotes a /P to the AI-suggested /Hn level via the existing MCID-safe
+   * renameElement primitive -- the retag itself is mechanically identical to
+   * fixHeadingHierarchy/fixMultipleH1's own renames; what's new here is
+   * ONLY resolveParagraphElementForMcid, re-locating the real struct
+   * element from the issue's (page, mcid) encoding.
+   *
+   * Declines (no mutation) when the element can't be re-confirmed --
+   * e.g. an earlier round's own fix already changed the structure tree
+   * enough that this MCID no longer resolves to a /P -- rather than
+   * retagging a different, unintended element.
+   */
+  fixHeadingPromoteFix(doc: PDFDocument, issue: AuditIssue, level: number): FixResult {
+    const target = parseHeadingStyleMismatchIssueElement(issue.element);
+    if (!target) {
+      return { issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error: `Unrecognized element id: ${issue.element}` };
+    }
+    if (!Number.isInteger(level) || level < 1 || level > 6) {
+      return { issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error: `Invalid heading level: ${level}` };
+    }
+
+    const ref = this.resolveParagraphElementForMcid(doc, target.pageNumber, target.mcid);
+    if (!ref) {
+      return {
+        issueId: issue.id, success: false, before: 'unknown', after: 'unknown',
+        error: `Could not re-confirm a /P element at page ${target.pageNumber}, MCID ${target.mcid} -- already fixed, or the structure changed since detection`,
+      };
+    }
+
+    const before = (doc.context.lookup(ref) as PDFDict).get(PDFName.of('S'))?.toString() ?? '/P';
+    this.renameElement(doc, ref, `H${level}`);
+
+    logger.info(`[StructureWriter] fixHeadingPromoteFix: page ${target.pageNumber} MCID ${target.mcid} ${before} -> /H${level}`);
+    return { issueId: issue.id, success: true, before, after: `/H${level}` };
   }
 
   /**

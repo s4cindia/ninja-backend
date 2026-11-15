@@ -24,6 +24,13 @@ import { fileStorageService } from '../storage/file-storage.service';
 import type { PDFDocument } from 'pdf-lib';
 import { pdfModifierService } from './pdf-modifier.service';
 import { pdfStructureWriterService, type FixResult } from './pdf-structure-writer.service';
+import {
+  collectHeadingStyleData,
+  findCandidateForIssue,
+  computeClusterSize,
+  hasConfirmedHeadingAtSameSize,
+  CLUSTER_SIZE_DECLINE_THRESHOLD,
+} from './heading-style-classifier';
 import { fontToUnicodeService } from './font-tounicode.service';
 import { decodePageContent } from './pdf-content-stream-io';
 import { pdfContrastWriterService, resolveColorContrastTargets } from './pdf-contrast-writer.service';
@@ -297,6 +304,13 @@ const LINK_CODES = new Set(['LINK-NOT-DESCRIPTIVE', 'LINK-URL-AS-TEXT', 'LINK-GE
 const LINK_MISSING_DESCRIPTION_CODES = new Set(['MATTERHORN-28-004']);
 const FORM_CODES = new Set(['FORM-FIELD-NO-LABEL', 'FORM-FIELD-MISSING-TOOLTIP']);
 const BOOKMARK_CODES = new Set(['BOOKMARK-MISSING', 'BOOKMARK-INSUFFICIENT', 'BOOKMARK-GENERIC-TEXT']);
+// See the "Heading-Style-Mismatch Classifier Design" doc
+// (https://claude.ai/artifact/4CwarLbLEjpTgALdFgnUBD) for why this previously
+// had no dispatch at all (pdf-heading-style-mismatch.validator.ts's own
+// former header comment said so explicitly) -- a cluster-size pre-filter
+// plus AI classification with real surrounding-text context now makes a
+// per-instance promotion safe enough to attempt, confidence-gated.
+const HEADING_STYLE_MISMATCH_CODES = new Set(['HEADING-STYLE-MISMATCH']);
 const PDFUA_IDENTIFIER_CODES = new Set(['PDFUA-IDENTIFIER-MISSING', 'MATTERHORN-06-002']);
 // pdfa11y-sourced (UA-07-001 -> 07-001, and 07-002 for completeness --
 // "DisplayDocTitle present but false" needs the identical fix): NOT
@@ -981,6 +995,21 @@ const LinkTextResult = z.object({
   rationale: z.string(),
 });
 
+const HEADING_PROMOTE_SCHEMA: Schema = {
+  type: SchemaType.OBJECT,
+  properties: {
+    isHeading: { type: SchemaType.BOOLEAN },
+    confidence: { type: SchemaType.NUMBER },
+    rationale: { type: SchemaType.STRING },
+  },
+  required: ['isHeading', 'confidence', 'rationale'],
+};
+const HeadingPromoteResult = z.object({
+  isHeading: z.boolean(),
+  confidence: z.number().min(0).max(1),
+  rationale: z.string(),
+});
+
 const FORM_FIELD_LABEL_SCHEMA: Schema = {
   type: SchemaType.OBJECT,
   properties: {
@@ -1081,6 +1110,10 @@ class AiAnalysisService {
      * reflects the untagged-PDF force-downgrade to 'guidance-only' below,
      * since that mutates `config.altTextMode` before this returns. */
     altTextMode: 'apply-to-pdf' | 'guidance-only';
+    /** Same rationale as colorContrastMode above, for linkTextMode. */
+    linkTextMode: 'guidance-only' | 'disabled' | 'apply-to-pdf';
+    /** Same rationale as colorContrastMode above, for bookmarkMode. */
+    bookmarkMode: 'guidance-only' | 'disabled' | 'apply-to-pdf';
   }> {
     logger.info(`[AiAnalysis] Starting analysis for job ${jobId}`);
 
@@ -1116,7 +1149,7 @@ class AiAnalysisService {
       await prisma.aiAnalysis.deleteMany({ where: { jobId } }).catch((err) => {
         logger.warn(`[AiAnalysis] Failed to prune stale suggestions for job ${jobId} (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
       });
-      return { analyzed: 0, skipped: 0, colorContrastMode: config.colorContrastMode, altTextMode: config.altTextMode };
+      return { analyzed: 0, skipped: 0, colorContrastMode: config.colorContrastMode, altTextMode: config.altTextMode, linkTextMode: config.linkTextMode, bookmarkMode: config.bookmarkMode };
     }
 
     // Load PDF from storage — prefer the remediated (Adobe-tagged) file if available
@@ -1438,6 +1471,8 @@ class AiAnalysisService {
         serviceError: geminiStatus.reason,
         colorContrastMode: config.colorContrastMode,
         altTextMode: config.altTextMode,
+        linkTextMode: config.linkTextMode,
+        bookmarkMode: config.bookmarkMode,
       };
     } finally {
       if (parsed?.parsedPdf) {
@@ -1928,6 +1963,11 @@ class AiAnalysisService {
     if (BOOKMARK_CODES.has(code)) {
       if (config.bookmarkMode === 'disabled') return null;
       return this.analyzeBookmark(issue, parsed, config.bookmarkMode);
+    }
+
+    if (HEADING_STYLE_MISMATCH_CODES.has(code)) {
+      if (!parsed.parsedPdf) return null;
+      return this.analyzeHeadingStyleMismatch(issue, parsed.parsedPdf);
     }
 
     if (DISPLAY_DOC_TITLE_CODES.has(code)) {
@@ -3397,6 +3437,112 @@ class AiAnalysisService {
     }
   }
 
+  /**
+   * HEADING-STYLE-MISMATCH -- see heading-style-classifier.ts's own header
+   * and the "Heading-Style-Mismatch Classifier Design" doc
+   * (https://claude.ai/artifact/4CwarLbLEjpTgALdFgnUBD) for the full design
+   * this implements.
+   *
+   * Re-runs collectHeadingStyleData fresh (same reasoning as every other
+   * analyze* method here re-parsing the current file itself rather than
+   * sharing the audit step's own in-memory parse -- see this class's own
+   * analyzeJob doc comment) rather than caching anything from detection
+   * time, so cluster size and the same-size-elsewhere signal always reflect
+   * THIS round's actual document state.
+   *
+   * Three decline points, in order, each cheaper than the next:
+   *   1. The candidate can't be re-located (findCandidateForIssue) --
+   *      already fixed, or detection ran against a document state this
+   *      parse no longer matches.
+   *   2. Cluster size exceeds CLUSTER_SIZE_DECLINE_THRESHOLD -- a common
+   *      body-text style variant, no AI call spent at all.
+   *   3. The AI call itself, or the confidence after folding in the
+   *      same-size-elsewhere signal, falls below HEADING_PROMOTE_MIN_CONFIDENCE
+   *      -- surfaces nothing rather than cluttering the review queue with a
+   *      suggestion neither side believes in.
+   *
+   * Heading LEVEL is a v1 simplification: ratio-to-body-median bands
+   * (>=2.2x -> H1, >=1.8x -> H2, else H3), not a full document-wide
+   * heading-hierarchy walk -- see the design doc's own "Out of scope for
+   * v1" section. Stored in the returned suggestion's `value` field as a
+   * string; fixHeadingPromoteFix's caller (applyApprovedSuggestions) reads
+   * it back from there, the same convention every other suggestion type
+   * storing a non-text payload in `value` already uses.
+   */
+  private async analyzeHeadingStyleMismatch(issue: AuditIssue, parsedPdf: ParsedPDF): Promise<AiSuggestionResult | null> {
+    const HEADING_PROMOTE_MIN_CONFIDENCE = 0.3;
+    // Confirmed decision (design doc): folded into the confidence score,
+    // not a separate hard gate -- a real heading already at this exact
+    // size elsewhere argues this candidate is more likely a deliberate
+    // stylistic echo of body text than a missed heading.
+    const SAME_SIZE_ELSEWHERE_PENALTY = 0.1;
+
+    const { allCandidates, existingHeadingFontSizes, bodyMedianFontSize } = await collectHeadingStyleData(parsedPdf);
+    const candidate = findCandidateForIssue(allCandidates, issue);
+    if (!candidate) {
+      logger.info(`[AiAnalysis] analyzeHeadingStyleMismatch: could not re-locate the candidate for ${issue.element} -- declining`);
+      return null;
+    }
+
+    const clusterSize = computeClusterSize(allCandidates, candidate.fontSize);
+    if (clusterSize > CLUSTER_SIZE_DECLINE_THRESHOLD) {
+      logger.info(`[AiAnalysis] analyzeHeadingStyleMismatch: ${clusterSize} other /P element(s) share this font size (page ${candidate.pageNumber}) -- a common body-text style variant, declining before any AI call`);
+      return null;
+    }
+
+    const confirmedElsewhere = hasConfirmedHeadingAtSameSize(existingHeadingFontSizes, candidate.fontSize);
+
+    const prompt =
+      'You are an accessibility expert reviewing a PDF paragraph that is styled visually like a heading ' +
+      '(unusually large font, short text) but is tagged as ordinary body text (/P).\n\n' +
+      `Candidate text: "${candidate.textSample}"\n` +
+      `Text immediately before it: "${candidate.precedingText}"\n` +
+      `Text immediately after it: "${candidate.followingText}"\n\n` +
+      'Decide whether the candidate text genuinely functions as a heading (a section/chapter title introducing ' +
+      'what follows) versus emphasized, decorative, or otherwise legitimate body text that merely happens to be ' +
+      'styled large (e.g. a pull-quote, an epigraph, a drop-cap-adjacent lead-in). Base your judgment on how it ' +
+      'reads in context, not on its styling alone -- styling is already why this was flagged. ' +
+      'Respond ONLY with JSON:\n{"isHeading":boolean,"confidence":0.0-1.0,"rationale":"brief"}';
+
+    try {
+      const { data, usage } = await geminiService.generateWithSchema(prompt, HeadingPromoteResult, {
+        model: 'flash',
+        maxOutputTokens: 1024,
+        responseSchema: HEADING_PROMOTE_SCHEMA,
+      });
+
+      if (!data.isHeading) {
+        logger.info(`[AiAnalysis] analyzeHeadingStyleMismatch: declined by the model itself (page ${candidate.pageNumber}): ${data.rationale}`);
+        return null;
+      }
+
+      const adjustedConfidence = Math.max(0, Math.min(1, data.confidence - (confirmedElsewhere ? SAME_SIZE_ELSEWHERE_PENALTY : 0)));
+      if (adjustedConfidence < HEADING_PROMOTE_MIN_CONFIDENCE) {
+        logger.info(`[AiAnalysis] analyzeHeadingStyleMismatch: confidence ${adjustedConfidence.toFixed(2)} below floor ${HEADING_PROMOTE_MIN_CONFIDENCE} (page ${candidate.pageNumber}, confirmedElsewhere=${confirmedElsewhere}) -- declining`);
+        return null;
+      }
+
+      const ratio = bodyMedianFontSize > 0 ? candidate.fontSize / bodyMedianFontSize : 0;
+      const level = ratio >= 2.2 ? 1 : ratio >= 1.8 ? 2 : 3;
+
+      return {
+        suggestionType: 'heading-promote-fix',
+        value: String(level),
+        guidance: `Promotes this /P to /H${level} ("${candidate.textSample}").`,
+        confidence: adjustedConfidence,
+        rationale: confirmedElsewhere
+          ? `${data.rationale} (confidence reduced: this exact font size is already used elsewhere for a confirmed real heading, suggesting this may be a deliberate body-text style echo instead)`
+          : data.rationale,
+        model: 'gemini-flash',
+        applyMode: 'apply-to-pdf',
+        usage: usage ? { promptTokens: usage.promptTokens, completionTokens: usage.completionTokens } : undefined,
+      };
+    } catch (err) {
+      logger.warn(`[AiAnalysis] analyzeHeadingStyleMismatch failed: ${err instanceof Error ? err.message : String(err)}`);
+      return null;
+    }
+  }
+
   // ─── Helpers ─────────────────────────────────────────────────────────────────
 
   private formatTableAsText(table: TableInfo): string {
@@ -4204,7 +4350,7 @@ class AiAnalysisService {
     // dispatch branch was added (not as a later catch-up) -- the exact
     // discipline the #747/#748/#821 incidents this comment already
     // documents were all missing.
-    const STRUCTURE_WRITER_TYPES = new Set(['heading-fix', 'list-fix', 'table-header-fix', 'table-header-fix-column', 'table-header-scope-fix', 'table-artifact-fix', 'table-from-layout-fix', 'bookmark-generate', 'heading-multiple-h1-fix', 'pdfua-identifier', 'color-contrast-fix', 'alt-text-decorative', 'untagged-content-fix', 'invisible-text-artifact-fix', 'figure-caption-reattach-fix', 'inline-figure-reattach-fix', 'tagged-content-artifact-split-fix', 'table-cell-reattach-fix', 'table-row-reattach-fix', 'font-tounicode-synthesis-fix', 'font-tounicode-extend-fix', 'artifact-unwrap-complex-fix', 'placedpdf-retag-fix', 'link-missing-annotation-fix', 'artifact-actualtext-fix', 'actualtext-missing-mcid-fix', 'tab-order-fix', 'mcid-page-mismatch-fix', 'display-doc-title-fix', 'rolemap-target-fix', 'index-structure-fix', 'footnote-structure-fix', 'bookmark-title-regenerate', 'cross-reference-link-fix', 'reading-order-float-fix', 'toc-link-fix', 'citation-link-fix', 'structure-parent-mismatch-fix']);
+    const STRUCTURE_WRITER_TYPES = new Set(['heading-fix', 'list-fix', 'table-header-fix', 'table-header-fix-column', 'table-header-scope-fix', 'table-artifact-fix', 'table-from-layout-fix', 'bookmark-generate', 'heading-multiple-h1-fix', 'pdfua-identifier', 'color-contrast-fix', 'alt-text-decorative', 'untagged-content-fix', 'invisible-text-artifact-fix', 'figure-caption-reattach-fix', 'inline-figure-reattach-fix', 'tagged-content-artifact-split-fix', 'table-cell-reattach-fix', 'table-row-reattach-fix', 'font-tounicode-synthesis-fix', 'font-tounicode-extend-fix', 'artifact-unwrap-complex-fix', 'placedpdf-retag-fix', 'link-missing-annotation-fix', 'artifact-actualtext-fix', 'actualtext-missing-mcid-fix', 'tab-order-fix', 'mcid-page-mismatch-fix', 'display-doc-title-fix', 'rolemap-target-fix', 'index-structure-fix', 'footnote-structure-fix', 'bookmark-title-regenerate', 'cross-reference-link-fix', 'reading-order-float-fix', 'toc-link-fix', 'citation-link-fix', 'structure-parent-mismatch-fix', 'heading-promote-fix']);
 
     let applied = 0;
     let failed = 0;
@@ -4336,6 +4482,15 @@ class AiAnalysisService {
           };
         } else if (suggestionType === 'heading-multiple-h1-fix') {
           const result = pdfStructureWriterService.fixMultipleH1(doc, originalIssue);
+          modification = { success: result.success, description: result.after, error: result.error };
+        } else if (suggestionType === 'heading-promote-fix') {
+          // value carries the AI-inferred level as a string (e.g. "2") --
+          // see analyzeHeadingStyleMismatch's own doc comment for why level
+          // inference lives there (it needs the same document-wide median
+          // collectHeadingStyleData already computed) rather than being
+          // re-derived here from scratch.
+          const level = parseInt(value ?? '', 10);
+          const result = pdfStructureWriterService.fixHeadingPromoteFix(doc, originalIssue, level);
           modification = { success: result.success, description: result.after, error: result.error };
         } else if (suggestionType === 'tab-order-fix') {
           const result = pdfStructureWriterService.fixTabOrder(doc, originalIssue);
