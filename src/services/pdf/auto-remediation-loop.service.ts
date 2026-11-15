@@ -1027,10 +1027,21 @@ class AutoRemediationLoopService {
     let consecutiveStalls = 0;
     let stopErrorMessage: string | undefined;
     let escalatedThisRun = false;
-    // Set the one time escalatedThisRun's grace round (below) is actually
-    // consumed, so the grace is granted at most once even though
-    // escalatedThisRun itself stays true for the rest of the run.
-    let escalationGraceUsed = false;
+    // True for exactly the one loop iteration immediately after escalating
+    // (the `continue` below) -- consumed unconditionally at the top of the
+    // very next iteration, whether or not the round cap actually collides
+    // with it that iteration. escalatedThisRun alone is NOT a safe gate
+    // here: it stays true for the rest of the run, so using it directly
+    // would grant a grace round at ANY later round-limit hit, not just the
+    // one the escalation actually collided with. Real incident
+    // (Karsaklian_189165, 2026-11-16): escalation fired cleanly at round 8
+    // with 2 rounds still left in a 10-round cap (rounds 7 & 8 both
+    // resolved 0 -- a genuine stall, nothing to do with the cap), round 9
+    // then made real progress (27 applied/25 resolved) -- and the run still
+    // got an extra, unwarranted 11th round when the cap was hit normally 2
+    // rounds later, purely because escalatedThisRun was still true from 3
+    // rounds earlier.
+    let justEscalated = false;
 
     try {
       while (true) {
@@ -1051,6 +1062,13 @@ class AutoRemediationLoopService {
           stopReason = 'error';
           break;
         }
+        // Consumed here, unconditionally, BEFORE the ceiling checks below --
+        // so it only ever covers the one iteration immediately following an
+        // escalation's own `continue`, never a later, unrelated round-limit
+        // hit (see justEscalated's own doc comment above).
+        const graceRoundAvailable = justEscalated;
+        justEscalated = false;
+
         // All three checks happen before starting a round, never mid-round --
         // a round is always allowed to finish once started, so a stop
         // request/ceiling never leaves the PDF half-applied.
@@ -1064,16 +1082,12 @@ class AutoRemediationLoopService {
           // linkTextMode/bookmarkMode to apply-to-pdf and persisting
           // autoStallEscalated: true) and then immediately hit this same
           // check again on the very next iteration -- before a single round
-          // ever ran under the escalated modes. Real incident
-          // (Karsaklian_189165, 2026-11-16): the run reported stopReason
-          // 'round_limit' having done zero work with contrast/link-text/
-          // bookmark already apply-to-pdf, which from the operator's side
-          // looked exactly like "escalation never kicked in" even though it
-          // had. Grant exactly one grace round past the cap, once, so the
-          // escalation this run already paid STALL_ROUND_LIMIT stalled
-          // rounds to unlock actually gets used before stopping for real.
-          if (escalatedThisRun && !escalationGraceUsed) {
-            escalationGraceUsed = true;
+          // ever ran under the escalated modes. Grant exactly one grace
+          // round past the cap in that exact case, so the escalation this
+          // run already paid STALL_ROUND_LIMIT stalled rounds to unlock
+          // actually gets used before stopping for real.
+          if (graceRoundAvailable) {
+            // proceed below -- this round runs despite being past the cap
           } else {
             stopReason = 'round_limit';
             break;
@@ -1148,6 +1162,7 @@ class AutoRemediationLoopService {
               const escalated = await driver.escalateStalledModes();
               if (escalated) {
                 escalatedThisRun = true;
+                justEscalated = true;
                 logger.info(`[AutoRemediationLoop] ${driver.describe()}: stalled after ${roundsCompleted} round(s) -- auto-escalating guidance-only color-contrast/link-text to apply-to-pdf for one more pass`);
                 consecutiveStalls = 0;
                 continue;

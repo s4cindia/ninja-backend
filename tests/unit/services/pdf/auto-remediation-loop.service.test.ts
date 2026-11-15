@@ -1087,7 +1087,7 @@ describe('autoRemediationLoopService.startAutoLoop', () => {
         .mockResolvedValueOnce(makeRun({ autoMaxRounds: 2, autoStallEscalated: false }) as any) // round 2 -- stalls -> escalate
         .mockResolvedValueOnce(makeRun({ autoMaxRounds: 2, autoStallEscalated: true }) as any) // grace round -- still stalls
         // Fallback for the loop's next getRoundState() after the grace round
-        // (checking the cap again, now with escalationGraceUsed already set).
+        // (checking the cap again, with the one-shot grace already spent).
         .mockResolvedValue(makeRun({ autoMaxRounds: 2, autoStallEscalated: true }) as any);
       vi.mocked(prisma.job.findUnique).mockResolvedValue({ id: 'job-1', tenantId: 'tenant-1', output: {}, autoEscalateOnStall: null } as any);
       vi.mocked(aiAnalysisService.analyzeJob).mockResolvedValue({ analyzed: 1, skipped: 0 } as any);
@@ -1100,8 +1100,52 @@ describe('autoRemediationLoopService.startAutoLoop', () => {
       // Round 1, round 2 (triggers escalation), the grace round -- then
       // stops without a 4th analysis pass: the grace round not converging
       // reports round_limit directly rather than looping for a second grace
-      // round (escalationGraceUsed is a one-shot, unlike escalatedThisRun).
+      // round (justEscalated is a one-shot, unlike escalatedThisRun).
       expect(aiAnalysisService.analyzeJob).toHaveBeenCalledTimes(3);
+      const escalationCalls = vi.mocked(prisma.pdfAutoRemediationRun.update).mock.calls.filter(
+        ([arg]) => (arg as { data?: { autoStallEscalated?: boolean } }).data?.autoStallEscalated === true
+      );
+      expect(escalationCalls).toHaveLength(1);
+      expect(prisma.pdfAutoRemediationRun.update).toHaveBeenCalledWith({
+        where: { id: 'run-1' },
+        data: { autoStatus: 'stopped', autoStopReason: 'round_limit', autoStopRequested: false, autoStoppedAt: expect.any(Date) },
+      });
+    });
+
+    it('does not grant a second grace round when the cap is hit well after an earlier, uneventful escalation -- real incident, Karsaklian_189165 (2026-11-16)', async () => {
+      // The actual production data: rounds 7 & 8 both resolved 0 (a genuine
+      // stall) -> escalated cleanly at round 8 with 2 rounds still left in
+      // a 10-round cap; round 9 then made real progress (27 applied/25
+      // resolved). The run still reported "11 of 10 rounds" -- an
+      // unwarranted bonus round when the cap was hit normally 2 rounds
+      // later -- because the old `escalatedThisRun && !escalationGraceUsed`
+      // check stayed eligible for the rest of the run, not just the one
+      // iteration right after escalating. Scaled down to a 4-round cap here
+      // (escalate at round 2, cap at round 4) -- same shape, cheaper mocks.
+      vi.mocked(getEffectiveAiRemediationConfig).mockResolvedValue({ autoEscalateOnStallDefault: true } as any);
+      mockLockAcquired();
+      vi.mocked(prisma.pdfAutoRemediationRun.findUnique)
+        .mockResolvedValueOnce(makeRun({ autoMaxRounds: 4, autoStallEscalated: false }) as any) // getConfig()
+        .mockResolvedValueOnce(makeRun({ autoMaxRounds: 4, autoStallEscalated: false }) as any) // round 1 -- stalls
+        .mockResolvedValueOnce(makeRun({ autoMaxRounds: 4, autoStallEscalated: false }) as any) // round 2 -- stalls again -> escalate (2 rounds still left)
+        .mockResolvedValue(makeRun({ autoMaxRounds: 4, autoStallEscalated: true }) as any); // rounds 3, 4, and the final cap check -- already escalated
+      vi.mocked(prisma.job.findUnique).mockResolvedValue({ id: 'job-1', tenantId: 'tenant-1', output: {}, autoEscalateOnStall: null } as any);
+      vi.mocked(aiAnalysisService.analyzeJob).mockResolvedValue({ analyzed: 1, skipped: 0 } as any);
+      vi.mocked(prisma.aiAnalysis.count).mockResolvedValue(1); // every round finds actionable work -- never converges on its own
+      vi.mocked(prisma.aiAnalysis.updateMany).mockResolvedValue({ count: 1 } as any);
+      vi.mocked(aiAnalysisService.applyApprovedSuggestions)
+        .mockResolvedValueOnce({ applied: 0, failed: 1, errors: [] }) // round 1: stalls
+        .mockResolvedValueOnce({ applied: 0, failed: 1, errors: [] }) // round 2: stalls -> escalate
+        // Rounds 3 & 4 (post-escalation): real, non-zero progress every
+        // round -- never stalling again, so only the ordinary round cap
+        // should end this run.
+        .mockResolvedValue({ applied: 1, failed: 0, errors: [], modifiedBuffer: Buffer.from('pdf'), fileName: 'doc.pdf' });
+      mockReauditSuccess();
+
+      await autoRemediationLoopService.startAutoLoop(new JobAutoRemediationDriver('run-1'));
+
+      // Exactly 4 analysis passes -- the configured cap -- never a 5th.
+      expect(aiAnalysisService.analyzeJob).toHaveBeenCalledTimes(4);
       const escalationCalls = vi.mocked(prisma.pdfAutoRemediationRun.update).mock.calls.filter(
         ([arg]) => (arg as { data?: { autoStallEscalated?: boolean } }).data?.autoStallEscalated === true
       );
