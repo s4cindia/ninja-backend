@@ -25,7 +25,26 @@ export const startAutoModeSchema = {
     autoCostLimitUsd: z.number().min(0.1).max(10).optional(),
     autoColorContrastMode: z.enum(['guidance-only', 'disabled', 'apply-to-pdf']).optional(),
     autoAltTextMode: z.enum(['apply-to-pdf', 'guidance-only']).optional(),
+    autoLinkTextMode: z.enum(['guidance-only', 'disabled', 'apply-to-pdf']).optional(),
   }).strict().optional(),
 };
 
 export type StartAutoModeBody = z.infer<typeof startAutoModeSchema['body']>;
+
+/**
+ * PATCH /pdf/:jobId/settings -- per-job overrides for fullAutoMode and
+ * auto-escalate-on-stall, visible/editable any time (not just at upload).
+ * `null` explicitly resets to "inherit the tenant default"; omitting a
+ * field leaves its current value untouched.
+ */
+export const updateJobSettingsSchema = {
+  params: z.object({
+    jobId: z.string().min(1, 'Job ID is required'),
+  }),
+  body: z.object({
+    fullAutoMode: z.boolean().nullable().optional(),
+    autoEscalateOnStall: z.boolean().nullable().optional(),
+  }).strict(),
+};
+
+export type UpdateJobSettingsBody = z.infer<typeof updateJobSettingsSchema['body']>;

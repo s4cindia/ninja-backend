@@ -32,14 +32,16 @@ import {
   autoRemediationLoopService,
   resolveColorContrastMode,
   resolveAltTextMode,
+  resolveLinkTextMode,
   resolveFullAutoMode,
+  resolveEscalateOnStall,
   enqueueOrRunAutoLoop,
   ComparisonTrialAutoRemediationDriver,
   JobAutoRemediationDriver,
 } from '../services/pdf/auto-remediation-loop.service';
 import { getEffectiveAiRemediationConfig } from '../services/pdf/ai-remediation-tenant-config.service';
 import { estimateBudgetForJob } from '../services/pdf/auto-mode-budget-estimate.service';
-import type { StartAutoModeBody } from '../schemas/pdf-auto-mode.schemas';
+import type { StartAutoModeBody, UpdateJobSettingsBody } from '../schemas/pdf-auto-mode.schemas';
 
 export class PdfAutoModeController {
   /**
@@ -107,12 +109,14 @@ export class PdfAutoModeController {
           ...(body.autoCostLimitUsd !== undefined && { autoCostLimitUsd: body.autoCostLimitUsd }),
           ...(body.autoColorContrastMode !== undefined && { autoColorContrastMode: body.autoColorContrastMode }),
           ...(body.autoAltTextMode !== undefined && { autoAltTextMode: body.autoAltTextMode }),
+          ...(body.autoLinkTextMode !== undefined && { autoLinkTextMode: body.autoLinkTextMode }),
         },
         update: {
           ...(body.autoMaxRounds !== undefined && { autoMaxRounds: body.autoMaxRounds }),
           ...(body.autoCostLimitUsd !== undefined && { autoCostLimitUsd: body.autoCostLimitUsd }),
           ...(body.autoColorContrastMode !== undefined && { autoColorContrastMode: body.autoColorContrastMode }),
           ...(body.autoAltTextMode !== undefined && { autoAltTextMode: body.autoAltTextMode }),
+          ...(body.autoLinkTextMode !== undefined && { autoLinkTextMode: body.autoLinkTextMode }),
         },
       });
 
@@ -206,6 +210,8 @@ export class PdfAutoModeController {
             autoCostLimitUsd: run?.autoCostLimitUsd ?? 2.0,
             autoColorContrastMode: run ? resolveColorContrastMode(run.autoColorContrastMode) ?? null : null,
             autoAltTextMode: run ? resolveAltTextMode(run.autoAltTextMode) ?? null : null,
+            autoLinkTextMode: run ? resolveLinkTextMode(run.autoLinkTextMode) ?? null : null,
+            autoStallEscalated: run?.autoStallEscalated ?? false,
             pendingFullAutoMode,
           },
         });
@@ -230,6 +236,8 @@ export class PdfAutoModeController {
           autoCostLimitUsd: run.autoCostLimitUsd,
           autoColorContrastMode: resolveColorContrastMode(run.autoColorContrastMode) ?? null,
           autoAltTextMode: resolveAltTextMode(run.autoAltTextMode) ?? null,
+          autoLinkTextMode: resolveLinkTextMode(run.autoLinkTextMode) ?? null,
+          autoStallEscalated: run.autoStallEscalated,
         },
       });
     } catch (error) {
@@ -311,6 +319,94 @@ export class PdfAutoModeController {
 
       const estimate = await estimateBudgetForJob(jobId);
       res.json({ success: true, data: estimate });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
+   * GET /pdf/:jobId/settings
+   * Reports this job's own `fullAutoMode`/`autoEscalateOnStall` overrides
+   * alongside the tenant default and the effective (resolved) value for
+   * each -- previously fullAutoMode was set-and-forget at upload time with
+   * no way to see or change it afterward; this and updateJobSettings below
+   * give both per-job overrides a real, visible, editable-any-time home
+   * (see the auto-escalate-on-stall design doc's "per-job override" section).
+   * Changing either override after its own trigger moment has already
+   * resolved for this job/run does nothing retroactively -- editable any
+   * time, but only acts on what hasn't happened yet.
+   */
+  async getJobSettings(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      if (!req.user) throw AppError.unauthorized('Not authenticated');
+      const jobId = req.job!.id;
+
+      const [job, aiRemediationConfig] = await Promise.all([
+        prisma.job.findUnique({ where: { id: jobId }, select: { fullAutoMode: true, autoEscalateOnStall: true } }),
+        getEffectiveAiRemediationConfig(req.job!.tenantId),
+      ]);
+      if (!job) throw AppError.notFound('Job not found.');
+
+      res.json({
+        success: true,
+        data: {
+          fullAutoMode: {
+            override: job.fullAutoMode,
+            tenantDefault: aiRemediationConfig.fullAutoModeDefault,
+            effective: resolveFullAutoMode(job.fullAutoMode, aiRemediationConfig.fullAutoModeDefault),
+          },
+          autoEscalateOnStall: {
+            override: job.autoEscalateOnStall,
+            tenantDefault: aiRemediationConfig.autoEscalateOnStallDefault,
+            effective: resolveEscalateOnStall(job.autoEscalateOnStall, aiRemediationConfig.autoEscalateOnStallDefault),
+          },
+        },
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
+   * PATCH /pdf/:jobId/settings
+   * Updates either or both overrides; omitted fields are left untouched. A
+   * field set to `null` explicitly resets that override back to "inherit
+   * the tenant default" (distinct from omitting it, which leaves whatever
+   * value was already there).
+   */
+  async updateJobSettings(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      if (!req.user) throw AppError.unauthorized('Not authenticated');
+      const jobId = req.job!.id;
+      const body = (req.body ?? {}) as NonNullable<UpdateJobSettingsBody>;
+
+      const [job, aiRemediationConfig] = await Promise.all([
+        prisma.job.update({
+          where: { id: jobId },
+          data: {
+            ...(body.fullAutoMode !== undefined && { fullAutoMode: body.fullAutoMode }),
+            ...(body.autoEscalateOnStall !== undefined && { autoEscalateOnStall: body.autoEscalateOnStall }),
+          },
+          select: { fullAutoMode: true, autoEscalateOnStall: true },
+        }),
+        getEffectiveAiRemediationConfig(req.job!.tenantId),
+      ]);
+
+      res.json({
+        success: true,
+        data: {
+          fullAutoMode: {
+            override: job.fullAutoMode,
+            tenantDefault: aiRemediationConfig.fullAutoModeDefault,
+            effective: resolveFullAutoMode(job.fullAutoMode, aiRemediationConfig.fullAutoModeDefault),
+          },
+          autoEscalateOnStall: {
+            override: job.autoEscalateOnStall,
+            tenantDefault: aiRemediationConfig.autoEscalateOnStallDefault,
+            effective: resolveEscalateOnStall(job.autoEscalateOnStall, aiRemediationConfig.autoEscalateOnStallDefault),
+          },
+        },
+      });
     } catch (error) {
       next(error);
     }

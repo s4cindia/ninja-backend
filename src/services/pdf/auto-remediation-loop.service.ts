@@ -29,6 +29,7 @@ import { remediationCycleHistoryService } from './remediation-cycle-history.serv
 import { fileStorageService } from '../storage/file-storage.service';
 import { notificationService } from '../notification/notification.service';
 import { areQueuesAvailable, getAutoRemediationQueue } from '../../queues';
+import { getEffectiveAiRemediationConfig } from './ai-remediation-tenant-config.service';
 import type { NotificationType } from '@prisma/client';
 
 /** Suggestion type that always requires manual approval, even in auto mode --
@@ -112,6 +113,21 @@ export function resolveAltTextMode(raw: string | null): AltTextMode | undefined 
   return VALID_ALT_TEXT_MODES.has(raw) ? (raw as AltTextMode) : undefined;
 }
 
+export type LinkTextMode = 'guidance-only' | 'disabled' | 'apply-to-pdf';
+const VALID_LINK_TEXT_MODES: ReadonlySet<string> = new Set(['guidance-only', 'disabled', 'apply-to-pdf']);
+
+/** Same inherit semantics as resolveColorContrastMode/resolveAltTextMode
+ * above, for PdfAutoRemediationRun.autoLinkTextMode -- added alongside
+ * auto-escalate-on-stall (see resolveEscalateOnStall below), which needs a
+ * per-run link-text override the loop previously had no way to set at all
+ * (analyzeJob already accepted one; runRound never passed it). Like
+ * autoAltTextMode, ComparisonTrial has no autoLinkTextMode column -- a trial
+ * always inherits the tenant/default linkTextMode. */
+export function resolveLinkTextMode(raw: string | null): LinkTextMode | undefined {
+  if (raw === null) return undefined;
+  return VALID_LINK_TEXT_MODES.has(raw) ? (raw as LinkTextMode) : undefined;
+}
+
 /**
  * Same inherit semantics as resolveColorContrastMode/resolveAltTextMode
  * above, for Job.fullAutoMode -- null means "inherit the tenant's own
@@ -121,6 +137,20 @@ export function resolveAltTextMode(raw: string | null): AltTextMode | undefined 
  * audit completes.
  */
 export function resolveFullAutoMode(jobOverride: boolean | null, tenantDefault: boolean): boolean {
+  return jobOverride ?? tenantDefault;
+}
+
+/**
+ * Same inherit-with-null semantics as resolveFullAutoMode above, for
+ * Job.autoEscalateOnStall -- null means "inherit the tenant's own
+ * aiRemediation.autoEscalateOnStallDefault setting". Resolved once per
+ * startAutoLoop invocation (not per round): when true, a run that would
+ * otherwise stop 'stalled' escalates its guidance-only
+ * colorContrastMode/linkTextMode to apply-to-pdf for one more pass first
+ * (see startAutoLoop's own stall-handling branch and
+ * AutoRemediationDriver.escalateStalledModes).
+ */
+export function resolveEscalateOnStall(jobOverride: boolean | null, tenantDefault: boolean): boolean {
   return jobOverride ?? tenantDefault;
 }
 
@@ -151,6 +181,13 @@ export function describeAutoLoopStop(
   roundsCompleted: number,
   costSpentUsd: number,
   errorMessage: string | undefined,
+  /** 'stalled' only: whether auto-escalate-on-stall already tried (and this
+   *  is the SECOND stall, after escalation). */
+  wasEscalated = false,
+  /** 'stalled' only: top remaining suggestion type(s) still not apply-to-pdf,
+   *  e.g. "color-contrast-fix (142)" -- from getStuckCategorySummary.
+   *  Undefined when nothing stuck was found (or the lookup itself failed). */
+  stuckCategorySummary?: string,
 ): { type: NotificationType; title: string; message: string } {
   const spent = `$${costSpentUsd.toFixed(2)}`;
   const rounds = `${roundsCompleted} round${roundsCompleted === 1 ? '' : 's'}`;
@@ -173,12 +210,17 @@ export function describeAutoLoopStop(
         title: 'Auto Mode paused -- budget limit reached',
         message: `${docLabel} hit its cost limit after ${rounds} (${spent} spent), with more actionable work still found. Raise the budget or review progress so far.`,
       };
-    case 'stalled':
+    case 'stalled': {
+      const stuckClause = stuckCategorySummary ? ` -- remaining work is mostly ${stuckCategorySummary}` : '';
+      const message = wasEscalated
+        ? `${docLabel} stopped after ${rounds} (${spent} spent): already auto-escalated guidance-only fixes for one more pass, but still made no further progress${stuckClause}. Review what's left manually.`
+        : `${docLabel} stopped after ${rounds} (${spent} spent): the last few rounds made no measurable progress${stuckClause}. Review what's left manually.`;
       return {
         type: 'SYSTEM_ALERT',
         title: 'Auto Mode paused -- no further progress',
-        message: `${docLabel} stopped after ${rounds} (${spent} spent): the last few rounds made no measurable progress. Review what's left manually.`,
+        message,
       };
+    }
     case 'error':
       return {
         type: 'JOB_FAILED',
@@ -209,6 +251,11 @@ export function describeAutoLoopStop(
 export interface AutoRemediationConfig {
   jobId: string;
   tenantId: string;
+  /** Job.autoEscalateOnStall -- null for ComparisonTrialAutoRemediationDriver
+   *  (trials never escalate, regardless of the tenant default; see
+   *  escalateStalledModes's own doc comment). Resolved once, before the
+   *  round loop starts, via resolveEscalateOnStall. */
+  autoEscalateOnStall: boolean | null;
 }
 
 export interface AutoRemediationRoundState {
@@ -217,6 +264,11 @@ export interface AutoRemediationRoundState {
   autoCostLimitUsd: number;
   autoColorContrastMode: string | null;
   autoAltTextMode: string | null;
+  autoLinkTextMode: string | null;
+  /** Caps auto-escalate-on-stall at one attempt per run -- re-read fresh
+   *  each round so a prior round's escalation is visible before the next
+   *  stall check. Always false for ComparisonTrialAutoRemediationDriver. */
+  autoStallEscalated: boolean;
 }
 
 export interface AutoRemediationDriver {
@@ -243,6 +295,17 @@ export interface AutoRemediationDriver {
    *  remediation-cycle lock is released -- see startAutoLoop's own comment
    *  on why that ordering matters). */
   markStopped(stopReason: AutoStopReason, stoppedAt: Date): Promise<void>;
+  /** Called once, right before the loop would otherwise stop 'stalled', when
+   *  resolveEscalateOnStall resolved true and this run hasn't escalated yet.
+   *  Sets colorContrastMode/linkTextMode to 'apply-to-pdf' and records that
+   *  escalation happened (so a second stall stops for real). Returns true
+   *  if it actually escalated something (the caller resets the stall
+   *  counter and continues the loop); false means "not supported" --
+   *  ComparisonTrialAutoRemediationDriver always returns false, since
+   *  trials are the admin research-tooling path and deliberately don't
+   *  participate in this (same reasoning as altTextMode's trial carve-out
+   *  above). */
+  escalateStalledModes(): Promise<boolean>;
 }
 
 /**
@@ -262,7 +325,10 @@ export class ComparisonTrialAutoRemediationDriver implements AutoRemediationDriv
     if (!trial?.ninjaJobId || trial.mode !== 'auto') return null;
     const job = await prisma.job.findUnique({ where: { id: trial.ninjaJobId } });
     if (!job) return null;
-    return { jobId: trial.ninjaJobId, tenantId: job.tenantId };
+    // Trials never escalate (see escalateStalledModes below) -- reporting
+    // null here regardless of the underlying job's own autoEscalateOnStall
+    // value keeps that decision in one place rather than two.
+    return { jobId: trial.ninjaJobId, tenantId: job.tenantId, autoEscalateOnStall: null };
   }
 
   async resetForNewRun(startedAt: Date): Promise<void> {
@@ -290,10 +356,14 @@ export class ComparisonTrialAutoRemediationDriver implements AutoRemediationDriv
       autoMaxRounds: current.autoMaxRounds,
       autoCostLimitUsd: current.autoCostLimitUsd,
       autoColorContrastMode: current.autoColorContrastMode,
-      // ComparisonTrial has no autoAltTextMode column -- the admin
-      // research-trial flow always inherits the tenant/default altTextMode;
-      // only PdfAutoRemediationRun (below) supports this per-job override.
+      // ComparisonTrial has no autoAltTextMode/autoLinkTextMode column -- the
+      // admin research-trial flow always inherits the tenant/default mode;
+      // only PdfAutoRemediationRun (below) supports these per-job overrides.
       autoAltTextMode: null,
+      autoLinkTextMode: null,
+      // Trials never escalate (see escalateStalledModes below) -- always
+      // reporting false means the loop's stall check never even tries.
+      autoStallEscalated: false,
     };
   }
 
@@ -309,6 +379,13 @@ export class ComparisonTrialAutoRemediationDriver implements AutoRemediationDriv
       where: { id: this.trialId },
       data: { autoStatus: 'stopped', autoStopReason: stopReason, autoStopRequested: false, autoStoppedAt: stoppedAt },
     });
+  }
+
+  /** Trials are the admin research-tooling path -- auto-escalate-on-stall is
+   *  an operator-facing production feature, same carve-out this file
+   *  already makes for altTextMode. Always a no-op. */
+  async escalateStalledModes(): Promise<boolean> {
+    return false;
   }
 }
 
@@ -336,7 +413,7 @@ export class JobAutoRemediationDriver implements AutoRemediationDriver {
     if (!run) return null;
     const job = await prisma.job.findUnique({ where: { id: run.jobId } });
     if (!job) return null;
-    return { jobId: run.jobId, tenantId: job.tenantId };
+    return { jobId: run.jobId, tenantId: job.tenantId, autoEscalateOnStall: job.autoEscalateOnStall };
   }
 
   async resetForNewRun(startedAt: Date): Promise<void> {
@@ -365,6 +442,8 @@ export class JobAutoRemediationDriver implements AutoRemediationDriver {
       autoCostLimitUsd: current.autoCostLimitUsd,
       autoColorContrastMode: current.autoColorContrastMode,
       autoAltTextMode: current.autoAltTextMode,
+      autoLinkTextMode: current.autoLinkTextMode,
+      autoStallEscalated: current.autoStallEscalated,
     };
   }
 
@@ -380,6 +459,19 @@ export class JobAutoRemediationDriver implements AutoRemediationDriver {
       where: { id: this.runId },
       data: { autoStatus: 'stopped', autoStopReason: stopReason, autoStopRequested: false, autoStoppedAt: stoppedAt },
     });
+  }
+
+  /** Forces colorContrastMode/linkTextMode to 'apply-to-pdf' for the rest of
+   *  this run and records that escalation happened, so a second stall stops
+   *  for real instead of escalating again. Unconditional -- the caller
+   *  (startAutoLoop) already checked resolveEscalateOnStall and
+   *  !state.autoStallEscalated before calling this. */
+  async escalateStalledModes(): Promise<boolean> {
+    await prisma.pdfAutoRemediationRun.update({
+      where: { id: this.runId },
+      data: { autoColorContrastMode: 'apply-to-pdf', autoLinkTextMode: 'apply-to-pdf', autoStallEscalated: true },
+    });
+    return true;
   }
 }
 
@@ -880,6 +972,13 @@ class AutoRemediationLoopService {
     }
     const { jobId, tenantId } = config;
 
+    // Resolved once, before the round loop starts -- same timing as the
+    // Full Auto Mode trigger's own resolveFullAutoMode call -- rather than
+    // re-fetching tenant config every round for a setting that can't change
+    // mid-run anyway.
+    const aiRemediationConfig = await getEffectiveAiRemediationConfig(tenantId);
+    const escalateOnStallEnabled = resolveEscalateOnStall(config.autoEscalateOnStall, aiRemediationConfig.autoEscalateOnStallDefault);
+
     let lock;
     try {
       lock = await remediationCycleLockService.acquireLock(jobId, AUTO_MODE_ACTOR, 'auto_loop');
@@ -910,6 +1009,7 @@ class AutoRemediationLoopService {
     let costSpentUsd = 0;
     let consecutiveStalls = 0;
     let stopErrorMessage: string | undefined;
+    let escalatedThisRun = false;
 
     try {
       while (true) {
@@ -952,6 +1052,7 @@ class AutoRemediationLoopService {
           tenantId,
           resolveColorContrastMode(state.autoColorContrastMode),
           resolveAltTextMode(state.autoAltTextMode),
+          resolveLinkTextMode(state.autoLinkTextMode),
         );
 
         // A fresh analysis pass (against whatever the *previous* round's
@@ -998,6 +1099,21 @@ class AutoRemediationLoopService {
         if (resolvedCount <= 0) {
           consecutiveStalls++;
           if (consecutiveStalls >= STALL_ROUND_LIMIT) {
+            // One escalation attempt per run: if enabled and not already
+            // tried, force colorContrastMode/linkTextMode to apply-to-pdf
+            // and give it one more round before actually stopping. `state`
+            // here is this iteration's own getRoundState() read, taken
+            // before this round ran -- any earlier round's own escalation
+            // would already show up in it.
+            if (escalateOnStallEnabled && !state.autoStallEscalated) {
+              const escalated = await driver.escalateStalledModes();
+              if (escalated) {
+                escalatedThisRun = true;
+                logger.info(`[AutoRemediationLoop] ${driver.describe()}: stalled after ${roundsCompleted} round(s) -- auto-escalating guidance-only color-contrast/link-text to apply-to-pdf for one more pass`);
+                consecutiveStalls = 0;
+                continue;
+              }
+            }
             stopReason = 'stalled';
             break;
           }
@@ -1070,12 +1186,18 @@ class AutoRemediationLoopService {
         // so TS can't carry the `!== 'manual_stop'` narrowing through into
         // the .then() closure below on its own.
         const notifiableStopReason = stopReason;
-        prisma.job.findUnique({ where: { id: jobId }, select: { userId: true, input: true } })
-          .then((jobRow) => {
+        const wasEscalated = escalatedThisRun;
+        Promise.all([
+          prisma.job.findUnique({ where: { id: jobId }, select: { userId: true, input: true } }),
+          // Only worth the extra query for a genuine stall -- every other
+          // stop reason's message is already specific enough without it.
+          notifiableStopReason === 'stalled' ? this.getStuckCategorySummary(jobId) : Promise.resolve(undefined),
+        ])
+          .then(([jobRow, stuckCategorySummary]) => {
             if (!jobRow) return;
             const fileName = (jobRow.input as Record<string, unknown> | null)?.fileName as string | undefined;
             const label = fileName ? `"${fileName}"` : 'Your document';
-            const { type, title, message } = describeAutoLoopStop(notifiableStopReason, label, roundsCompleted, costSpentUsd, stopErrorMessage);
+            const { type, title, message } = describeAutoLoopStop(notifiableStopReason, label, roundsCompleted, costSpentUsd, stopErrorMessage, wasEscalated, stuckCategorySummary);
             return notificationService.createNotification({
               userId: jobRow.userId,
               tenantId,
@@ -1113,6 +1235,32 @@ class AutoRemediationLoopService {
   }
 
   /**
+   * Best-effort, for the 'stalled' stop notification only: names the top 1-2
+   * suggestionTypes still sitting pending/approved but NOT apply-to-pdf
+   * (guidance-only or disabled) -- the categories a fresh round can never
+   * resolve regardless of how many more it runs, since nothing dispatches
+   * them for apply. Returns undefined (not thrown) on any failure, or when
+   * nothing matches -- this is diagnostic color for a notification message,
+   * never allowed to affect whether the loop itself stops cleanly.
+   */
+  private async getStuckCategorySummary(jobId: string): Promise<string | undefined> {
+    try {
+      const rows = await prisma.aiAnalysis.findMany({
+        where: { jobId, status: { in: ['pending', 'approved'] }, applyMode: { not: 'apply-to-pdf' } },
+        select: { suggestionType: true },
+      });
+      if (rows.length === 0) return undefined;
+      const counts = new Map<string, number>();
+      for (const row of rows) counts.set(row.suggestionType, (counts.get(row.suggestionType) ?? 0) + 1);
+      const top = [...counts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 2);
+      return top.map(([type, count]) => `${type} (${count})`).join(', ');
+    } catch (err) {
+      logger.warn(`[AutoRemediationLoop] Failed to summarize stuck categories for job ${jobId} (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
+      return undefined;
+    }
+  }
+
+  /**
    * One analyze -> [auto-approve -> apply -> re-audit] pass. The apply/
    * reaudit steps are skipped entirely when the fresh analysis finds
    * nothing actionable -- that's the caller's convergence signal, checked
@@ -1127,6 +1275,7 @@ class AutoRemediationLoopService {
     tenantId: string,
     colorContrastModeOverride: ColorContrastMode | undefined,
     altTextModeOverride: AltTextMode | undefined,
+    linkTextModeOverride: LinkTextMode | undefined,
   ): Promise<{ actionableFound: number; applied: number; resolvedCount: number }> {
     const roundStartedAt = new Date();
     const analysis = await aiAnalysisService.analyzeJob(
@@ -1135,6 +1284,7 @@ class AutoRemediationLoopService {
       {
         ...(colorContrastModeOverride !== undefined && { colorContrastMode: colorContrastModeOverride }),
         ...(altTextModeOverride !== undefined && { altTextMode: altTextModeOverride }),
+        ...(linkTextModeOverride !== undefined && { linkTextMode: linkTextModeOverride }),
       },
     );
     // This round's AI spend (Operational Reports Group 2 -- see
@@ -1220,6 +1370,34 @@ class AutoRemediationLoopService {
           status: { in: ['pending', 'approved'] },
         },
         data: { applyMode: 'guidance-only' },
+      });
+    }
+
+    // Same stale-row reconciliation as colorContrastMode above, for
+    // linkTextMode -- two branches (guidance-only downgrade, disabled
+    // delete) since linkTextMode has the same 3-value range as
+    // colorContrastMode, unlike altTextMode's 2. Only the 'link-text'
+    // suggestionType is gated by this mode -- 'link-missing-annotation-fix'
+    // is unconditionally rule-based apply-to-pdf (see ai-analysis.service.ts)
+    // and needs no reconciliation here.
+    const effectiveLinkTextMode = analysis.linkTextMode;
+    if (effectiveLinkTextMode === 'guidance-only') {
+      await prisma.aiAnalysis.updateMany({
+        where: {
+          jobId,
+          suggestionType: 'link-text',
+          applyMode: 'apply-to-pdf',
+          status: { in: ['pending', 'approved'] },
+        },
+        data: { applyMode: 'guidance-only' },
+      });
+    } else if (effectiveLinkTextMode === 'disabled') {
+      await prisma.aiAnalysis.deleteMany({
+        where: {
+          jobId,
+          suggestionType: 'link-text',
+          status: { in: ['pending', 'approved'] },
+        },
       });
     }
 

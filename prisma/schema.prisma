@@ -210,6 +210,16 @@ model Job {
   // operator to click "Start Auto Remediation" (pdf-audit.worker.ts).
   fullAutoMode Boolean?
 
+  // Per-job override for "auto-escalate on stall" -- null means "inherit
+  // the tenant's own aiRemediation.autoEscalateOnStallDefault setting" (see
+  // resolveEscalateOnStall in auto-remediation-loop.service.ts). When the
+  // effective value is true, an Auto Mode run that would otherwise stop
+  // 'stalled' escalates its guidance-only color-contrast/link-text modes to
+  // apply-to-pdf for one more pass before actually stopping. Visible and
+  // editable at any time via GET/PATCH /pdf/:jobId/settings, same as
+  // fullAutoMode above -- not frozen at upload time.
+  autoEscalateOnStall Boolean?
+
   // Remediation-cycle concurrency lock -- prevents two overlapping "apply
   // fixes -> re-audit -> re-run AI analysis" cycles on the same job from
   // interleaving their job.output writes with no ordering guarantee (the
@@ -1032,6 +1042,18 @@ model PdfAutoRemediationRun {
   /// auto-remediation-loop.service.ts, which reports this field as null,
   /// never read from ComparisonTrial itself).
   autoAltTextMode String?
+  /// 'guidance-only' | 'disabled' | 'apply-to-pdf', or null to inherit the
+  /// tenant's own aiRemediation.linkTextMode setting -- same semantics as
+  /// autoColorContrastMode above. Unlike color contrast/alt text, link text
+  /// previously had NO per-run override at all (analyzeJob already accepted
+  /// one; runRound never passed it) -- added alongside auto-escalate-on-
+  /// stall, which needs it.
+  autoLinkTextMode String?
+  /// Caps auto-escalate-on-stall at one attempt per run -- set true the
+  /// moment a stall is escalated (see startAutoLoop's own stall-handling
+  /// branch); a second stall after that stops for real rather than
+  /// escalating again.
+  autoStallEscalated Boolean @default(false)
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt

@@ -14,7 +14,7 @@ import { Router } from 'express';
 import { authenticate } from '../middleware/auth.middleware';
 import { authorizeJob, authorizeJobForReview } from '../middleware/authorize-job.middleware';
 import { validate } from '../middleware/validate.middleware';
-import { startAutoModeSchema } from '../schemas/pdf-auto-mode.schemas';
+import { startAutoModeSchema, updateJobSettingsSchema } from '../schemas/pdf-auto-mode.schemas';
 import { pdfAutoModeController } from '../controllers/pdf-auto-mode.controller';
 
 const router = Router();
@@ -62,6 +62,27 @@ router.get(
   authenticate,
   authorizeJobForReview,
   pdfAutoModeController.getBudgetEstimate.bind(pdfAutoModeController)
+);
+
+/**
+ * GET /pdf/:jobId/settings
+ * PATCH /pdf/:jobId/settings
+ * Per-job overrides for fullAutoMode and auto-escalate-on-stall -- visible
+ * and editable at any time, not just at upload. See
+ * pdf-auto-mode.controller.ts's own doc comment on both handlers.
+ */
+router.get(
+  '/:jobId/settings',
+  authenticate,
+  authorizeJobForReview,
+  pdfAutoModeController.getJobSettings.bind(pdfAutoModeController)
+);
+router.patch(
+  '/:jobId/settings',
+  authenticate,
+  authorizeJob,
+  validate(updateJobSettingsSchema),
+  pdfAutoModeController.updateJobSettings.bind(pdfAutoModeController)
 );
 
 export default router;

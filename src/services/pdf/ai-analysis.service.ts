@@ -1081,6 +1081,8 @@ class AiAnalysisService {
      * reflects the untagged-PDF force-downgrade to 'guidance-only' below,
      * since that mutates `config.altTextMode` before this returns. */
     altTextMode: 'apply-to-pdf' | 'guidance-only';
+    /** Same rationale as colorContrastMode above, for linkTextMode. */
+    linkTextMode: 'guidance-only' | 'disabled' | 'apply-to-pdf';
   }> {
     logger.info(`[AiAnalysis] Starting analysis for job ${jobId}`);
 
@@ -1116,7 +1118,7 @@ class AiAnalysisService {
       await prisma.aiAnalysis.deleteMany({ where: { jobId } }).catch((err) => {
         logger.warn(`[AiAnalysis] Failed to prune stale suggestions for job ${jobId} (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
       });
-      return { analyzed: 0, skipped: 0, colorContrastMode: config.colorContrastMode, altTextMode: config.altTextMode };
+      return { analyzed: 0, skipped: 0, colorContrastMode: config.colorContrastMode, altTextMode: config.altTextMode, linkTextMode: config.linkTextMode };
     }
 
     // Load PDF from storage — prefer the remediated (Adobe-tagged) file if available
@@ -1438,6 +1440,7 @@ class AiAnalysisService {
         serviceError: geminiStatus.reason,
         colorContrastMode: config.colorContrastMode,
         altTextMode: config.altTextMode,
+        linkTextMode: config.linkTextMode,
       };
     } finally {
       if (parsed?.parsedPdf) {

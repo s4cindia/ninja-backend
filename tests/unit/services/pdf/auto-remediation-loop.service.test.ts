@@ -40,7 +40,7 @@ vi.mock('../../../../src/lib/prisma', () => ({
     comparisonTrial: { findUnique: vi.fn(), findMany: vi.fn(), update: vi.fn(), updateMany: mockComparisonTrialUpdateMany },
     pdfAutoRemediationRun: { findUnique: vi.fn(), findMany: vi.fn(), update: vi.fn(), updateMany: mockPdfAutoRemediationRunUpdateMany },
     job: { findUnique: vi.fn(), findMany: vi.fn(), update: vi.fn() },
-    aiAnalysis: { updateMany: vi.fn(), count: vi.fn(), deleteMany: vi.fn() },
+    aiAnalysis: { updateMany: vi.fn(), count: vi.fn(), deleteMany: vi.fn(), findMany: vi.fn() },
     $queryRaw: mockQueryRaw,
     $transaction: (fn: (tx: unknown) => Promise<unknown>) =>
       fn({
@@ -51,6 +51,13 @@ vi.mock('../../../../src/lib/prisma', () => ({
   },
 }));
 vi.mock('../../../../src/services/pdf/ai-analysis.service');
+// startAutoLoop resolves auto-escalate-on-stall (resolveEscalateOnStall)
+// once per run via getEffectiveAiRemediationConfig -- mock it instead of
+// letting it hit the real tenant-settings Prisma read, which this file's
+// own prisma mock doesn't even define a `tenant` property for.
+vi.mock('../../../../src/services/pdf/ai-remediation-tenant-config.service', () => ({
+  getEffectiveAiRemediationConfig: vi.fn(),
+}));
 vi.mock('../../../../src/services/pdf/pdf-reaudit.service');
 vi.mock('../../../../src/services/pdf/remediation-cycle-lock.service');
 vi.mock('../../../../src/services/pdf/remediation-cycle-history.service');
@@ -62,8 +69,9 @@ vi.mock('../../../../src/lib/logger', () => ({
 
 import prisma from '../../../../src/lib/prisma';
 import { logger } from '../../../../src/lib/logger';
-import { autoRemediationLoopService, ComparisonTrialAutoRemediationDriver, JobAutoRemediationDriver, describeAutoLoopStop } from '../../../../src/services/pdf/auto-remediation-loop.service';
+import { autoRemediationLoopService, ComparisonTrialAutoRemediationDriver, JobAutoRemediationDriver, describeAutoLoopStop, resolveLinkTextMode, resolveEscalateOnStall } from '../../../../src/services/pdf/auto-remediation-loop.service';
 import { aiAnalysisService } from '../../../../src/services/pdf/ai-analysis.service';
+import { getEffectiveAiRemediationConfig } from '../../../../src/services/pdf/ai-remediation-tenant-config.service';
 import { pdfReauditService } from '../../../../src/services/pdf/pdf-reaudit.service';
 import { remediationCycleLockService } from '../../../../src/services/pdf/remediation-cycle-lock.service';
 import { notificationService } from '../../../../src/services/notification/notification.service';
@@ -93,6 +101,8 @@ function makeRun(overrides: Record<string, unknown> = {}) {
     autoRoundsCompleted: 0,
     autoStopRequested: false,
     autoColorContrastMode: null,
+    autoLinkTextMode: null,
+    autoStallEscalated: false,
     ...overrides,
   };
 }
@@ -109,7 +119,7 @@ function mockLockAcquired(cycleNumber = 7) {
  * starts -- independent of whatever a round later mocks findUnique to
  * return for its own cost-accounting re-fetch. */
 function mockJobFound() {
-  vi.mocked(prisma.job.findUnique).mockResolvedValue({ id: 'job-1', tenantId: 'tenant-1', output: {} } as any);
+  vi.mocked(prisma.job.findUnique).mockResolvedValue({ id: 'job-1', tenantId: 'tenant-1', output: {}, autoEscalateOnStall: null } as any);
 }
 
 function mockReauditSuccess() {
@@ -127,6 +137,7 @@ function mockReauditSuccess() {
 
 type ColorContrastMode = 'guidance-only' | 'disabled' | 'apply-to-pdf';
 type AltTextMode = 'apply-to-pdf' | 'guidance-only';
+type LinkTextMode = 'guidance-only' | 'disabled' | 'apply-to-pdf';
 
 /** A round that finds `actionableCount` suggestions, applies all of them
  * successfully, and re-audits cleanly. `colorContrastMode` is analyzeJob's
@@ -156,8 +167,8 @@ function mockProductiveRound(actionableCount: number, costUsd = 0, colorContrast
 /** A round whose fresh analysis finds nothing actionable at all -- the
  * genuine convergence signal; apply/reaudit are never reached. See
  * mockProductiveRound's doc comment for what `colorContrastMode` means. */
-function mockEmptyRound(colorContrastMode?: ColorContrastMode, altTextMode?: AltTextMode) {
-  vi.mocked(aiAnalysisService.analyzeJob).mockResolvedValueOnce({ analyzed: 0, skipped: 0, colorContrastMode, altTextMode } as any);
+function mockEmptyRound(colorContrastMode?: ColorContrastMode, altTextMode?: AltTextMode, linkTextMode?: LinkTextMode) {
+  vi.mocked(aiAnalysisService.analyzeJob).mockResolvedValueOnce({ analyzed: 0, skipped: 0, colorContrastMode, altTextMode, linkTextMode } as any);
   vi.mocked(prisma.aiAnalysis.count).mockResolvedValueOnce(0);
 }
 
@@ -187,6 +198,27 @@ describe('describeAutoLoopStop', () => {
     expect(result.title).toContain('no further progress');
   });
 
+  it('names the stuck category in a stalled message when one was found', () => {
+    const result = describeAutoLoopStop('stalled', '"doc.pdf"', 4, 0.10, undefined, false, 'color-contrast-fix (142)');
+    expect(result.message).toContain('color-contrast-fix (142)');
+  });
+
+  it('says nothing about a stuck category when none was found (the lookup failed or nothing matched)', () => {
+    const result = describeAutoLoopStop('stalled', '"doc.pdf"', 4, 0.10, undefined, false, undefined);
+    expect(result.message).not.toContain('mostly');
+  });
+
+  it('mentions the already-tried escalation when a second stall happens after one', () => {
+    const result = describeAutoLoopStop('stalled', '"doc.pdf"', 6, 0.15, undefined, true, 'color-contrast-fix (142)');
+    expect(result.message).toContain('already auto-escalated');
+    expect(result.message).toContain('color-contrast-fix (142)');
+  });
+
+  it('does not claim an escalation was tried when wasEscalated is false', () => {
+    const result = describeAutoLoopStop('stalled', '"doc.pdf"', 2, 0.05, undefined, false, undefined);
+    expect(result.message).not.toContain('already auto-escalated');
+  });
+
   it('maps error to JOB_FAILED and includes the real error message when present', () => {
     const result = describeAutoLoopStop('error', '"doc.pdf"', 1, 0.01, 'Prisma connection lost');
     expect(result.type).toBe('JOB_FAILED');
@@ -206,12 +238,43 @@ describe('describeAutoLoopStop', () => {
   });
 });
 
+describe('resolveLinkTextMode', () => {
+  it('passes through each of the three valid modes', () => {
+    expect(resolveLinkTextMode('guidance-only')).toBe('guidance-only');
+    expect(resolveLinkTextMode('disabled')).toBe('disabled');
+    expect(resolveLinkTextMode('apply-to-pdf')).toBe('apply-to-pdf');
+  });
+
+  it('returns undefined for null (inherit) so the caller omits the override entirely', () => {
+    expect(resolveLinkTextMode(null)).toBeUndefined();
+  });
+
+  it('treats an unrecognized stored value the same as null', () => {
+    expect(resolveLinkTextMode('not-a-real-mode')).toBeUndefined();
+  });
+});
+
+describe('resolveEscalateOnStall', () => {
+  it('uses the job override when set, regardless of the tenant default', () => {
+    expect(resolveEscalateOnStall(true, false)).toBe(true);
+    expect(resolveEscalateOnStall(false, true)).toBe(false);
+  });
+
+  it('falls back to the tenant default when the job has no override (null)', () => {
+    expect(resolveEscalateOnStall(null, true)).toBe(true);
+    expect(resolveEscalateOnStall(null, false)).toBe(false);
+  });
+});
+
 describe('autoRemediationLoopService.startAutoLoop', () => {
   beforeEach(() => {
     // resetAllMocks (not clearAllMocks) -- also drains any unconsumed
     // mockResolvedValueOnce queue from a previous test, which clearAllMocks
     // leaves in place and would otherwise leak into the next test.
     vi.resetAllMocks();
+    // Auto-escalate-on-stall defaults OFF, matching the real tenant
+    // default -- individual escalation tests override this.
+    vi.mocked(getEffectiveAiRemediationConfig).mockResolvedValue({ autoEscalateOnStallDefault: false } as any);
   });
 
   it('does nothing if the trial is not in auto mode', async () => {
@@ -576,6 +639,73 @@ describe('autoRemediationLoopService.startAutoLoop', () => {
     );
   });
 
+  it('downgrades a stale pending/approved link-text row when analyzeJob resolves linkTextMode guidance-only', async () => {
+    // Same stale-row hazard as colorContrastMode/altTextMode above, for
+    // linkTextMode -- the per-run override this file previously had no way
+    // to set at all (see auto-escalate-on-stall's own design doc).
+    vi.mocked(prisma.comparisonTrial.findUnique).mockResolvedValue(makeTrial() as any);
+    mockLockAcquired();
+    mockJobFound();
+    mockEmptyRound(undefined, undefined, 'guidance-only');
+
+    await autoRemediationLoopService.startAutoLoop(new ComparisonTrialAutoRemediationDriver('trial-1'));
+
+    expect(prisma.aiAnalysis.updateMany).toHaveBeenCalledWith({
+      where: {
+        jobId: 'job-1',
+        suggestionType: 'link-text',
+        applyMode: 'apply-to-pdf',
+        status: { in: ['pending', 'approved'] },
+      },
+      data: { applyMode: 'guidance-only' },
+    });
+    expect(prisma.aiAnalysis.deleteMany).not.toHaveBeenCalled();
+  });
+
+  it('deletes (not downgrades) a stale pending/approved link-text row when analyzeJob resolves linkTextMode disabled', async () => {
+    vi.mocked(prisma.comparisonTrial.findUnique).mockResolvedValue(makeTrial() as any);
+    mockLockAcquired();
+    mockJobFound();
+    mockEmptyRound(undefined, undefined, 'disabled');
+
+    await autoRemediationLoopService.startAutoLoop(new ComparisonTrialAutoRemediationDriver('trial-1'));
+
+    expect(prisma.aiAnalysis.deleteMany).toHaveBeenCalledWith({
+      where: {
+        jobId: 'job-1',
+        suggestionType: 'link-text',
+        status: { in: ['pending', 'approved'] },
+      },
+    });
+  });
+
+  it('does not touch link-text rows at all when analyzeJob resolves linkTextMode apply-to-pdf', async () => {
+    vi.mocked(prisma.comparisonTrial.findUnique).mockResolvedValue(makeTrial() as any);
+    mockLockAcquired();
+    mockJobFound();
+    mockEmptyRound(undefined, undefined, 'apply-to-pdf');
+
+    await autoRemediationLoopService.startAutoLoop(new ComparisonTrialAutoRemediationDriver('trial-1'));
+
+    expect(prisma.aiAnalysis.deleteMany).not.toHaveBeenCalled();
+    expect(prisma.aiAnalysis.updateMany).not.toHaveBeenCalledWith(
+      expect.objectContaining({ where: expect.objectContaining({ suggestionType: 'link-text' }) })
+    );
+  });
+
+  it('never reconciles link-missing-annotation-fix rows -- that suggestion type is unconditionally rule-based apply-to-pdf, not gated by linkTextMode', async () => {
+    vi.mocked(prisma.comparisonTrial.findUnique).mockResolvedValue(makeTrial() as any);
+    mockLockAcquired();
+    mockJobFound();
+    mockEmptyRound(undefined, undefined, 'disabled');
+
+    await autoRemediationLoopService.startAutoLoop(new ComparisonTrialAutoRemediationDriver('trial-1'));
+
+    expect(prisma.aiAnalysis.deleteMany).not.toHaveBeenCalledWith(
+      expect.objectContaining({ where: expect.objectContaining({ suggestionType: 'link-missing-annotation-fix' }) })
+    );
+  });
+
   it('excludes alt-text-decorative from both the actionable-count query and the auto-approve update', async () => {
     vi.mocked(prisma.comparisonTrial.findUnique).mockResolvedValue(makeTrial() as any);
     mockLockAcquired();
@@ -749,6 +879,177 @@ describe('autoRemediationLoopService.startAutoLoop', () => {
     expect(prisma.comparisonTrial.update).toHaveBeenCalledWith({
       where: { id: 'trial-1' },
       data: { autoStatus: 'stopped', autoStopReason: 'converged', autoStopRequested: false, autoStoppedAt: expect.any(Date) },
+    });
+  });
+
+  it('includes the top stuck category in the stop notification when a real stall leaves guidance-only work behind', async () => {
+    vi.mocked(prisma.comparisonTrial.findUnique).mockResolvedValue(makeTrial({ autoMaxRounds: 10 }) as any);
+    mockLockAcquired();
+    vi.mocked(aiAnalysisService.analyzeJob).mockResolvedValue({ analyzed: 1, skipped: 0 } as any);
+    vi.mocked(prisma.aiAnalysis.count).mockResolvedValue(1);
+    vi.mocked(prisma.aiAnalysis.updateMany).mockResolvedValue({ count: 1 } as any);
+    vi.mocked(aiAnalysisService.applyApprovedSuggestions).mockResolvedValue({ applied: 0, failed: 1, errors: [] });
+    vi.mocked(prisma.job.findUnique).mockResolvedValue({
+      id: 'job-1', tenantId: 'tenant-1', output: {}, userId: 'user-1', input: { fileName: 'doc.pdf' },
+    } as any);
+    vi.mocked(prisma.aiAnalysis.findMany).mockResolvedValue([
+      { suggestionType: 'color-contrast-fix' },
+      { suggestionType: 'color-contrast-fix' },
+      { suggestionType: 'link-text' },
+    ] as any);
+
+    await autoRemediationLoopService.startAutoLoop(new ComparisonTrialAutoRemediationDriver('trial-1'));
+
+    await vi.waitFor(() => expect(notificationService.createNotification).toHaveBeenCalledTimes(1));
+    expect(prisma.aiAnalysis.findMany).toHaveBeenCalledWith({
+      where: { jobId: 'job-1', status: { in: ['pending', 'approved'] }, applyMode: { not: 'apply-to-pdf' } },
+      select: { suggestionType: true },
+    });
+    expect(notificationService.createNotification).toHaveBeenCalledWith(
+      expect.objectContaining({ message: expect.stringContaining('color-contrast-fix (2)') })
+    );
+  });
+
+  it('does not query stuck categories at all for a non-stalled stop reason', async () => {
+    vi.mocked(prisma.comparisonTrial.findUnique).mockResolvedValue(makeTrial() as any);
+    mockLockAcquired();
+    mockJobFound();
+    mockEmptyRound();
+
+    await autoRemediationLoopService.startAutoLoop(new ComparisonTrialAutoRemediationDriver('trial-1'));
+
+    await vi.waitFor(() => expect(notificationService.createNotification).toHaveBeenCalledTimes(1));
+    expect(prisma.aiAnalysis.findMany).not.toHaveBeenCalled();
+  });
+
+  describe('auto-escalate-on-stall', () => {
+    it('escalates once on a real stall (job-native path) and keeps going instead of stopping', async () => {
+      vi.mocked(getEffectiveAiRemediationConfig).mockResolvedValue({ autoEscalateOnStallDefault: true } as any);
+      mockLockAcquired();
+      // getConfig()'s own lookup, then rounds 1 & 2's getRoundState (neither
+      // escalated yet) -- round 3 never re-checks autoStallEscalated since it
+      // converges before reaching the stall branch at all.
+      vi.mocked(prisma.pdfAutoRemediationRun.findUnique).mockResolvedValue(makeRun() as any);
+      vi.mocked(prisma.job.findUnique).mockResolvedValue({ id: 'job-1', tenantId: 'tenant-1', output: {}, autoEscalateOnStall: null } as any);
+      // Rounds 1 & 2 stall (nothing applies); round 3's fresh analysis finds
+      // nothing left at all -- the real convergence signal.
+      vi.mocked(aiAnalysisService.analyzeJob).mockResolvedValue({ analyzed: 1, skipped: 0, colorContrastMode: 'guidance-only', linkTextMode: 'guidance-only' } as any);
+      vi.mocked(prisma.aiAnalysis.updateMany).mockResolvedValue({ count: 1 } as any);
+      vi.mocked(aiAnalysisService.applyApprovedSuggestions).mockResolvedValue({ applied: 0, failed: 1, errors: [] });
+      vi.mocked(prisma.aiAnalysis.count)
+        .mockResolvedValueOnce(1) // round 1: stalls
+        .mockResolvedValueOnce(1) // round 2: stalls again -> escalate
+        .mockResolvedValueOnce(0); // round 3 (post-escalation): converges
+
+      await autoRemediationLoopService.startAutoLoop(new JobAutoRemediationDriver('run-1'));
+
+      expect(prisma.pdfAutoRemediationRun.update).toHaveBeenCalledWith({
+        where: { id: 'run-1' },
+        data: { autoColorContrastMode: 'apply-to-pdf', autoLinkTextMode: 'apply-to-pdf', autoStallEscalated: true },
+      });
+      // 3 analysis passes, not 2 -- the loop kept going after escalating
+      // instead of stopping 'stalled' right at the threshold.
+      expect(aiAnalysisService.analyzeJob).toHaveBeenCalledTimes(3);
+      expect(prisma.pdfAutoRemediationRun.update).toHaveBeenCalledWith({
+        where: { id: 'run-1' },
+        data: { autoStatus: 'stopped', autoStopReason: 'converged', autoStopRequested: false, autoStoppedAt: expect.any(Date) },
+      });
+    });
+
+    it('stops "stalled" for real on a second stall after already escalating -- does not escalate twice', async () => {
+      vi.mocked(getEffectiveAiRemediationConfig).mockResolvedValue({ autoEscalateOnStallDefault: true } as any);
+      mockLockAcquired();
+      vi.mocked(prisma.pdfAutoRemediationRun.findUnique)
+        .mockResolvedValueOnce(makeRun({ autoStallEscalated: false }) as any) // getConfig()'s own lookup
+        .mockResolvedValueOnce(makeRun({ autoStallEscalated: false }) as any) // round 1
+        .mockResolvedValueOnce(makeRun({ autoStallEscalated: false }) as any) // round 2 -- stalls -> escalate
+        .mockResolvedValueOnce(makeRun({ autoStallEscalated: true }) as any) // round 3 -- already escalated
+        .mockResolvedValueOnce(makeRun({ autoStallEscalated: true }) as any); // round 4 -- stalls again -> stop for real
+      vi.mocked(prisma.job.findUnique).mockResolvedValue({ id: 'job-1', tenantId: 'tenant-1', output: {}, autoEscalateOnStall: null } as any);
+      // Every round stalls, even after escalation -- confirms escalation is
+      // attempted exactly once, not retried indefinitely.
+      vi.mocked(aiAnalysisService.analyzeJob).mockResolvedValue({ analyzed: 1, skipped: 0, colorContrastMode: 'apply-to-pdf', linkTextMode: 'apply-to-pdf' } as any);
+      vi.mocked(prisma.aiAnalysis.count).mockResolvedValue(1);
+      vi.mocked(prisma.aiAnalysis.updateMany).mockResolvedValue({ count: 1 } as any);
+      vi.mocked(aiAnalysisService.applyApprovedSuggestions).mockResolvedValue({ applied: 0, failed: 1, errors: [] });
+
+      await autoRemediationLoopService.startAutoLoop(new JobAutoRemediationDriver('run-1'));
+
+      expect(aiAnalysisService.analyzeJob).toHaveBeenCalledTimes(4);
+      // Escalated exactly once (after round 2) -- resetForNewRun and
+      // recordRoundProgress also call this same mock each round, so this
+      // filters for the escalation payload specifically rather than
+      // asserting a raw total call count.
+      const escalationCalls = vi.mocked(prisma.pdfAutoRemediationRun.update).mock.calls.filter(
+        ([arg]) => (arg as { data?: { autoStallEscalated?: boolean } }).data?.autoStallEscalated === true
+      );
+      expect(escalationCalls).toHaveLength(1);
+      expect(prisma.pdfAutoRemediationRun.update).toHaveBeenCalledWith({
+        where: { id: 'run-1' },
+        data: { autoStatus: 'stopped', autoStopReason: 'stalled', autoStopRequested: false, autoStoppedAt: expect.any(Date) },
+      });
+    });
+
+    it('does not escalate when autoEscalateOnStallDefault resolves false -- stops "stalled" exactly like today', async () => {
+      vi.mocked(getEffectiveAiRemediationConfig).mockResolvedValue({ autoEscalateOnStallDefault: false } as any);
+      mockLockAcquired();
+      vi.mocked(prisma.pdfAutoRemediationRun.findUnique).mockResolvedValue(makeRun() as any);
+      vi.mocked(prisma.job.findUnique).mockResolvedValue({ id: 'job-1', tenantId: 'tenant-1', output: {}, autoEscalateOnStall: null } as any);
+      vi.mocked(aiAnalysisService.analyzeJob).mockResolvedValue({ analyzed: 1, skipped: 0 } as any);
+      vi.mocked(prisma.aiAnalysis.count).mockResolvedValue(1);
+      vi.mocked(prisma.aiAnalysis.updateMany).mockResolvedValue({ count: 1 } as any);
+      vi.mocked(aiAnalysisService.applyApprovedSuggestions).mockResolvedValue({ applied: 0, failed: 1, errors: [] });
+
+      await autoRemediationLoopService.startAutoLoop(new JobAutoRemediationDriver('run-1'));
+
+      expect(aiAnalysisService.analyzeJob).toHaveBeenCalledTimes(2);
+      expect(prisma.pdfAutoRemediationRun.update).not.toHaveBeenCalledWith(
+        expect.objectContaining({ data: expect.objectContaining({ autoStallEscalated: true }) })
+      );
+      expect(prisma.pdfAutoRemediationRun.update).toHaveBeenCalledWith({
+        where: { id: 'run-1' },
+        data: { autoStatus: 'stopped', autoStopReason: 'stalled', autoStopRequested: false, autoStoppedAt: expect.any(Date) },
+      });
+    });
+
+    it('a job-level autoEscalateOnStall: false override wins over a tenant default of true', async () => {
+      vi.mocked(getEffectiveAiRemediationConfig).mockResolvedValue({ autoEscalateOnStallDefault: true } as any);
+      mockLockAcquired();
+      vi.mocked(prisma.pdfAutoRemediationRun.findUnique).mockResolvedValue(makeRun() as any);
+      vi.mocked(prisma.job.findUnique).mockResolvedValue({ id: 'job-1', tenantId: 'tenant-1', output: {}, autoEscalateOnStall: false } as any);
+      vi.mocked(aiAnalysisService.analyzeJob).mockResolvedValue({ analyzed: 1, skipped: 0 } as any);
+      vi.mocked(prisma.aiAnalysis.count).mockResolvedValue(1);
+      vi.mocked(prisma.aiAnalysis.updateMany).mockResolvedValue({ count: 1 } as any);
+      vi.mocked(aiAnalysisService.applyApprovedSuggestions).mockResolvedValue({ applied: 0, failed: 1, errors: [] });
+
+      await autoRemediationLoopService.startAutoLoop(new JobAutoRemediationDriver('run-1'));
+
+      expect(prisma.pdfAutoRemediationRun.update).not.toHaveBeenCalledWith(
+        expect.objectContaining({ data: expect.objectContaining({ autoStallEscalated: true }) })
+      );
+    });
+
+    it('a ComparisonTrial never escalates even when the tenant default is true -- its own escalateStalledModes is always a no-op', async () => {
+      vi.mocked(getEffectiveAiRemediationConfig).mockResolvedValue({ autoEscalateOnStallDefault: true } as any);
+      mockLockAcquired();
+      vi.mocked(prisma.comparisonTrial.findUnique).mockResolvedValue(makeTrial() as any);
+      mockJobFound();
+      vi.mocked(aiAnalysisService.analyzeJob).mockResolvedValue({ analyzed: 1, skipped: 0 } as any);
+      vi.mocked(prisma.aiAnalysis.count).mockResolvedValue(1);
+      vi.mocked(prisma.aiAnalysis.updateMany).mockResolvedValue({ count: 1 } as any);
+      vi.mocked(aiAnalysisService.applyApprovedSuggestions).mockResolvedValue({ applied: 0, failed: 1, errors: [] });
+
+      await autoRemediationLoopService.startAutoLoop(new ComparisonTrialAutoRemediationDriver('trial-1'));
+
+      // Still stops after exactly STALL_ROUND_LIMIT (2) rounds, not more --
+      // the escalation gate resolved true (tenant default), but the trial
+      // driver's own escalateStalledModes() returned false, so the loop
+      // fell through to a normal stall exactly as before this feature.
+      expect(aiAnalysisService.analyzeJob).toHaveBeenCalledTimes(2);
+      expect(prisma.comparisonTrial.update).toHaveBeenCalledWith({
+        where: { id: 'trial-1' },
+        data: { autoStatus: 'stopped', autoStopReason: 'stalled', autoStopRequested: false, autoStoppedAt: expect.any(Date) },
+      });
     });
   });
 
@@ -983,7 +1284,10 @@ describe('ComparisonTrialAutoRemediationDriver', () => {
 
       expect(prisma.comparisonTrial.findUnique).toHaveBeenCalledWith({ where: { id: 'trial-1' } });
       expect(prisma.job.findUnique).toHaveBeenCalledWith({ where: { id: 'job-1' } });
-      expect(config).toEqual({ jobId: 'job-1', tenantId: 'tenant-1' });
+      // Trials never escalate -- always null regardless of the underlying
+      // job's own autoEscalateOnStall value (which this mock doesn't even
+      // set, to make that explicit).
+      expect(config).toEqual({ jobId: 'job-1', tenantId: 'tenant-1', autoEscalateOnStall: null });
     });
 
     it('returns null when the trial does not exist', async () => {
@@ -1046,6 +1350,8 @@ describe('ComparisonTrialAutoRemediationDriver', () => {
         autoCostLimitUsd: 1.5,
         autoColorContrastMode: 'apply-to-pdf',
         autoAltTextMode: null,
+        autoLinkTextMode: null,
+        autoStallEscalated: false,
       });
     });
 
@@ -1189,13 +1495,13 @@ describe('JobAutoRemediationDriver', () => {
   describe('getConfig', () => {
     it('resolves jobId/tenantId when the run exists and has a job', async () => {
       vi.mocked(prisma.pdfAutoRemediationRun.findUnique).mockResolvedValue(makeRun() as any);
-      vi.mocked(prisma.job.findUnique).mockResolvedValue({ id: 'job-1', tenantId: 'tenant-1' } as any);
+      vi.mocked(prisma.job.findUnique).mockResolvedValue({ id: 'job-1', tenantId: 'tenant-1', autoEscalateOnStall: true } as any);
 
       const config = await new JobAutoRemediationDriver('run-1').getConfig();
 
       expect(prisma.pdfAutoRemediationRun.findUnique).toHaveBeenCalledWith({ where: { id: 'run-1' } });
       expect(prisma.job.findUnique).toHaveBeenCalledWith({ where: { id: 'job-1' } });
-      expect(config).toEqual({ jobId: 'job-1', tenantId: 'tenant-1' });
+      expect(config).toEqual({ jobId: 'job-1', tenantId: 'tenant-1', autoEscalateOnStall: true });
     });
 
     it('returns null when the run does not exist', async () => {
@@ -1243,6 +1549,8 @@ describe('JobAutoRemediationDriver', () => {
           // not just the no-column-set default null ComparisonTrial always
           // reports (see that driver's own getRoundState test above).
           autoAltTextMode: 'guidance-only',
+          autoLinkTextMode: 'disabled',
+          autoStallEscalated: true,
         }) as any
       );
 
@@ -1254,6 +1562,8 @@ describe('JobAutoRemediationDriver', () => {
         autoCostLimitUsd: 1.5,
         autoColorContrastMode: 'apply-to-pdf',
         autoAltTextMode: 'guidance-only',
+        autoLinkTextMode: 'disabled',
+        autoStallEscalated: true,
       });
     });
 
