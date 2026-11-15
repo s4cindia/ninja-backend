@@ -128,6 +128,20 @@ export function resolveLinkTextMode(raw: string | null): LinkTextMode | undefine
   return VALID_LINK_TEXT_MODES.has(raw) ? (raw as LinkTextMode) : undefined;
 }
 
+export type BookmarkMode = 'guidance-only' | 'disabled' | 'apply-to-pdf';
+const VALID_BOOKMARK_MODES: ReadonlySet<string> = new Set(['guidance-only', 'disabled', 'apply-to-pdf']);
+
+/** Same inherit semantics as resolveLinkTextMode above, for
+ * PdfAutoRemediationRun.autoBookmarkMode -- added for the same reason:
+ * regenerateGenericBookmarkTitles (pdf-structure-writer.service.ts) is a
+ * deterministic, already-proven fixer with zero per-run override, sitting
+ * idle behind bookmarkMode's tenant-wide guidance-only default on every
+ * Auto Mode run. */
+export function resolveBookmarkMode(raw: string | null): BookmarkMode | undefined {
+  if (raw === null) return undefined;
+  return VALID_BOOKMARK_MODES.has(raw) ? (raw as BookmarkMode) : undefined;
+}
+
 /**
  * Same inherit semantics as resolveColorContrastMode/resolveAltTextMode
  * above, for Job.fullAutoMode -- null means "inherit the tenant's own
@@ -265,6 +279,7 @@ export interface AutoRemediationRoundState {
   autoColorContrastMode: string | null;
   autoAltTextMode: string | null;
   autoLinkTextMode: string | null;
+  autoBookmarkMode: string | null;
   /** Caps auto-escalate-on-stall at one attempt per run -- re-read fresh
    *  each round so a prior round's escalation is visible before the next
    *  stall check. Always false for ComparisonTrialAutoRemediationDriver. */
@@ -297,7 +312,7 @@ export interface AutoRemediationDriver {
   markStopped(stopReason: AutoStopReason, stoppedAt: Date): Promise<void>;
   /** Called once, right before the loop would otherwise stop 'stalled', when
    *  resolveEscalateOnStall resolved true and this run hasn't escalated yet.
-   *  Sets colorContrastMode/linkTextMode to 'apply-to-pdf' and records that
+   *  Sets colorContrastMode/linkTextMode/bookmarkMode to 'apply-to-pdf' and records that
    *  escalation happened (so a second stall stops for real). Returns true
    *  if it actually escalated something (the caller resets the stall
    *  counter and continues the loop); false means "not supported" --
@@ -361,6 +376,7 @@ export class ComparisonTrialAutoRemediationDriver implements AutoRemediationDriv
       // only PdfAutoRemediationRun (below) supports these per-job overrides.
       autoAltTextMode: null,
       autoLinkTextMode: null,
+      autoBookmarkMode: null,
       // Trials never escalate (see escalateStalledModes below) -- always
       // reporting false means the loop's stall check never even tries.
       autoStallEscalated: false,
@@ -443,6 +459,7 @@ export class JobAutoRemediationDriver implements AutoRemediationDriver {
       autoColorContrastMode: current.autoColorContrastMode,
       autoAltTextMode: current.autoAltTextMode,
       autoLinkTextMode: current.autoLinkTextMode,
+      autoBookmarkMode: current.autoBookmarkMode,
       autoStallEscalated: current.autoStallEscalated,
     };
   }
@@ -461,15 +478,15 @@ export class JobAutoRemediationDriver implements AutoRemediationDriver {
     });
   }
 
-  /** Forces colorContrastMode/linkTextMode to 'apply-to-pdf' for the rest of
-   *  this run and records that escalation happened, so a second stall stops
+  /** Forces colorContrastMode/linkTextMode/bookmarkMode to 'apply-to-pdf' for
+   *  the rest of this run and records that escalation happened, so a second stall stops
    *  for real instead of escalating again. Unconditional -- the caller
    *  (startAutoLoop) already checked resolveEscalateOnStall and
    *  !state.autoStallEscalated before calling this. */
   async escalateStalledModes(): Promise<boolean> {
     await prisma.pdfAutoRemediationRun.update({
       where: { id: this.runId },
-      data: { autoColorContrastMode: 'apply-to-pdf', autoLinkTextMode: 'apply-to-pdf', autoStallEscalated: true },
+      data: { autoColorContrastMode: 'apply-to-pdf', autoLinkTextMode: 'apply-to-pdf', autoBookmarkMode: 'apply-to-pdf', autoStallEscalated: true },
     });
     return true;
   }
@@ -1053,6 +1070,7 @@ class AutoRemediationLoopService {
           resolveColorContrastMode(state.autoColorContrastMode),
           resolveAltTextMode(state.autoAltTextMode),
           resolveLinkTextMode(state.autoLinkTextMode),
+          resolveBookmarkMode(state.autoBookmarkMode),
         );
 
         // A fresh analysis pass (against whatever the *previous* round's
@@ -1276,6 +1294,7 @@ class AutoRemediationLoopService {
     colorContrastModeOverride: ColorContrastMode | undefined,
     altTextModeOverride: AltTextMode | undefined,
     linkTextModeOverride: LinkTextMode | undefined,
+    bookmarkModeOverride: BookmarkMode | undefined,
   ): Promise<{ actionableFound: number; applied: number; resolvedCount: number }> {
     const roundStartedAt = new Date();
     const analysis = await aiAnalysisService.analyzeJob(
@@ -1285,6 +1304,7 @@ class AutoRemediationLoopService {
         ...(colorContrastModeOverride !== undefined && { colorContrastMode: colorContrastModeOverride }),
         ...(altTextModeOverride !== undefined && { altTextMode: altTextModeOverride }),
         ...(linkTextModeOverride !== undefined && { linkTextMode: linkTextModeOverride }),
+        ...(bookmarkModeOverride !== undefined && { bookmarkMode: bookmarkModeOverride }),
       },
     );
     // This round's AI spend (Operational Reports Group 2 -- see
@@ -1396,6 +1416,36 @@ class AutoRemediationLoopService {
         where: {
           jobId,
           suggestionType: 'link-text',
+          status: { in: ['pending', 'approved'] },
+        },
+      });
+    }
+
+    // Same stale-row reconciliation as colorContrastMode/linkTextMode above,
+    // for bookmarkMode. Three suggestion types can carry applyMode
+    // 'apply-to-pdf' when bookmarkMode is: 'bookmark-title-regenerate' (the
+    // deterministic, no-AI-call writer -- regenerateGenericBookmarkTitles),
+    // its AI-guess fallback 'bookmark-title', and 'bookmark-generate' (the
+    // deterministic from-headings writer). 'bookmark-missing' is excluded --
+    // its own applyMode is hardcoded 'guidance-only' always, regardless of
+    // bookmarkMode, so it never needs reconciliation.
+    const effectiveBookmarkMode = analysis.bookmarkMode;
+    const BOOKMARK_RECONCILE_TYPES = ['bookmark-title-regenerate', 'bookmark-title', 'bookmark-generate'];
+    if (effectiveBookmarkMode === 'guidance-only') {
+      await prisma.aiAnalysis.updateMany({
+        where: {
+          jobId,
+          suggestionType: { in: BOOKMARK_RECONCILE_TYPES },
+          applyMode: 'apply-to-pdf',
+          status: { in: ['pending', 'approved'] },
+        },
+        data: { applyMode: 'guidance-only' },
+      });
+    } else if (effectiveBookmarkMode === 'disabled') {
+      await prisma.aiAnalysis.deleteMany({
+        where: {
+          jobId,
+          suggestionType: { in: BOOKMARK_RECONCILE_TYPES },
           status: { in: ['pending', 'approved'] },
         },
       });

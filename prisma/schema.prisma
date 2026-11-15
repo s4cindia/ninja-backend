@@ -1049,6 +1049,13 @@ model PdfAutoRemediationRun {
   /// one; runRound never passed it) -- added alongside auto-escalate-on-
   /// stall, which needs it.
   autoLinkTextMode String?
+  /// 'guidance-only' | 'disabled' | 'apply-to-pdf', or null to inherit the
+  /// tenant's own aiRemediation.bookmarkMode setting -- same semantics as
+  /// autoColorContrastMode/autoLinkTextMode above. Real-world value: on a
+  /// live Karsaklian stall, regenerateGenericBookmarkTitles (a deterministic,
+  /// already-proven fixer, no AI call) was sitting idle behind this mode with
+  /// zero per-run override, the exact same gap autoLinkTextMode just closed.
+  autoBookmarkMode String?
   /// Caps auto-escalate-on-stall at one attempt per run -- set true the
   /// moment a stall is escalated (see startAutoLoop's own stall-handling
   /// branch); a second stall after that stops for real rather than

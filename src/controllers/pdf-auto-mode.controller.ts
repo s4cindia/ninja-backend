@@ -33,6 +33,7 @@ import {
   resolveColorContrastMode,
   resolveAltTextMode,
   resolveLinkTextMode,
+  resolveBookmarkMode,
   resolveFullAutoMode,
   resolveEscalateOnStall,
   enqueueOrRunAutoLoop,
@@ -110,6 +111,7 @@ export class PdfAutoModeController {
           ...(body.autoColorContrastMode !== undefined && { autoColorContrastMode: body.autoColorContrastMode }),
           ...(body.autoAltTextMode !== undefined && { autoAltTextMode: body.autoAltTextMode }),
           ...(body.autoLinkTextMode !== undefined && { autoLinkTextMode: body.autoLinkTextMode }),
+          ...(body.autoBookmarkMode !== undefined && { autoBookmarkMode: body.autoBookmarkMode }),
         },
         update: {
           ...(body.autoMaxRounds !== undefined && { autoMaxRounds: body.autoMaxRounds }),
@@ -117,6 +119,7 @@ export class PdfAutoModeController {
           ...(body.autoColorContrastMode !== undefined && { autoColorContrastMode: body.autoColorContrastMode }),
           ...(body.autoAltTextMode !== undefined && { autoAltTextMode: body.autoAltTextMode }),
           ...(body.autoLinkTextMode !== undefined && { autoLinkTextMode: body.autoLinkTextMode }),
+          ...(body.autoBookmarkMode !== undefined && { autoBookmarkMode: body.autoBookmarkMode }),
         },
       });
 
@@ -211,6 +214,7 @@ export class PdfAutoModeController {
             autoColorContrastMode: run ? resolveColorContrastMode(run.autoColorContrastMode) ?? null : null,
             autoAltTextMode: run ? resolveAltTextMode(run.autoAltTextMode) ?? null : null,
             autoLinkTextMode: run ? resolveLinkTextMode(run.autoLinkTextMode) ?? null : null,
+            autoBookmarkMode: run ? resolveBookmarkMode(run.autoBookmarkMode) ?? null : null,
             autoStallEscalated: run?.autoStallEscalated ?? false,
             pendingFullAutoMode,
           },
@@ -237,6 +241,7 @@ export class PdfAutoModeController {
           autoColorContrastMode: resolveColorContrastMode(run.autoColorContrastMode) ?? null,
           autoAltTextMode: resolveAltTextMode(run.autoAltTextMode) ?? null,
           autoLinkTextMode: resolveLinkTextMode(run.autoLinkTextMode) ?? null,
+          autoBookmarkMode: resolveBookmarkMode(run.autoBookmarkMode) ?? null,
           autoStallEscalated: run.autoStallEscalated,
         },
       });

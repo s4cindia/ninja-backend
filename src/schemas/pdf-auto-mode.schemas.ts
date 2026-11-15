@@ -26,6 +26,7 @@ export const startAutoModeSchema = {
     autoColorContrastMode: z.enum(['guidance-only', 'disabled', 'apply-to-pdf']).optional(),
     autoAltTextMode: z.enum(['apply-to-pdf', 'guidance-only']).optional(),
     autoLinkTextMode: z.enum(['guidance-only', 'disabled', 'apply-to-pdf']).optional(),
+    autoBookmarkMode: z.enum(['guidance-only', 'disabled', 'apply-to-pdf']).optional(),
   }).strict().optional(),
 };
 

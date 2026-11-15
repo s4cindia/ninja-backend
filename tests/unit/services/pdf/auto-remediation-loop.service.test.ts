@@ -69,7 +69,7 @@ vi.mock('../../../../src/lib/logger', () => ({
 
 import prisma from '../../../../src/lib/prisma';
 import { logger } from '../../../../src/lib/logger';
-import { autoRemediationLoopService, ComparisonTrialAutoRemediationDriver, JobAutoRemediationDriver, describeAutoLoopStop, resolveLinkTextMode, resolveEscalateOnStall } from '../../../../src/services/pdf/auto-remediation-loop.service';
+import { autoRemediationLoopService, ComparisonTrialAutoRemediationDriver, JobAutoRemediationDriver, describeAutoLoopStop, resolveLinkTextMode, resolveBookmarkMode, resolveEscalateOnStall } from '../../../../src/services/pdf/auto-remediation-loop.service';
 import { aiAnalysisService } from '../../../../src/services/pdf/ai-analysis.service';
 import { getEffectiveAiRemediationConfig } from '../../../../src/services/pdf/ai-remediation-tenant-config.service';
 import { pdfReauditService } from '../../../../src/services/pdf/pdf-reaudit.service';
@@ -102,6 +102,7 @@ function makeRun(overrides: Record<string, unknown> = {}) {
     autoStopRequested: false,
     autoColorContrastMode: null,
     autoLinkTextMode: null,
+    autoBookmarkMode: null,
     autoStallEscalated: false,
     ...overrides,
   };
@@ -138,6 +139,7 @@ function mockReauditSuccess() {
 type ColorContrastMode = 'guidance-only' | 'disabled' | 'apply-to-pdf';
 type AltTextMode = 'apply-to-pdf' | 'guidance-only';
 type LinkTextMode = 'guidance-only' | 'disabled' | 'apply-to-pdf';
+type BookmarkMode = 'guidance-only' | 'disabled' | 'apply-to-pdf';
 
 /** A round that finds `actionableCount` suggestions, applies all of them
  * successfully, and re-audits cleanly. `colorContrastMode` is analyzeJob's
@@ -167,8 +169,8 @@ function mockProductiveRound(actionableCount: number, costUsd = 0, colorContrast
 /** A round whose fresh analysis finds nothing actionable at all -- the
  * genuine convergence signal; apply/reaudit are never reached. See
  * mockProductiveRound's doc comment for what `colorContrastMode` means. */
-function mockEmptyRound(colorContrastMode?: ColorContrastMode, altTextMode?: AltTextMode, linkTextMode?: LinkTextMode) {
-  vi.mocked(aiAnalysisService.analyzeJob).mockResolvedValueOnce({ analyzed: 0, skipped: 0, colorContrastMode, altTextMode, linkTextMode } as any);
+function mockEmptyRound(colorContrastMode?: ColorContrastMode, altTextMode?: AltTextMode, linkTextMode?: LinkTextMode, bookmarkMode?: BookmarkMode) {
+  vi.mocked(aiAnalysisService.analyzeJob).mockResolvedValueOnce({ analyzed: 0, skipped: 0, colorContrastMode, altTextMode, linkTextMode, bookmarkMode } as any);
   vi.mocked(prisma.aiAnalysis.count).mockResolvedValueOnce(0);
 }
 
@@ -251,6 +253,22 @@ describe('resolveLinkTextMode', () => {
 
   it('treats an unrecognized stored value the same as null', () => {
     expect(resolveLinkTextMode('not-a-real-mode')).toBeUndefined();
+  });
+});
+
+describe('resolveBookmarkMode', () => {
+  it('passes through each of the three valid modes', () => {
+    expect(resolveBookmarkMode('guidance-only')).toBe('guidance-only');
+    expect(resolveBookmarkMode('disabled')).toBe('disabled');
+    expect(resolveBookmarkMode('apply-to-pdf')).toBe('apply-to-pdf');
+  });
+
+  it('returns undefined for null (inherit) so the caller omits the override entirely', () => {
+    expect(resolveBookmarkMode(null)).toBeUndefined();
+  });
+
+  it('treats an unrecognized stored value the same as null', () => {
+    expect(resolveBookmarkMode('not-a-real-mode')).toBeUndefined();
   });
 });
 
@@ -706,6 +724,74 @@ describe('autoRemediationLoopService.startAutoLoop', () => {
     );
   });
 
+  it('downgrades stale pending/approved bookmark rows (all three apply-to-pdf-capable suggestion types) when analyzeJob resolves bookmarkMode guidance-only', async () => {
+    // regenerateGenericBookmarkTitles (bookmark-title-regenerate) is a real,
+    // already-proven deterministic fixer that was sitting idle behind
+    // bookmarkMode with zero per-run override -- the same gap linkTextMode
+    // had before this feature existed.
+    vi.mocked(prisma.comparisonTrial.findUnique).mockResolvedValue(makeTrial() as any);
+    mockLockAcquired();
+    mockJobFound();
+    mockEmptyRound(undefined, undefined, undefined, 'guidance-only');
+
+    await autoRemediationLoopService.startAutoLoop(new ComparisonTrialAutoRemediationDriver('trial-1'));
+
+    expect(prisma.aiAnalysis.updateMany).toHaveBeenCalledWith({
+      where: {
+        jobId: 'job-1',
+        suggestionType: { in: ['bookmark-title-regenerate', 'bookmark-title', 'bookmark-generate'] },
+        applyMode: 'apply-to-pdf',
+        status: { in: ['pending', 'approved'] },
+      },
+      data: { applyMode: 'guidance-only' },
+    });
+    expect(prisma.aiAnalysis.deleteMany).not.toHaveBeenCalled();
+  });
+
+  it('deletes (not downgrades) stale pending/approved bookmark rows when analyzeJob resolves bookmarkMode disabled', async () => {
+    vi.mocked(prisma.comparisonTrial.findUnique).mockResolvedValue(makeTrial() as any);
+    mockLockAcquired();
+    mockJobFound();
+    mockEmptyRound(undefined, undefined, undefined, 'disabled');
+
+    await autoRemediationLoopService.startAutoLoop(new ComparisonTrialAutoRemediationDriver('trial-1'));
+
+    expect(prisma.aiAnalysis.deleteMany).toHaveBeenCalledWith({
+      where: {
+        jobId: 'job-1',
+        suggestionType: { in: ['bookmark-title-regenerate', 'bookmark-title', 'bookmark-generate'] },
+        status: { in: ['pending', 'approved'] },
+      },
+    });
+  });
+
+  it('does not touch bookmark rows at all when analyzeJob resolves bookmarkMode apply-to-pdf', async () => {
+    vi.mocked(prisma.comparisonTrial.findUnique).mockResolvedValue(makeTrial() as any);
+    mockLockAcquired();
+    mockJobFound();
+    mockEmptyRound(undefined, undefined, undefined, 'apply-to-pdf');
+
+    await autoRemediationLoopService.startAutoLoop(new ComparisonTrialAutoRemediationDriver('trial-1'));
+
+    expect(prisma.aiAnalysis.deleteMany).not.toHaveBeenCalled();
+    expect(prisma.aiAnalysis.updateMany).not.toHaveBeenCalledWith(
+      expect.objectContaining({ where: expect.objectContaining({ suggestionType: expect.objectContaining({ in: expect.arrayContaining(['bookmark-title-regenerate']) }) }) })
+    );
+  });
+
+  it('never reconciles bookmark-missing rows -- its own applyMode is hardcoded guidance-only always, regardless of bookmarkMode', async () => {
+    vi.mocked(prisma.comparisonTrial.findUnique).mockResolvedValue(makeTrial() as any);
+    mockLockAcquired();
+    mockJobFound();
+    mockEmptyRound(undefined, undefined, undefined, 'disabled');
+
+    await autoRemediationLoopService.startAutoLoop(new ComparisonTrialAutoRemediationDriver('trial-1'));
+
+    expect(prisma.aiAnalysis.deleteMany).not.toHaveBeenCalledWith(
+      expect.objectContaining({ where: expect.objectContaining({ suggestionType: expect.objectContaining({ in: expect.arrayContaining(['bookmark-missing']) }) }) })
+    );
+  });
+
   it('excludes alt-text-decorative from both the actionable-count query and the auto-approve update', async () => {
     vi.mocked(prisma.comparisonTrial.findUnique).mockResolvedValue(makeTrial() as any);
     mockLockAcquired();
@@ -945,7 +1031,7 @@ describe('autoRemediationLoopService.startAutoLoop', () => {
 
       expect(prisma.pdfAutoRemediationRun.update).toHaveBeenCalledWith({
         where: { id: 'run-1' },
-        data: { autoColorContrastMode: 'apply-to-pdf', autoLinkTextMode: 'apply-to-pdf', autoStallEscalated: true },
+        data: { autoColorContrastMode: 'apply-to-pdf', autoLinkTextMode: 'apply-to-pdf', autoBookmarkMode: 'apply-to-pdf', autoStallEscalated: true },
       });
       // 3 analysis passes, not 2 -- the loop kept going after escalating
       // instead of stopping 'stalled' right at the threshold.
@@ -1351,6 +1437,7 @@ describe('ComparisonTrialAutoRemediationDriver', () => {
         autoColorContrastMode: 'apply-to-pdf',
         autoAltTextMode: null,
         autoLinkTextMode: null,
+        autoBookmarkMode: null,
         autoStallEscalated: false,
       });
     });
@@ -1550,6 +1637,7 @@ describe('JobAutoRemediationDriver', () => {
           // reports (see that driver's own getRoundState test above).
           autoAltTextMode: 'guidance-only',
           autoLinkTextMode: 'disabled',
+          autoBookmarkMode: 'apply-to-pdf',
           autoStallEscalated: true,
         }) as any
       );
@@ -1563,6 +1651,7 @@ describe('JobAutoRemediationDriver', () => {
         autoColorContrastMode: 'apply-to-pdf',
         autoAltTextMode: 'guidance-only',
         autoLinkTextMode: 'disabled',
+        autoBookmarkMode: 'apply-to-pdf',
         autoStallEscalated: true,
       });
     });

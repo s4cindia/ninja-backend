@@ -21,6 +21,13 @@ BEGIN
 
   IF NOT EXISTS (
     SELECT 1 FROM information_schema.columns
+    WHERE table_name = 'PdfAutoRemediationRun' AND column_name = 'autoBookmarkMode'
+  ) THEN
+    ALTER TABLE "PdfAutoRemediationRun" ADD COLUMN "autoBookmarkMode" TEXT;
+  END IF;
+
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.columns
     WHERE table_name = 'PdfAutoRemediationRun' AND column_name = 'autoStallEscalated'
   ) THEN
     ALTER TABLE "PdfAutoRemediationRun" ADD COLUMN "autoStallEscalated" BOOLEAN NOT NULL DEFAULT false;

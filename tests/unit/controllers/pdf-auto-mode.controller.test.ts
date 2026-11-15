@@ -240,6 +240,26 @@ describe('PdfAutoModeController', () => {
       expect(res.status).toHaveBeenCalledWith(202);
     });
 
+    it('passes a validated autoBookmarkMode body override through to the upsert -- regenerateGenericBookmarkTitles is a real, proven fixer that had no per-run override either', async () => {
+      vi.mocked(prisma.pdfAutoRemediationRun.findUnique).mockResolvedValue(null as any);
+      vi.mocked(prisma.pdfAutoRemediationRun.upsert).mockResolvedValue({ id: 'run-1', jobId: 'job-1' } as any);
+      vi.mocked(autoRemediationLoopService.startAutoLoop).mockResolvedValue(undefined);
+      const res = makeRes();
+
+      await pdfAutoModeController.start(
+        makeReq({ body: { autoBookmarkMode: 'apply-to-pdf' } as any }),
+        res,
+        next
+      );
+
+      expect(prisma.pdfAutoRemediationRun.upsert).toHaveBeenCalledWith({
+        where: { jobId: 'job-1' },
+        create: { jobId: 'job-1', autoBookmarkMode: 'apply-to-pdf' },
+        update: { autoBookmarkMode: 'apply-to-pdf' },
+      });
+      expect(res.status).toHaveBeenCalledWith(202);
+    });
+
     it('rejects with 409 when auto mode is already running for this job', async () => {
       vi.mocked(prisma.pdfAutoRemediationRun.findUnique).mockResolvedValue({ id: 'run-1', jobId: 'job-1', autoStatus: 'running' } as any);
 
@@ -370,6 +390,7 @@ describe('PdfAutoModeController', () => {
           autoColorContrastMode: null,
           autoAltTextMode: null,
           autoLinkTextMode: null,
+          autoBookmarkMode: null,
           autoStallEscalated: false,
           pendingFullAutoMode: false,
         },
@@ -410,6 +431,7 @@ describe('PdfAutoModeController', () => {
         autoCostLimitUsd: 1.5,
         autoColorContrastMode: null,
         autoLinkTextMode: null,
+        autoBookmarkMode: null,
         autoStallEscalated: false,
       } as any);
       vi.mocked(getEffectiveAiRemediationConfig).mockResolvedValue({ fullAutoModeDefault: true } as any);
@@ -431,6 +453,7 @@ describe('PdfAutoModeController', () => {
           autoColorContrastMode: null,
           autoAltTextMode: null,
           autoLinkTextMode: null,
+          autoBookmarkMode: null,
           autoStallEscalated: false,
           pendingFullAutoMode: true,
         },
@@ -469,6 +492,7 @@ describe('PdfAutoModeController', () => {
         autoCostLimitUsd: 1.5,
         autoColorContrastMode: 'disabled',
         autoLinkTextMode: 'apply-to-pdf',
+        autoBookmarkMode: 'guidance-only',
         autoStallEscalated: true,
       } as any);
       const res = makeRes();
@@ -489,6 +513,7 @@ describe('PdfAutoModeController', () => {
           autoColorContrastMode: 'disabled',
           autoAltTextMode: null,
           autoLinkTextMode: 'apply-to-pdf',
+          autoBookmarkMode: 'guidance-only',
           autoStallEscalated: true,
         },
       });
