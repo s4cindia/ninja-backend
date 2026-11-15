@@ -182,6 +182,18 @@ export class PdfAutoModeController {
       // opted into Auto Mode for yet.
       let run = await prisma.pdfAutoRemediationRun.findUnique({ where: { jobId } });
 
+      // Resolved once up front so every branch below can report it --
+      // previously neither flag was visible anywhere once a run existed
+      // (only `pendingFullAutoMode`, and only pre-start), so there was no
+      // way to tell from the Audit Results page whether the run actually in
+      // flight had Full Auto Mode / Auto-escalate-on-stall on. Real
+      // incident (2026-11-16): an apparently-recurring stall with no
+      // escalation looked like a live bug when it was actually a stale page
+      // view of an old job whose settings nobody could see to compare.
+      const aiRemediationConfig = await getEffectiveAiRemediationConfig(req.job!.tenantId);
+      const fullAutoModeEffective = resolveFullAutoMode(req.job!.fullAutoMode, aiRemediationConfig.fullAutoModeDefault);
+      const autoEscalateOnStallEffective = resolveEscalateOnStall(req.job!.autoEscalateOnStall, aiRemediationConfig.autoEscalateOnStallDefault);
+
       // autoStatus is null both when no row exists yet and when one does
       // but the loop hasn't made its first write yet (schema: 'running' |
       // 'stopped' | null -- "never started"). Either way, Full Auto Mode
@@ -197,9 +209,6 @@ export class PdfAutoModeController {
       // taken right after upload, long before the trigger fires -- always
       // raced ahead of it and disabled the interval permanently.
       if (!run || run.autoStatus === null) {
-        const aiRemediationConfig = await getEffectiveAiRemediationConfig(req.job!.tenantId);
-        const pendingFullAutoMode = resolveFullAutoMode(req.job!.fullAutoMode, aiRemediationConfig.fullAutoModeDefault);
-
         res.json({
           success: true,
           data: {
@@ -216,7 +225,9 @@ export class PdfAutoModeController {
             autoLinkTextMode: run ? resolveLinkTextMode(run.autoLinkTextMode) ?? null : null,
             autoBookmarkMode: run ? resolveBookmarkMode(run.autoBookmarkMode) ?? null : null,
             autoStallEscalated: run?.autoStallEscalated ?? false,
-            pendingFullAutoMode,
+            pendingFullAutoMode: fullAutoModeEffective,
+            fullAutoModeEffective,
+            autoEscalateOnStallEffective,
           },
         });
         return;
@@ -243,6 +254,8 @@ export class PdfAutoModeController {
           autoLinkTextMode: resolveLinkTextMode(run.autoLinkTextMode) ?? null,
           autoBookmarkMode: resolveBookmarkMode(run.autoBookmarkMode) ?? null,
           autoStallEscalated: run.autoStallEscalated,
+          fullAutoModeEffective,
+          autoEscalateOnStallEffective,
         },
       });
     } catch (error) {

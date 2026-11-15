@@ -365,7 +365,7 @@ describe('PdfAutoModeController', () => {
   describe('getStatus -- job-native (no trial) path', () => {
     beforeEach(() => {
       vi.mocked(prisma.comparisonTrial.findUnique).mockResolvedValue(null as any);
-      vi.mocked(getEffectiveAiRemediationConfig).mockResolvedValue({ fullAutoModeDefault: false } as any);
+      vi.mocked(getEffectiveAiRemediationConfig).mockResolvedValue({ fullAutoModeDefault: false, autoEscalateOnStallDefault: false } as any);
     });
 
     it('reports "never run" defaults (200, not 404) when no run row exists yet -- the expected common state for a job nobody has started Auto Mode on', async () => {
@@ -393,6 +393,8 @@ describe('PdfAutoModeController', () => {
           autoBookmarkMode: null,
           autoStallEscalated: false,
           pendingFullAutoMode: false,
+          fullAutoModeEffective: false,
+          autoEscalateOnStallEffective: false,
         },
       });
     });
@@ -434,7 +436,7 @@ describe('PdfAutoModeController', () => {
         autoBookmarkMode: null,
         autoStallEscalated: false,
       } as any);
-      vi.mocked(getEffectiveAiRemediationConfig).mockResolvedValue({ fullAutoModeDefault: true } as any);
+      vi.mocked(getEffectiveAiRemediationConfig).mockResolvedValue({ fullAutoModeDefault: true, autoEscalateOnStallDefault: false } as any);
       const res = makeRes();
 
       await pdfAutoModeController.getStatus(makeReq(), res, next);
@@ -456,11 +458,13 @@ describe('PdfAutoModeController', () => {
           autoBookmarkMode: null,
           autoStallEscalated: false,
           pendingFullAutoMode: true,
+          fullAutoModeEffective: true,
+          autoEscalateOnStallEffective: false,
         },
       });
     });
 
-    it('does not compute pendingFullAutoMode once a run has actually started or stopped', async () => {
+    it('also resolves fullAutoModeEffective/autoEscalateOnStallEffective once a run has actually started or stopped, even though pendingFullAutoMode no longer applies -- previously neither flag was visible anywhere during or after a run, only pre-start', async () => {
       vi.mocked(prisma.pdfAutoRemediationRun.findUnique).mockResolvedValue({
         autoStatus: 'stopped',
         autoStopReason: 'converged',
@@ -470,11 +474,17 @@ describe('PdfAutoModeController', () => {
         autoCostLimitUsd: 2.0,
         autoColorContrastMode: null,
       } as any);
+      vi.mocked(getEffectiveAiRemediationConfig).mockResolvedValue({ fullAutoModeDefault: true, autoEscalateOnStallDefault: true } as any);
       const res = makeRes();
 
       await pdfAutoModeController.getStatus(makeReq(), res, next);
 
-      expect(getEffectiveAiRemediationConfig).not.toHaveBeenCalled();
+      expect(getEffectiveAiRemediationConfig).toHaveBeenCalledWith('tenant-1');
+      expect(res.json).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({ fullAutoModeEffective: true, autoEscalateOnStallEffective: true }),
+        })
+      );
       expect(res.json).toHaveBeenCalledWith(
         expect.objectContaining({ data: expect.not.objectContaining({ pendingFullAutoMode: expect.anything() }) })
       );
@@ -515,6 +525,8 @@ describe('PdfAutoModeController', () => {
           autoLinkTextMode: 'apply-to-pdf',
           autoBookmarkMode: 'guidance-only',
           autoStallEscalated: true,
+          fullAutoModeEffective: false,
+          autoEscalateOnStallEffective: false,
         },
       });
     });
