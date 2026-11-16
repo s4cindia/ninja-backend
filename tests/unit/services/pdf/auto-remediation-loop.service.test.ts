@@ -430,6 +430,51 @@ describe('autoRemediationLoopService.startAutoLoop', () => {
     );
   });
 
+  it('logs a per-issue-code breakdown of this round\'s resolved/regressions on the reaudit history event', async () => {
+    // Same fixture shape as mockProductiveRound, but with non-empty
+    // resolved/regressions arrays so tallyByCode has something real to
+    // count -- confirms the breakdown reaches logEvent, not just the bare
+    // counts it was already asserting on elsewhere in this file.
+    vi.mocked(prisma.comparisonTrial.findUnique).mockResolvedValue(makeTrial() as any);
+    mockLockAcquired(7);
+    vi.mocked(aiAnalysisService.analyzeJob).mockResolvedValueOnce({ analyzed: 1, skipped: 0 } as any);
+    vi.mocked(prisma.aiAnalysis.count).mockResolvedValueOnce(5);
+    vi.mocked(prisma.aiAnalysis.updateMany).mockResolvedValueOnce({ count: 5 } as any);
+    vi.mocked(aiAnalysisService.applyApprovedSuggestions).mockResolvedValueOnce({
+      applied: 5,
+      failed: 0,
+      errors: [],
+      modifiedBuffer: Buffer.from('pdf'),
+      fileName: 'doc.pdf',
+    });
+    vi.mocked(pdfReauditService.reauditAndCompare).mockResolvedValue({
+      success: true,
+      jobId: 'job-1',
+      originalAuditId: 'job-1',
+      reauditId: 'job-1-reaudit',
+      fileName: 'doc.pdf',
+      comparison: {
+        resolved: [{ code: 'MATTERHORN-13-001' }, { code: 'MATTERHORN-13-001' }, { code: 'COLOR-CONTRAST' }],
+        remaining: [],
+        regressions: [{ code: 'SPAN-ILLEGAL-NESTING' }, { code: 'SPAN-ILLEGAL-NESTING' }, { code: 'SPAN-ILLEGAL-NESTING' }, { code: 'DUPLICATE-FIGURE-TILES' }],
+      },
+      metrics: { totalOriginal: 3, totalNew: 7, resolvedCount: 3, remainingCount: 0, regressionCount: 4, resolutionRate: 100 },
+      reauditReport: { issues: [] } as any,
+    } as any);
+    vi.mocked(prisma.job.findUnique).mockResolvedValue({ id: 'job-1', tenantId: 'tenant-1', output: {} } as any);
+    mockEmptyRound();
+
+    await autoRemediationLoopService.startAutoLoop(new ComparisonTrialAutoRemediationDriver('trial-1'));
+
+    expect(remediationCycleHistoryService.logEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: 'reaudit',
+        resolvedByCode: { 'MATTERHORN-13-001': 2, 'COLOR-CONTRAST': 1 },
+        regressionsByCode: { 'SPAN-ILLEGAL-NESTING': 3, 'DUPLICATE-FIGURE-TILES': 1 },
+      })
+    );
+  });
+
   it('regression: does not converge while a leftover approved-but-unapplied row from a partial apply failure remains (CodeRabbit finding)', async () => {
     // Round 1: 10 actionable, but only 8 apply -- 2 stay stuck at 'approved'
     // (not a full stall since applied > 0, so this isn't caught by stall

@@ -2880,6 +2880,16 @@ model RemediationCycleEvent {
   /// preserves the real count even when the list itself is cut. Only ever
   /// populated on 'apply_fixes', and only when there were failures.
   applyErrorsJson         Json?
+  /// Per-issue-code counts ({ "CODE": count, ... }) for this reaudit
+  /// event's resolved/regressions arrays -- the breakdown behind
+  /// resolvedCount/regressionCount, previously only ever visible in a log
+  /// line (pdf-reaudit.service.ts's "Regressions this round: ..."), never
+  /// persisted or surfaced in the UI. Naturally bounded by the number of
+  /// distinct validator codes in this codebase (well under 100), not by
+  /// issue count, so no truncation cap is needed the way applyErrorsJson
+  /// needs one. Only ever populated on 'reaudit'.
+  resolvedByCode          Json?
+  regressionsByCode       Json?
 
   @@index([jobId, cycleNumber])
 }
