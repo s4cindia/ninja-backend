@@ -367,7 +367,16 @@ describe('pdf-structure-writer.service — generateBookmarksFromHeadings resolve
     );
     doc.catalog.set(PDFName.of('StructTreeRoot'), structTreeRootRef);
 
-    const result = pdfStructureWriterService.generateBookmarksFromHeadings(doc);
+    const parsedPdf = {
+      pdfjsDoc: {
+        getPage: async () => ({
+          getViewport: () => ({ height: 0 }),
+          getTextContent: async () => ({ items: [] }),
+        }),
+      },
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any;
+    const result = await pdfStructureWriterService.generateBookmarksFromHeadings(doc, parsedPdf);
 
     // Both headings included -- not just the literal /H2, which is what the
     // pre-fix version would have silently produced (generated: 1).
