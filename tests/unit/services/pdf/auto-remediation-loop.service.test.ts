@@ -69,7 +69,7 @@ vi.mock('../../../../src/lib/logger', () => ({
 
 import prisma from '../../../../src/lib/prisma';
 import { logger } from '../../../../src/lib/logger';
-import { autoRemediationLoopService, ComparisonTrialAutoRemediationDriver, JobAutoRemediationDriver, describeAutoLoopStop, resolveLinkTextMode, resolveBookmarkMode, resolveEscalateOnStall } from '../../../../src/services/pdf/auto-remediation-loop.service';
+import { autoRemediationLoopService, ComparisonTrialAutoRemediationDriver, JobAutoRemediationDriver, describeAutoLoopStop, resolveLinkTextMode, resolveBookmarkMode, resolveEscalateOnStall, resolveFullQC } from '../../../../src/services/pdf/auto-remediation-loop.service';
 import { aiAnalysisService } from '../../../../src/services/pdf/ai-analysis.service';
 import { getEffectiveAiRemediationConfig } from '../../../../src/services/pdf/ai-remediation-tenant-config.service';
 import { pdfReauditService } from '../../../../src/services/pdf/pdf-reaudit.service';
@@ -281,6 +281,18 @@ describe('resolveEscalateOnStall', () => {
   it('falls back to the tenant default when the job has no override (null)', () => {
     expect(resolveEscalateOnStall(null, true)).toBe(true);
     expect(resolveEscalateOnStall(null, false)).toBe(false);
+  });
+});
+
+describe('resolveFullQC', () => {
+  it('uses the job override when set, regardless of the tenant default', () => {
+    expect(resolveFullQC(true, false)).toBe(true);
+    expect(resolveFullQC(false, true)).toBe(false);
+  });
+
+  it('falls back to the tenant default when the job has no override (null)', () => {
+    expect(resolveFullQC(null, true)).toBe(true);
+    expect(resolveFullQC(null, false)).toBe(false);
   });
 });
 

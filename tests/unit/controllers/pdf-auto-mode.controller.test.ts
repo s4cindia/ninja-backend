@@ -659,11 +659,12 @@ describe('PdfAutoModeController', () => {
       vi.mocked(getEffectiveAiRemediationConfig).mockResolvedValue({
         fullAutoModeDefault: false,
         autoEscalateOnStallDefault: false,
+        fullQCDefault: false,
       } as any);
     });
 
-    it('getJobSettings reports override/tenantDefault/effective for both per-job overrides', async () => {
-      vi.mocked(prisma.job.findUnique).mockResolvedValue({ fullAutoMode: true, autoEscalateOnStall: null } as any);
+    it('getJobSettings reports override/tenantDefault/effective for all three per-job overrides', async () => {
+      vi.mocked(prisma.job.findUnique).mockResolvedValue({ fullAutoMode: true, autoEscalateOnStall: null, fullQC: true } as any);
       const res = makeRes();
 
       await pdfAutoModeController.getJobSettings(makeReq(), res, next);
@@ -673,15 +674,17 @@ describe('PdfAutoModeController', () => {
         data: {
           fullAutoMode: { override: true, tenantDefault: false, effective: true },
           autoEscalateOnStall: { override: null, tenantDefault: false, effective: false },
+          fullQC: { override: true, tenantDefault: false, effective: true },
         },
       });
     });
 
     it('getJobSettings resolves a null override against the tenant default', async () => {
-      vi.mocked(prisma.job.findUnique).mockResolvedValue({ fullAutoMode: null, autoEscalateOnStall: null } as any);
+      vi.mocked(prisma.job.findUnique).mockResolvedValue({ fullAutoMode: null, autoEscalateOnStall: null, fullQC: null } as any);
       vi.mocked(getEffectiveAiRemediationConfig).mockResolvedValue({
         fullAutoModeDefault: true,
         autoEscalateOnStallDefault: true,
+        fullQCDefault: true,
       } as any);
       const res = makeRes();
 
@@ -692,6 +695,7 @@ describe('PdfAutoModeController', () => {
         data: {
           fullAutoMode: { override: null, tenantDefault: true, effective: true },
           autoEscalateOnStall: { override: null, tenantDefault: true, effective: true },
+          fullQC: { override: null, tenantDefault: true, effective: true },
         },
       });
     });

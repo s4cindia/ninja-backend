@@ -629,8 +629,14 @@ export class PdfController {
       // before the run's own escalation check (resolved once, at loop start)
       // already locked in the tenant default.
       const autoEscalateOnStall = parseBooleanField(req.body?.autoEscalateOnStall);
+      // Per-file "Full QC" override -- null/omitted inherits the tenant's
+      // own aiRemediation.fullQCDefault setting (see resolveFullQC in
+      // auto-remediation-loop.service.ts). Gates visibility of the
+      // page-by-page structure-tag review mode on this job's Audit Results
+      // page; set only here, at upload time.
+      const fullQC = parseBooleanField(req.body?.fullQC);
 
-      const { jobId: newJobId } = await createAndEnqueuePdfAuditJob(req.file, tenantId, userId, { assignment, fullAutoMode, autoEscalateOnStall });
+      const { jobId: newJobId } = await createAndEnqueuePdfAuditJob(req.file, tenantId, userId, { assignment, fullAutoMode, autoEscalateOnStall, fullQC });
       jobId = newJobId;
       notifyJobAssignment(assignment, tenantId, jobId, req.file.originalname);
 
@@ -1071,6 +1077,8 @@ export class PdfController {
       // where nobody will be on the Audit Results page in time to set this
       // via the per-job Settings menu before the auto-started run reads it.
       const autoEscalateOnStall = parseBooleanField(req.body?.autoEscalateOnStall);
+      // Per-file "Full QC" override -- see auditFromBuffer's own comment.
+      const fullQC = parseBooleanField(req.body?.fullQC);
 
       let assignment: JobOwnerAssignment;
       try {
@@ -1110,6 +1118,7 @@ export class PdfController {
           assignedAt: assignment.assignedAt,
           fullAutoMode,
           autoEscalateOnStall,
+          fullQC,
           type: 'PDF_ACCESSIBILITY',
           status: 'QUEUED',
           input: {
@@ -1247,7 +1256,7 @@ export async function createAndEnqueuePdfAuditJob(
   file: { originalname: string; mimetype: string; size: number; buffer?: Buffer },
   tenantId: string,
   userId: string,
-  jobOptions?: { forceAutoTag?: boolean; sourceS3Key?: string; assignment?: JobOwnerAssignment; fullAutoMode?: boolean | null; autoEscalateOnStall?: boolean | null }
+  jobOptions?: { forceAutoTag?: boolean; sourceS3Key?: string; assignment?: JobOwnerAssignment; fullAutoMode?: boolean | null; autoEscalateOnStall?: boolean | null; fullQC?: boolean | null }
 ): Promise<{ jobId: string }> {
   // assignment absent (every caller except auditFromBuffer's own
   // Team-Leader-assigns-at-upload path) is a plain self-upload -- ownerId
@@ -1264,6 +1273,7 @@ export async function createAndEnqueuePdfAuditJob(
       assignedAt: jobOptions?.assignment?.assignedAt ?? null,
       fullAutoMode: jobOptions?.fullAutoMode ?? null,
       autoEscalateOnStall: jobOptions?.autoEscalateOnStall ?? null,
+      fullQC: jobOptions?.fullQC ?? null,
       type: 'PDF_ACCESSIBILITY',
       status: 'QUEUED',
       input: {

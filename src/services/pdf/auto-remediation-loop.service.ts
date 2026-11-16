@@ -168,6 +168,18 @@ export function resolveEscalateOnStall(jobOverride: boolean | null, tenantDefaul
   return jobOverride ?? tenantDefault;
 }
 
+/**
+ * Same inherit-with-null semantics as resolveFullAutoMode/resolveEscalateOnStall
+ * above, for Job.fullQC -- null means "inherit the tenant's own
+ * aiRemediation.fullQCDefault setting". Not an auto-loop behavior at all (it
+ * gates visibility of the page-by-page structure-tag review UI), but kept
+ * alongside the other two "job override ?? tenant default" resolvers since
+ * this file is already the de facto home for all of them.
+ */
+export function resolveFullQC(jobOverride: boolean | null, tenantDefault: boolean): boolean {
+  return jobOverride ?? tenantDefault;
+}
+
 /** A round that applies nothing still counts toward the round/cost ceilings
  * (analyzeJob still runs, still spends tokens) without making any progress --
  * e.g. every approved suggestion this round hit an unhandled suggestionType

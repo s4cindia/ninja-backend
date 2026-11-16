@@ -35,6 +35,12 @@ export const DEFAULT_AI_REMEDIATION_CONFIG = {
   // apply-to-pdf for one more pass before actually stopping. See
   // resolveEscalateOnStall in auto-remediation-loop.service.ts.
   autoEscalateOnStallDefault: false,
+  // Tenant-wide default for "Full QC" -- when true, the page-by-page
+  // structure-tag review mode (GET/PATCH /pdf/:jobId/structure-tags) is
+  // visible on a job's Audit Results page unless the individual file's own
+  // upload-time fullQC override says otherwise. See resolveFullQC in
+  // auto-remediation-loop.service.ts.
+  fullQCDefault: false,
 };
 
 /**

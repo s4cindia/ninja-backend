@@ -94,6 +94,26 @@ describe('createAndEnqueuePdfAuditJob', () => {
     );
   });
 
+  it('persists Job.fullQC as given (true/false), and null when no override is passed at all', async () => {
+    (prisma.job.create as any).mockResolvedValue({ id: 'job-9' });
+    await createAndEnqueuePdfAuditJob(FILE, 'tenant-1', 'caller-1', { fullQC: true });
+    expect(prisma.job.create).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ fullQC: true }) })
+    );
+
+    (prisma.job.create as any).mockResolvedValue({ id: 'job-10' });
+    await createAndEnqueuePdfAuditJob(FILE, 'tenant-1', 'caller-1', { fullQC: false });
+    expect(prisma.job.create).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ fullQC: false }) })
+    );
+
+    (prisma.job.create as any).mockResolvedValue({ id: 'job-11' });
+    await createAndEnqueuePdfAuditJob(FILE, 'tenant-1', 'caller-1');
+    expect(prisma.job.create).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ fullQC: null }) })
+    );
+  });
+
   it('owns the job as the assignee, stamping assignedById/assignedAt, when a real assignment is passed', async () => {
     (prisma.job.create as any).mockResolvedValue({ id: 'job-2' });
     const assignedAt = new Date('2026-11-13T00:00:00.000Z');

@@ -91,6 +91,9 @@ const aiRemediationConfigUpdateSchema = z.object({
   // Tenant-wide default for "auto-escalate on stall" -- see
   // resolveEscalateOnStall in auto-remediation-loop.service.ts.
   autoEscalateOnStallDefault: z.boolean().optional(),
+  // Tenant-wide default for "Full QC" (page-by-page structure-tag review) --
+  // see resolveFullQC in auto-remediation-loop.service.ts.
+  fullQCDefault: z.boolean().optional(),
 }).strict();
 
 const workflowConfigUpdateSchema = z.object({

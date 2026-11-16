@@ -220,6 +220,16 @@ model Job {
   // fullAutoMode above -- not frozen at upload time.
   autoEscalateOnStall Boolean?
 
+  // Per-file override for the "Full QC" structure-tag review feature -- null
+  // means "inherit the tenant's own aiRemediation.fullQCDefault setting" (see
+  // resolveFullQC in auto-remediation-loop.service.ts). When the effective
+  // value is true, the "Review structure tags" page-by-page tag-review mode
+  // is visible on this job's Audit Results page; when false, it's hidden.
+  // Set only at upload time -- unlike fullAutoMode/autoEscalateOnStall above,
+  // deliberately NOT exposed on GET/PATCH /pdf/:jobId/settings for later
+  // editing (see the Full QC design decision, 2026-11-16).
+  fullQC Boolean?
+
   // Remediation-cycle concurrency lock -- prevents two overlapping "apply
   // fixes -> re-audit -> re-run AI analysis" cycles on the same job from
   // interleaving their job.output writes with no ordering guarantee (the
