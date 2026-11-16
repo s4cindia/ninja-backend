@@ -28,6 +28,7 @@ import { remediationCycleLockService, STALE_LOCK_MS } from './remediation-cycle-
 import { remediationCycleHistoryService } from './remediation-cycle-history.service';
 import { fileStorageService } from '../storage/file-storage.service';
 import { notificationService } from '../notification/notification.service';
+import type { AuditIssue } from '../audit/base-audit.service';
 import { areQueuesAvailable, getAutoRemediationQueue } from '../../queues';
 import { getEffectiveAiRemediationConfig } from './ai-remediation-tenant-config.service';
 import type { NotificationType } from '@prisma/client';
@@ -189,6 +190,21 @@ export function resolveFullQC(jobOverride: boolean | null, tenantDefault: boolea
  * the round/cost ceiling silently absorbs the blame. Stopping distinctly
  * after this many consecutive no-progress rounds surfaces the real cause. */
 const STALL_ROUND_LIMIT = 2;
+
+/**
+ * Per-issue-code counts for a reaudit round's resolved/regressions arrays --
+ * the breakdown behind resolvedCount/regressionCount that was previously
+ * only ever visible in pdf-reaudit.service.ts's own log line
+ * ("Regressions this round: CODE@pN, ..."), never persisted or surfaced in
+ * the UI. Shared by both reaudit logEvent call sites below.
+ */
+function tallyByCode(issues: AuditIssue[]): Record<string, number> {
+  const counts: Record<string, number> = {};
+  for (const issue of issues) {
+    counts[issue.code] = (counts[issue.code] ?? 0) + 1;
+  }
+  return counts;
+}
 
 export type AutoStopReason = 'converged' | 'round_limit' | 'budget_limit' | 'manual_stop' | 'stalled' | 'error';
 
@@ -883,6 +899,8 @@ class AutoRemediationLoopService {
           remainingCount,
           regressionCount,
           resolutionRate,
+          resolvedByCode: tallyByCode(comparison.comparison.resolved),
+          regressionsByCode: tallyByCode(comparison.comparison.regressions),
           errorMessage: comparison.success ? undefined : comparison.error,
           triggeredBy: 'watchdog',
           startedAt,
@@ -1586,6 +1604,8 @@ class AutoRemediationLoopService {
       remainingCount,
       regressionCount,
       resolutionRate,
+      resolvedByCode: tallyByCode(comparison.comparison.resolved),
+      regressionsByCode: tallyByCode(comparison.comparison.regressions),
       errorMessage: comparison.success ? undefined : comparison.error,
       triggeredBy: AUTO_MODE_ACTOR,
       startedAt: reauditStartedAt,

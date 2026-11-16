@@ -41,6 +41,12 @@ export interface LogCycleEventInput {
     totalErrors: number;
     truncated: boolean;
   };
+  /** Per-issue-code counts behind resolvedCount/regressionCount -- the
+   * breakdown previously only ever visible in a log line. Only ever
+   * populated on the 'reaudit' action. See the Prisma field's own doc
+   * comment. */
+  resolvedByCode?: Record<string, number>;
+  regressionsByCode?: Record<string, number>;
 }
 
 class RemediationCycleHistoryService {
