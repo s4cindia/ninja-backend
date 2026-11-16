@@ -38,6 +38,8 @@ import { locateMcidBoundingBoxes, locateByteRangeBoundingBox, type DeviceBoundin
 import { findMcidPageMismatches } from './mcid-page-mismatch';
 import { findFloatInterruptions } from './reading-order-float';
 import { findStructureParentMismatches } from './structure-parent-mismatch';
+import { findSpanIllegalNestingViolations } from './span-illegal-nesting';
+import { findDuplicateFigureTiles } from './duplicate-figure-tiles';
 import { parseIssueElement as parseHeadingStyleMismatchIssueElement } from './heading-style-classifier';
 import { buildFormXObjectResolver } from './validators/pdf-figure-structtree.validator';
 import {
@@ -2804,6 +2806,158 @@ export class PdfStructureWriterService {
       success: true,
       before: `/${target.tag}'s own /P pointed at object ${target.declaredParentRef.objectNumber}`,
       after: `/P corrected to object ${target.actualParentRef.objectNumber} (/${target.actualParentS}), matching its real structure-tree position`,
+    };
+  }
+
+  /**
+   * SPAN-ILLEGAL-NESTING auto-fix -- see span-illegal-nesting.ts's own doc
+   * comment for the full S4 QC finding and scope (Span only, clean-dissolve
+   * cases only). Dissolves the Span: its own illegal child/children are
+   * promoted to sit directly under the Span's real parent, in the Span's
+   * own former position (preserving document order), and the Span dict
+   * itself is left unreferenced (ordinary, harmless PDF garbage -- the same
+   * convention every other dissolve/relocate fixer in this file already
+   * follows; nothing else in the document still points at it once its own
+   * one /K entry in the parent is replaced).
+   *
+   * Each promoted child's own /P is updated to the new parent -- without
+   * this, pdf-structure-parent-mismatch.validator.ts would immediately
+   * re-flag every one of them next audit (its own real incident, PR #829,
+   * is exactly a fixer that moved /K entries without updating /P).
+   *
+   * Re-confirms the violation fresh via findSpanIllegalNestingViolations at
+   * apply time (not trusting the audit-time snapshot) -- same "bail rather
+   * than guess" posture as fixStructureElementWrongParent above and every
+   * other mechanical fixer in this file.
+   */
+  fixSpanIllegalNesting(doc: PDFDocument, issue: AuditIssue): FixResult {
+    const match = issue.element ? /^span-illegal-nesting_r(\d+)$/.exec(issue.element) : null;
+    if (!match) {
+      return { issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error: `Unrecognized element id "${issue.element}"` };
+    }
+    const objectNumber = parseInt(match[1], 10);
+
+    const violations = findSpanIllegalNestingViolations(doc);
+    const target = violations.find(v => v.spanRef.objectNumber === objectNumber);
+    if (!target) {
+      return {
+        issueId: issue.id, success: false, before: 'unknown', after: 'unknown',
+        error: `Could not re-confirm a Span-illegal-nesting violation for object ${objectNumber} -- may already be fixed, or the document changed`,
+      };
+    }
+    if (!target.autoFixable) {
+      return {
+        issueId: issue.id, success: false, before: 'unknown', after: 'unknown',
+        error: 'Not auto-fixable -- this Span mixes legitimate inline content with the illegal child(ren), or its parent cannot directly hold the dissolved content',
+      };
+    }
+
+    const parent = doc.context.lookup(target.parentRef);
+    if (!(parent instanceof PDFDict)) {
+      return { issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error: 'Span\'s own parent does not resolve to a dictionary' };
+    }
+
+    const k = parent.get(PDFName.of('K'));
+    const replacement = target.illegalChildRefs;
+
+    if (k instanceof PDFRef && k.objectNumber === target.spanRef.objectNumber) {
+      parent.set(PDFName.of('K'), replacement.length === 1 ? replacement[0] : doc.context.obj(replacement));
+    } else if (k instanceof PDFArray) {
+      const arr = k.asArray();
+      const idx = arr.findIndex(item => item instanceof PDFRef && item.objectNumber === target.spanRef.objectNumber);
+      if (idx === -1) {
+        return {
+          issueId: issue.id, success: false, before: 'unknown', after: 'unknown',
+          error: 'Span no longer found in its parent\'s /K array -- may already be fixed, or the document changed',
+        };
+      }
+      const newArr = [...arr.slice(0, idx), ...replacement, ...arr.slice(idx + 1)];
+      parent.set(PDFName.of('K'), doc.context.obj(newArr));
+    } else {
+      return { issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error: 'Span\'s parent /K is neither a matching scalar nor an array' };
+    }
+
+    for (const childRef of replacement) {
+      const childDict = doc.context.lookup(childRef);
+      if (childDict instanceof PDFDict) {
+        childDict.set(PDFName.of('P'), target.parentRef);
+      }
+    }
+
+    logger.info(`[StructureWriter] fixSpanIllegalNesting: dissolved /Span (object ${objectNumber}), promoted ${replacement.length} child element(s) (/${target.illegalChildTags.join(', /')}) to its parent (/${target.parentS ?? 'StructTreeRoot'})`);
+
+    return {
+      issueId: issue.id,
+      success: true,
+      before: `/Span (object ${objectNumber}) wrapped ${target.illegalChildTags.length} illegal child element(s) (/${target.illegalChildTags.join(', /')})`,
+      after: `Span dissolved -- child element(s) promoted directly under /${target.parentS ?? 'StructTreeRoot'}`,
+    };
+  }
+
+  /**
+   * DUPLICATE-FIGURE-TILES auto-fix -- see duplicate-figure-tiles.ts's own
+   * doc comment for the full S4 QC finding and scope. Merges each
+   * duplicate Figure's own /K content (its MCID references -- bare
+   * numbers, MCR dicts, or refs, in whatever shape they already are) into
+   * the primary (first in document order) Figure's own /K, then removes
+   * each duplicate from the shared parent's /K array. The primary's own
+   * /Alt is left untouched -- by construction of the detection, every
+   * Figure in the group already shares identical alt text, so there is no
+   * choice to make. Duplicate dicts are left unreferenced afterward
+   * (ordinary, harmless PDF garbage, same convention fixSpanIllegalNesting
+   * above already follows).
+   *
+   * Re-confirms the group fresh via findDuplicateFigureTiles at apply time
+   * -- same "bail rather than guess" posture as every other mechanical
+   * fixer in this file.
+   */
+  fixDuplicateFigureTiles(doc: PDFDocument, issue: AuditIssue): FixResult {
+    const match = issue.element ? /^duplicate-figure-tiles_r(\d+)$/.exec(issue.element) : null;
+    if (!match) {
+      return { issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error: `Unrecognized element id "${issue.element}"` };
+    }
+    const objectNumber = parseInt(match[1], 10);
+
+    const groups = findDuplicateFigureTiles(doc);
+    const target = groups.find(g => g.primaryRef.objectNumber === objectNumber);
+    if (!target) {
+      return {
+        issueId: issue.id, success: false, before: 'unknown', after: 'unknown',
+        error: `Could not re-confirm a duplicate-Figure-tiles group for object ${objectNumber} -- may already be fixed, or the document changed`,
+      };
+    }
+
+    const primaryDict = doc.context.lookup(target.primaryRef);
+    if (!(primaryDict instanceof PDFDict)) {
+      return { issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error: 'Primary Figure does not resolve to a dictionary' };
+    }
+
+    const kEntriesOf = (dict: PDFDict): PDFObject[] => {
+      const k = dict.get(PDFName.of('K'));
+      const resolved = k instanceof PDFRef ? doc.context.lookup(k) : k;
+      if (resolved instanceof PDFArray) return resolved.asArray();
+      return k !== undefined ? [k] : [];
+    };
+
+    const mergedEntries: PDFObject[] = kEntriesOf(primaryDict);
+    for (const dupRef of target.duplicateRefs) {
+      const dupDict = doc.context.lookup(dupRef);
+      if (!(dupDict instanceof PDFDict)) continue;
+      mergedEntries.push(...kEntriesOf(dupDict));
+    }
+    primaryDict.set(PDFName.of('K'), doc.context.obj(mergedEntries));
+
+    for (const dupRef of target.duplicateRefs) {
+      this.removeFromKids(doc, target.parentRef, dupRef);
+    }
+
+    logger.info(`[StructureWriter] fixDuplicateFigureTiles: merged ${target.duplicateRefs.length} duplicate Figure(s) into object ${objectNumber} on page ${target.pageNumber}`);
+
+    return {
+      issueId: issue.id,
+      success: true,
+      before: `${target.duplicateRefs.length + 1} separate /Figure elements shared identical alt text ("${target.altText.slice(0, 60)}")`,
+      after: `Merged into one /Figure (object ${objectNumber}) -- ${target.duplicateRefs.length} duplicate(s) removed`,
     };
   }
 

@@ -35,6 +35,8 @@ import { pdfHeaderFooterContentValidator } from './validators/pdf-header-footer-
 import { pdfReadingOrderFloatValidator } from './validators/pdf-reading-order-float.validator';
 import { pdfStructureParentMismatchValidator } from './validators/pdf-structure-parent-mismatch.validator';
 import { pdfHeadingStyleMismatchValidator } from './validators/pdf-heading-style-mismatch.validator';
+import { pdfSpanIllegalNestingValidator } from './validators/pdf-span-illegal-nesting.validator';
+import { pdfDuplicateFigureTilesValidator } from './validators/pdf-duplicate-figure-tiles.validator';
 import { pdfTableCellTreeValidator } from './validators/pdf-table-cell-tree.validator';
 import { pdfFontToUnicodeValidator } from './validators/pdf-font-tounicode.validator';
 import { pdfTabOrderValidator } from './validators/pdf-tab-order.validator';
@@ -646,6 +648,43 @@ class PdfAuditService extends BaseAuditService<PdfParseResult, PdfValidationResu
             const errorMessage = error instanceof Error ? error.message : 'Unknown error';
             logger.error(`[PdfAudit] PdfStructureParentMismatchValidator failed:`, error);
             result.validatorErrors.push({ validator: 'PdfStructureParentMismatchValidator', error: errorMessage });
+          }
+        }
+
+        // 1l. Span-As-Parent Illegal Nesting Validator -- S4 QC Round 3
+        // finding on Karsaklian_189165_9781606497623.pdf (2026-11-17):
+        // "child Span tags incorrectly placed as parent elements." See
+        // span-illegal-nesting.ts's own header comment.
+        if (willRunStructure) {
+          try {
+            logger.info(`[PdfAudit] Running PdfSpanIllegalNestingValidator...`);
+            const spanNestingResult = await pdfSpanIllegalNestingValidator.validate(parsedPdf);
+            result.structureIssues.push(...spanNestingResult.issues);
+            result.issues.push(...spanNestingResult.issues);
+            logger.info(`[PdfAudit] PdfSpanIllegalNestingValidator found ${spanNestingResult.issues.length} issue(s)`);
+          } catch (error) {
+            const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+            logger.error(`[PdfAudit] PdfSpanIllegalNestingValidator failed:`, error);
+            result.validatorErrors.push({ validator: 'PdfSpanIllegalNestingValidator', error: errorMessage });
+          }
+        }
+
+        // 1m. Duplicate Figure Tiles Validator -- S4 QC Round 3 finding on
+        // Karsaklian_189165_9781606497623.pdf (2026-11-17): "a single image
+        // was tagged with two separate Figure tags and contained duplicate
+        // alternative text descriptions." See duplicate-figure-tiles.ts's
+        // own header comment.
+        if (willRunStructure) {
+          try {
+            logger.info(`[PdfAudit] Running PdfDuplicateFigureTilesValidator...`);
+            const duplicateFigureResult = await pdfDuplicateFigureTilesValidator.validate(parsedPdf);
+            result.structureIssues.push(...duplicateFigureResult.issues);
+            result.issues.push(...duplicateFigureResult.issues);
+            logger.info(`[PdfAudit] PdfDuplicateFigureTilesValidator found ${duplicateFigureResult.issues.length} issue(s)`);
+          } catch (error) {
+            const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+            logger.error(`[PdfAudit] PdfDuplicateFigureTilesValidator failed:`, error);
+            result.validatorErrors.push({ validator: 'PdfDuplicateFigureTilesValidator', error: errorMessage });
           }
         }
       };
