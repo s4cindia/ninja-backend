@@ -4514,12 +4514,24 @@ class AiAnalysisService {
             ? { success: r.success, description: r.after, error: r.error }
             : { success: false, error: 'table-from-layout-fix result missing from batch (no matching TableInfo resolved)' };
         } else if (suggestionType === 'bookmark-generate') {
-          const result = pdfStructureWriterService.generateBookmarksFromHeadings(doc);
-          modification = {
-            success: result.generated > 0,
-            description: `Generated ${result.generated} bookmark(s)`,
-            error: result.generated === 0 ? 'No headings found' : undefined,
-          };
+          // Needs real pdfjs-decoded heading text (see resolveRealHeadingInfo's
+          // own doc comment) -- doc here is pdf-lib-only, so a fresh,
+          // isolated parse is done on demand, same pattern as
+          // parsedForImages above.
+          let parsedForBookmarks: ParsedPDF | null = null;
+          try {
+            parsedForBookmarks = await pdfParserService.parseBuffer(pdfBuffer, fileName);
+            const result = await pdfStructureWriterService.generateBookmarksFromHeadings(doc, parsedForBookmarks);
+            modification = {
+              success: result.generated > 0,
+              description: `Generated ${result.generated} bookmark(s)`,
+              error: result.generated === 0 ? 'No headings found' : undefined,
+            };
+          } finally {
+            if (parsedForBookmarks) {
+              await pdfParserService.close(parsedForBookmarks).catch(() => {});
+            }
+          }
         } else if (suggestionType === 'bookmark-title-regenerate') {
           // Same bulk-apply shape as bookmark-generate above: this runs
           // document-wide regardless of which specific BOOKMARK-GENERIC-TEXT
@@ -4527,12 +4539,20 @@ class AiAnalysisService {
           // target page, or the target heading is itself still a
           // fallback/placeholder) rather than guessing -- see
           // regenerateGenericBookmarkTitles's own doc comment.
-          const result = pdfStructureWriterService.regenerateGenericBookmarkTitles(doc);
-          modification = {
-            success: result.updated > 0,
-            description: `Regenerated ${result.updated} bookmark title(s) from real heading text`,
-            error: result.updated === 0 ? 'No unambiguous tagged-heading match found for any generic bookmark' : undefined,
-          };
+          let parsedForBookmarkTitles: ParsedPDF | null = null;
+          try {
+            parsedForBookmarkTitles = await pdfParserService.parseBuffer(pdfBuffer, fileName);
+            const result = await pdfStructureWriterService.regenerateGenericBookmarkTitles(doc, parsedForBookmarkTitles);
+            modification = {
+              success: result.updated > 0,
+              description: `Regenerated ${result.updated} bookmark title(s) from real heading text`,
+              error: result.updated === 0 ? 'No unambiguous tagged-heading match found for any generic bookmark' : undefined,
+            };
+          } finally {
+            if (parsedForBookmarkTitles) {
+              await pdfParserService.close(parsedForBookmarkTitles).catch(() => {});
+            }
+          }
         } else if (suggestionType === 'heading-multiple-h1-fix') {
           const result = pdfStructureWriterService.fixMultipleH1(doc, originalIssue);
           modification = { success: result.success, description: result.after, error: result.error };

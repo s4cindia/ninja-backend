@@ -11,6 +11,7 @@ import { getEffectiveAiRemediationConfig } from '../../services/pdf/ai-remediati
 import { resolveFullAutoMode, enqueueOrRunAutoLoop, JobAutoRemediationDriver } from '../../services/pdf/auto-remediation-loop.service';
 import { pdfModifierService } from '../../services/pdf/pdf-modifier.service';
 import { pdfStructureWriterService } from '../../services/pdf/pdf-structure-writer.service';
+import { pdfParserService } from '../../services/pdf/pdf-parser.service';
 import { fileStorageService } from '../../services/storage/file-storage.service';
 import { aiConfig } from '../../config/ai.config';
 import { pdfConfig } from '../../config/pdf.config';
@@ -369,12 +370,23 @@ async function processPdfAccessibility(
       }
 
       if (hasMissingBookmarks) {
-        const { generated } = pdfStructureWriterService.generateBookmarksFromHeadings(autoFixDoc);
-        if (generated > 0) {
-          logger.info(`[PDF Worker] Auto-generated ${generated} bookmarks for job ${dbJobId}`);
-          autoFixApplied = true;
-        } else {
-          logger.debug(`[PDF Worker] Bookmark auto-generate skipped for job ${dbJobId}: no H1-H6 structure elements found`);
+        // Needs real pdfjs-decoded heading text (see resolveRealHeadingInfo's
+        // own doc comment) -- autoFixDoc here is pdf-lib-only, so a fresh,
+        // isolated parse is done on demand.
+        let parsedForBookmarks: Awaited<ReturnType<typeof pdfParserService.parseBuffer>> | null = null;
+        try {
+          parsedForBookmarks = await pdfParserService.parseBuffer(auditBuffer, fileName);
+          const { generated } = await pdfStructureWriterService.generateBookmarksFromHeadings(autoFixDoc, parsedForBookmarks);
+          if (generated > 0) {
+            logger.info(`[PDF Worker] Auto-generated ${generated} bookmarks for job ${dbJobId}`);
+            autoFixApplied = true;
+          } else {
+            logger.debug(`[PDF Worker] Bookmark auto-generate skipped for job ${dbJobId}: no H1-H6 structure elements found`);
+          }
+        } finally {
+          if (parsedForBookmarks) {
+            await pdfParserService.close(parsedForBookmarks).catch(() => {});
+          }
         }
       }
 

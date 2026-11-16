@@ -40,6 +40,7 @@ import { findFloatInterruptions } from './reading-order-float';
 import { findStructureParentMismatches } from './structure-parent-mismatch';
 import { findSpanIllegalNestingViolations } from './span-illegal-nesting';
 import { findDuplicateFigureTiles } from './duplicate-figure-tiles';
+import { buildContentIdBBoxMap, type ContentIdMaps } from '../zone-extractor/tagged-pdf-extractor';
 import { parseIssueElement as parseHeadingStyleMismatchIssueElement } from './heading-style-classifier';
 import { buildFormXObjectResolver } from './validators/pdf-figure-structtree.validator';
 import {
@@ -5073,7 +5074,110 @@ export class PdfStructureWriterService {
    *
    * Sets /PageMode: /UseOutlines on the catalog so bookmarks open automatically.
    */
-  generateBookmarksFromHeadings(doc: PDFDocument): { generated: number } {
+  /**
+   * Real text (and, best-effort, top-Y position on the page) for a heading
+   * struct element, when pdf-lib's own extractTextFromStructElem
+   * (ActualText/Alt only) comes back empty -- the overwhelmingly common
+   * case for a NORMAL heading, whose real text is just rendered glyphs
+   * with no ActualText override at all (ActualText exists for the
+   * exceptional case where rendered glyphs don't match the semantic text,
+   * e.g. an image of text -- not for ordinary tagged body/heading content).
+   *
+   * Real incident (Karsaklian_189165_9781606497623.pdf, 2026-11-16): every
+   * one of 69 real, correctly-tagged headings on this file came back null
+   * from extractTextFromStructElem alone -- not because the headings were
+   * unusual, but because that method was never able to read ordinary
+   * rendered-glyph text (collectTextFromK's own comment: "MCR dict... text
+   * requires content stream parsing; skip"). This was the real reason
+   * generateBookmarksFromHeadings fell back to "Section -- p.N" for all 67
+   * headings on this file, and why regenerateGenericBookmarkTitles could
+   * never recover afterward -- both used the same incomplete lookup.
+   *
+   * Falls back to the SAME pdfjs-based MCID->text mechanism pdf-heading-
+   * style-mismatch.validator.ts already uses successfully on this exact
+   * file (buildContentIdBBoxMap, zone-extractor/tagged-pdf-extractor.ts) --
+   * not re-derived from scratch. `pageMapsCache` is a PER-CALL local cache
+   * (keyed by 0-indexed page index), built by the two callers below; never
+   * an instance field, since this service is a stateless singleton shared
+   * across requests/documents.
+   *
+   * topY is computed independently of which text path won (ActualText or
+   * pdfjs fallback) -- same top-left-origin convention as every other bbox
+   * in this codebase (pageHeight - deviceY - height). Null when no MCID
+   * under this node resolved to a real bbox (e.g. an empty heading, or one
+   * whose content lives in a Form XObject buildContentIdBBoxMap doesn't
+   * reach) -- the caller treats that as "position unknown", not "zero".
+   */
+  private async resolveRealHeadingInfo(
+    doc: PDFDocument,
+    parsedPdf: ParsedPDF,
+    node: PDFDict,
+    pageIndex: number,
+    pageMapsCache: Map<number, ContentIdMaps>,
+  ): Promise<{ text: string | null; topY: number | null }> {
+    const directText = this.extractTextFromStructElem(doc, node);
+
+    const mcids: number[] = [];
+    this.collectMcidsUnderNode(doc, node.get(PDFName.of('K')), mcids, 0);
+    if (mcids.length === 0) return { text: directText, topY: null };
+
+    let maps = pageMapsCache.get(pageIndex);
+    if (!maps) {
+      try {
+        const page = await parsedPdf.pdfjsDoc.getPage(pageIndex + 1);
+        maps = await buildContentIdBBoxMap(page);
+      } catch (err) {
+        logger.warn(`[StructureWriter] resolveRealHeadingInfo: could not read pdfjs page ${pageIndex + 1}: ${err instanceof Error ? err.message : String(err)}`);
+        maps = { bboxMap: new Map(), fontMap: new Map(), textMap: new Map() };
+      }
+      pageMapsCache.set(pageIndex, maps);
+    }
+
+    const pageRef = doc.getPage(pageIndex).ref;
+    let topY: number | null = null;
+    let pdfjsText = '';
+    for (const mcid of mcids) {
+      const key = `p${pageRef.objectNumber}R_mc${mcid}`;
+      const parts = maps.textMap.get(key);
+      if (parts) pdfjsText += parts.join('');
+      const bbox = maps.bboxMap.get(key);
+      if (bbox && (topY === null || bbox.y < topY)) topY = bbox.y;
+    }
+
+    const text = directText ?? (pdfjsText.trim() || null);
+    return { text, topY };
+  }
+
+  /** Collects every leaf MCID under a struct element's /K -- bare number,
+   *  MCR dict's /MCID, or (recursing further) a nested struct element's
+   *  own /K. Unlike collectTextFromK (which deliberately skips these,
+   *  since it can only resolve ActualText/Alt), this is the "give me every
+   *  MCID so I can look each one up in a real pdfjs text/bbox map" half of
+   *  resolveRealHeadingInfo above. Depth-limited to avoid stack overflow,
+   *  not a discovered data boundary. */
+  private collectMcidsUnderNode(doc: PDFDocument, raw: PDFObject | undefined, out: number[], depth: number): void {
+    if (depth > 12 || raw === undefined) return;
+    if (raw instanceof PDFNumber) {
+      out.push(raw.asNumber());
+      return;
+    }
+    if (raw instanceof PDFArray) {
+      for (const item of raw.asArray()) this.collectMcidsUnderNode(doc, item, out, depth + 1);
+      return;
+    }
+    if (raw instanceof PDFRef) {
+      const obj = doc.context.lookup(raw);
+      if (!(obj instanceof PDFDict)) return;
+      if (obj.get(PDFName.of('S')) !== undefined) {
+        this.collectMcidsUnderNode(doc, obj.get(PDFName.of('K')), out, depth + 1);
+      } else {
+        const mcidVal = obj.get(PDFName.of('MCID'));
+        if (mcidVal instanceof PDFNumber) out.push(mcidVal.asNumber());
+      }
+    }
+  }
+
+  async generateBookmarksFromHeadings(doc: PDFDocument, parsedPdf: ParsedPDF): Promise<{ generated: number }> {
     const structRoot = this.getStructTreeRoot(doc);
     if (!structRoot) return { generated: 0 };
 
@@ -5093,13 +5197,12 @@ export class PdfStructureWriterService {
     // first one.
     const roleMap = this.buildRoleMap(doc, structRoot);
 
-    // Collect headings in document order
-    const headings: Array<{
-      level: number;
-      title: string;
-      pageIndex: number;
-      fallback: boolean;
-    }> = [];
+    // Pass 1 (sync): collect heading NODES in document order --
+    // traverseStructTree's own visitor callback is synchronous (used by
+    // many other methods in this file), so real text resolution -- which
+    // needs an async pdfjs page read -- happens in pass 2 below, after this
+    // walk completes, not inside the callback itself.
+    const headingNodes: Array<{ node: PDFDict; level: number; pageIndex: number }> = [];
 
     this.traverseStructTree(doc, structRoot, (node, ref) => {
       if (!ref) return;
@@ -5116,13 +5219,27 @@ export class PdfStructureWriterService {
         pageIndex = pageRefToIndex.get(pgRaw.objectNumber) ?? 0;
       }
 
-      const extracted = this.extractTextFromStructElem(doc, node);
+      headingNodes.push({ node, level, pageIndex });
+    });
+
+    // Pass 2 (async): resolve each heading's real text -- see
+    // resolveRealHeadingInfo's own doc comment for why ActualText/Alt alone
+    // (the previous, only, behavior here) fell back to the generic
+    // "Section -- p.N" placeholder for essentially every ordinary heading.
+    const pageMapsCache = new Map<number, ContentIdMaps>();
+    const headings: Array<{
+      level: number;
+      title: string;
+      pageIndex: number;
+      fallback: boolean;
+    }> = [];
+    for (const h of headingNodes) {
+      const { text: extracted } = await this.resolveRealHeadingInfo(doc, parsedPdf, h.node, h.pageIndex, pageMapsCache);
       const title = extracted
         ? extracted.slice(0, 200)
-        : `Section — p.${pageIndex + 1}`;
-
-      headings.push({ level, title, pageIndex, fallback: !extracted });
-    });
+        : `Section — p.${h.pageIndex + 1}`;
+      headings.push({ level: h.level, title, pageIndex: h.pageIndex, fallback: !extracted });
+    }
 
     if (headings.length === 0) {
       logger.info('[StructureWriter] generateBookmarksFromHeadings: no headings found');
@@ -5222,33 +5339,44 @@ export class PdfStructureWriterService {
    * .ts's own GENERIC_TITLE_RE (the same regex that validator uses to flag
    * BOOKMARK-GENERIC-TEXT) -- confirmed real via all 67 bookmarks on
    * Karsaklian_189165_9781606497623.pdf, every single one literally
-   * "Section — p.25" / "Section — p.26" / etc. (a real em dash
-   * between the label and the page number -- see GENERIC_TITLE_RE's own
-   * comment for the live-run regression this caused) (InDesign's own fallback when it
-   * couldn't resolve real heading text at export time, itself downstream of
-   * the RoleMap-flattening bug the related PdfRoleMapIntegrityValidator
-   * fixes -- once that fix retargets a heading style to a real /Hn type,
-   * extractTextFromStructElem can resolve real text for it where it
-   * couldn't before).
+   * "Section — p.25" / "Section — p.26" / etc.
    *
    * Unlike generateBookmarksFromHeadings (which builds a BRAND NEW /Outlines
    * tree from scratch), this walks the EXISTING outline tree and only
    * touches a bookmark's /Title -- structure, nesting, and every other
-   * bookmark's title are left untouched. Bails (does not touch that
-   * bookmark) rather than guessing whenever:
-   *   - the current title isn't actually generic (nothing to fix)
-   *   - the bookmark's own /Dest (or /A's GoTo /D) doesn't resolve to a real
-   *     page in this document (named destinations are not resolved here)
-   *   - more than one real, non-fallback heading shares that exact page --
-   *     ambiguous, no way to know which one this bookmark was meant for
-   *   - no tagged heading on that page has REAL (non-fallback) extracted
-   *     text at all
+   * bookmark's title are left untouched.
+   *
+   * Matching algorithm: "nearest preceding heading" in document order,
+   * disambiguated by real page position (top-Y) when the bookmark's own
+   * destination carries one. For a bookmark targeting page P:
+   *   - 0 or 1 real-text heading on page P: use the LAST real-text heading
+   *     at or before page P in document order (subsumes the simple
+   *     "exactly one heading on this page" case, and additionally recovers
+   *     a bookmark whose own page has NO heading of its own -- common for
+   *     body-content anchors -- by inheriting the governing heading from
+   *     an earlier page).
+   *   - 2+ real-text headings on page P: only resolved when the bookmark's
+   *     own /Dest carries a real /XYZ top (Y-coordinate) -- picks the
+   *     heading on that page positioned at-or-above that Y, closest to it.
+   *     Without a real top (the common case for a bookmark this service
+   *     itself generated, via generateBookmarksFromHeadings's own
+   *     null-filled /XYZ destination -- see that method's own doc comment),
+   *     this is a genuine information limit, not a heuristic gap: there is
+   *     no way to know which of the 2+ headings the bookmark was meant
+   *     for, so it's left untouched rather than guessed.
    * This codebase's established "bail rather than guess" convention (see
    * findPrecedingColor, locateXObjectInvocation, generateBookmarksFromHeadings
    * itself) applies identically here: a bookmark pointed at the wrong
    * section is worse than one left with its current, merely-unhelpful title.
+   *
+   * Real text comes from resolveRealHeadingInfo (ActualText/Alt, falling
+   * back to a real pdfjs MCID->text lookup) -- see its own doc comment for
+   * why pdf-lib's ActualText/Alt-only lookup alone resolved zero of 69 real
+   * headings on Karsaklian_189165_9781606497623.pdf, which is the actual
+   * reason this method could never recover any of that file's 67 generic
+   * bookmarks before, regardless of how many shared a page.
    */
-  regenerateGenericBookmarkTitles(doc: PDFDocument): { updated: number } {
+  async regenerateGenericBookmarkTitles(doc: PDFDocument, parsedPdf: ParsedPDF): Promise<{ updated: number }> {
     const structRoot = this.getStructTreeRoot(doc);
     if (!structRoot) return { updated: 0 };
 
@@ -5262,10 +5390,10 @@ export class PdfStructureWriterService {
 
     const roleMap = this.buildRoleMap(doc, structRoot);
 
-    // Only a page with EXACTLY ONE real-text heading is unambiguous enough
-    // to safely match a bookmark to -- a page with zero or multiple such
-    // headings is left alone (null marks "ambiguous", not "none seen yet").
-    const headingTextByPage = new Map<number, string | null>();
+    // Pass 1 (sync): collect heading nodes in document order -- real text
+    // resolution (pass 2) needs an async pdfjs page read, which
+    // traverseStructTree's own synchronous visitor can't do inline.
+    const headingNodes: Array<{ node: PDFDict; pageIndex: number }> = [];
     this.traverseStructTree(doc, structRoot, (node, ref) => {
       if (!ref) return;
       const rawTag = node.get(PDFName.of('S'))?.toString().replace(/^\//, '');
@@ -5278,16 +5406,45 @@ export class PdfStructureWriterService {
       const pageIndex = pageRefToIndex.get(pgRaw.objectNumber);
       if (pageIndex === undefined) return;
 
-      const extracted = this.extractTextFromStructElem(doc, node);
-      // Also bails when the extracted text is ITSELF generic-shaped (e.g. a
-      // heading whose real tagged text literally reads "Section 3", not a
-      // placeholder but not a helpful bookmark title either) -- never worth
-      // replacing one unhelpful title with another.
-      if (!extracted || GENERIC_TITLE_RE.test(extracted.trim())) return;
-
-      const existing = headingTextByPage.get(pageIndex);
-      headingTextByPage.set(pageIndex, existing === undefined ? extracted.slice(0, 200) : null);
+      headingNodes.push({ node, pageIndex });
     });
+
+    // Pass 2 (async): resolve real text + top-Y for each heading, in
+    // document order -- "nearest preceding" below relies on this array
+    // already being in that order, matching generateBookmarksFromHeadings'
+    // own collection order.
+    const pageMapsCache = new Map<number, ContentIdMaps>();
+    const allHeadings: Array<{ pageIndex: number; topY: number | null; text: string }> = [];
+    for (const h of headingNodes) {
+      const { text, topY } = await this.resolveRealHeadingInfo(doc, parsedPdf, h.node, h.pageIndex, pageMapsCache);
+      // Also skips a heading whose extracted text is ITSELF generic-shaped
+      // (e.g. real tagged text literally reading "Section 3") -- never
+      // worth using one unhelpful title to replace another.
+      if (!text || GENERIC_TITLE_RE.test(text.trim())) continue;
+      allHeadings.push({ pageIndex: h.pageIndex, topY, text: text.slice(0, 200) });
+    }
+
+    /** Nearest preceding heading for a bookmark's own (pageIndex, topY)
+     *  target -- see this method's own doc comment for the full algorithm. */
+    const findGoverningHeading = (targetPageIndex: number, targetTopY: number | null): string | null => {
+      const samePage = allHeadings.filter(h => h.pageIndex === targetPageIndex);
+      if (samePage.length <= 1) {
+        let candidate: typeof allHeadings[number] | null = null;
+        for (const h of allHeadings) {
+          if (h.pageIndex <= targetPageIndex) candidate = h;
+          else break; // allHeadings is in document order -- pages are non-decreasing
+        }
+        return candidate?.text ?? null;
+      }
+      if (targetTopY === null) return null; // ambiguous, no Y to disambiguate -- bail
+      let candidate: typeof allHeadings[number] | null = null;
+      for (const h of samePage) {
+        if (h.topY !== null && h.topY <= targetTopY && (!candidate || h.topY > candidate.topY!)) {
+          candidate = h;
+        }
+      }
+      return candidate?.text ?? null;
+    };
 
     let updated = 0;
     const visitOutlineItem = (itemRef: PDFRef): void => {
@@ -5299,8 +5456,8 @@ export class PdfStructureWriterService {
         titleRaw instanceof PDFHexString || titleRaw instanceof PDFString ? titleRaw.decodeText().trim() : '';
 
       if (currentTitle && GENERIC_TITLE_RE.test(currentTitle)) {
-        const pageIndex = this.resolveOutlineItemPageIndex(doc, item, pageRefToIndex);
-        const newTitle = pageIndex !== null ? headingTextByPage.get(pageIndex) : undefined;
+        const target = this.resolveOutlineItemTarget(doc, item, pageRefToIndex);
+        const newTitle = target ? findGoverningHeading(target.pageIndex, target.topY) : null;
         if (newTitle) {
           item.set(PDFName.of('Title'), PDFHexString.fromText(newTitle));
           updated++;
@@ -5320,11 +5477,17 @@ export class PdfStructureWriterService {
     return { updated };
   }
 
-  /** Resolves an outline item's target page index via /Dest (direct array
-   *  form) or /A's GoTo /D -- returns null for a named destination (string/
-   *  name, requiring a /Names /Dests lookup this method doesn't attempt) or
-   *  any other unresolvable shape, rather than guessing. */
-  private resolveOutlineItemPageIndex(doc: PDFDocument, item: PDFDict, pageRefToIndex: Map<number, number>): number | null {
+  /** Resolves an outline item's target page index AND, when the
+   *  destination is a real /XYZ with a numeric top, its top-left-origin
+   *  Y-coordinate on that page (pageHeight - top, matching every other
+   *  bbox convention in this codebase) -- via /Dest (direct array form) or
+   *  /A's GoTo /D. Returns null for a named destination (string/name,
+   *  requiring a /Names /Dests lookup this method doesn't attempt) or any
+   *  other unresolvable shape, rather than guessing. topY is null whenever
+   *  the destination type isn't /XYZ or its top is absent/non-numeric
+   *  (e.g. the common null-filled form generateBookmarksFromHeadings
+   *  itself writes) -- "position unknown", not "top of page". */
+  private resolveOutlineItemTarget(doc: PDFDocument, item: PDFDict, pageRefToIndex: Map<number, number>): { pageIndex: number; topY: number | null } | null {
     let destRaw: PDFObject | undefined = item.get(PDFName.of('Dest'));
     if (destRaw === undefined) {
       const actionRaw = item.get(PDFName.of('A'));
@@ -5335,7 +5498,20 @@ export class PdfStructureWriterService {
     if (!(dest instanceof PDFArray) || dest.size() === 0) return null;
     const pageRef = dest.get(0);
     if (!(pageRef instanceof PDFRef)) return null;
-    return pageRefToIndex.get(pageRef.objectNumber) ?? null;
+    const pageIndex = pageRefToIndex.get(pageRef.objectNumber);
+    if (pageIndex === undefined) return null;
+
+    // [page /XYZ left top zoom] -- top is index 3. Any other destination
+    // type (/Fit, /FitH, etc.) or a non-numeric/absent top leaves topY
+    // null rather than guessing a position.
+    const typeRaw = dest.size() > 1 ? dest.get(1) : undefined;
+    const type = typeRaw && 'toString' in typeRaw ? typeRaw.toString().replace(/^\//, '') : undefined;
+    const topRaw = dest.size() > 3 ? dest.get(3) : undefined;
+    let topY: number | null = null;
+    if (type === 'XYZ' && topRaw instanceof PDFNumber) {
+      topY = doc.getPage(pageIndex).getHeight() - topRaw.asNumber();
+    }
+    return { pageIndex, topY };
   }
 
   // ══════════════════════════════════════════════════════════════════════════

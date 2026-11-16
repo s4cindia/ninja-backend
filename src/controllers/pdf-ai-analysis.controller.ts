@@ -21,6 +21,7 @@ import { pdfContrastWriterService, resolveColorContrastTargets } from '../servic
 import { pdfReauditService } from '../services/pdf/pdf-reaudit.service';
 import { pdfComprehensiveParserService } from '../services/pdf/pdf-comprehensive-parser.service';
 import { pdfParserService } from '../services/pdf/pdf-parser.service';
+import type { ParsedPDF } from '../services/pdf/pdf-parser.service';
 import type { TableInfo } from '../services/pdf/structure-analyzer.service';
 import { TABLE_LIKELY_FORMULA_CODE } from '../services/pdf/validators/pdf-table.validator';
 import type { AuditIssue } from '../services/audit/base-audit.service';
@@ -530,12 +531,24 @@ export class PdfAiAnalysisController {
           }
         }
       } else if (suggestionType === 'bookmark-generate') {
-        const result = pdfStructureWriterService.generateBookmarksFromHeadings(doc);
-        modification = {
-          success: result.generated > 0,
-          description: `Generated ${result.generated} bookmark(s) from heading structure`,
-          error: result.generated === 0 ? 'No headings found to generate bookmarks from' : undefined,
-        };
+        // Needs real pdfjs-decoded heading text (see resolveRealHeadingInfo's
+        // own doc comment) -- pdf-lib's own `doc` has no pdfjs access, so a
+        // fresh, isolated parse is done here, same on-demand pattern as
+        // table-from-layout-fix above.
+        let parsedForBookmarks: ParsedPDF | null = null;
+        try {
+          parsedForBookmarks = await pdfParserService.parseBuffer(pdfBuffer, fileName);
+          const result = await pdfStructureWriterService.generateBookmarksFromHeadings(doc, parsedForBookmarks);
+          modification = {
+            success: result.generated > 0,
+            description: `Generated ${result.generated} bookmark(s) from heading structure`,
+            error: result.generated === 0 ? 'No headings found to generate bookmarks from' : undefined,
+          };
+        } finally {
+          if (parsedForBookmarks) {
+            await pdfParserService.close(parsedForBookmarks).catch(() => {});
+          }
+        }
       } else if (suggestionType === 'heading-multiple-h1-fix') {
         const result = pdfStructureWriterService.fixMultipleH1(doc, originalIssue);
         modification = { success: result.success, description: result.after, error: result.error };

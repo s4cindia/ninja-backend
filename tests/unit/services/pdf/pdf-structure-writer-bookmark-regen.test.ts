@@ -14,6 +14,25 @@
 import { describe, it, expect } from 'vitest';
 import { PDFDocument, PDFName, PDFHexString, PDFDict, PDFRef } from 'pdf-lib';
 import { pdfStructureWriterService } from '../../../../src/services/pdf/pdf-structure-writer.service';
+import type { ParsedPDF } from '../../../../src/services/pdf/pdf-parser.service';
+
+/** Every heading in this file's own fixtures carries real ActualText, so
+ *  resolveRealHeadingInfo's pdfjs fallback is never actually NEEDED for
+ *  correctness here -- but it's still attempted (any heading with an own
+ *  MCID triggers a page lookup) before the ActualText short-circuit wins,
+ *  so this must resolve to something valid rather than throw. An empty
+ *  getTextContent is the cleanest "there's nothing here" shape -- no
+ *  warning logged, no crash, same end result as if pdfjs found nothing. */
+function fakeParsedPdf(): ParsedPDF {
+  return {
+    pdfjsDoc: {
+      getPage: async () => ({
+        getViewport: () => ({ height: 0 }),
+        getTextContent: async () => ({ items: [] }),
+      }),
+    },
+  } as unknown as ParsedPDF;
+}
 
 /** Minimal already-tagged doc: N pages, one H1 struct element per entry in
  *  `headings` (page index 0-based, real ActualText or null for "no real text"),
@@ -82,7 +101,7 @@ describe('PdfStructureWriterService.regenerateGenericBookmarkTitles', () => {
     const doc = await buildDocWithHeadings(1, [{ pageIndex: 0, actualText: 'Chapter 3: Financial Risk Assessment' }]);
     const bookmarkRef = addBookmark(doc, 'Section p.1', 0);
 
-    const result = pdfStructureWriterService.regenerateGenericBookmarkTitles(doc);
+    const result = await pdfStructureWriterService.regenerateGenericBookmarkTitles(doc, fakeParsedPdf());
 
     expect(result.updated).toBe(1);
     expect(titleOf(doc, bookmarkRef)).toBe('Chapter 3: Financial Risk Assessment');
@@ -92,7 +111,7 @@ describe('PdfStructureWriterService.regenerateGenericBookmarkTitles', () => {
     const doc = await buildDocWithHeadings(1, [{ pageIndex: 0, actualText: 'Chapter 3: Financial Risk Assessment' }]);
     const bookmarkRef = addBookmark(doc, 'Section — p.1', 0);
 
-    const result = pdfStructureWriterService.regenerateGenericBookmarkTitles(doc);
+    const result = await pdfStructureWriterService.regenerateGenericBookmarkTitles(doc, fakeParsedPdf());
 
     expect(result.updated).toBe(1);
     expect(titleOf(doc, bookmarkRef)).toBe('Chapter 3: Financial Risk Assessment');
@@ -102,7 +121,7 @@ describe('PdfStructureWriterService.regenerateGenericBookmarkTitles', () => {
     const doc = await buildDocWithHeadings(1, [{ pageIndex: 0, actualText: 'Chapter 3: Financial Risk Assessment' }]);
     const bookmarkRef = addBookmark(doc, 'My Custom Bookmark Title', 0);
 
-    const result = pdfStructureWriterService.regenerateGenericBookmarkTitles(doc);
+    const result = await pdfStructureWriterService.regenerateGenericBookmarkTitles(doc, fakeParsedPdf());
 
     expect(result.updated).toBe(0);
     expect(titleOf(doc, bookmarkRef)).toBe('My Custom Bookmark Title');
@@ -115,7 +134,7 @@ describe('PdfStructureWriterService.regenerateGenericBookmarkTitles', () => {
     ]);
     const bookmarkRef = addBookmark(doc, 'Section p.1', 0);
 
-    const result = pdfStructureWriterService.regenerateGenericBookmarkTitles(doc);
+    const result = await pdfStructureWriterService.regenerateGenericBookmarkTitles(doc, fakeParsedPdf());
 
     expect(result.updated).toBe(0);
     expect(titleOf(doc, bookmarkRef)).toBe('Section p.1');
@@ -125,7 +144,7 @@ describe('PdfStructureWriterService.regenerateGenericBookmarkTitles', () => {
     const doc = await buildDocWithHeadings(1, [{ pageIndex: 0, actualText: null }]);
     const bookmarkRef = addBookmark(doc, 'Section p.1', 0);
 
-    const result = pdfStructureWriterService.regenerateGenericBookmarkTitles(doc);
+    const result = await pdfStructureWriterService.regenerateGenericBookmarkTitles(doc, fakeParsedPdf());
 
     expect(result.updated).toBe(0);
     expect(titleOf(doc, bookmarkRef)).toBe('Section p.1');
@@ -135,7 +154,7 @@ describe('PdfStructureWriterService.regenerateGenericBookmarkTitles', () => {
     const doc = await buildDocWithHeadings(1, [{ pageIndex: 0, actualText: 'Section 3' }]);
     const bookmarkRef = addBookmark(doc, 'Section p.1', 0);
 
-    const result = pdfStructureWriterService.regenerateGenericBookmarkTitles(doc);
+    const result = await pdfStructureWriterService.regenerateGenericBookmarkTitles(doc, fakeParsedPdf());
 
     expect(result.updated).toBe(0);
     expect(titleOf(doc, bookmarkRef)).toBe('Section p.1');
@@ -156,7 +175,7 @@ describe('PdfStructureWriterService.regenerateGenericBookmarkTitles', () => {
     parentDict.set(PDFName.of('First'), childRef);
     parentDict.set(PDFName.of('Last'), childRef);
 
-    const result = pdfStructureWriterService.regenerateGenericBookmarkTitles(doc);
+    const result = await pdfStructureWriterService.regenerateGenericBookmarkTitles(doc, fakeParsedPdf());
 
     expect(result.updated).toBe(2);
     expect(titleOf(doc, parentRef)).toBe('Part One');
@@ -172,7 +191,7 @@ describe('PdfStructureWriterService.regenerateGenericBookmarkTitles', () => {
     const outlines = doc.context.obj({ Type: PDFName.of('Outlines'), First: itemRef, Last: itemRef }) as PDFDict;
     doc.catalog.set(PDFName.of('Outlines'), doc.context.register(outlines));
 
-    const result = pdfStructureWriterService.regenerateGenericBookmarkTitles(doc);
+    const result = await pdfStructureWriterService.regenerateGenericBookmarkTitles(doc, fakeParsedPdf());
 
     expect(result.updated).toBe(1);
     expect(titleOf(doc, itemRef)).toBe('Appendix: Glossary');
@@ -181,7 +200,7 @@ describe('PdfStructureWriterService.regenerateGenericBookmarkTitles', () => {
   it('returns {updated: 0} and does not crash when there is no /Outlines at all', async () => {
     const doc = await buildDocWithHeadings(1, [{ pageIndex: 0, actualText: 'Chapter One' }]);
 
-    const result = pdfStructureWriterService.regenerateGenericBookmarkTitles(doc);
+    const result = await pdfStructureWriterService.regenerateGenericBookmarkTitles(doc, fakeParsedPdf());
 
     expect(result.updated).toBe(0);
   });
@@ -190,7 +209,7 @@ describe('PdfStructureWriterService.regenerateGenericBookmarkTitles', () => {
     const doc = await PDFDocument.create();
     doc.addPage([400, 600]);
 
-    const result = pdfStructureWriterService.regenerateGenericBookmarkTitles(doc);
+    const result = await pdfStructureWriterService.regenerateGenericBookmarkTitles(doc, fakeParsedPdf());
 
     expect(result.updated).toBe(0);
   });
