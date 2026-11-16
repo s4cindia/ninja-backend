@@ -188,7 +188,18 @@ const TABLE_LAYOUT_CODES = new Set(['MATTERHORN-15-005', 'TABLE-LAYOUT-UNTAGGED'
 // already uses when it can fail at apply time.
 const TABLE_NOT_TAGGED_CODES = new Set(['MATTERHORN-15-001']);
 const LIST_CODES = new Set(['LIST-NOT-TAGGED', 'LIST-IMPROPER-MARKUP']);
-const READING_ORDER_CODES = new Set(['MATTERHORN-09-004', 'READING-ORDER-SUSPECT', 'READING-ORDER-COLUMN', 'READING-ORDER-RTOL']);
+// Confirmed dead before this fix (S4 QC R3 triage, 2026-11-17): the four
+// codes previously listed here (MATTERHORN-09-004, READING-ORDER-SUSPECT,
+// READING-ORDER-COLUMN, READING-ORDER-RTOL) are never emitted anywhere in
+// this codebase -- an exhaustive grep found zero producers. The codes
+// pdf-structure.validator.ts's validateReadingOrder() actually emits
+// (MATTERHORN-12-001, READING-ORDER-COLUMNS, READING-ORDER-VISUAL,
+// READING-ORDER-TABLE, READING-ORDER-ISSUE) never matched this set, so
+// every reading-order issue that validator ever raised silently got no AI
+// suggestion at all -- analyzeReadingOrder() below was fully implemented
+// and reachable code, just never actually dispatched to. This is a
+// realignment to the real codes, not new behavior.
+const READING_ORDER_CODES = new Set(['MATTERHORN-12-001', 'READING-ORDER-COLUMNS', 'READING-ORDER-VISUAL', 'READING-ORDER-TABLE', 'READING-ORDER-ISSUE']);
 const HEADING_CODES = new Set(['HEADING-SKIP', 'HEADING-MULTIPLE-H1', 'HEADING-NESTING', 'MATTERHORN-06-001']);
 const LANGUAGE_CODES = new Set(['MATTERHORN-11-001', 'LANGUAGE-MISSING']);
 const TAB_ORDER_CODES = new Set(['TAB-ORDER-NOT-STRUCTURE']);
@@ -205,6 +216,12 @@ const READING_ORDER_FLOAT_CODES = new Set(['READING-ORDER-FLOAT-INTERRUPTION']);
 // unlike most of this file's other structural codes. See
 // structure-parent-mismatch.ts's own header comment for the real incident.
 const STRUCTURE_PARENT_MISMATCH_CODES = new Set(['STRUCTURE-ELEMENT-WRONG-PARENT']);
+// Only the auto-fixable code is dispatched here -- SPAN-ILLEGAL-NESTING-MANUAL
+// deliberately has no dispatch wiring, matching READING-ORDER-FLOAT-
+// INTERRUPTION-MANUAL's and pdf-header-footer-content.validator.ts's own
+// established convention for this codebase's detect-only/manual-review codes.
+const SPAN_ILLEGAL_NESTING_CODES = new Set(['SPAN-ILLEGAL-NESTING']);
+const DUPLICATE_FIGURE_TILES_CODES = new Set(['DUPLICATE-FIGURE-TILES']);
 // Only the two categories with one unambiguous correct RoleMap retarget --
 // see pdf-rolemap-integrity.validator.ts's own header comment for why
 // these are the only two whose /RoleMap entry alone has a single safe
@@ -1838,6 +1855,40 @@ class AiAnalysisService {
         guidance: 'This element\'s /P will be corrected to match its real, current parent in the structure tree.',
         confidence: 1.0,
         rationale: 'Mechanical structure-tree consistency fix -- no content judgment required',
+        model: 'rule-based',
+        applyMode: 'apply-to-pdf',
+      };
+    }
+
+    if (SPAN_ILLEGAL_NESTING_CODES.has(code)) {
+      // Purely mechanical (re-confirmed fresh at apply time against the
+      // same single source of truth, findSpanIllegalNestingViolations --
+      // see its own doc comment) -- only ever generated for the
+      // auto-fixable code (Span has no legitimate content of its own and
+      // its real parent can legally hold the dissolved children directly),
+      // same confidence/rule-based treatment as structure-parent-mismatch-
+      // fix above. SPAN-ILLEGAL-NESTING-MANUAL never reaches this branch.
+      return {
+        suggestionType: 'span-illegal-nesting-fix',
+        guidance: 'This Span will be dissolved and its illegal child element(s) promoted to sit directly under its own parent, in the same position.',
+        confidence: 1.0,
+        rationale: 'Mechanical struct-tree dissolve -- no content judgment required',
+        model: 'rule-based',
+        applyMode: 'apply-to-pdf',
+      };
+    }
+
+    if (DUPLICATE_FIGURE_TILES_CODES.has(code)) {
+      // Purely mechanical (re-confirmed fresh at apply time against the
+      // same single source of truth, findDuplicateFigureTiles -- see its
+      // own doc comment) -- the group is only ever generated when every
+      // member already shares identical alt text, so there is no content
+      // judgment left to make at apply time either.
+      return {
+        suggestionType: 'duplicate-figure-tiles-fix',
+        guidance: 'The duplicate Figure element(s) will be merged into the first one on this page -- their content moved in, duplicates removed.',
+        confidence: 1.0,
+        rationale: 'Mechanical struct-tree merge -- no content judgment required',
         model: 'rule-based',
         applyMode: 'apply-to-pdf',
       };
@@ -4349,8 +4400,10 @@ class AiAnalysisService {
     // 'structure-parent-mismatch-fix' added here at the SAME time its own
     // dispatch branch was added (not as a later catch-up) -- the exact
     // discipline the #747/#748/#821 incidents this comment already
-    // documents were all missing.
-    const STRUCTURE_WRITER_TYPES = new Set(['heading-fix', 'list-fix', 'table-header-fix', 'table-header-fix-column', 'table-header-scope-fix', 'table-artifact-fix', 'table-from-layout-fix', 'bookmark-generate', 'heading-multiple-h1-fix', 'pdfua-identifier', 'color-contrast-fix', 'alt-text-decorative', 'untagged-content-fix', 'invisible-text-artifact-fix', 'figure-caption-reattach-fix', 'inline-figure-reattach-fix', 'tagged-content-artifact-split-fix', 'table-cell-reattach-fix', 'table-row-reattach-fix', 'font-tounicode-synthesis-fix', 'font-tounicode-extend-fix', 'artifact-unwrap-complex-fix', 'placedpdf-retag-fix', 'link-missing-annotation-fix', 'artifact-actualtext-fix', 'actualtext-missing-mcid-fix', 'tab-order-fix', 'mcid-page-mismatch-fix', 'display-doc-title-fix', 'rolemap-target-fix', 'index-structure-fix', 'footnote-structure-fix', 'bookmark-title-regenerate', 'cross-reference-link-fix', 'reading-order-float-fix', 'toc-link-fix', 'citation-link-fix', 'structure-parent-mismatch-fix', 'heading-promote-fix']);
+    // documents were all missing. 'span-illegal-nesting-fix' (S4 QC R3,
+    // 2026-11-17) follows the same discipline: added in the same change as
+    // its own dispatch branch and apply-time writer call, not after.
+    const STRUCTURE_WRITER_TYPES = new Set(['heading-fix', 'list-fix', 'table-header-fix', 'table-header-fix-column', 'table-header-scope-fix', 'table-artifact-fix', 'table-from-layout-fix', 'bookmark-generate', 'heading-multiple-h1-fix', 'pdfua-identifier', 'color-contrast-fix', 'alt-text-decorative', 'untagged-content-fix', 'invisible-text-artifact-fix', 'figure-caption-reattach-fix', 'inline-figure-reattach-fix', 'tagged-content-artifact-split-fix', 'table-cell-reattach-fix', 'table-row-reattach-fix', 'font-tounicode-synthesis-fix', 'font-tounicode-extend-fix', 'artifact-unwrap-complex-fix', 'placedpdf-retag-fix', 'link-missing-annotation-fix', 'artifact-actualtext-fix', 'actualtext-missing-mcid-fix', 'tab-order-fix', 'mcid-page-mismatch-fix', 'display-doc-title-fix', 'rolemap-target-fix', 'index-structure-fix', 'footnote-structure-fix', 'bookmark-title-regenerate', 'cross-reference-link-fix', 'reading-order-float-fix', 'toc-link-fix', 'citation-link-fix', 'structure-parent-mismatch-fix', 'heading-promote-fix', 'span-illegal-nesting-fix', 'duplicate-figure-tiles-fix']);
 
     let applied = 0;
     let failed = 0;
@@ -4508,6 +4561,17 @@ class AiAnalysisService {
           // Struct-tree-only, single /P write -- see
           // fixStructureElementWrongParent's own doc comment.
           const result = pdfStructureWriterService.fixStructureElementWrongParent(doc, originalIssue);
+          modification = { success: result.success, description: result.after, error: result.error };
+        } else if (suggestionType === 'span-illegal-nesting-fix') {
+          // Struct-tree-only (dissolve Span, promote children, fix /P) --
+          // see fixSpanIllegalNesting's own doc comment.
+          const result = pdfStructureWriterService.fixSpanIllegalNesting(doc, originalIssue);
+          modification = { success: result.success, description: result.after, error: result.error };
+        } else if (suggestionType === 'duplicate-figure-tiles-fix') {
+          // Struct-tree-only (merge duplicate Figures' /K into the
+          // primary, remove duplicates) -- see fixDuplicateFigureTiles's
+          // own doc comment.
+          const result = pdfStructureWriterService.fixDuplicateFigureTiles(doc, originalIssue);
           modification = { success: result.success, description: result.after, error: result.error };
         } else if (suggestionType === 'rolemap-target-fix') {
           const result = pdfStructureWriterService.fixDegenerateRoleMapEntry(doc, originalIssue);

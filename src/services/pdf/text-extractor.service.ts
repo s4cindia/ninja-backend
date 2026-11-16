@@ -7,6 +7,54 @@ interface FontInfo {
   italic?: boolean;
 }
 
+/**
+ * Merges a hyphen-broken word across adjacent lines before joining them --
+ * otherwise a word split by ordinary line-wrap hyphenation (e.g.
+ * "exam-" / "ple") stays broken as "exam-\nple" in every string this
+ * service produces, which is exactly the "Hyphenated Words Not Merged
+ * Correctly" defect S4 QC flagged (fresh finding, 2026-11-17): the text
+ * this service extracts feeds alt-text generation (photo-alt-generator.
+ * service.ts) and heading/table classification (structure-analyzer.
+ * service.ts), so a broken word there degrades both.
+ *
+ * Only merges when the break looks like ordinary line-wrap hyphenation,
+ * not a real hyphenated compound: the hyphen must be the line's last
+ * character (truly word-final, not e.g. a spaced em-dash) AND the next
+ * line must start with a lowercase letter -- a capitalized or digit-led
+ * next line reads as a new sentence/list item, not a word continuation.
+ *
+ * Known, documented limitation: a real compound word that happens to
+ * break at a line end (e.g. "well-" / "known") is indistinguishable from
+ * a line-wrap artifact by this heuristic alone and will be merged into
+ * "wellknown", losing the hyphen. No dictionary lookup is available to
+ * disambiguate; this trade-off mirrors every other best-effort text
+ * heuristic already in this file (e.g. detectBlockType's footer/header
+ * position guesses).
+ *
+ * Scope: this only corrects the text THIS SERVICE produces for downstream
+ * analysis/generation consumers. It does not insert /ActualText into the
+ * remediated PDF's own content stream, so it does not change how a
+ * third-party screen reader or raw text-extraction tool reads the
+ * PDF's existing body text -- that would require content-stream-level
+ * marked-content splicing (the same high-risk category documented on
+ * fixArtifactActualTextSibling in pdf-structure-writer.service.ts) and is
+ * intentionally left as a separate, larger follow-up.
+ */
+export function joinLinesDehyphenated(lineTexts: string[]): string {
+  if (lineTexts.length === 0) return '';
+  let result = lineTexts[0];
+  for (let i = 1; i < lineTexts.length; i++) {
+    const next = lineTexts[i];
+    const endsWithWordFinalHyphen = /[a-z]-$/.test(result);
+    if (endsWithWordFinalHyphen && /^[a-z]/.test(next)) {
+      result = result.slice(0, -1) + next;
+    } else {
+      result += '\n' + next;
+    }
+  }
+  return result;
+}
+
 export interface TextItem {
   text: string;
   pageNumber: number;
@@ -235,7 +283,7 @@ class TextExtractorService {
       : [];
 
     const pageText = lines.length > 0
-      ? lines.map(l => l.text).join('\n')
+      ? joinLinesDehyphenated(lines.map(l => l.text))
       : items.map(i => i.text).join(' ');
 
     const normalizedText = options.normalizeWhitespace
@@ -407,7 +455,7 @@ class TextExtractorService {
   }
 
   private createBlock(lines: TextLine[]): TextBlock {
-    const text = lines.map(l => l.text).join('\n');
+    const text = joinLinesDehyphenated(lines.map(l => l.text));
     const pageNumber = lines[0].pageNumber;
 
     const minX = Math.min(...lines.map(l => l.boundingBox.x));
