@@ -36,6 +36,7 @@ import {
   resolveBookmarkMode,
   resolveFullAutoMode,
   resolveEscalateOnStall,
+  resolveFullQC,
   enqueueOrRunAutoLoop,
   ComparisonTrialAutoRemediationDriver,
   JobAutoRemediationDriver,
@@ -360,7 +361,7 @@ export class PdfAutoModeController {
       const jobId = req.job!.id;
 
       const [job, aiRemediationConfig] = await Promise.all([
-        prisma.job.findUnique({ where: { id: jobId }, select: { fullAutoMode: true, autoEscalateOnStall: true } }),
+        prisma.job.findUnique({ where: { id: jobId }, select: { fullAutoMode: true, autoEscalateOnStall: true, fullQC: true } }),
         getEffectiveAiRemediationConfig(req.job!.tenantId),
       ]);
       if (!job) throw AppError.notFound('Job not found.');
@@ -377,6 +378,14 @@ export class PdfAutoModeController {
             override: job.autoEscalateOnStall,
             tenantDefault: aiRemediationConfig.autoEscalateOnStallDefault,
             effective: resolveEscalateOnStall(job.autoEscalateOnStall, aiRemediationConfig.autoEscalateOnStallDefault),
+          },
+          // Read-only here, unlike the two above -- fullQC is set once at
+          // upload time and deliberately has no PATCH support (see the Full
+          // QC design decision, 2026-11-16).
+          fullQC: {
+            override: job.fullQC,
+            tenantDefault: aiRemediationConfig.fullQCDefault,
+            effective: resolveFullQC(job.fullQC, aiRemediationConfig.fullQCDefault),
           },
         },
       });
