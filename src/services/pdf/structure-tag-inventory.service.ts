@@ -255,7 +255,25 @@ export function extractStructureTagsForPage(doc: PDFDocument, targetPageNumber: 
   const allMcids = new Set<number>();
   for (const p of onThisPage) for (const mcid of p.mcids) allMcids.add(mcid);
 
+  // allowSinglePointBoxes: true -- real incident, 2026-11-17: Karsaklian_189165_
+  // 9781606497623.pdf (and, going by its own doc comment, likely every
+  // InDesign-style export) wraps each PHYSICAL LINE of a /P in its own
+  // single-Tm/single-TJ marked-content span, not one span per paragraph with
+  // per-line Td/T* advances -- so an ordinary line's own geometry, considered
+  // alone, is a true single point (one include() call, no accompanying path/
+  // clip-rect). The default (area-requiring) behavior this function documents
+  // for its ORIGINAL caller (cropBase64Region, which needs a real croppable
+  // area) was silently discarding every one of these, which made ordinary
+  // body-text /P elements -- the vast majority of any real page's structure
+  // tree -- vanish from this feature's "every structure element on a page"
+  // inventory entirely. A /P spanning multiple lines still aggregates into a
+  // real multi-point box once each line's own point survives (the loop below
+  // unions every one of its MCIDs' boxes); only a genuinely single-line /P
+  // ends up as a thin/zero-height sliver, the same documented anchor-only
+  // approximation this module already accepts elsewhere (no font metrics
+  // available from a raw content stream).
   const boxes = locateMcidBoundingBoxes(content, allMcids, {
+    allowSinglePointBoxes: true,
     resolveFormXObject: buildFormXObjectResolver(doc, targetPageNumber),
   });
   const { width: pageWidth, height: pageHeight } = doc.getPage(targetPageNumber - 1).getSize();
