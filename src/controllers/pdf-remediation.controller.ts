@@ -1092,7 +1092,14 @@ export class PdfRemediationController {
         return;
       }
 
-      const downloadFileName = fileName.replace('.pdf', '_remediated.pdf');
+      // Dated at download time, not at some earlier internal event (the
+      // job's own completedAt, or the last auto-remediation round) -- a
+      // manual Full QC retag can land after either of those, so "now" is
+      // the only timestamp that's always at least as fresh as the file
+      // actually being sent. See generateHandoffNote's own doc comment for
+      // why this convention exists (S4 Carlisle handoff, 2026-11-17).
+      const versionStamp = new Date().toISOString().slice(0, 10);
+      const downloadFileName = fileName.replace('.pdf', `_v${versionStamp}.pdf`);
 
       res.setHeader('Content-Type', 'application/pdf');
       res.setHeader('Content-Disposition', `attachment; filename="${downloadFileName}"`);
@@ -1109,6 +1116,108 @@ export class PdfRemediationController {
           message: 'Failed to download remediated PDF',
         },
       });
+    }
+  }
+
+  /**
+   * A short, factual cover note for handing a remediated file to an
+   * external QC partner (e.g. S4 Carlisle) -- built to close a real,
+   * recurring confusion: without a stated "as of" state, an external
+   * reviewer has no way to tell whether a finding they're about to flag was
+   * already fixed by the time they're looking, or fixed days after (S4's
+   * own Round 3 re-flagged several items PRs #809-824 had already
+   * resolved, simply because the review and the fix landed close enough in
+   * time that neither side could tell which came first).
+   *
+   * Every field here is read from the job's own real, current records --
+   * nothing is inferred or templated. The one thing this endpoint
+   * deliberately does NOT claim: whether a human completed a manual Full
+   * QC structure-tag review pass. There's no system-of-record for that
+   * today (see structure-tag-inventory.service.ts's own header comment on
+   * the feature's current limits), so the caller (PdfAuditResultsPage) is
+   * the one that gates generation on an explicit human confirmation
+   * checkbox rather than this endpoint silently asserting it happened.
+   *
+   * GET /api/v1/pdf/:jobId/remediation/handoff-note
+   */
+  async getHandoffNote(req: AuthenticatedRequest, res: Response): Promise<Response> {
+    try {
+      const { jobId } = req.params;
+      const tenantId = req.user?.tenantId;
+      if (!tenantId) {
+        return res.status(401).json({ success: false, error: { code: 'UNAUTHORIZED', message: 'Authentication required' } });
+      }
+
+      const job = await prisma.job.findFirst({ where: { id: jobId, tenantId } });
+      if (!job) {
+        return res.status(404).json({ success: false, error: { code: 'JOB_NOT_FOUND', message: 'Job not found or access denied' } });
+      }
+
+      const input = job.input as { fileName?: string } | null;
+      const output = job.output as { score?: number; combinedIssues?: Array<{ code: string; triage?: { disposition?: string } }> } | null;
+      const fileName = input?.fileName || 'document.pdf';
+
+      const autoRun = await prisma.pdfAutoRemediationRun.findUnique({ where: { jobId } });
+
+      // Opportunistic, not required -- the most recent TeamReview row for
+      // this job, if this tenant's team uses that separate sign-off
+      // feature. Real, verifiable (reviewer identity + timestamp come from
+      // an actual DB row, same source getActiveReviewBlock's download gate
+      // already trusts), so worth surfacing when present; its absence
+      // means nothing (most jobs, including this one, have no team review
+      // at all -- it's gated to TEAM_LEADER/ADMIN writers, not every job).
+      const latestTeamReview = await prisma.teamReview.findFirst({
+        where: { jobId },
+        orderBy: { reviewedAt: 'desc' },
+        include: { reviewer: { select: { firstName: true, lastName: true, email: true } } },
+      });
+
+      // Keyed on (code, disposition) together, not code alone -- the same
+      // code can carry different dispositions across its own instances
+      // (MATTERHORN-13-001 is the real example: some instances are
+      // auto-resolved pending approval, others are plain manual review),
+      // and collapsing them into one count would hide which subset is
+      // which.
+      const issuesByCodeAndDisposition = new Map<string, { code: string; disposition: string; count: number }>();
+      for (const issue of output?.combinedIssues ?? []) {
+        const disposition = issue.triage?.disposition ?? 'unknown';
+        const key = `${issue.code}::${disposition}`;
+        const existing = issuesByCodeAndDisposition.get(key);
+        if (existing) {
+          existing.count++;
+        } else {
+          issuesByCodeAndDisposition.set(key, { code: issue.code, disposition, count: 1 });
+        }
+      }
+      const remainingIssues = [...issuesByCodeAndDisposition.values()].sort((a, b) => b.count - a.count);
+
+      return res.status(200).json({
+        success: true,
+        data: {
+          fileName,
+          generatedAt: new Date().toISOString(),
+          score: output?.score ?? null,
+          totalRemaining: output?.combinedIssues?.length ?? 0,
+          remainingIssues,
+          autoRemediation: autoRun ? {
+            roundsCompleted: autoRun.autoRoundsCompleted,
+            maxRounds: autoRun.autoMaxRounds,
+            stopReason: autoRun.autoStopReason,
+            costSpentUsd: autoRun.autoCostSpentUsd,
+            stoppedAt: autoRun.autoStoppedAt,
+          } : null,
+          teamReview: latestTeamReview ? {
+            outcome: latestTeamReview.outcome,
+            reviewedAt: latestTeamReview.reviewedAt,
+            reviewedBy: [latestTeamReview.reviewer.firstName, latestTeamReview.reviewer.lastName].filter(Boolean).join(' ')
+              || latestTeamReview.reviewer.email,
+            notes: latestTeamReview.notes,
+          } : null,
+        },
+      });
+    } catch (error) {
+      logger.error('Failed to generate handoff note', { error, jobId: req.params.jobId });
+      return res.status(500).json({ success: false, error: { code: 'INTERNAL_SERVER_ERROR', message: 'Failed to generate handoff note' } });
     }
   }
 

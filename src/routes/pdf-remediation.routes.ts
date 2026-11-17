@@ -170,6 +170,21 @@ router.get(
 );
 
 /**
+ * GET /api/v1/pdf/:jobId/remediation/handoff-note
+ * A factual cover note (score, round history, remaining-issue breakdown)
+ * for handing the remediated file to an external QC partner.
+ *
+ * @param jobId - PDF audit job ID
+ * @returns { fileName, generatedAt, score, remainingIssues, autoRemediation, teamReview }
+ */
+router.get(
+  '/:jobId/remediation/handoff-note',
+  authenticate,
+  authorizeJobForReview,
+  (req, res) => pdfRemediationController.getHandoffNote(req, res)
+);
+
+/**
  * POST /api/v1/pdf/:jobId/remediation/re-audit
  * Re-audit a remediated PDF and compare with original results
  *

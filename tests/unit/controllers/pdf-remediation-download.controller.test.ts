@@ -118,7 +118,7 @@ describe('PdfRemediationController.downloadRemediatedPdf', () => {
     expect(fileStorageService.downloadFile).toHaveBeenCalledWith('job-storage/job-1/remediated/math_kim.pdf');
     expect(fileStorageService.getRemediatedFile).not.toHaveBeenCalled();
     expect(res.send).toHaveBeenCalledWith(pdfBytes);
-    expect(res.setHeader).toHaveBeenCalledWith('Content-Disposition', expect.stringContaining('math_kim_remediated.pdf'));
+    expect(res.setHeader).toHaveBeenCalledWith('Content-Disposition', expect.stringMatching(/filename="math_kim_v\d{4}-\d{2}-\d{2}\.pdf"/));
     expect(res.status).not.toHaveBeenCalledWith(404);
   });
 
