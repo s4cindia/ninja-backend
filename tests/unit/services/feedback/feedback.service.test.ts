@@ -39,7 +39,7 @@ vi.mock('../../../../src/services/email/email.service', () => ({
 }));
 
 import prisma from '../../../../src/lib/prisma';
-import { feedbackService } from '../../../../src/services/feedback/feedback.service';
+import { feedbackService, FeedbackService } from '../../../../src/services/feedback/feedback.service';
 
 describe('FeedbackService', () => {
   beforeEach(() => {
@@ -335,6 +335,12 @@ describe('FeedbackService', () => {
       const result = await feedbackService.updateFeedbackStatus('f-1', 't-1', 'RESOLVED');
 
       expect(result).toEqual(baseRow);
+    });
+  });
+
+  describe('toFeedbackType', () => {
+    it('maps full_qc_review to FULL_QC_REVIEW (Structure Tag Review "Flag" action)', () => {
+      expect(FeedbackService.toFeedbackType('full_qc_review')).toBe('FULL_QC_REVIEW');
     });
   });
 });
