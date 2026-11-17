@@ -103,6 +103,7 @@ const TYPE_MAP: Record<string, FeedbackType> = {
   general: 'GENERAL',
   bug_report: 'BUG_REPORT',
   feature_request: 'FEATURE_REQUEST',
+  full_qc_review: 'FULL_QC_REVIEW',
 };
 
 const STATUS_MAP: Record<string, FeedbackStatus> = {

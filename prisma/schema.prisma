@@ -519,6 +519,11 @@ enum FeedbackType {
   GENERAL
   BUG_REPORT
   FEATURE_REQUEST
+  /// A note or flag filed during the Full QC page-by-page structure-tag
+  /// review (StructureTagPanel's "Flag" action) -- reuses this existing
+  /// Feedback model rather than a second mechanism. context.jobId /
+  /// context.pageNumber / context.elementPath identify what was flagged.
+  FULL_QC_REVIEW
 }
 
 enum FeedbackStatus {
