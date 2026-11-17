@@ -94,6 +94,52 @@ describe('extractStructureTagsForPage', () => {
     expect(extractStructureTagsForPage(doc, 1)).toEqual([]);
   });
 
+  it('still returns a single-line /P (one MCID, one Tm+Tj, no path geometry) instead of silently omitting it -- real incident, Karsaklian_189165_9781606497623.pdf: ordinary body-text lines are wrapped exactly this way (no per-line path/clip-rect, no Td/T* advance -- an isolated Tm+TJ per line), making every one a true single point that the default (area-requiring) locateMcidBoundingBoxes behavior discarded, vanishing whole pages of real content from this feature\'s inventory', async () => {
+    const doc = await makeDoc();
+    const page = doc.getPage(0);
+    const ref = doc.context.register(doc.context.obj({ S: PDFName.of('P'), Pg: page.ref, K: 9 }));
+    const root = doc.context.obj({ Type: PDFName.of('StructTreeRoot'), K: [ref] });
+    doc.catalog.set(PDFName.of('StructTreeRoot'), doc.context.register(root));
+
+    // One marked-content span, one BT..ET, one Tm (absolute position), one
+    // TJ -- no m/l/re, no Td/T* -- exactly the real shape: a single point.
+    writePageContent(doc, 1, '<</MCID 9>>BDC BT 10.5 0 0 10.5 63 583 Tm [(Some real body text.)] TJ ET EMC');
+
+    const result = extractStructureTagsForPage(doc, 1);
+
+    expect(result).toHaveLength(1);
+    expect(result[0].tag).toBe('P');
+    expect(result[0].bbox.width).toBe(0);
+    expect(result[0].bbox.height).toBe(0);
+  });
+
+  it('aggregates a multi-line /P (one MCID per line, each its own single-Tm/single-Tj point) into a real, non-degenerate bbox spanning every line', async () => {
+    const doc = await makeDoc();
+    const page = doc.getPage(0);
+    const ref = doc.context.register(doc.context.obj({ S: PDFName.of('P'), Pg: page.ref, K: [10, 11, 12] }));
+    const root = doc.context.obj({ Type: PDFName.of('StructTreeRoot'), K: [ref] });
+    doc.catalog.set(PDFName.of('StructTreeRoot'), doc.context.register(root));
+
+    // Three separate lines of the SAME paragraph, same shape as the real
+    // file: each its own BDC/EMC span, own BT..ET, one Tm (moving down the
+    // page and slightly right, as real line-wrapped text does), one TJ.
+    writePageContent(
+      doc, 1,
+      '<</MCID 10>>BDC BT 10.5 0 0 10.5 63 600 Tm [(Line one of this paragraph.)] TJ ET EMC ' +
+      '<</MCID 11>>BDC BT 10.5 0 0 10.5 63 585 Tm [(Line two continues here.)] TJ ET EMC ' +
+      '<</MCID 12>>BDC BT 10.5 0 0 10.5 63 570 Tm [(And line three finishes it.)] TJ ET EMC',
+    );
+
+    const result = extractStructureTagsForPage(doc, 1);
+
+    expect(result).toHaveLength(1);
+    expect(result[0].bbox.x).toBe(63);
+    // Device-space y ranges 570-600 -> top-left y = pageHeight(792) - 600 = 192.
+    expect(result[0].bbox.y).toBe(192);
+    expect(result[0].bbox.width).toBe(0); // every Tm uses the same X -- a real limitation, not this fix's concern
+    expect(result[0].bbox.height).toBe(30); // 600 - 570: real vertical extent across the three lines
+  });
+
   it('only returns elements that actually live on the requested page', async () => {
     const doc = await makeDoc(2);
     const page2 = doc.getPage(1);
