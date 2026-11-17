@@ -3501,16 +3501,40 @@ class AiAnalysisService {
    * time, so cluster size and the same-size-elsewhere signal always reflect
    * THIS round's actual document state.
    *
-   * Three decline points, in order, each cheaper than the next:
+   * Cluster size is folded into the confidence score, NOT a hard pre-call
+   * gate (changed from the original design -- see "Large-cluster gate ->
+   * penalty" below for why). Two decline points remain, in order, each
+   * cheaper than the next:
    *   1. The candidate can't be re-located (findCandidateForIssue) --
    *      already fixed, or detection ran against a document state this
    *      parse no longer matches.
-   *   2. Cluster size exceeds CLUSTER_SIZE_DECLINE_THRESHOLD -- a common
-   *      body-text style variant, no AI call spent at all.
-   *   3. The AI call itself, or the confidence after folding in the
-   *      same-size-elsewhere signal, falls below HEADING_PROMOTE_MIN_CONFIDENCE
-   *      -- surfaces nothing rather than cluttering the review queue with a
-   *      suggestion neither side believes in.
+   *   2. The AI call itself, or the confidence after folding in the
+   *      same-size-elsewhere and large-cluster signals, falls below
+   *      HEADING_PROMOTE_MIN_CONFIDENCE -- surfaces nothing rather than
+   *      cluttering the review queue with a suggestion neither side
+   *      believes in.
+   *
+   * Large-cluster gate -> penalty (2026-11-17): the original design hard-
+   * declined (zero AI calls) whenever CLUSTER_SIZE_DECLINE_THRESHOLD same-
+   * font-size /P candidates existed document-wide, on the theory that a
+   * large cluster means "a legitimate, deliberately repeated body-text
+   * style." Confirmed live-wrong on Karsaklian_189165_9781606497623.pdf
+   * (the real S4 Carlisle finding this whole classifier exists for, <H1>
+   * content tagged <TPT>): its ~30 real, systematically mistagged section
+   * headings form exactly this shape -- 12 at one font size, 18 at
+   * another, EVERY one of them short (max 60 chars, confirmed by directly
+   * walking collectHeadingStyleData's own candidate population, not just
+   * the already-flagged issues) -- indistinguishable from a genuine
+   * repeated-decorative-style cluster by cluster size and length alone.
+   * The hard gate blocked all ~30 of them from ever reaching the one
+   * signal that CAN tell the two shapes apart: the AI reading actual
+   * surrounding text (a real section title reads as a title; a repeated
+   * decorative style, e.g. a pull-quote, reads as a quoted sentence in
+   * context) -- already proven correct by this method's OWN "declines when
+   * the model itself says this is not a heading" case. Removing the hard
+   * gate costs one more (cheap, Flash) AI call per large-cluster candidate
+   * instead of zero; the confidence penalty below is extra margin on top
+   * of that already-proven judgment, not a replacement for it.
    *
    * Heading LEVEL is a v1 simplification: ratio-to-body-median bands
    * (>=2.2x -> H1, >=1.8x -> H2, else H3), not a full document-wide
@@ -3527,6 +3551,10 @@ class AiAnalysisService {
     // size elsewhere argues this candidate is more likely a deliberate
     // stylistic echo of body text than a missed heading.
     const SAME_SIZE_ELSEWHERE_PENALTY = 0.1;
+    // Same treatment, same reasoning, for cluster size -- see this method's
+    // own "Large-cluster gate -> penalty" doc comment above for why this
+    // moved from a hard pre-call decline to a confidence penalty.
+    const LARGE_CLUSTER_PENALTY = 0.15;
 
     const { allCandidates, existingHeadingFontSizes, bodyMedianFontSize } = await collectHeadingStyleData(parsedPdf);
     const candidate = findCandidateForIssue(allCandidates, issue);
@@ -3536,9 +3564,9 @@ class AiAnalysisService {
     }
 
     const clusterSize = computeClusterSize(allCandidates, candidate.fontSize);
-    if (clusterSize > CLUSTER_SIZE_DECLINE_THRESHOLD) {
-      logger.info(`[AiAnalysis] analyzeHeadingStyleMismatch: ${clusterSize} other /P element(s) share this font size (page ${candidate.pageNumber}) -- a common body-text style variant, declining before any AI call`);
-      return null;
+    const isLargeCluster = clusterSize > CLUSTER_SIZE_DECLINE_THRESHOLD;
+    if (isLargeCluster) {
+      logger.info(`[AiAnalysis] analyzeHeadingStyleMismatch: ${clusterSize} other /P element(s) share this font size (page ${candidate.pageNumber}) -- large cluster, still asking the model but with a confidence penalty`);
     }
 
     const confirmedElsewhere = hasConfirmedHeadingAtSameSize(existingHeadingFontSizes, candidate.fontSize);
@@ -3567,22 +3595,29 @@ class AiAnalysisService {
         return null;
       }
 
-      const adjustedConfidence = Math.max(0, Math.min(1, data.confidence - (confirmedElsewhere ? SAME_SIZE_ELSEWHERE_PENALTY : 0)));
+      const adjustedConfidence = Math.max(0, Math.min(1, data.confidence
+        - (confirmedElsewhere ? SAME_SIZE_ELSEWHERE_PENALTY : 0)
+        - (isLargeCluster ? LARGE_CLUSTER_PENALTY : 0)));
       if (adjustedConfidence < HEADING_PROMOTE_MIN_CONFIDENCE) {
-        logger.info(`[AiAnalysis] analyzeHeadingStyleMismatch: confidence ${adjustedConfidence.toFixed(2)} below floor ${HEADING_PROMOTE_MIN_CONFIDENCE} (page ${candidate.pageNumber}, confirmedElsewhere=${confirmedElsewhere}) -- declining`);
+        logger.info(`[AiAnalysis] analyzeHeadingStyleMismatch: confidence ${adjustedConfidence.toFixed(2)} below floor ${HEADING_PROMOTE_MIN_CONFIDENCE} (page ${candidate.pageNumber}, confirmedElsewhere=${confirmedElsewhere}, isLargeCluster=${isLargeCluster}) -- declining`);
         return null;
       }
 
       const ratio = bodyMedianFontSize > 0 ? candidate.fontSize / bodyMedianFontSize : 0;
       const level = ratio >= 2.2 ? 1 : ratio >= 1.8 ? 2 : 3;
 
+      const penaltyNotes = [
+        confirmedElsewhere ? 'this exact font size is already used elsewhere for a confirmed real heading' : null,
+        isLargeCluster ? `${clusterSize} other /P elements document-wide share this exact font size` : null,
+      ].filter((n): n is string => n !== null);
+
       return {
         suggestionType: 'heading-promote-fix',
         value: String(level),
         guidance: `Promotes this /P to /H${level} ("${candidate.textSample}").`,
         confidence: adjustedConfidence,
-        rationale: confirmedElsewhere
-          ? `${data.rationale} (confidence reduced: this exact font size is already used elsewhere for a confirmed real heading, suggesting this may be a deliberate body-text style echo instead)`
+        rationale: penaltyNotes.length > 0
+          ? `${data.rationale} (confidence reduced: ${penaltyNotes.join('; ')})`
           : data.rationale,
         model: 'gemini-flash',
         applyMode: 'apply-to-pdf',

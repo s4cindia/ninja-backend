@@ -114,8 +114,22 @@ describe('dispatchIssue: HEADING-STYLE-MISMATCH routing', () => {
     expect(['1', '2', '3']).toContain(res.value);
   });
 
-  it('declines before ever calling the model when the font-size band is a common body-text style variant (cluster-size pre-filter)', async () => {
-    const spy = vi.spyOn(geminiService, 'generateWithSchema');
+  it('still asks the model for a large font-size cluster, but declines when the model reads it as a repeated decorative style (cluster size is a confidence penalty, not a hard pre-call gate)', async () => {
+    // Real incident (Karsaklian_189165_9781606497623.pdf, 2026-11-17): a
+    // hard pre-call decline here used to block ~30 of that file's REAL,
+    // systematically mistagged section headings -- they formed exactly
+    // this large-same-size-short-candidates shape, indistinguishable from
+    // a genuine repeated decorative style by cluster size and length
+    // alone. Only the model reading actual text content can tell them
+    // apart (see the next test for the "genuinely mistagged" side of that
+    // same shape) -- so cluster size now only reduces confidence
+    // (LARGE_CLUSTER_PENALTY), it never skips the call outright.
+    const spy = vi.spyOn(geminiService, 'generateWithSchema').mockResolvedValue({
+      data: { isHeading: false, confidence: 0.15, rationale: 'Reads as a quoted sentence repeated for emphasis, not a section title.' },
+      usage: { promptTokens: 20, completionTokens: 10 },
+      attempts: 1,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any);
 
     // 9 paragraphs at the SAME heading-sized font -- just past
     // CLUSTER_SIZE_DECLINE_THRESHOLD (8) -- packed into their own
@@ -141,8 +155,44 @@ describe('dispatchIssue: HEADING-STYLE-MISMATCH routing', () => {
     const parsed = { isTagged: true, pages: [], parsedPdf } as unknown as PdfParseResult;
     const res = await svc.dispatchIssue(issue, parsed, CONFIG, new Map(), new Map(), new Map());
 
+    expect(spy).toHaveBeenCalled();
     expect(res).toBeNull();
-    expect(spy).not.toHaveBeenCalled();
+  });
+
+  it('promotes a genuine heading despite a large same-size cluster, when the model is confident enough to survive the penalty (the Karsaklian shape itself)', async () => {
+    vi.spyOn(geminiService, 'generateWithSchema').mockResolvedValue({
+      data: { isHeading: true, confidence: 0.9, rationale: 'Reads as a genuine, repeated section-title pattern, not decorative text.' },
+      usage: { promptTokens: 20, completionTokens: 10 },
+      attempts: 1,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any);
+
+    // Same large-cluster shape as the test above, EXCEPT every instance is
+    // a real, short section title rather than a pull-quote -- the exact
+    // ambiguity cluster size alone cannot resolve.
+    const manyBodyLines: Line[] = Array.from({ length: 20 }, (_, i) => ({
+      text: `Ordinary body sentence number ${i + 1} describing routine operational detail.`,
+      y: 780 - i * 18,
+      size: 11,
+    }));
+    const sectionTitleLines: Line[] = Array.from({ length: 9 }, (_, i) => ({
+      text: `Section ${i + 1} Overview`,
+      y: 60 + i * 35,
+      size: 22,
+    }));
+    const manyLines: Line[] = [...manyBodyLines, ...sectionTitleLines];
+    const parsedPdf = await buildTaggedDoc(manyLines);
+    const audit = await pdfHeadingStyleMismatchValidator.validate(parsedPdf);
+    expect(audit.issues.length).toBeGreaterThan(0);
+
+    const issue = audit.issues[0];
+    const parsed = { isTagged: true, pages: [], parsedPdf } as unknown as PdfParseResult;
+    const res = await svc.dispatchIssue(issue, parsed, CONFIG, new Map(), new Map(), new Map());
+
+    expect(res).not.toBeNull();
+    expect(res.suggestionType).toBe('heading-promote-fix');
+    expect(res.confidence).toBeCloseTo(0.75, 5); // 0.9 raw - 0.15 large-cluster penalty
+    expect(res.rationale).toContain('confidence reduced');
   });
 
   it('declines when the model itself says this is not a heading', async () => {
