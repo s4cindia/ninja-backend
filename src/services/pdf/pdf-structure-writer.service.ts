@@ -721,6 +721,64 @@ export class PdfStructureWriterService {
   }
 
   /**
+   * Recursively clears /P AND /S on every descendant of kRaw, all the way
+   * down -- not just the direct children detachDirectChildrenParentPointers
+   * already covers one level deep. Needed specifically for
+   * buildTableFromLayout's own deletion of the trivial box it replaces:
+   * unlike markTableAsArtifact's outwardly-identical deletion (which first
+   * declines outright via tableSubtreeHasRealContent whenever any
+   * descendant carries a real MCID, so it only ever has to clean up an
+   * always-empty, content-free subtree -- see that method's own doc
+   * comment), buildTableFromLayout can't decline the same way: the whole
+   * point of the fix is to replace a box that's spuriously paired with
+   * genuinely tabular LAYOUT content, and a real, live case (job
+   * 3xmmA5hVcFNlUYpEFTTdg, 2026-11-18) confirmed the trivial box being
+   * replaced can itself carry a real MCID on its own leftover TD.
+   *
+   * Clearing /P alone (detachDirectChildrenParentPointers' own job,
+   * matching markTableAsArtifact's Farrar-incident fix) only stops
+   * reattachTableRow/reattachTableCell's orphan-repair path from
+   * resurrecting a dangling /P pointer -- it does nothing to stop
+   * pdf-table-cell-tree.validator.ts's own, separate detection, which
+   * doesn't look at /P at all: its /TD /TH pass walks /ParentTree
+   * directly (bottom-up, by MCID) and its /TR pass enumerates every
+   * indirect /StructElem object in the file outright, in both cases
+   * flagging anything with a real MCID and a matching /S (TD/TH/TR) that
+   * isn't reachable from the struct tree root. Clearing /S here (not
+   * /Type -- see markTableAsArtifact's own doc comment for why retagging
+   * to /Artifact instead was tried and reverted for PAC compatibility)
+   * makes every descendant fail that /S match, so neither pass has
+   * anything left to flag. Confirmed live: this exact shape (139 leftover
+   * TR/TD pairs, each with a real MCID, in round 1 alone) was the root
+   * cause of job 3xmmA5hVcFNlUYpEFTTdg's Auto Mode run oscillating for 10
+   * rounds without net progress -- the row/cell-reconnect fixer kept
+   * reattaching these zombies, re-triggering MATTERHORN-15-001 on the
+   * same tables, which buildTableFromLayout then deleted again, leaving a
+   * smaller zombie behind, round after round, instead of ever converging.
+   */
+  private detachDescendantsRecursively(doc: PDFDocument, kRaw: PDFObject | undefined, seen = new Set<string>()): void {
+    if (kRaw === undefined) return;
+    const context = doc.context;
+    const resolved = kRaw instanceof PDFRef ? context.lookup(kRaw) : kRaw;
+    const entries = resolved instanceof PDFArray
+      ? Array.from({ length: resolved.size() }, (_, i) => resolved.get(i))
+      : [kRaw];
+    for (const entry of entries) {
+      if (!(entry instanceof PDFRef)) continue; // bare MCID integers have no further structure to clean up
+      const key = entry.toString();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const child = context.lookup(entry);
+      if (!(child instanceof PDFDict)) continue;
+
+      this.detachDescendantsRecursively(doc, child.get(PDFName.of('K')), seen);
+
+      child.delete(PDFName.of('P'));
+      child.delete(PDFName.of('S'));
+    }
+  }
+
+  /**
    * True if ANY descendant of `node` carries a real MCID (a bare integer,
    * an MCR dict's /MCID, or any entry inside a /K array holding either) --
    * i.e. genuine painted content exists somewhere under this subtree, not
@@ -4708,6 +4766,26 @@ export class PdfStructureWriterService {
           // spuriously paired with a decorative box (PR #546) -- that box is
           // exactly what MATTERHORN-15-005's existing fix already removes,
           // so it no longer sits around as an untouched leftover here either.
+          //
+          // Before dropping the box's own /K below (deleteElement's job),
+          // fully neutralize whatever it already had underneath it -- a
+          // real, live job (3xmmA5hVcFNlUYpEFTTdg, 2026-11-18) confirmed
+          // the trivial box can itself carry a pre-existing TR/TD with a
+          // real MCID (unlike markTableAsArtifact's own always-empty-box
+          // invariant, enforced by declining via tableSubtreeHasRealContent
+          // when it isn't -- not an option here, since declining would
+          // leave MATTERHORN-15-001 permanently unfixed for every table
+          // shaped this way instead of fixed). Left alone, that leftover
+          // TR/TD stays a fully tagged, independently-discoverable
+          // StructElem that pdf-table-cell-tree.validator.ts's own
+          // disconnected-row/cell checks (which don't go through /P or
+          // top-down reachability at all) then flag as a fresh regression
+          // -- see detachDescendantsRecursively's own doc comment for the
+          // full mechanism and the confirmed-live oscillation this caused.
+          const targetDict = doc.context.lookup(targetRef);
+          if (targetDict instanceof PDFDict) {
+            this.detachDescendantsRecursively(doc, targetDict.get(PDFName.of('K')));
+          }
           this.deleteElement(doc, targetRef);
 
           const myCells = cellPlans.filter(cp => cp.entryIndex === entryIndex);

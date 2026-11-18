@@ -69,7 +69,16 @@ async function buildDocWithTrivialBoxAndSiblings(
   lines: Array<{ text: string; x: number; y: number }>,
   siblingCountBefore = 3,
   siblingCountAfter = 3,
-): Promise<{ doc: PDFDocument; trivialBoxRef: PDFRef; parentRef: PDFRef }> {
+  // Matches the confirmed-live shape (job 3xmmA5hVcFNlUYpEFTTdg,
+  // 2026-11-18): the trivial box's own TR/TD, left over from before this
+  // fix ever ran, carrying a real MCID -- the one invariant markTableAsArtifact's
+  // "always-empty decorative box" assumption depends on but this fix can't
+  // assume, since it can't decline the way that method does. Also, unlike
+  // the default (K-less) shape below, sets /Type /StructElem and real /P
+  // pointers throughout, matching what pdf-table-cell-tree.validator.ts's
+  // /TR enumeration pass and real documents actually carry.
+  trivialBoxHasRealContent = false,
+): Promise<{ doc: PDFDocument; trivialBoxRef: PDFRef; trivialTrRef: PDFRef; trivialTdRef: PDFRef; parentRef: PDFRef }> {
   const src = await PDFDocument.create();
   const page = src.addPage([400, 600]);
   const font = await src.embedFont(StandardFonts.Helvetica);
@@ -77,9 +86,21 @@ async function buildDocWithTrivialBoxAndSiblings(
   const doc = await PDFDocument.load(await src.save());
   const pageRef = doc.getPage(0).ref;
 
-  const trivialTdRef = doc.context.register(doc.context.obj({ S: PDFName.of('TD'), Pg: pageRef }));
-  const trivialTrRef = doc.context.register(doc.context.obj({ S: PDFName.of('TR'), K: [trivialTdRef] }));
+  const trivialTdRef = doc.context.register(doc.context.obj(
+    trivialBoxHasRealContent
+      ? { Type: PDFName.of('StructElem'), S: PDFName.of('TD'), Pg: pageRef, K: PDFNumber.of(0) }
+      : { S: PDFName.of('TD'), Pg: pageRef }
+  ));
+  const trivialTrRef = doc.context.register(doc.context.obj(
+    trivialBoxHasRealContent
+      ? { Type: PDFName.of('StructElem'), S: PDFName.of('TR'), K: [trivialTdRef] }
+      : { S: PDFName.of('TR'), K: [trivialTdRef] }
+  ));
   const trivialBoxRef = doc.context.register(doc.context.obj({ S: PDFName.of('Table'), K: [trivialTrRef], Pg: pageRef }));
+  if (trivialBoxHasRealContent) {
+    (doc.context.lookup(trivialTrRef) as PDFDict).set(PDFName.of('P'), trivialBoxRef);
+    (doc.context.lookup(trivialTdRef) as PDFDict).set(PDFName.of('P'), trivialTrRef);
+  }
 
   const siblingsBefore = Array.from({ length: siblingCountBefore }, () =>
     doc.context.register(doc.context.obj({ S: PDFName.of('P'), Pg: pageRef }))
@@ -91,7 +112,6 @@ async function buildDocWithTrivialBoxAndSiblings(
   const documentRef = doc.context.register(
     doc.context.obj({ S: PDFName.of('Document'), K: [...siblingsBefore, trivialBoxRef, ...siblingsAfter] })
   );
-  trivialTdRef; // (referenced via trivialTrRef's K)
   const trivialBox = doc.context.lookup(trivialBoxRef) as PDFDict;
   trivialBox.set(PDFName.of('P'), documentRef);
 
@@ -101,7 +121,7 @@ async function buildDocWithTrivialBoxAndSiblings(
   doc.catalog.set(PDFName.of('StructTreeRoot'), structTreeRootRef);
   doc.getPage(0).node.set(PDFName.of('StructParents'), PDFNumber.of(0));
 
-  return { doc, trivialBoxRef, parentRef: documentRef };
+  return { doc, trivialBoxRef, trivialTrRef, trivialTdRef, parentRef: documentRef };
 }
 
 /**
@@ -642,5 +662,50 @@ describe('PdfStructureWriterService.buildTableFromLayout', () => {
     // (Default siblingCountBefore/After from buildDocWithTrivialBoxAndSiblings
     // is 3 each.)
     expect(getKidsTags(doc, parentRef)).toEqual(['P', 'P', 'P', 'Artifact', 'P', 'P', 'P']);
+  });
+
+  /**
+   * Root-cause regression for job 3xmmA5hVcFNlUYpEFTTdg's Auto Mode run
+   * (confirmed live, 2026-11-18): oscillated for 10 rounds, $2.17 spent,
+   * net negative progress. Direct struct-tree inspection of the job's own
+   * remediated PDF found 116 orphaned /TR elements, each hanging off a
+   * /Table with no /P and no /K, with a child /TD still carrying a real
+   * MCID -- the trivial box's own pre-existing TR/TD, left fully intact
+   * (merely unreachable) by the OLD deleteElement/buildTableFromLayout,
+   * which only cleared the TOP box's own /K and /P. Both the TD (via
+   * /ParentTree, bypassing /P) and the TR (via raw /StructElem
+   * enumeration, bypassing /K reachability) were then independently
+   * rediscoverable by pdf-table-cell-tree.validator.ts as fresh
+   * TABLE-CELL-DISCONNECTED / TABLE-ROW-DISCONNECTED regressions every
+   * round, which a later fixer kept "repairing" by reattaching them --
+   * re-triggering MATTERHORN-15-001 on the same table, which this method
+   * then deleted again, leaving a smaller zombie behind, round after
+   * round, instead of ever converging.
+   */
+  it('fully neutralizes the replaced trivial box\'s own leftover TR/TD, even when it carries a real MCID, instead of leaving a zombie StructElem behind', async () => {
+    const { doc, trivialTrRef, trivialTdRef } = await buildDocWithTrivialBoxAndSiblings(
+      [{ text: 'Solo', x: 50, y: 500 }], 2, 2, /* trivialBoxHasRealContent */ true,
+    );
+
+    const cells: TableCell[] = [cell(0, 0, [buildItem(50, 500, 'Solo')])];
+    const table = tableInfo({ id: 'table_p1_0', pageNumber: 1, cells, rowCount: 1, columnCount: 1 });
+    const results = pdfStructureWriterService.buildTableFromLayout(doc, [{ issue: issueFor('table_p1_0'), table }]);
+    expect(results[0].success).toBe(true);
+
+    // Neither the old TR nor the old TD still presents as a /TR or /TD/TH
+    // StructElem -- the exact signal pdf-table-cell-tree.validator.ts's
+    // two independent passes (ParentTree walk for TD/TH, raw enumeration
+    // for TR) key on, regardless of reachability from root.
+    const trDict = doc.context.lookup(trivialTrRef) as PDFDict;
+    const tdDict = doc.context.lookup(trivialTdRef) as PDFDict;
+    expect(trDict.get(PDFName.of('S'))).toBeUndefined();
+    expect(tdDict.get(PDFName.of('S'))).toBeUndefined();
+
+    // Also no longer carries a dangling /P a later orphan-repair pass
+    // (reattachTableRow/reattachTableCell) could resurrect -- same
+    // protection markTableAsArtifact already has for its own, shallower
+    // (always-empty) case.
+    expect(trDict.get(PDFName.of('P'))).toBeUndefined();
+    expect(tdDict.get(PDFName.of('P'))).toBeUndefined();
   });
 });
