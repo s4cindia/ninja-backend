@@ -681,9 +681,18 @@ describe('PdfStructureWriterService.buildTableFromLayout', () => {
    * re-triggering MATTERHORN-15-001 on the same table, which this method
    * then deleted again, leaving a smaller zombie behind, round after
    * round, instead of ever converging.
+   *
+   * The pure-container TR (no content of its own) is still neutered. The
+   * content-bearing TD is now REHOMED, not neutered -- confirmed live on
+   * job oxs0RDh-mI5XfubDGuqpW (the Altman re-run after an earlier version
+   * of this fix that only neutered): 97 citation/cross-reference-link
+   * fixes declined because their "enclosing" struct element, found via
+   * /ParentTree, had been stripped to a bare, /S-less dict by the earlier
+   * neuter-only version -- real content left with no owning struct
+   * element at all. Rehoming keeps the real content reachable.
    */
-  it('fully neutralizes the replaced trivial box\'s own leftover TR/TD, even when it carries a real MCID, instead of leaving a zombie StructElem behind', async () => {
-    const { doc, trivialTrRef, trivialTdRef } = await buildDocWithTrivialBoxAndSiblings(
+  it('rehomes the replaced trivial box\'s own leftover content-bearing TD as a plain /P, and neuters its now-empty TR container', async () => {
+    const { doc, trivialTrRef, trivialTdRef, parentRef } = await buildDocWithTrivialBoxAndSiblings(
       [{ text: 'Solo', x: 50, y: 500 }], 2, 2, /* trivialBoxHasRealContent */ true,
     );
 
@@ -692,20 +701,73 @@ describe('PdfStructureWriterService.buildTableFromLayout', () => {
     const results = pdfStructureWriterService.buildTableFromLayout(doc, [{ issue: issueFor('table_p1_0'), table }]);
     expect(results[0].success).toBe(true);
 
-    // Neither the old TR nor the old TD still presents as a /TR or /TD/TH
-    // StructElem -- the exact signal pdf-table-cell-tree.validator.ts's
-    // two independent passes (ParentTree walk for TD/TH, raw enumeration
-    // for TR) key on, regardless of reachability from root.
+    // The TR is a pure container (no content of its own once its TD
+    // child is extracted) -- no longer presents as /TR, matching
+    // pdf-table-cell-tree.validator.ts's raw /StructElem enumeration pass.
     const trDict = doc.context.lookup(trivialTrRef) as PDFDict;
-    const tdDict = doc.context.lookup(trivialTdRef) as PDFDict;
     expect(trDict.get(PDFName.of('S'))).toBeUndefined();
-    expect(tdDict.get(PDFName.of('S'))).toBeUndefined();
-
-    // Also no longer carries a dangling /P a later orphan-repair pass
-    // (reattachTableRow/reattachTableCell) could resurrect -- same
-    // protection markTableAsArtifact already has for its own, shallower
-    // (always-empty) case.
     expect(trDict.get(PDFName.of('P'))).toBeUndefined();
-    expect(tdDict.get(PDFName.of('P'))).toBeUndefined();
+
+    // The TD directly owns a real MCID -- rehomed as a plain /P, genuinely
+    // reachable again (spliced in as a sibling right after the new Table),
+    // with its original MCID binding untouched.
+    const tdDict = doc.context.lookup(trivialTdRef) as PDFDict;
+    expect(tdDict.get(PDFName.of('S'))).toEqual(PDFName.of('P'));
+    expect(tdDict.get(PDFName.of('K'))).toEqual(PDFNumber.of(0));
+    expect(tdDict.get(PDFName.of('P'))).toEqual(parentRef);
+    expect(getKidsTags(doc, parentRef)).toEqual(['P', 'P', 'Table', 'P', 'P', 'P']);
+  });
+
+  /**
+   * Same rehoming mechanism as the test above, but with TWO content-bearing
+   * rows under the trivial box (table_p1_0 only has ONE row via its own
+   * TableInfo, so neither row's content gets claimed by the NEW table --
+   * both rows' TDs must be rehomed, in their original reading order, not
+   * just the first one found).
+   */
+  it('rehomes multiple leftover content-bearing rows in their original reading order', async () => {
+    const { doc, parentRef } = await buildDocWithTrivialBoxAndSiblings(
+      [{ text: 'Solo', x: 50, y: 500 }], 1, 1,
+    );
+    const pageRef = doc.getPage(0).ref;
+    const documentDict = doc.context.lookup(parentRef) as PDFDict;
+    const kids = (documentDict.get(PDFName.of('K')) as PDFArray).asArray() as PDFRef[];
+    const trivialBoxRef = kids.find(r => (doc.context.lookup(r) as PDFDict).get(PDFName.of('S'))?.toString() === '/Table')!;
+    const trivialBoxDict = doc.context.lookup(trivialBoxRef) as PDFDict;
+
+    // Replace the single-row trivial box with a two-row one, each row
+    // carrying its own real, distinct MCID -- same confirmed-live shape
+    // (/Type /StructElem, /S /TR|/TD, real /K MCID), just two of them.
+    const td1Ref = doc.context.register(doc.context.obj({ Type: PDFName.of('StructElem'), S: PDFName.of('TD'), Pg: pageRef, K: PDFNumber.of(10) }));
+    const tr1Ref = doc.context.register(doc.context.obj({ Type: PDFName.of('StructElem'), S: PDFName.of('TR'), K: [td1Ref] }));
+    (doc.context.lookup(td1Ref) as PDFDict).set(PDFName.of('P'), tr1Ref);
+    const td2Ref = doc.context.register(doc.context.obj({ Type: PDFName.of('StructElem'), S: PDFName.of('TD'), Pg: pageRef, K: PDFNumber.of(11) }));
+    const tr2Ref = doc.context.register(doc.context.obj({ Type: PDFName.of('StructElem'), S: PDFName.of('TR'), K: [td2Ref] }));
+    (doc.context.lookup(td2Ref) as PDFDict).set(PDFName.of('P'), tr2Ref);
+    (doc.context.lookup(tr1Ref) as PDFDict).set(PDFName.of('P'), trivialBoxRef);
+    (doc.context.lookup(tr2Ref) as PDFDict).set(PDFName.of('P'), trivialBoxRef);
+    trivialBoxDict.set(PDFName.of('K'), doc.context.obj([tr1Ref, tr2Ref]));
+
+    const cells: TableCell[] = [cell(0, 0, [buildItem(50, 500, 'Solo')])];
+    const table = tableInfo({ id: 'table_p1_0', pageNumber: 1, cells, rowCount: 1, columnCount: 1 });
+    const results = pdfStructureWriterService.buildTableFromLayout(doc, [{ issue: issueFor('table_p1_0'), table }]);
+    expect(results[0].success).toBe(true);
+
+    for (const trRef of [tr1Ref, tr2Ref]) {
+      const trDict = doc.context.lookup(trRef) as PDFDict;
+      expect(trDict.get(PDFName.of('S'))).toBeUndefined();
+    }
+    const td1Dict = doc.context.lookup(td1Ref) as PDFDict;
+    const td2Dict = doc.context.lookup(td2Ref) as PDFDict;
+    expect(td1Dict.get(PDFName.of('S'))).toEqual(PDFName.of('P'));
+    expect(td2Dict.get(PDFName.of('S'))).toEqual(PDFName.of('P'));
+
+    // Reading order preserved: row 1's TD comes before row 2's TD, both
+    // right after the new Table that replaced the trivial box's own slot.
+    expect(getKidsTags(doc, parentRef)).toEqual(['P', 'Table', 'P', 'P', 'P']);
+    const finalKids = ((doc.context.lookup(parentRef) as PDFDict).get(PDFName.of('K')) as PDFArray).asArray() as PDFRef[];
+    const tableIdx = finalKids.findIndex(r => r.objectNumber === findTableKid(doc, parentRef).objectNumber);
+    expect(finalKids[tableIdx + 1].objectNumber).toBe(td1Ref.objectNumber);
+    expect(finalKids[tableIdx + 2].objectNumber).toBe(td2Ref.objectNumber);
   });
 });

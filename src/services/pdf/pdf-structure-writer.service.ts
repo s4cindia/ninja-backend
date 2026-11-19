@@ -721,9 +721,13 @@ export class PdfStructureWriterService {
   }
 
   /**
-   * Recursively clears /P AND /S on every descendant of kRaw, all the way
-   * down -- not just the direct children detachDirectChildrenParentPointers
-   * already covers one level deep. Needed specifically for
+   * Recursively walks every descendant of kRaw, all the way down -- not
+   * just the direct children detachDirectChildrenParentPointers already
+   * covers one level deep -- and for each one, either REHOMES it (if it
+   * directly owns real, painted content: a bare MCID or MCR dict in its
+   * own /K) or NEUTERS it (clears /P and /S, same as before, if it's a
+   * pure structural container with no content of its own once its own
+   * children have been handled). Needed specifically for
    * buildTableFromLayout's own deletion of the trivial box it replaces:
    * unlike markTableAsArtifact's outwardly-identical deletion (which first
    * declines outright via tableSubtreeHasRealContent whenever any
@@ -735,28 +739,55 @@ export class PdfStructureWriterService {
    * 3xmmA5hVcFNlUYpEFTTdg, 2026-11-18) confirmed the trivial box being
    * replaced can itself carry a real MCID on its own leftover TD.
    *
-   * Clearing /P alone (detachDirectChildrenParentPointers' own job,
-   * matching markTableAsArtifact's Farrar-incident fix) only stops
-   * reattachTableRow/reattachTableCell's orphan-repair path from
-   * resurrecting a dangling /P pointer -- it does nothing to stop
-   * pdf-table-cell-tree.validator.ts's own, separate detection, which
-   * doesn't look at /P at all: its /TD /TH pass walks /ParentTree
-   * directly (bottom-up, by MCID) and its /TR pass enumerates every
-   * indirect /StructElem object in the file outright, in both cases
-   * flagging anything with a real MCID and a matching /S (TD/TH/TR) that
-   * isn't reachable from the struct tree root. Clearing /S here (not
-   * /Type -- see markTableAsArtifact's own doc comment for why retagging
-   * to /Artifact instead was tried and reverted for PAC compatibility)
-   * makes every descendant fail that /S match, so neither pass has
-   * anything left to flag. Confirmed live: this exact shape (139 leftover
-   * TR/TD pairs, each with a real MCID, in round 1 alone) was the root
-   * cause of job 3xmmA5hVcFNlUYpEFTTdg's Auto Mode run oscillating for 10
-   * rounds without net progress -- the row/cell-reconnect fixer kept
-   * reattaching these zombies, re-triggering MATTERHORN-15-001 on the
-   * same tables, which buildTableFromLayout then deleted again, leaving a
-   * smaller zombie behind, round after round, instead of ever converging.
+   * NEUTERING alone (this method's first version) stops
+   * pdf-table-cell-tree.validator.ts's two disconnected-row/cell passes
+   * (one walks /ParentTree directly by MCID, the other enumerates every
+   * indirect /StructElem with /S TR, neither looks at /P or top-down
+   * reachability) from re-flagging the leftover TR/TD as a fresh
+   * regression -- but it does so by stripping /S from a node that still
+   * owns a real MCID /ParentTree still points at, leaving that specific
+   * piece of real content with NO owning struct element at all. Confirmed
+   * live on job oxs0RDh-mI5XfubDGuqpW (the Altman re-run after this
+   * method's first version shipped): 97 citation/cross-reference-link
+   * fixes declined with "Enclosing struct element is no longer reachable
+   * from the structure tree root after splicing" -- every one of them
+   * resolved to exactly this shape, a /ParentTree entry pointing at a
+   * node this method had stripped to bare {Type, Pg, K} with no /S.
+   *
+   * REHOMING fixes that: retag the content-owning node to /P (the generic
+   * fallback this codebase uses elsewhere for real content with no
+   * stronger semantic signal) and splice it in as a plain sibling right
+   * after wherever this subtree's caller last placed something (initially
+   * the new Table buildTableFromLayout just inserted, then each
+   * successively rehomed leaf) -- keeps it in roughly its original
+   * reading-order position and, critically, genuinely reachable again, so
+   * /ParentTree's existing entry for its MCID keeps pointing at something
+   * real. A node with BOTH nested struct-element children AND its own
+   * direct content has its /K rewritten to just the content entries
+   * before being rehomed -- the struct-element children were already
+   * independently recursed into and rehomed/neutered on their own, so
+   * leaving their refs behind here would make them reachable through TWO
+   * parents at once.
+   *
+   * Known boundary: only rehomes content found via a descendant's own
+   * /K, not a bare MCID sitting directly in the TOP-level kRaw passed by
+   * the caller (i.e. the deleted element itself directly owning content,
+   * with no intervening TR/TD) -- no live case has shown that shape, and
+   * handling it would mean the caller deciding NOT to delete the element
+   * at all. Confirmed live on job 3xmmA5hVcFNlUYpEFTTdg: 139 leftover
+   * TR/TD pairs, each with a real MCID, were the root cause of that job's
+   * Auto Mode run oscillating for 10 rounds without net progress -- the
+   * row/cell-reconnect fixer kept reattaching these zombies, re-triggering
+   * MATTERHORN-15-001 on the same tables, which buildTableFromLayout then
+   * deleted again, leaving a smaller zombie behind, round after round,
+   * instead of ever converging.
    */
-  private detachDescendantsRecursively(doc: PDFDocument, kRaw: PDFObject | undefined, seen = new Set<string>()): void {
+  private detachDescendantsRecursively(
+    doc: PDFDocument,
+    kRaw: PDFObject | undefined,
+    rehome: { parentRef: PDFRef; afterRef: PDFRef },
+    seen = new Set<string>(),
+  ): void {
     if (kRaw === undefined) return;
     const context = doc.context;
     const resolved = kRaw instanceof PDFRef ? context.lookup(kRaw) : kRaw;
@@ -771,10 +802,42 @@ export class PdfStructureWriterService {
       const child = context.lookup(entry);
       if (!(child instanceof PDFDict)) continue;
 
-      this.detachDescendantsRecursively(doc, child.get(PDFName.of('K')), seen);
+      const childKRaw = child.get(PDFName.of('K'));
+      const childEntries = childKRaw instanceof PDFArray
+        ? Array.from({ length: childKRaw.size() }, (_, i) => childKRaw.get(i))
+        : childKRaw !== undefined ? [childKRaw] : [];
 
-      child.delete(PDFName.of('P'));
-      child.delete(PDFName.of('S'));
+      const contentEntries: PDFObject[] = [];
+      const nestedStructRefs: PDFRef[] = [];
+      for (const ce of childEntries) {
+        const resolvedCe = ce instanceof PDFRef ? context.lookup(ce) : ce;
+        if (resolvedCe instanceof PDFNumber) {
+          contentEntries.push(ce);
+        } else if (resolvedCe instanceof PDFDict && resolvedCe.get(PDFName.of('MCID')) !== undefined) {
+          contentEntries.push(ce); // MCR (Marked Content Reference) dict -- also real content
+        } else if (ce instanceof PDFRef && resolvedCe instanceof PDFDict) {
+          nestedStructRefs.push(ce);
+        }
+      }
+
+      // Recurse into nested struct-element children first -- each is
+      // independently rehomed or neutered before this node's own fate is
+      // decided, so a node with mixed content+children never leaves a
+      // stale ref to an already-rehomed child in its own /K below.
+      for (const nestedRef of nestedStructRefs) {
+        this.detachDescendantsRecursively(doc, nestedRef, rehome, seen);
+      }
+
+      if (contentEntries.length > 0) {
+        child.set(PDFName.of('K'), contentEntries.length === 1 ? contentEntries[0] : doc.context.obj(contentEntries));
+        this.renameElement(doc, entry, 'P');
+        this.insertIntoKidsAfter(doc, rehome.parentRef, rehome.afterRef, entry);
+        child.set(PDFName.of('P'), rehome.parentRef);
+        rehome.afterRef = entry;
+      } else {
+        child.delete(PDFName.of('P'));
+        child.delete(PDFName.of('S'));
+      }
     }
   }
 
@@ -4768,23 +4831,25 @@ export class PdfStructureWriterService {
           // so it no longer sits around as an untouched leftover here either.
           //
           // Before dropping the box's own /K below (deleteElement's job),
-          // fully neutralize whatever it already had underneath it -- a
-          // real, live job (3xmmA5hVcFNlUYpEFTTdg, 2026-11-18) confirmed
+          // rehome or neutralize whatever it already had underneath it --
+          // a real, live job (3xmmA5hVcFNlUYpEFTTdg, 2026-11-18) confirmed
           // the trivial box can itself carry a pre-existing TR/TD with a
           // real MCID (unlike markTableAsArtifact's own always-empty-box
           // invariant, enforced by declining via tableSubtreeHasRealContent
           // when it isn't -- not an option here, since declining would
           // leave MATTERHORN-15-001 permanently unfixed for every table
-          // shaped this way instead of fixed). Left alone, that leftover
-          // TR/TD stays a fully tagged, independently-discoverable
-          // StructElem that pdf-table-cell-tree.validator.ts's own
-          // disconnected-row/cell checks (which don't go through /P or
-          // top-down reachability at all) then flag as a fresh regression
-          // -- see detachDescendantsRecursively's own doc comment for the
-          // full mechanism and the confirmed-live oscillation this caused.
+          // shaped this way instead of fixed). Left merely neutered
+          // (stripped of /S but still /ParentTree-registered), that
+          // leftover content-bearing node is exactly what a later
+          // link/citation fix resolves via /ParentTree as its "enclosing"
+          // struct element, finds unreachable, and correctly declines on
+          // -- confirmed live on job oxs0RDh-mI5XfubDGuqpW (97 cases) --
+          // see detachDescendantsRecursively's own doc comment for the
+          // full mechanism, both confirmed-live incidents, and why
+          // rehoming (not just neutering) is what actually closes this.
           const targetDict = doc.context.lookup(targetRef);
           if (targetDict instanceof PDFDict) {
-            this.detachDescendantsRecursively(doc, targetDict.get(PDFName.of('K')));
+            this.detachDescendantsRecursively(doc, targetDict.get(PDFName.of('K')), { parentRef: parentRaw, afterRef: tableRef });
           }
           this.deleteElement(doc, targetRef);
 
