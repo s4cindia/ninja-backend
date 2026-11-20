@@ -475,6 +475,22 @@ export class JobAutoRemediationDriver implements AutoRemediationDriver {
     return { jobId: run.jobId, tenantId: job.tenantId, autoEscalateOnStall: job.autoEscalateOnStall };
   }
 
+  /** Also resets autoStallEscalated to false -- without this, a job that
+   *  escalated once stayed permanently un-escalatable on every future
+   *  start, contradicting escalateStalledModes' own doc comment ("one
+   *  escalation attempt per run"): this field is only ever set true by
+   *  escalateStalledModes and was never cleared anywhere else, so it
+   *  silently meant "one escalation attempt ever for this job" instead.
+   *  Real incident (DuBrin_FOB_8e.pdf, 2026-11-20): the original run
+   *  escalated once, stalled again, and stopped; a fresh round started
+   *  afterward inherited autoStallEscalated: true from that same row and
+   *  would have skipped escalation entirely on a second stall, defeating
+   *  the whole point of starting a fresh round to give stuck suggestions
+   *  (see PR #847's retry-on-escalation fix) another chance. The
+   *  apply-to-pdf mode flips escalateStalledModes also makes are
+   *  deliberately NOT reset here -- those are a real, intentional
+   *  "gentler settings didn't work" decision that should persist across
+   *  restarts; only the one-shot gate resets. */
   async resetForNewRun(startedAt: Date): Promise<void> {
     await prisma.pdfAutoRemediationRun.update({
       where: { id: this.runId },
@@ -486,6 +502,7 @@ export class JobAutoRemediationDriver implements AutoRemediationDriver {
         autoCostSpentUsd: 0,
         autoStartedAt: startedAt,
         autoStoppedAt: null,
+        autoStallEscalated: false,
       },
     });
   }

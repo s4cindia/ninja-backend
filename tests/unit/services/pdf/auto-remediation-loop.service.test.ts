@@ -1866,7 +1866,7 @@ describe('JobAutoRemediationDriver', () => {
     });
   });
 
-  it('resetForNewRun writes the exact fresh-run reset payload the trial driver uses', async () => {
+  it('resetForNewRun writes the exact fresh-run reset payload the trial driver uses, plus clearing autoStallEscalated', async () => {
     const startedAt = new Date('2026-01-01T00:00:00Z');
     await new JobAutoRemediationDriver('run-1').resetForNewRun(startedAt);
 
@@ -1880,8 +1880,42 @@ describe('JobAutoRemediationDriver', () => {
         autoCostSpentUsd: 0,
         autoStartedAt: startedAt,
         autoStoppedAt: null,
+        autoStallEscalated: false,
       },
     });
+  });
+
+  it('a fresh run can escalate again after a prior run already escalated once -- real incident, DuBrin_FOB_8e.pdf (2026-11-20)', async () => {
+    // Prior run already escalated (autoStallEscalated: true persisted on the
+    // row) -- without resetForNewRun clearing it, this fresh run's own
+    // stall would skip escalation entirely (see resetForNewRun's own doc
+    // comment: "one escalation attempt ever for this job" was the bug).
+    vi.mocked(getEffectiveAiRemediationConfig).mockResolvedValue({ autoEscalateOnStallDefault: true } as any);
+    mockLockAcquired();
+    let autoStallEscalatedState = true;
+    vi.mocked(prisma.pdfAutoRemediationRun.findUnique).mockImplementation(async () =>
+      makeRun({ autoStallEscalated: autoStallEscalatedState }) as any
+    );
+    vi.mocked(prisma.pdfAutoRemediationRun.update).mockImplementation(async (args: any) => {
+      if (args.data.autoStallEscalated !== undefined) autoStallEscalatedState = args.data.autoStallEscalated;
+      return makeRun({ autoStallEscalated: autoStallEscalatedState }) as any;
+    });
+    vi.mocked(prisma.job.findUnique).mockResolvedValue({ id: 'job-1', tenantId: 'tenant-1', output: {}, autoEscalateOnStall: null } as any);
+    vi.mocked(aiAnalysisService.analyzeJob).mockResolvedValue({ analyzed: 1, skipped: 0, colorContrastMode: 'guidance-only', linkTextMode: 'guidance-only' } as any);
+    vi.mocked(prisma.aiAnalysis.updateMany).mockResolvedValue({ count: 1 } as any);
+    vi.mocked(aiAnalysisService.applyApprovedSuggestions).mockResolvedValue({ applied: 0, failed: 1, errors: [] });
+    vi.mocked(prisma.aiAnalysis.count)
+      .mockResolvedValueOnce(1) // round 1: stalls
+      .mockResolvedValueOnce(1) // round 2: stalls again -- escalates, now that resetForNewRun cleared the flag
+      .mockResolvedValueOnce(0); // round 3 (post-escalation): converges
+
+    await autoRemediationLoopService.startAutoLoop(new JobAutoRemediationDriver('run-1'));
+
+    expect(prisma.pdfAutoRemediationRun.update).toHaveBeenCalledWith({
+      where: { id: 'run-1' },
+      data: { autoColorContrastMode: 'apply-to-pdf', autoLinkTextMode: 'apply-to-pdf', autoBookmarkMode: 'apply-to-pdf', autoStallEscalated: true },
+    });
+    expect(aiAnalysisService.analyzeJob).toHaveBeenCalledTimes(3);
   });
 
   describe('getRoundState', () => {
