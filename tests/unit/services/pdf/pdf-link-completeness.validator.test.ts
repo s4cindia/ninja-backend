@@ -194,6 +194,30 @@ describe('PdfLinkCompletenessValidator -- cross-reference detection', () => {
     expect(issues.length).toBe(0);
   });
 
+  it('flags "in Figure N"-style prose cross-references (Karsaklian_189165 S4 QC finding, 2026-11-20)', async () => {
+    const issues = await crossRefIssuesFor('Let\'s visit the five negotiation dilemmas in Figure 5.1. Every negotiator is prone to face several dilemmas.');
+
+    expect(issues.length).toBe(1);
+    expect(issues[0].context).toContain('in Figure 5.1');
+    expect(issues[0].crossReferenceData).toEqual({ keyword: 'figure', number: '5.1', fullText: 'in Figure 5.1' });
+  });
+
+  it('flags "shown in Table N" and "illustrated in Figure N" prose cross-references', async () => {
+    const shownIn = await crossRefIssuesFor('The results are shown in Table 2 below.');
+    const illustratedIn = await crossRefIssuesFor('This relationship is illustrated in Figure 3 above.');
+
+    expect(shownIn.length).toBe(1);
+    expect(shownIn[0].context).toContain('shown in Table 2');
+    expect(illustratedIn.length).toBe(1);
+    expect(illustratedIn[0].context).toContain('illustrated in Figure 3');
+  });
+
+  it('does not flag ordinary prose containing the word "in" with no reference shape', async () => {
+    const issues = await crossRefIssuesFor('I live in Chicago and work in marketing.');
+
+    expect(issues.length).toBe(0);
+  });
+
   it('does not flag a cross-reference that already has a real Link annotation covering it', async () => {
     const src = await PDFDocument.create();
     const page = src.addPage([500, 300]);

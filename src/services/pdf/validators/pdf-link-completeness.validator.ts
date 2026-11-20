@@ -70,7 +70,25 @@ const MIN_LINK_TEXT_LENGTH = 10;
 // "table" keywords are captured the same way but have no resolution path
 // wired up yet (matching "Figure 2" to a specific numbered Figure struct
 // element wasn't investigated) -- they stay manual-review-only today.
-const CROSS_REFERENCE_RE = /\bsee\s+(chapter|section|figure|fig|table|page|pg|p)\.?\s+(\d+(?:\.\d+)*)\b/gi;
+//
+// Prefix alternation widened beyond "see" (S4 QC, Karsaklian_189165,
+// 2026-11-20): the SAME document's own page 51 reads "...the five
+// negotiation dilemmas in Figure 5.1. Every negotiator...", referencing
+// the exact Figure 5.1 shown on the very next page -- a real,
+// undetected cross-reference, just phrased without "see". "in"/"shown
+// in"/"illustrated in" are the other common prose constructions for
+// exactly this reference shape. Known, accepted trade-off from widening
+// to bare "in": a phrase like "Chapter 11 bankruptcy" (the legal term,
+// not a book chapter) would also match and get flagged -- no worse than
+// this validator's own pre-existing "see Chapter 11" false-positive risk
+// for the identical reason, and still far better than missing this
+// entire, very common phrasing. "shown in"/"illustrated in" must be
+// listed before the bare "in" alternative has no bearing on matching
+// (the engine tries each starting position in the string independently,
+// and `\b` + the longer alternatives' own extra literal text mean "in"
+// alone can only ever match where "shown "/"illustrated " isn't also
+// present) -- order here is for readability, not correctness.
+const CROSS_REFERENCE_RE = /\b(?:see|shown in|illustrated in|in)\s+(chapter|section|figure|fig|table|page|pg|p)\.?\s+(\d+(?:\.\d+)*)\b/gi;
 
 // In-text citations -- "(Author, Year)", "(Author and Author2, Year)",
 // "(Author Year)" (no comma), optionally with a disambiguating suffix
