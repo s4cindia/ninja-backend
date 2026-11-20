@@ -7663,32 +7663,49 @@ export class PdfStructureWriterService {
    * real defect this fixes (confirmed on Math_Weir_PDF.pdf: 66 of 75 real
    * /fc caption StructElems tagged in the content stream and correctly
    * cross-referenced in /ParentTree, but never linked into any parent's /K
-   * array -- invisible to any top-down reader). Every one of the 66 real
-   * cases shares one exact shape, verified before writing this fix rather
-   * than assumed:
+   * array -- invisible to any top-down reader). Handles TWO confirmed-real
+   * reading-order conventions, tried in this order:
    *
-   *   [[grandparent, K: array, multiple children]]
-   *     -> [Sect, K: bare (single child), P: grandparent]
-   *          -> [Figure]
-   *     -> ... (the /fc's own /Story wrapper belongs HERE, right after Sect)
+   * 1. Caption FOLLOWS its figure by MCID (Math_Weir_PDF.pdf: 66/66 real
+   *    cases share one exact shape, verified before writing this fix
+   *    rather than assumed):
    *
-   * i.e. the /Figure immediately preceding the caption (by MCID, on the
-   * SAME page) is always wrapped in its own single-child /Sect, and that
-   * /Sect always has a real /P pointing at a genuine multi-child container
-   * -- the correct reattachment point, confirmed identical across all 66
-   * real cases rather than merely assumed from the first few. Uses
-   * insertIntoKidsAfter (already-established anchor-relative insertion) to
-   * splice the /Story in immediately after its Figure's /Sect, preserving
-   * reading-order proximity, then sets the /Story's own /P (missing
-   * entirely on every real case) to the grandparent.
+   *      [[grandparent, K: array, multiple children]]
+   *        -> [Sect, K: bare (single child), P: grandparent]
+   *             -> [Figure]
+   *        -> ... (the /fc's own /Story wrapper belongs HERE, right after Sect)
+   *
+   *    i.e. the /Figure immediately preceding the caption (by MCID, on the
+   *    SAME page) is always wrapped in its own single-child /Sect, and that
+   *    /Sect always has a real /P pointing at a genuine multi-child
+   *    container -- the correct reattachment point, confirmed identical
+   *    across all 66 real cases. Uses insertIntoKidsAfter (already-
+   *    established anchor-relative insertion) to splice the /Story in
+   *    immediately after its Figure's /Sect, preserving reading-order
+   *    proximity, then sets the /Story's own /P (missing entirely on every
+   *    real case) to the grandparent.
+   *
+   * 2. Caption PRECEDES its figure(s) by MCID -- no /Figure appears before
+   *    it anywhere on the page (confirmed real on Whiting_186772_E9778: 42
+   *    captions, every one of them MCID-numbered before the figure(s) they
+   *    caption). This is NOT just the first convention with the search
+   *    direction flipped -- the correct target is a different parent
+   *    entirely, confirmed from 8/8 already-correctly-attached captions
+   *    elsewhere in this SAME document sharing this exact "no preceding
+   *    figure" shape: the nearest FOLLOWING /Figure's own direct parent is
+   *    a self-contained figure-group /Sect (either a bare ref to one
+   *    Figure, or an array of ONLY /Figure children -- no heading or
+   *    paragraph siblings mixed in), and the caption's /Story belongs
+   *    INSIDE that same /Sect, as the LAST child after all its sibling
+   *    /Figure elements -- not beside the /Sect under a grandparent.
    *
    * Bails (does not guess) when: the element id doesn't resolve to a real
    * /fc at the expected position (the document changed since the issue was
    * generated), the /fc's own /P doesn't point at a real /Story, no
-   * /Figure precedes the caption on the same page, that Figure's own
-   * parent isn't a single-child wrapper, or that wrapper has no real /P of
-   * its own -- each a genuinely different document shape this fix hasn't
-   * been verified against, matching this file's established convention.
+   * /Figure exists on the page in either direction, or either convention's
+   * parent shape doesn't match exactly what was verified above -- each a
+   * genuinely different document shape this fix hasn't been verified
+   * against, matching this file's established convention.
    */
   reattachFigureCaption(doc: PDFDocument, issues: AuditIssue[]): FixResult[] {
     const results: FixResult[] = [];
@@ -7765,95 +7782,214 @@ export class PdfStructureWriterService {
           if (resolved.get(PDFName.of('S'))?.toString() !== '/Figure') continue;
           if (i > bestFigureMcid) { bestFigureMcid = i; bestFigureRef = entry; }
         }
-        if (!bestFigureRef) {
+        if (bestFigureRef) {
+          const figureDict = doc.context.lookup(bestFigureRef, PDFDict);
+          const sectPRaw = figureDict?.get(PDFName.of('P'));
+          if (!(sectPRaw instanceof PDFRef)) {
+            results.push({ issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error: 'Preceding /Figure has no /P of its own' });
+            continue;
+          }
+          const sectRef = sectPRaw;
+          const sectDict = doc.context.lookup(sectRef, PDFDict);
+          if (!sectDict) {
+            results.push({ issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error: 'Figure\'s /P does not resolve to a real dictionary' });
+            continue;
+          }
+
+          // Confirmed real shape: the Figure's own direct parent has EXACTLY
+          // one child (itself) -- a genuinely different (already multi-
+          // child) parent shape hasn't been verified against real data.
+          // CodeRabbit finding on PR #592, confirmed real: the original check
+          // only confirmed /Sect /K was NOT an array (a lone-child shape) but
+          // never confirmed it's a ref to THIS bestFigureRef specifically --
+          // subsumed by the stricter exact-match check below (a genuine
+          // array still fails the `instanceof PDFRef` half of it).
+          const sectK = sectDict.get(PDFName.of('K'));
+          if (!(sectK instanceof PDFRef) || sectK.objectNumber !== bestFigureRef.objectNumber) {
+            results.push({ issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error: 'Figure\'s parent /K does not reference this /Figure (or has multiple children) -- unverified shape, declining rather than guessing' });
+            continue;
+          }
+
+          const grandparentPRaw = sectDict.get(PDFName.of('P'));
+          if (!(grandparentPRaw instanceof PDFRef)) {
+            results.push({ issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error: 'Figure\'s single-child parent has no /P of its own' });
+            continue;
+          }
+          const grandparentRef = grandparentPRaw;
+
+          const grandparentDict = doc.context.lookup(grandparentRef, PDFDict);
+          const grandparentK = grandparentDict?.get(PDFName.of('K'));
+          if (!(grandparentK instanceof PDFArray)) {
+            results.push({ issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error: 'Figure\'s grandparent /K is not an array' });
+            continue;
+          }
+
+          // CodeRabbit finding on PR #592, confirmed real: a stale or
+          // repeated issue (the same disconnected-caption issue dispatched
+          // twice without a fresh audit in between) would previously insert
+          // the SAME /Story a second time, corrupting the tree. Idempotent:
+          // if the /Story is already exactly where this fix would put it,
+          // succeed without mutating; if it's attached ANYWHERE else
+          // (a different /P, or present but out of position), decline rather
+          // than guess what should happen to it.
+          const grandparentKids = grandparentK.asArray();
+          const sectIndex = grandparentKids.findIndex(item => item instanceof PDFRef && item.objectNumber === sectRef.objectNumber);
+          const storyIndexes = grandparentKids
+            .map((item, index) => (item instanceof PDFRef && item.objectNumber === storyRef.objectNumber ? index : -1))
+            .filter(index => index >= 0);
+          const existingStoryParent = storyDict.get(PDFName.of('P'));
+          const alreadyCorrectlyAttached =
+            existingStoryParent instanceof PDFRef &&
+            existingStoryParent.objectNumber === grandparentRef.objectNumber &&
+            sectIndex !== -1 &&
+            storyIndexes.length === 1 &&
+            storyIndexes[0] === sectIndex + 1;
+
+          if (alreadyCorrectlyAttached) {
+            results.push({
+              issueId: issue.id,
+              success: true,
+              before: 'already attached',
+              after: `already attached immediately after its figure's /Sect wrapper (${sectRef.toString()}) under ${grandparentRef.toString()}`,
+            });
+            continue;
+          }
+          if (existingStoryParent !== undefined || storyIndexes.length > 0) {
+            results.push({ issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error: 'Story is already attached to the structure tree in an unexpected position -- declining rather than guessing' });
+            continue;
+          }
+
+          this.insertIntoKidsAfter(doc, grandparentRef, sectRef, storyRef);
+          storyDict.set(PDFName.of('P'), grandparentRef);
+
+          results.push({
+            issueId: issue.id,
+            success: true,
+            before: 'disconnected from the structure tree',
+            after: `reattached as a sibling immediately after its figure's /Sect wrapper (${sectRef.toString()}) under ${grandparentRef.toString()}`,
+          });
+          continue;
+        }
+
+        // No preceding /Figure anywhere on the page -- the opposite
+        // reading-order convention (confirmed real on Whiting_186772_E9778:
+        // 42 captions, every one of them MCID-numbered BEFORE the figure(s)
+        // they caption, not after). Flipping the search direction alone is
+        // NOT enough: the backward path's target (sibling of the Figure's
+        // /Sect, under a grandparent) does not hold here. The real shape,
+        // confirmed from 8/8 already-correctly-attached captions elsewhere
+        // in this SAME document that share this exact "no preceding figure"
+        // situation: the following Figure's own direct parent is a
+        // self-contained figure-group /Sect (either a bare ref to one
+        // Figure, or an array of ONLY /Figure children -- no heading or
+        // paragraph siblings mixed in), and the caption's /Story belongs
+        // INSIDE that same /Sect, as the LAST child after all its sibling
+        // /Figure elements -- not beside the /Sect under a grandparent.
+        let fwdFigureRef: PDFRef | null = null;
+        for (let i = captionMcid + 1; i < pageArrRaw.length; i++) {
+          const entry = pageArrRaw[i];
+          if (!(entry instanceof PDFRef)) continue;
+          const resolved = doc.context.lookup(entry);
+          if (!(resolved instanceof PDFDict)) continue;
+          if (resolved.get(PDFName.of('S'))?.toString() !== '/Figure') continue;
+          fwdFigureRef = entry;
+          break;
+        }
+        if (!fwdFigureRef) {
           results.push({ issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error: `No preceding /Figure found on page ${pageNumber} to anchor the caption near` });
           continue;
         }
 
-        const figureDict = doc.context.lookup(bestFigureRef, PDFDict);
-        const sectPRaw = figureDict?.get(PDFName.of('P'));
-        if (!(sectPRaw instanceof PDFRef)) {
-          results.push({ issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error: 'Preceding /Figure has no /P of its own' });
+        const fwdFigureDict = doc.context.lookup(fwdFigureRef, PDFDict);
+        const fwdSectPRaw = fwdFigureDict?.get(PDFName.of('P'));
+        if (!(fwdSectPRaw instanceof PDFRef)) {
+          results.push({ issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error: 'Following /Figure has no /P of its own' });
           continue;
         }
-        const sectRef = sectPRaw;
-        const sectDict = doc.context.lookup(sectRef, PDFDict);
-        if (!sectDict) {
+        const fwdSectRef = fwdSectPRaw;
+        const fwdSectDict = doc.context.lookup(fwdSectRef, PDFDict);
+        if (!fwdSectDict) {
           results.push({ issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error: 'Figure\'s /P does not resolve to a real dictionary' });
           continue;
         }
 
-        // Confirmed real shape: the Figure's own direct parent has EXACTLY
-        // one child (itself) -- a genuinely different (already multi-
-        // child) parent shape hasn't been verified against real data.
-        // CodeRabbit finding on PR #592, confirmed real: the original check
-        // only confirmed /Sect /K was NOT an array (a lone-child shape) but
-        // never confirmed it's a ref to THIS bestFigureRef specifically --
-        // subsumed by the stricter exact-match check below (a genuine
-        // array still fails the `instanceof PDFRef` half of it).
-        const sectK = sectDict.get(PDFName.of('K'));
-        if (!(sectK instanceof PDFRef) || sectK.objectNumber !== bestFigureRef.objectNumber) {
-          results.push({ issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error: 'Figure\'s parent /K does not reference this /Figure (or has multiple children) -- unverified shape, declining rather than guessing' });
+        const fwdSectK = fwdSectDict.get(PDFName.of('K'));
+        let currentKids: PDFRef[];
+        if (fwdSectK instanceof PDFRef) {
+          if (fwdSectK.objectNumber !== fwdFigureRef.objectNumber) {
+            results.push({ issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error: 'Following Figure\'s parent /K does not reference this /Figure -- unverified shape, declining rather than guessing' });
+            continue;
+          }
+          currentKids = [fwdSectK];
+        } else if (fwdSectK instanceof PDFArray) {
+          const rawKids = fwdSectK.asArray();
+          if (rawKids.length === 0 || !rawKids.every((item): item is PDFRef => item instanceof PDFRef)) {
+            results.push({ issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error: 'Following Figure\'s parent /K is not a pure figure-group container -- unverified shape, declining rather than guessing' });
+            continue;
+          }
+          currentKids = rawKids as PDFRef[];
+        } else {
+          results.push({ issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error: 'Following Figure\'s parent /K is neither a bare ref nor an array' });
           continue;
         }
 
-        const grandparentPRaw = sectDict.get(PDFName.of('P'));
-        if (!(grandparentPRaw instanceof PDFRef)) {
-          results.push({ issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error: 'Figure\'s single-child parent has no /P of its own' });
+        // Every kid must be a /Figure or (at most one, and only ours) a
+        // /Story -- anything else is a genuinely different shape this fix
+        // hasn't been verified against.
+        const figureKids: PDFRef[] = [];
+        const storyKids: PDFRef[] = [];
+        let unexpectedKidShape = false;
+        for (const kidRef of currentKids) {
+          const kidDict = doc.context.lookup(kidRef, PDFDict);
+          const kidTag = kidDict?.get(PDFName.of('S'))?.toString();
+          if (kidTag === '/Figure') figureKids.push(kidRef);
+          else if (kidTag === '/Story') storyKids.push(kidRef);
+          else { unexpectedKidShape = true; break; }
+        }
+        if (unexpectedKidShape || figureKids.length === 0) {
+          results.push({ issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error: 'Following Figure\'s parent /K is not a pure figure-group container -- unverified shape, declining rather than guessing' });
           continue;
         }
-        const grandparentRef = grandparentPRaw;
-
-        const grandparentDict = doc.context.lookup(grandparentRef, PDFDict);
-        const grandparentK = grandparentDict?.get(PDFName.of('K'));
-        if (!(grandparentK instanceof PDFArray)) {
-          results.push({ issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error: 'Figure\'s grandparent /K is not an array' });
+        if (storyKids.length > 1 || (storyKids.length === 1 && storyKids[0].objectNumber !== storyRef.objectNumber)) {
+          results.push({ issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error: 'Figure group already has a different /Story attached -- unverified shape, declining rather than guessing' });
           continue;
         }
 
-        // CodeRabbit finding on PR #592, confirmed real: a stale or
-        // repeated issue (the same disconnected-caption issue dispatched
-        // twice without a fresh audit in between) would previously insert
-        // the SAME /Story a second time, corrupting the tree. Idempotent:
-        // if the /Story is already exactly where this fix would put it,
-        // succeed without mutating; if it's attached ANYWHERE else
-        // (a different /P, or present but out of position), decline rather
-        // than guess what should happen to it.
-        const grandparentKids = grandparentK.asArray();
-        const sectIndex = grandparentKids.findIndex(item => item instanceof PDFRef && item.objectNumber === sectRef.objectNumber);
-        const storyIndexes = grandparentKids
-          .map((item, index) => (item instanceof PDFRef && item.objectNumber === storyRef.objectNumber ? index : -1))
-          .filter(index => index >= 0);
-        const existingStoryParent = storyDict.get(PDFName.of('P'));
-        const alreadyCorrectlyAttached =
-          existingStoryParent instanceof PDFRef &&
-          existingStoryParent.objectNumber === grandparentRef.objectNumber &&
-          sectIndex !== -1 &&
-          storyIndexes.length === 1 &&
-          storyIndexes[0] === sectIndex + 1;
+        const lastKidRef = currentKids[currentKids.length - 1];
+        const existingStoryParent2 = storyDict.get(PDFName.of('P'));
 
-        if (alreadyCorrectlyAttached) {
-          results.push({
-            issueId: issue.id,
-            success: true,
-            before: 'already attached',
-            after: `already attached immediately after its figure's /Sect wrapper (${sectRef.toString()}) under ${grandparentRef.toString()}`,
-          });
+        if (storyKids.length === 1) {
+          // Our own /Story is already a kid here -- idempotent only if it's
+          // exactly in the last-child position with /P set to this /Sect.
+          const alreadyCorrectlyAttached2 =
+            existingStoryParent2 instanceof PDFRef &&
+            existingStoryParent2.objectNumber === fwdSectRef.objectNumber &&
+            lastKidRef.objectNumber === storyRef.objectNumber;
+          if (alreadyCorrectlyAttached2) {
+            results.push({
+              issueId: issue.id,
+              success: true,
+              before: 'already attached',
+              after: `already attached as the last child of its figure group's /Sect (${fwdSectRef.toString()})`,
+            });
+            continue;
+          }
+          results.push({ issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error: 'Story is already attached to the structure tree in an unexpected position -- declining rather than guessing' });
           continue;
         }
-        if (existingStoryParent !== undefined || storyIndexes.length > 0) {
+        if (existingStoryParent2 !== undefined) {
           results.push({ issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error: 'Story is already attached to the structure tree in an unexpected position -- declining rather than guessing' });
           continue;
         }
 
-        this.insertIntoKidsAfter(doc, grandparentRef, sectRef, storyRef);
-        storyDict.set(PDFName.of('P'), grandparentRef);
+        this.insertIntoKidsAfter(doc, fwdSectRef, lastKidRef, storyRef);
+        storyDict.set(PDFName.of('P'), fwdSectRef);
 
         results.push({
           issueId: issue.id,
           success: true,
           before: 'disconnected from the structure tree',
-          after: `reattached as a sibling immediately after its figure's /Sect wrapper (${sectRef.toString()}) under ${grandparentRef.toString()}`,
+          after: `reattached as the last child of its figure group's /Sect (${fwdSectRef.toString()}), covering ${figureKids.length} figure(s)`,
         });
       } catch (err) {
         results.push({ issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error: err instanceof Error ? err.message : String(err) });
