@@ -747,6 +747,184 @@ describe('PdfStructureWriterService.buildFigureFromImage', () => {
   }, 30_000);
 });
 
+describe('PdfStructureWriterService.buildFigureFromImage -- anchor fallbacks (real investigation, Whiting/Zaidi jobs, 2026-11-20)', () => {
+  /**
+   * Regression for a real failure cluster: the single nearest MCID to an
+   * image's position can itself be orphaned -- opened in the content
+   * stream but never linked into the structure tree -- even while OTHER
+   * real tagged content sits a little farther away on the EXACT SAME
+   * page (confirmed live: Zaidi job, pages 41/87/177). Simulated here by
+   * detaching one of two tagged paragraphs from its parent's /K (content-
+   * stream MCID untouched, so findNearestMcidForPosition still finds it --
+   * it's just unreachable from the struct tree) while leaving the farther
+   * paragraph correctly attached.
+   */
+  it('skips an orphaned nearest MCID and resolves via a farther, correctly-attached one on the same page', async () => {
+    const src = await PDFDocument.create();
+    const srcPage = src.addPage([400, 600]);
+    srcPage.drawText('Orphaned nearby paragraph', { x: 50, y: 500, size: 14 });
+    srcPage.drawText('Real farther paragraph', { x: 50, y: 50, size: 14 });
+    const img = await src.embedPng(PNG);
+    // Positioned right next to the soon-to-be-orphaned paragraph (y=500),
+    // far from the real one (y=50).
+    srcPage.drawImage(img, { x: 50, y: 440, width: 40, height: 30 });
+    const doc = await PDFDocument.load(await src.save());
+
+    const zones: OrderableZone[] = [
+      { pageNumber: 1, bbox: { x: 0, y: 0, w: 400, h: 200 }, zoneType: 'paragraph' },
+      { pageNumber: 1, bbox: { x: 0, y: 400, w: 400, h: 200 }, zoneType: 'paragraph' },
+    ];
+    const built = buildStructTreeFromZones(doc, zones);
+    expect(built.elements).toBeGreaterThan(0);
+
+    const xObjectName = decodeContent(doc).match(/\/([\w.#+-]+)\s+Do\b/)?.[1]!;
+    expect(xObjectName).toBeTruthy();
+
+    // Identify which MCID actually belongs to "Orphaned nearby paragraph"'s
+    // own BDC/EMC span in the real content stream, rather than assuming a
+    // zones-array/reading-order position -- robust against how
+    // buildStructTreeFromZones orders or splits spans internally.
+    const taggedContent = decodeContent(doc);
+    const bdcBlocks = [...taggedContent.matchAll(/<<\s*\/MCID\s+(\d+)\s*>>\s*BDC([\s\S]*?)EMC/g)];
+    const blockText = (block: string): string =>
+      [...block.matchAll(/<([0-9A-Fa-f]+)>\s*Tj/g)].map(m => Buffer.from(m[1], 'hex').toString('ascii')).join('');
+    const nearbyBlock = bdcBlocks.find(b => blockText(b[2]).includes('Orphaned nearby paragraph'));
+    expect(nearbyBlock).toBeTruthy();
+    const nearbyMcid = parseInt(nearbyBlock![1], 10);
+
+    // Detach the struct element owning that MCID from its parent's /K,
+    // leaving the content-stream MCID/BDC span itself untouched -- exactly
+    // the real orphaned shape, confirmed via direct struct-tree inspection
+    // on the real Zaidi PDF.
+    const root = doc.context.lookup(doc.catalog.get(PDFName.of('StructTreeRoot'))) as PDFDict;
+    let orphanRef: PDFRef | null = null;
+    let orphanParentRef: PDFRef | null = null;
+    const walk = (node: unknown, parent: PDFRef | null): void => {
+      if (!(node instanceof PDFDict)) return;
+      const k = node.get(PDFName.of('K'));
+      const kids = k instanceof PDFArray ? k.asArray() : [k];
+      for (const kid of kids) {
+        if (kid instanceof PDFRef) {
+          const resolved = doc.context.lookup(kid);
+          if (tagOf(resolved) === 'P' && resolved instanceof PDFDict) {
+            const ownMcid = resolved.get(PDFName.of('K'));
+            if (ownMcid instanceof PDFNumber && ownMcid.asNumber() === nearbyMcid && parent) {
+              orphanRef = kid;
+              orphanParentRef = parent;
+            }
+          }
+          walk(resolved, kid);
+        }
+      }
+    };
+    walk(root, null);
+    expect(orphanRef).toBeTruthy();
+    expect(orphanParentRef).toBeTruthy();
+
+    const parentDict = doc.context.lookup(orphanParentRef!) as PDFDict;
+    const parentK = parentDict.get(PDFName.of('K')) as PDFArray;
+    const idx = parentK.asArray().findIndex(r => r instanceof PDFRef && r.objectNumber === (orphanRef as unknown as PDFRef).objectNumber);
+    expect(idx).toBeGreaterThanOrEqual(0);
+    parentK.remove(idx);
+
+    const buffer = Buffer.from(await doc.save());
+    const tmpPath = path.join(os.tmpdir(), `zzz-diag-figure-writer-orphan-${Date.now()}-${Math.random().toString(36).slice(2)}.pdf`);
+    fs.writeFileSync(tmpPath, buffer);
+    const parsedPdf = await pdfParserService.parse(tmpPath);
+    try {
+      const imageId = `img_p1_0_${xObjectName}`;
+      // Position in the SAME top-down coordinate convention
+      // findNearestMcidCandidatesForPosition compares against (viewport
+      // top-down y, not pdf-lib's own bottom-left drawImage y) -- chosen
+      // close to "Orphaned nearby paragraph"'s own top-down text position
+      // (drawn at bottom-left y=500 on a 600pt page -> top-down ~100) and
+      // far from "Real farther paragraph"'s (drawn at y=50 -> top-down ~550).
+      const results = await pdfStructureWriterService.buildFigureFromImage(doc, parsedPdf, [
+        { imageId, pageNumber: 1, position: { x: 50, y: 110, width: 40, height: 30 } },
+      ]);
+      // Previously failed here with "Nearest MCID N did not resolve to a
+      // real struct element" -- now succeeds by trying the next candidate.
+      expect(results[0].success).toBe(true);
+
+      const after = await pdfModifierService.setAltText(doc, imageId, 'Resolved via farther anchor');
+      expect(after.success).toBe(true);
+    } finally {
+      await pdfParserService.close(parsedPdf);
+      fs.unlinkSync(tmpPath);
+    }
+  }, 30_000);
+
+  /**
+   * Regression for a real failure (confirmed live: Whiting job, page 408 --
+   * a wholesale-untagged "plates" page with ZERO MCIDs anywhere in its own
+   * content stream and no /StructParents entry at all). buildFigureFromImage
+   * must fall back to the nearest OTHER page (here, the preceding one) that
+   * has any resolvable tagged content, anchoring the new Figure after that
+   * page's own last tagged element, and must allocate this page a brand-new
+   * /StructParents key rather than throwing.
+   */
+  it('falls back to the preceding page\'s last tagged element, and allocates a missing /StructParents key, when the image\'s own page has no tagged content at all', async () => {
+    const src = await PDFDocument.create();
+    const page1 = src.addPage([400, 600]);
+    page1.drawText('Page one real paragraph', { x: 50, y: 500, size: 14 });
+    const page2 = src.addPage([400, 600]);
+    const img = await src.embedPng(PNG);
+    page2.drawImage(img, { x: 50, y: 100, width: 100, height: 80 });
+    const doc = await PDFDocument.load(await src.save());
+
+    // Tag ONLY page 1 -- buildStructTreeFromZones processes every real page
+    // (even untouched ones get an /Artifact-wrapped content rewrite and a
+    // real /StructParents, per its own doc comment), so page 2's
+    // /StructParents is deleted afterward to simulate a page the original
+    // tagging pass never reached AT ALL -- the real Whiting/Zaidi shape.
+    const zones: OrderableZone[] = [
+      { pageNumber: 1, bbox: { x: 0, y: 0, w: 400, h: 200 }, zoneType: 'paragraph' },
+    ];
+    const built = buildStructTreeFromZones(doc, zones);
+    expect(built.elements).toBeGreaterThan(0);
+    expect(built.mcids).toBeGreaterThan(0);
+
+    const pages = doc.getPages();
+    pages[1].node.delete(PDFName.of('StructParents'));
+
+    const xObjectName = (decodePageContent(doc, 2) ?? '').match(/\/([\w.#+-]+)\s+Do\b/)?.[1]!;
+    expect(xObjectName).toBeTruthy();
+
+    const root = doc.context.lookup(doc.catalog.get(PDFName.of('StructTreeRoot'))) as PDFDict;
+    const { parentRef: page1ParentRef } = findParaAndParent(doc, root);
+
+    const buffer = Buffer.from(await doc.save());
+    const tmpPath = path.join(os.tmpdir(), `zzz-diag-figure-writer-nostructparents-${Date.now()}-${Math.random().toString(36).slice(2)}.pdf`);
+    fs.writeFileSync(tmpPath, buffer);
+    const parsedPdf = await pdfParserService.parse(tmpPath);
+    try {
+      const imageId = `img_p2_0_${xObjectName}`;
+      const results = await pdfStructureWriterService.buildFigureFromImage(doc, parsedPdf, [
+        { imageId, pageNumber: 2, position: { x: 50, y: 100, width: 100, height: 80 } },
+      ]);
+      // Previously threw/failed with "page 2 has no /StructParents entry".
+      expect(results[0].success).toBe(true);
+
+      // Page 2 now has a real, newly-allocated /StructParents.
+      const structParents = pages[1].node.get(PDFName.of('StructParents'));
+      expect(structParents).toBeInstanceOf(PDFNumber);
+
+      // The new Figure landed on page 1's paragraph's own parent -- the
+      // only tagged content anywhere in the document -- immediately after
+      // it (preceding-page fallback, not a later page).
+      const parentDict = doc.context.lookup(page1ParentRef) as PDFDict;
+      const kids = (parentDict.get(PDFName.of('K')) as PDFArray).asArray();
+      expect(kids.some(k => tagOf(doc.context.lookup(k)) === 'Figure')).toBe(true);
+
+      const after = await pdfModifierService.setAltText(doc, imageId, 'Resolved via preceding page');
+      expect(after.success).toBe(true);
+    } finally {
+      await pdfParserService.close(parsedPdf);
+      fs.unlinkSync(tmpPath);
+    }
+  }, 30_000);
+});
+
 describe('PdfStructureWriterService.retagDecorativeFigureAsArtifact', () => {
   it('retags a buildFigureFromImage-created Figure to /Artifact: struct element removed, /ParentTree slot nulled, content stream rewritten', async () => {
     const { doc, parsedPdf, xObjectName, tmpPath } = await buildDocWithTaggedTextAndUntaggedImage();

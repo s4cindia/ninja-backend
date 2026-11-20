@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { locateXObjectInvocation, findNearestMcidForPosition } from '../../../../src/services/pdf/figure-content-tagger';
+import { locateXObjectInvocation, findNearestMcidForPosition, findNearestMcidCandidatesForPosition } from '../../../../src/services/pdf/figure-content-tagger';
 import { PDFDocument } from 'pdf-lib';
 import { buildStructTreeFromZones } from '../../../../src/services/zone-extractor/seam-c/struct-tree-builder';
 import type { OrderableZone } from '../../../../src/services/zone-extractor/seam-c/reading-order';
@@ -107,6 +107,74 @@ describe('findNearestMcidForPosition', () => {
     try {
       const result = await findNearestMcidForPosition(parsedPdf, 1, { x: 50, y: 100 });
       expect(result).toBeNull();
+    } finally {
+      await pdfParserService.close(parsedPdf);
+      fs.unlinkSync(tmpPath);
+    }
+  }, 30_000);
+});
+
+describe('findNearestMcidCandidatesForPosition', () => {
+  /**
+   * Regression for a real investigation finding (Whiting/Zaidi jobs,
+   * 2026-11-20): a single "nearest MCID" can itself be orphaned in the
+   * structure tree even while a real, correctly-tagged element sits a
+   * little farther away on the same page -- buildFigureFromImage needs
+   * every nearby candidate, not just #1, to recover from that. This test
+   * covers the plural function's own contract: two distinct tagged
+   * paragraphs on one page, each its own MCID, returned sorted
+   * nearest-first to the target, with no duplicates.
+   */
+  it('returns every distinct nearby MCID, nearest-first, not just the single closest one', async () => {
+    const src = await PDFDocument.create();
+    const srcPage = src.addPage([400, 600]);
+    srcPage.drawText('Close paragraph', { x: 50, y: 400, size: 14 });
+    srcPage.drawText('Far paragraph', { x: 50, y: 50, size: 14 });
+    const doc = await PDFDocument.load(await src.save());
+
+    const zones: OrderableZone[] = [
+      { pageNumber: 1, bbox: { x: 0, y: 150, w: 400, h: 150 }, zoneType: 'paragraph' },
+      { pageNumber: 1, bbox: { x: 0, y: 500, w: 400, h: 100 }, zoneType: 'paragraph' },
+    ];
+    const built = buildStructTreeFromZones(doc, zones);
+    expect(built.elements).toBeGreaterThan(0);
+
+    const buffer = Buffer.from(await doc.save());
+    const tmpPath = path.join(os.tmpdir(), `zzz-diag-figure-test-multi-${Date.now()}.pdf`);
+    fs.writeFileSync(tmpPath, buffer);
+    const parsedPdf = await pdfParserService.parse(tmpPath);
+    try {
+      // Target near "Close paragraph" (y=400, drawn text -> top-down y
+      // ~ 600-400=200-ish once pdfjs flips it) -- closer to that one than
+      // to "Far paragraph" (y=50 -> top-down ~550-ish).
+      const candidates = await findNearestMcidCandidatesForPosition(parsedPdf, 1, { x: 50, y: 200 });
+      expect(candidates.length).toBe(2);
+      // Sorted nearest-first.
+      expect(candidates[0].distance).toBeLessThanOrEqual(candidates[1].distance);
+      // No duplicate MCIDs.
+      expect(new Set(candidates.map(c => c.mcid)).size).toBe(2);
+      // findNearestMcidForPosition (the single-result wrapper) must still
+      // return exactly the first of these -- backward compatible contract.
+      const single = await findNearestMcidForPosition(parsedPdf, 1, { x: 50, y: 200 });
+      expect(single).toEqual(candidates[0]);
+    } finally {
+      await pdfParserService.close(parsedPdf);
+      fs.unlinkSync(tmpPath);
+    }
+  }, 30_000);
+
+  it('returns [] when the page has no MCID-bound text content at all', async () => {
+    const src = await PDFDocument.create();
+    src.addPage([400, 600]);
+    const doc = await PDFDocument.load(await src.save());
+
+    const buffer = Buffer.from(await doc.save());
+    const tmpPath = path.join(os.tmpdir(), `zzz-diag-figure-test-multi-empty-${Date.now()}.pdf`);
+    fs.writeFileSync(tmpPath, buffer);
+    const parsedPdf = await pdfParserService.parse(tmpPath);
+    try {
+      const candidates = await findNearestMcidCandidatesForPosition(parsedPdf, 1, { x: 50, y: 100 });
+      expect(candidates).toEqual([]);
     } finally {
       await pdfParserService.close(parsedPdf);
       fs.unlinkSync(tmpPath);
