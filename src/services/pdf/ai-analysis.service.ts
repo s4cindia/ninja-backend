@@ -222,6 +222,9 @@ const STRUCTURE_PARENT_MISMATCH_CODES = new Set(['STRUCTURE-ELEMENT-WRONG-PARENT
 // established convention for this codebase's detect-only/manual-review codes.
 const SPAN_ILLEGAL_NESTING_CODES = new Set(['SPAN-ILLEGAL-NESTING']);
 const DUPLICATE_FIGURE_TILES_CODES = new Set(['DUPLICATE-FIGURE-TILES']);
+// Purely mechanical, same posture as DUPLICATE_FIGURE_TILES_CODES above --
+// see pdf-hyphenated-line-break.validator.ts's own header comment.
+const HYPHENATED_LINE_BREAK_CODES = new Set(['HYPHENATED-LINE-BREAK']);
 // Only the two categories with one unambiguous correct RoleMap retarget --
 // see pdf-rolemap-integrity.validator.ts's own header comment for why
 // these are the only two whose /RoleMap entry alone has a single safe
@@ -1889,6 +1892,25 @@ class AiAnalysisService {
         guidance: 'The duplicate Figure element(s) will be merged into the first one on this page -- their content moved in, duplicates removed.',
         confidence: 1.0,
         rationale: 'Mechanical struct-tree merge -- no content judgment required',
+        model: 'rule-based',
+        applyMode: 'apply-to-pdf',
+      };
+    }
+
+    if (HYPHENATED_LINE_BREAK_CODES.has(code)) {
+      // Purely mechanical (re-confirmed fresh at apply time against the
+      // same single source of truth, findHyphenatedLineBreaksOnPage -- see
+      // fixHyphenatedLineBreak's own doc comment) -- the pairing heuristic
+      // already ran at validation time, so there's no content judgment
+      // left to make here, same posture as duplicate-figure-tiles-fix
+      // above. ActualText-only -- see that same doc comment for the
+      // deliberate scope limit (screen-reader/validator reading, not raw
+      // text search/extraction).
+      return {
+        suggestionType: 'hyphenated-line-break-fix',
+        guidance: 'The hyphen-broken word\'s /ActualText will be corrected to the merged word, and the continuation fragment\'s own /ActualText suppressed, without touching the page\'s own text-show operators.',
+        confidence: 1.0,
+        rationale: 'Mechanical ActualText override -- no content judgment required',
         model: 'rule-based',
         applyMode: 'apply-to-pdf',
       };
@@ -4627,6 +4649,11 @@ class AiAnalysisService {
           // primary, remove duplicates) -- see fixDuplicateFigureTiles's
           // own doc comment.
           const result = pdfStructureWriterService.fixDuplicateFigureTiles(doc, originalIssue);
+          modification = { success: result.success, description: result.after, error: result.error };
+        } else if (suggestionType === 'hyphenated-line-break-fix') {
+          // Content-stream-level, /ActualText-only (no Tj/TJ bytes
+          // touched) -- see fixHyphenatedLineBreak's own doc comment.
+          const result = pdfStructureWriterService.fixHyphenatedLineBreak(doc, originalIssue);
           modification = { success: result.success, description: result.after, error: result.error };
         } else if (suggestionType === 'rolemap-target-fix') {
           const result = pdfStructureWriterService.fixDegenerateRoleMapEntry(doc, originalIssue);
