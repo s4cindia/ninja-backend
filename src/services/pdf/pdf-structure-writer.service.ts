@@ -3882,14 +3882,30 @@ export class PdfStructureWriterService {
    * correct general rule regardless of whether a producer left-aligns,
    * centers, or right-aligns its group-header text over its sub-columns.
    *
+   * A GROUP-header cell with zero MCIDs (collectCellMcids finds no bound
+   * content at all) is treated as a legitimate blank spacer, not missing
+   * evidence: confirmed real on the Whiting job's table_p87_0/table_p205_0
+   * (both genuine two-level headers per classifyHeaderBlock, each with
+   * one or more group cells carrying no label at all — e.g. a lone
+   * unlabeled column standing next to a real banner that covers the
+   * rest). Such a cell is given a virtual X center via
+   * fillBlankGroupCenters, derived purely from its own structural slot
+   * among its sibling group cells — never from guessed geometry — so the
+   * rest of this method's nearest-by-distance logic (and its existing
+   * decline checks below) runs unchanged on the result. SUB-column
+   * headers are NOT given this fallback: a blank sub-column header is a
+   * different, unverified shape and still declines.
+   *
    * Declines (returns null) whenever the evidence is incomplete rather
-   * than guessing: the page's content stream can't be decoded, any header
-   * cell carries no locatable MCID geometry at all, the resulting
-   * assignment leaves any group with zero sub-columns (a real group must
-   * cover at least one), or the assignment isn't monotonically
-   * non-decreasing left to right (a sub-column assigned to an EARLIER
-   * group than the one before it means the struct tree's own /K order
-   * doesn't match real reading order — too unusual a shape to trust).
+   * than guessing: the page's content stream can't be decoded, any
+   * sub-column header cell carries no locatable MCID geometry at all,
+   * EVERY group cell is blank (no real anchor at all to place anything
+   * against), the resulting assignment leaves any group with zero
+   * sub-columns (a real group must cover at least one), or the
+   * assignment isn't monotonically non-decreasing left to right (a
+   * sub-column assigned to an EARLIER group than the one before it means
+   * the struct tree's own /K order doesn't match real reading order —
+   * too unusual a shape to trust).
    */
   private mapSubColumnsToGroupsByGeometry(
     doc: PDFDocument,
@@ -3928,9 +3944,12 @@ export class PdfStructureWriterService {
       return found ? (minX + maxX) / 2 : null;
     };
 
-    const groupCenters = groupMcids.map(mergedXCenter);
+    const groupCentersRaw = groupMcids.map(mergedXCenter);
     const subCenters = subMcids.map(mergedXCenter);
-    if (groupCenters.some(c => c === null) || subCenters.some(c => c === null)) return null;
+    if (subCenters.some(c => c === null)) return null;
+
+    const groupCenters = this.fillBlankGroupCenters(groupCentersRaw, subCenters as number[]);
+    if (groupCenters === null) return null;
 
     const mapping: number[] = [];
     const assignedCount = new Array(block.groupIndices.length).fill(0);
@@ -3951,6 +3970,33 @@ export class PdfStructureWriterService {
     }
 
     return mapping;
+  }
+
+  /**
+   * Fills in a virtual X center for each BLANK group-header cell (zero
+   * MCIDs — a legitimate spacer, not malformed structure: see
+   * mapSubColumnsToGroupsByGeometry's own doc comment for the real
+   * Whiting-job shape this closes). Each blank group's purely structural
+   * slot (its 0-based position among the other group cells) is mapped
+   * proportionally onto the real sub-column centers' own index range, and
+   * its virtual center is set to the actual real sub-column center AT
+   * that proportional index — not a fabricated interpolated point, but a
+   * real position already present in subCenters — so the caller's own
+   * nearest-by-distance assignment naturally claims that sub-column for
+   * the blank group first, while genuinely-closer real estate still falls
+   * to any real-geometry group neighbors. Returns null only when EVERY
+   * group cell is blank: with no real anchor at all, there is no
+   * evidence to place anything against.
+   */
+  private fillBlankGroupCenters(raw: Array<number | null>, subCenters: number[]): number[] | null {
+    if (raw.every(c => c === null)) return null;
+    const groupCount = raw.length;
+    const subCount = subCenters.length;
+    return raw.map((center, k) => {
+      if (center !== null) return center;
+      const idx = groupCount > 1 ? Math.round((k * (subCount - 1)) / (groupCount - 1)) : 0;
+      return subCenters[Math.min(Math.max(idx, 0), subCount - 1)];
+    });
   }
 
   /**

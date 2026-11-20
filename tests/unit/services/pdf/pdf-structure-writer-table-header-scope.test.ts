@@ -528,6 +528,101 @@ describe('PdfStructureWriterService.fixTableHeaderScope -- multi-level header He
     expect(headersOf(doc, data[5])).toEqual([rowLabelId, group3Id, subIds[5]]);
   });
 
+  it('gives a BLANK (zero-MCID) group-header cell a position from its own structural slot instead of declining, matching the real Whiting-job table_p87_0/table_p205_0 shape (an unlabeled spacer group next to a real banner group)', async () => {
+    const doc = await PDFDocument.create();
+    const page = doc.addPage([612, 792]);
+
+    const corner = cellWithMcid(doc, 'TH', page.ref, 0);
+    const group1 = cell(doc, 'TH', page.ref); // blank spacer -- no label, no MCID at all
+    const group2 = cellWithMcid(doc, 'TH', page.ref, 1); // real banner, e.g. "ALL MOVEMENTS..."
+    const rowLabel = cellWithMcid(doc, 'TH', page.ref, 2);
+    const sub1 = cellWithMcid(doc, 'TH', page.ref, 3);
+    const sub2 = cellWithMcid(doc, 'TH', page.ref, 4);
+    const sub3 = cellWithMcid(doc, 'TH', page.ref, 5);
+    const dataLabel = cell(doc, 'TD', page.ref);
+    const d1 = cell(doc, 'TD', page.ref);
+    const d2 = cell(doc, 'TD', page.ref);
+    const d3 = cell(doc, 'TD', page.ref);
+
+    const tableRef = doc.context.register(doc.context.obj({
+      S: PDFName.of('Table'), Pg: page.ref,
+      K: [
+        row(doc, [corner, group1, group2]),
+        row(doc, [rowLabel, sub1, sub2, sub3]),
+        row(doc, [dataLabel, d1, d2, d3]),
+      ],
+    }));
+    const docRef = doc.context.register(doc.context.obj({ S: PDFName.of('Document'), K: [tableRef] }));
+    doc.catalog.set(PDFName.of('StructTreeRoot'), doc.context.register(doc.context.obj({ Type: PDFName.of('StructTreeRoot'), K: [docRef] })));
+
+    // group2's real anchor (250) sits centered over sub2/sub3 (200/300);
+    // group1 has no content stream entry at all -- it's blank by construction.
+    writePageContent(
+      doc, 1,
+      '<</MCID 1>>BDC 250 700 0 0 re EMC ' +
+      '<</MCID 3>>BDC 100 680 0 0 re EMC ' +
+      '<</MCID 4>>BDC 200 680 0 0 re EMC ' +
+      '<</MCID 5>>BDC 300 680 0 0 re EMC',
+    );
+
+    const results = pdfStructureWriterService.fixTableHeaderScope(doc, [issueFor('table_p1_0')]);
+
+    expect(results[0].success).toBe(true);
+    const group1Id = idOf(doc, group1);
+    const group2Id = idOf(doc, group2);
+    const rowLabelId = idOf(doc, rowLabel);
+    expect(group1Id).toBeDefined();
+
+    // sub1 (x=100) is closest to group1's structural-slot position (snapped
+    // to sub1's own real center, since group1 is the leftmost of 2 groups
+    // across 3 sub-columns) -- the blank group still claims at least one
+    // real sub-column, it is never left out.
+    expect(headersOf(doc, d1)).toEqual([rowLabelId, group1Id, idOf(doc, sub1)]);
+    // sub2/sub3 are closer to group2's real anchor (250) than to group1's.
+    expect(headersOf(doc, d2)).toEqual([rowLabelId, group2Id, idOf(doc, sub2)]);
+    expect(headersOf(doc, d3)).toEqual([rowLabelId, group2Id, idOf(doc, sub3)]);
+  });
+
+  it('declines the geometry fallback when EVERY group-header cell is blank (zero MCIDs) -- no real anchor anywhere to place anything against', async () => {
+    const doc = await PDFDocument.create();
+    const page = doc.addPage([612, 792]);
+
+    const corner = cell(doc, 'TH', page.ref);
+    const group1 = cell(doc, 'TH', page.ref); // blank
+    const group2 = cell(doc, 'TH', page.ref); // blank
+    const rowLabel = cellWithMcid(doc, 'TH', page.ref, 0);
+    const sub1 = cellWithMcid(doc, 'TH', page.ref, 1);
+    const sub2 = cellWithMcid(doc, 'TH', page.ref, 2);
+    const sub3 = cellWithMcid(doc, 'TH', page.ref, 3);
+    const dataLabel = cell(doc, 'TD', page.ref);
+    const d1 = cell(doc, 'TD', page.ref);
+    const d2 = cell(doc, 'TD', page.ref);
+    const d3 = cell(doc, 'TD', page.ref);
+
+    const tableRef = doc.context.register(doc.context.obj({
+      S: PDFName.of('Table'), Pg: page.ref,
+      K: [
+        row(doc, [corner, group1, group2]),
+        row(doc, [rowLabel, sub1, sub2, sub3]),
+        row(doc, [dataLabel, d1, d2, d3]),
+      ],
+    }));
+    const docRef = doc.context.register(doc.context.obj({ S: PDFName.of('Document'), K: [tableRef] }));
+    doc.catalog.set(PDFName.of('StructTreeRoot'), doc.context.register(doc.context.obj({ Type: PDFName.of('StructTreeRoot'), K: [docRef] })));
+
+    writePageContent(
+      doc, 1,
+      '<</MCID 1>>BDC 100 680 0 0 re EMC ' +
+      '<</MCID 2>>BDC 200 680 0 0 re EMC ' +
+      '<</MCID 3>>BDC 300 680 0 0 re EMC',
+    );
+
+    pdfStructureWriterService.fixTableHeaderScope(doc, [issueFor('table_p1_0')]);
+
+    expect(idOf(doc, sub1)).toBeUndefined();
+    expect(headersOf(doc, d1)).toBeUndefined();
+  });
+
   it('declines the geometry fallback (no /Headers, no /ID) when no group or sub-column cell has any locatable MCID geometry, even if the count divides evenly -- CodeRabbit finding on PR #593: divisibility alone is not real evidence', async () => {
     const doc = await PDFDocument.create();
     const page = doc.addPage([612, 792]);
