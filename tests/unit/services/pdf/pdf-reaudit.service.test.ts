@@ -633,6 +633,61 @@ describe('PdfReauditService', () => {
       expect(result.error).toContain('Invalid page request.');
     });
 
+    /**
+     * Real incident (DuBrin_FOB_8e.pdf and Whiting_186772, both
+     * 2026-11-20): this exact failure recurred identically on the retry
+     * both times -- revertUnpersistedApplies discards the failing buffer on
+     * every failure, so every past occurrence destroyed its own evidence
+     * before anyone could inspect it. Saves a diagnostic copy under a
+     * clearly-marked key (never the original/remediated-file slot) so a
+     * future occurrence can finally be root-caused.
+     */
+    it('saves a diagnostic copy of the failing buffer when the transient error recurs after the retry', async () => {
+      vi.mocked(prisma.job.findUnique).mockResolvedValue({
+        id: mockJobId,
+        output: { auditReport: mockOriginalAuditReport },
+      } as any);
+      vi.mocked(pdfAuditService.runAuditFromBuffer).mockRejectedValue(new Error('Invalid page request.'));
+      vi.mocked(fileStorageService.saveFile).mockResolvedValue('job-storage/test-job-123/diagnostic-reaudit-failure-123-test-document.pdf');
+
+      await pdfReauditService.reauditAndCompare(mockJobId, mockBuffer, mockFileName);
+
+      expect(fileStorageService.saveFile).toHaveBeenCalledTimes(1);
+      const [jobIdArg, fileNameArg, bufferArg] = vi.mocked(fileStorageService.saveFile).mock.calls[0];
+      expect(jobIdArg).toBe(mockJobId);
+      expect(fileNameArg).toMatch(/^diagnostic-reaudit-failure-\d+-test-document\.pdf$/);
+      expect(bufferArg).toBe(mockBuffer);
+    });
+
+    it('does not save a diagnostic copy for a non-transient failure, or when the retry itself succeeds', async () => {
+      vi.mocked(prisma.job.findUnique).mockResolvedValue({
+        id: mockJobId,
+        output: { auditReport: mockOriginalAuditReport },
+      } as any);
+      vi.mocked(fileStorageService.saveRemediatedFile).mockResolvedValue('/path/to/remediated.pdf');
+      vi.mocked(pdfAuditService.runAuditFromBuffer)
+        .mockRejectedValueOnce(new Error('Invalid page request.'))
+        .mockResolvedValueOnce({ ...mockOriginalAuditReport, jobId: `${mockJobId}-reaudit`, issues: [] });
+
+      await pdfReauditService.reauditAndCompare(mockJobId, mockBuffer, mockFileName);
+
+      expect(fileStorageService.saveFile).not.toHaveBeenCalled();
+    });
+
+    it('a diagnostic-save failure is non-fatal and does not mask the real audit error', async () => {
+      vi.mocked(prisma.job.findUnique).mockResolvedValue({
+        id: mockJobId,
+        output: { auditReport: mockOriginalAuditReport },
+      } as any);
+      vi.mocked(pdfAuditService.runAuditFromBuffer).mockRejectedValue(new Error('Invalid page request.'));
+      vi.mocked(fileStorageService.saveFile).mockRejectedValue(new Error('S3 unreachable'));
+
+      const result = await pdfReauditService.reauditAndCompare(mockJobId, mockBuffer, mockFileName);
+
+      expect(result.success).toBe(false);
+      expect(result.error).toContain('Invalid page request.');
+    });
+
     it('does not retry a non-transient audit failure', async () => {
       vi.mocked(prisma.job.findUnique).mockResolvedValue({
         id: mockJobId,
