@@ -55,6 +55,8 @@ import {
   buildPlacedPdfRetagEdit,
   findArtifactWrappedActualTextSiblings,
   findActualTextRunsMissingMcid,
+  collectTopLevelMarkedContentSpans,
+  type TopLevelMarkedContentSpan,
 } from './pdf-artifact-tagger';
 import {
   matchCellRanges,
@@ -6547,6 +6549,183 @@ export class PdfStructureWriterService {
       before: `${resolved.length} letter(s) on this page hidden as /Artifact beside already-tagged siblings`,
       after: `Retagged ${resolved.length} letter(s) as /Span <</ActualText>> (${resolved.map((r) => r.text).join('')})`,
     };
+  }
+
+  /**
+   * HYPHENATED-LINE-BREAK fix: a word split by ordinary line-wrap
+   * hyphenation ("exam-" / "ple") is announced by a screen reader, and
+   * reported by an ActualText-aware PDF/UA validator, as two separate
+   * fragments -- "exam dash" then "ple" -- even though both fragments
+   * already carry their own real /MCID and are already correctly
+   * reachable via /ParentTree (ordinary body text, not the Artifact/
+   * missing-MCID defects the two fixers above target). This is the
+   * "Hyphenated Words Not Merged Correctly" defect S4 QC flagged
+   * (text-extractor.service.ts's joinLinesDehyphenated already fixes the
+   * SAME defect for this tool's own internal alt-text/heading-
+   * classification text, per that function's own doc comment -- this is
+   * the "separate, larger follow-up" it defers: making the PDF's OWN
+   * content read correctly to assistive technology, not just our own
+   * internal reasoning).
+   *
+   * IMPORTANT, DELIBERATE SCOPE LIMIT: this overrides /ActualText only --
+   * the replacement-text mechanism PDF32000 section 14.9.4 defines for
+   * exactly this purpose, the same category this file already uses
+   * successfully in fixArtifactActualTextSibling/fixActualTextMissingMcid
+   * above. It does NOT rewrite the page's own text-show (Tj/TJ) operators,
+   * so it fixes how a screen reader announces the word and how an
+   * ActualText-aware validator reports it, but it does NOT fix plain copy/
+   * paste or raw text search/extraction (Ctrl+F, pdftotext-style tools) --
+   * those read the content stream's raw glyph-to-Unicode text directly and
+   * never consult /ActualText at all. True content-stream-level
+   * dehyphenation (merging the glyphs themselves into one searchable run)
+   * would need to reflow glyph positioning/kerning across what are
+   * currently two separate text-positioning contexts -- a substantially
+   * larger, higher-risk undertaking that stays out of scope here, the same
+   * "separate, larger follow-up" this fix's own sibling comment defers.
+   * S4's own observation cites "readability, searchability, and screen
+   * reader interpretation" -- this fix addresses only the last of those
+   * three.
+   *
+   * Pairs exactly two ADJACENT top-level spans (no other span in between,
+   * same adjacency rigor as findArtifactWrappedActualTextSiblings above):
+   * the first ends in a word-final hyphen (the hyphen is the span's own
+   * last decoded character), the second starts with a lowercase letter --
+   * same heuristic, and the SAME documented "wellknown"-style compound-
+   * word trade-off, as joinLinesDehyphenated. Declines (does not guess) a
+   * real hyphenated compound that happens to break at a line end; no
+   * dictionary lookup is available to disambiguate.
+   *
+   * Requires BOTH spans to already have a real /MCID and no existing
+   * /ActualText of their own -- same "decline rather than guess" posture
+   * as every other fixer in this file. Same-page only: a hyphenation that
+   * crosses a page boundary (the last word of one page continuing as the
+   * first word of the next) is deliberately NOT attempted here --
+   * confirming the two fragments are really the same reading-order flow
+   * across two separate pages' own content streams is a materially
+   * different, riskier check than same-page adjacency, and is left for a
+   * future pass.
+   *
+   * Decodes each candidate span's raw bytes using the ordinary-text
+   * convention (falls back to the byte's own Latin-1 code point on a
+   * /ToUnicode miss), NOT fixArtifactActualTextSibling's stricter decline-
+   * on-miss -- that fixer's decorative/swash-glyph target has no reason to
+   * resemble its real letter on a miss, but this fix's target is ordinary
+   * body text, where a miss is the rare exception, same distinction that
+   * fixer's own doc comment already draws.
+   *
+   * The first span's /ActualText becomes the corrected, merged word; the
+   * second span's /ActualText is set to the empty string to suppress its
+   * own fragment from being separately announced/extracted a second time
+   * -- an empty /ActualText is a standard, legal way to mark marked
+   * content as contributing no accessible text, the same mechanism
+   * authoring tools already use for decorative repeated text.
+   */
+  fixHyphenatedLineBreak(doc: PDFDocument, issue: AuditIssue): FixResult {
+    const fail = (error: string): FixResult => ({ issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error });
+
+    if (!issue.pageNumber) return fail('Issue has no pageNumber');
+    const pageNumber = issue.pageNumber;
+
+    const found = this.findHyphenatedLineBreaksOnPage(doc, pageNumber);
+    if (found === null) return fail(`Page ${pageNumber} has no content stream`);
+    if (found.pairs.length === 0) {
+      return fail('No adjacent, already-tagged word-final-hyphen / lowercase-continuation span pair found on this page -- already fixed, or the page changed since the audit that found it');
+    }
+
+    // Only the first remaining pair -- one issue, one fix, same one-to-one
+    // convention as every other fixer here. findHyphenatedLineBreaksOnPage
+    // re-scans fresh each call, and a fixed span no longer qualifies as a
+    // candidate (isCandidate excludes hasActualText), so calling this once
+    // per HYPHENATED-LINE-BREAK issue the validator emitted for this page
+    // naturally converges on all of them without needing to target a
+    // specific pair by index.
+    const { first, second, mergedWord } = found.pairs[0];
+    const edits: Array<{ offset: number; text: string }> = [
+      { offset: second.dictOpenEnd as number, text: `/ActualText ${this.actualTextLiteral('')} ` },
+      { offset: first.dictOpenEnd as number, text: `/ActualText ${this.actualTextLiteral(mergedWord)} ` },
+    ];
+    edits.sort((e1, e2) => e2.offset - e1.offset);
+    let newContent = found.content;
+    for (const e of edits) {
+      newContent = newContent.slice(0, e.offset) + e.text + newContent.slice(e.offset);
+    }
+    writePageContent(doc, pageNumber, newContent);
+
+    return {
+      issueId: issue.id,
+      success: true,
+      before: 'Word split across a line-wrap hyphen, announced/extracted by AT as two separate fragments',
+      after: `Merged via /ActualText override into "${mergedWord}" (first span), with the second span's own ActualText suppressed`,
+    };
+  }
+
+  /**
+   * Read-only detection half of HYPHENATED-LINE-BREAK, shared by
+   * pdf-hyphenated-line-break.validator.ts (which calls this once per page
+   * to report one issue per pair found) and fixHyphenatedLineBreak above
+   * (which calls this fresh on every apply and only ever acts on the first
+   * remaining pair). See fixHyphenatedLineBreak's own doc comment for the
+   * full scope/heuristic/trade-offs -- this is pure extraction of its
+   * detection logic, no behavior change.
+   *
+   * Pairs are matched greedily, left to right, non-overlapping: once spans
+   * i/i+1 match, scanning resumes at i+2, so a run of three+ consecutive
+   * hyphenated fragments (rare, but not impossible) is still reported and
+   * fixed as however many adjacent pairs it actually decomposes into,
+   * rather than double-counting a span in two different pairs.
+   *
+   * Returns null when the page has no content stream at all (distinct from
+   * finding zero pairs, which is the ordinary "nothing left to fix" case).
+   */
+  findHyphenatedLineBreaksOnPage(
+    doc: PDFDocument,
+    pageNumber: number
+  ): { content: string; pairs: Array<{ first: TopLevelMarkedContentSpan; second: TopLevelMarkedContentSpan; mergedWord: string }> } | null {
+    let content: string | null;
+    try {
+      content = decodePageContent(doc, pageNumber);
+    } catch {
+      return null;
+    }
+    if (!content) return null;
+
+    const spans = collectTopLevelMarkedContentSpans(content);
+    const resolveGlyphText = this.buildGlyphTextResolver(doc, pageNumber);
+
+    const decodeSpan = (s: TopLevelMarkedContentSpan): string => {
+      let text = '';
+      for (let i = 0; i < s.rawBytes.length; i++) {
+        const byteCode = s.rawBytes.charCodeAt(i);
+        let glyph = s.fontResourceName ? resolveGlyphText(s.fontResourceName, byteCode) : null;
+        if (glyph === null && s.fontResourceName) {
+          const table = baseEncodingTable(this.fontBaseEncodingName(doc, pageNumber, s.fontResourceName));
+          const cp = table?.[byteCode];
+          if (cp) glyph = String.fromCodePoint(cp);
+        }
+        // Ordinary-text convention (see fixHyphenatedLineBreak's own doc
+        // comment): fall back to the byte's own Latin-1 code point rather
+        // than decline the whole span over one unresolved byte.
+        text += glyph ?? String.fromCharCode(byteCode);
+      }
+      return text;
+    };
+
+    const isCandidate = (s: TopLevelMarkedContentSpan): boolean =>
+      s.hasMcid && !s.hasActualText && !s.sawOwnET && s.dictOpenEnd !== null && s.rawBytes.length > 0;
+
+    const pairs: Array<{ first: TopLevelMarkedContentSpan; second: TopLevelMarkedContentSpan; mergedWord: string }> = [];
+    for (let i = 0; i < spans.length - 1; i++) {
+      const a = spans[i];
+      const b = spans[i + 1];
+      if (!isCandidate(a) || !isCandidate(b)) continue;
+      const aText = decodeSpan(a);
+      const bText = decodeSpan(b);
+      if (!/[a-z]-$/.test(aText) || !/^[a-z]/.test(bText)) continue;
+      pairs.push({ first: a, second: b, mergedWord: aText.slice(0, -1) + bText });
+      i++; // skip b -- do not let it also start a new pair as a "first" span
+    }
+
+    return { content, pairs };
   }
 
   /**

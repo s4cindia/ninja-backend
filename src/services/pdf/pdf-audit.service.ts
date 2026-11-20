@@ -37,6 +37,7 @@ import { pdfStructureParentMismatchValidator } from './validators/pdf-structure-
 import { pdfHeadingStyleMismatchValidator } from './validators/pdf-heading-style-mismatch.validator';
 import { pdfSpanIllegalNestingValidator } from './validators/pdf-span-illegal-nesting.validator';
 import { pdfDuplicateFigureTilesValidator } from './validators/pdf-duplicate-figure-tiles.validator';
+import { pdfHyphenatedLineBreakValidator } from './validators/pdf-hyphenated-line-break.validator';
 import { pdfTableCellTreeValidator } from './validators/pdf-table-cell-tree.validator';
 import { pdfFontToUnicodeValidator } from './validators/pdf-font-tounicode.validator';
 import { pdfTabOrderValidator } from './validators/pdf-tab-order.validator';
@@ -685,6 +686,24 @@ class PdfAuditService extends BaseAuditService<PdfParseResult, PdfValidationResu
             const errorMessage = error instanceof Error ? error.message : 'Unknown error';
             logger.error(`[PdfAudit] PdfDuplicateFigureTilesValidator failed:`, error);
             result.validatorErrors.push({ validator: 'PdfDuplicateFigureTilesValidator', error: errorMessage });
+          }
+        }
+
+        // 1n. Hyphenated Line Break Validator -- S4 QC finding on
+        // DuBrin_FOB_8e.pdf (2026-11-20): "Hyphenated Words Not Merged
+        // Correctly." See pdf-hyphenated-line-break.validator.ts's own
+        // header comment.
+        if (willRunStructure) {
+          try {
+            logger.info(`[PdfAudit] Running PdfHyphenatedLineBreakValidator...`);
+            const hyphenatedResult = await pdfHyphenatedLineBreakValidator.validate(parsedPdf);
+            result.structureIssues.push(...hyphenatedResult.issues);
+            result.issues.push(...hyphenatedResult.issues);
+            logger.info(`[PdfAudit] PdfHyphenatedLineBreakValidator found ${hyphenatedResult.issues.length} issue(s)`);
+          } catch (error) {
+            const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+            logger.error(`[PdfAudit] PdfHyphenatedLineBreakValidator failed:`, error);
+            result.validatorErrors.push({ validator: 'PdfHyphenatedLineBreakValidator', error: errorMessage });
           }
         }
       };

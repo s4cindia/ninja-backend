@@ -980,7 +980,7 @@ export interface ArtifactActualTextSibling {
  * letters this function finds AND the already-ActualText-tagged siblings
  * this function's own doc comment assumed (incorrectly) were fine.
  */
-interface TopLevelMarkedContentSpan {
+export interface TopLevelMarkedContentSpan {
   tagStart: number;
   contentStart: number;
   closeOpStart: number;
@@ -1010,7 +1010,7 @@ interface TopLevelMarkedContentSpan {
  * findArtifactWrappedActualTextSiblings's own doc comment for why BT/ET
  * is tracked only for sawOwnET, never as a nesting-depth reset point.
  */
-function collectTopLevelMarkedContentSpans(content: string): TopLevelMarkedContentSpan[] {
+export function collectTopLevelMarkedContentSpans(content: string): TopLevelMarkedContentSpan[] {
   const tokens = tokenize(content);
   const spans: TopLevelMarkedContentSpan[] = [];
 
