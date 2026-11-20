@@ -1145,6 +1145,49 @@ describe('autoRemediationLoopService.startAutoLoop', () => {
       });
     });
 
+    it('gives every permanently-failed AiAnalysis suggestion for this job a fresh attempt budget when escalating -- real incident, DuBrin_FOB_8e.pdf (2026-11-20)', async () => {
+      // A suggestion that failed twice in an earlier round (status: 'failed')
+      // should get one more chance once a stall triggers escalation -- see
+      // escalateStalledModes's own doc comment for why a stall is exactly
+      // the "something changed, worth another look" moment this needs.
+      vi.mocked(getEffectiveAiRemediationConfig).mockResolvedValue({ autoEscalateOnStallDefault: true } as any);
+      mockLockAcquired();
+      vi.mocked(prisma.pdfAutoRemediationRun.findUnique).mockResolvedValue(makeRun() as any);
+      vi.mocked(prisma.job.findUnique).mockResolvedValue({ id: 'job-1', tenantId: 'tenant-1', output: {}, autoEscalateOnStall: null } as any);
+      vi.mocked(aiAnalysisService.analyzeJob).mockResolvedValue({ analyzed: 1, skipped: 0, colorContrastMode: 'guidance-only', linkTextMode: 'guidance-only' } as any);
+      vi.mocked(prisma.aiAnalysis.updateMany).mockResolvedValue({ count: 1 } as any);
+      vi.mocked(aiAnalysisService.applyApprovedSuggestions).mockResolvedValue({ applied: 0, failed: 1, errors: [] });
+      vi.mocked(prisma.aiAnalysis.count)
+        .mockResolvedValueOnce(1) // round 1: stalls
+        .mockResolvedValueOnce(1) // round 2: stalls again -> escalate
+        .mockResolvedValueOnce(0); // round 3 (post-escalation): converges
+
+      await autoRemediationLoopService.startAutoLoop(new JobAutoRemediationDriver('run-1'));
+
+      expect(prisma.aiAnalysis.updateMany).toHaveBeenCalledWith({
+        where: { jobId: 'job-1', status: 'failed' },
+        data: { status: 'approved', failedAttempts: 0, updatedAt: expect.any(Date) },
+      });
+    });
+
+    it('does not touch failed suggestions when auto-escalate-on-stall is disabled -- escalation never runs, so neither does the reset', async () => {
+      vi.mocked(getEffectiveAiRemediationConfig).mockResolvedValue({ autoEscalateOnStallDefault: false } as any);
+      mockLockAcquired();
+      vi.mocked(prisma.pdfAutoRemediationRun.findUnique).mockResolvedValue(makeRun({ autoMaxRounds: 2 }) as any);
+      vi.mocked(prisma.job.findUnique).mockResolvedValue({ id: 'job-1', tenantId: 'tenant-1', output: {}, autoEscalateOnStall: null } as any);
+      vi.mocked(aiAnalysisService.analyzeJob).mockResolvedValue({ analyzed: 1, skipped: 0 } as any);
+      vi.mocked(prisma.aiAnalysis.count).mockResolvedValue(1);
+      const updateManySpy = vi.mocked(prisma.aiAnalysis.updateMany).mockResolvedValue({ count: 1 } as any);
+      vi.mocked(aiAnalysisService.applyApprovedSuggestions).mockResolvedValue({ applied: 0, failed: 1, errors: [] });
+
+      await autoRemediationLoopService.startAutoLoop(new JobAutoRemediationDriver('run-1'));
+
+      expect(updateManySpy).not.toHaveBeenCalledWith({
+        where: { jobId: 'job-1', status: 'failed' },
+        data: { status: 'approved', failedAttempts: 0, updatedAt: expect.any(Date) },
+      });
+    });
+
     it('grants one grace round past the cap when a stall is detected on what would otherwise be the last round -- real incident, Karsaklian_189165 (2026-11-16)', async () => {
       // Without this, escalateStalledModes() still ran (colorContrastMode/
       // linkTextMode/bookmarkMode flipped, autoStallEscalated: true

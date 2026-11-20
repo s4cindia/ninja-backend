@@ -347,8 +347,20 @@ export interface AutoRemediationDriver {
    *  ComparisonTrialAutoRemediationDriver always returns false, since
    *  trials are the admin research-tooling path and deliberately don't
    *  participate in this (same reasoning as altTextMode's trial carve-out
-   *  above). */
-  escalateStalledModes(): Promise<boolean>;
+   *  above).
+   *
+   *  Also gives every 'failed' AiAnalysis suggestion for `jobId` one fresh
+   *  attempt budget (see JobAutoRemediationDriver's own implementation) --
+   *  a stall is exactly the "something changed, worth another look" moment
+   *  recordApplyFailure's own doc comment didn't have a hook for: a
+   *  suggestion that failed in an early round because of some OTHER
+   *  structural problem on its page may well succeed now if a later
+   *  round's unrelated fix already cleared that blocker, but nothing ever
+   *  gave it a second chance before this (real incident, DuBrin_FOB_8e.pdf,
+   *  2026-11-20 -- see fixLinkMissingAnnotation's own apply history on that
+   *  job: failed twice by round 2 citing an untagged /Artifact span that a
+   *  later round's own fix resolved, then sat 'failed' for 8 more rounds). */
+  escalateStalledModes(jobId: string): Promise<boolean>;
 }
 
 /**
@@ -427,7 +439,10 @@ export class ComparisonTrialAutoRemediationDriver implements AutoRemediationDriv
 
   /** Trials are the admin research-tooling path -- auto-escalate-on-stall is
    *  an operator-facing production feature, same carve-out this file
-   *  already makes for altTextMode. Always a no-op. */
+   *  already makes for altTextMode. Always a no-op, including the
+   *  failed-suggestion retry the job-native driver's own implementation
+   *  now also does on escalation -- trials deliberately don't participate
+   *  in either. */
   async escalateStalledModes(): Promise<boolean> {
     return false;
   }
@@ -510,11 +525,23 @@ export class JobAutoRemediationDriver implements AutoRemediationDriver {
    *  the rest of this run and records that escalation happened, so a second stall stops
    *  for real instead of escalating again. Unconditional -- the caller
    *  (startAutoLoop) already checked resolveEscalateOnStall and
-   *  !state.autoStallEscalated before calling this. */
-  async escalateStalledModes(): Promise<boolean> {
+   *  !state.autoStallEscalated before calling this.
+   *
+   *  Also gives every 'failed' AiAnalysis row for this job one fresh
+   *  attempt budget -- see the interface's own doc comment for why a stall
+   *  is the right moment for this. Scoped to apply-to-pdf suggestions only
+   *  (status 'failed' is never reached by guidance-only rows in the first
+   *  place, since recordApplyFailure is only ever called from the apply
+   *  path), and capped by this same one-escalation-per-run gate, so this
+   *  can't compound into unbounded retries across a long-running job. */
+  async escalateStalledModes(jobId: string): Promise<boolean> {
     await prisma.pdfAutoRemediationRun.update({
       where: { id: this.runId },
       data: { autoColorContrastMode: 'apply-to-pdf', autoLinkTextMode: 'apply-to-pdf', autoBookmarkMode: 'apply-to-pdf', autoStallEscalated: true },
+    });
+    await prisma.aiAnalysis.updateMany({
+      where: { jobId, status: 'failed' },
+      data: { status: 'approved', failedAttempts: 0, updatedAt: new Date() },
     });
     return true;
   }
@@ -1201,11 +1228,11 @@ class AutoRemediationLoopService {
             // before this round ran -- any earlier round's own escalation
             // would already show up in it.
             if (escalateOnStallEnabled && !state.autoStallEscalated) {
-              const escalated = await driver.escalateStalledModes();
+              const escalated = await driver.escalateStalledModes(jobId);
               if (escalated) {
                 escalatedThisRun = true;
                 justEscalated = true;
-                logger.info(`[AutoRemediationLoop] ${driver.describe()}: stalled after ${roundsCompleted} round(s) -- auto-escalating guidance-only color-contrast/link-text to apply-to-pdf for one more pass`);
+                logger.info(`[AutoRemediationLoop] ${driver.describe()}: stalled after ${roundsCompleted} round(s) -- auto-escalating guidance-only color-contrast/link-text to apply-to-pdf, and giving any permanently-failed suggestions one fresh retry, for one more pass`);
                 consecutiveStalls = 0;
                 continue;
               }
