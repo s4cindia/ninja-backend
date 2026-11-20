@@ -104,5 +104,25 @@ export const pdfConfig = {
   // point, not yet load-tested against a large real document -- raise
   // only after measuring wall-clock and memory on one.
   applyPageConcurrency: parseInt(process.env.PDF_APPLY_PAGE_CONCURRENCY || '4', 10),
+  // Bounds how many of pdf-audit.service.ts's 8 comprehensive-mode lanes
+  // (Structure, Alt Text, Formula+Tables, Contrast, Links, Forms, Bookmarks,
+  // Supplemental) run concurrently, via p-limit -- previously all 8 always
+  // ran at once with no cap at all. Each lane is individually tuned and
+  // already frees its own per-item buffers (altTextConcurrency,
+  // contrastRenderConcurrency above), so no single lane looked like the
+  // cause -- the risk is their AGGREGATE peak, concurrent with whatever
+  // in-memory modifiedBuffer this same re-audit call is also holding. Real
+  // incidents (DuBrin_FOB_8e.pdf and Whiting_186772, both 2026-11-20): the
+  // comprehensive re-audit pass died with no catchable exception and no
+  // history log entry mid-flight (postRemediationProgress frozen at
+  // altTextImageProgress 61/138, contrastPageProgress 198/544) -- the
+  // signature of a hard container kill, not a normal thrown error -- on
+  // 408-544 page documents. Same shape as a documented 2026-10-14 incident
+  // (see auto-remediation-loop.service.ts's reconcileAllOrphanedRuns doc
+  // comment), so this is a known, recurring failure class, not a one-off.
+  // 4 (half of all 8 lanes) is a starting point, not load-tested against
+  // the real ECS task memory limit -- raise or lower after measuring actual
+  // peak RSS during a comprehensive re-audit on one of the documents above.
+  auditLaneConcurrency: parseInt(process.env.PDF_AUDIT_LANE_CONCURRENCY || '4', 10),
   chunkSize: 10,
 };

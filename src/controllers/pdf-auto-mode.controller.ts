@@ -43,7 +43,35 @@ import {
 } from '../services/pdf/auto-remediation-loop.service';
 import { getEffectiveAiRemediationConfig } from '../services/pdf/ai-remediation-tenant-config.service';
 import { estimateBudgetForJob } from '../services/pdf/auto-mode-budget-estimate.service';
+import { remediationCycleLockService, STALE_LOCK_MS } from '../services/pdf/remediation-cycle-lock.service';
 import type { StartAutoModeBody, UpdateJobSettingsBody } from '../schemas/pdf-auto-mode.schemas';
+
+/**
+ * Real incident (Whiting_186772, 2026-11-20): a round died mid-reaudit with
+ * no catchable exception (consistent with a hard container kill), leaving
+ * the remediation-cycle lock held. autoStatus eventually self-healed to
+ * 'stopped'/'error' via the periodic watchdog (reconcileAllOrphanedRuns),
+ * but the lock itself only clears via its own STALE_LOCK_MS timer -- by
+ * design (see forceStopForShutdown's own doc comment: touching the lock
+ * early would reintroduce the exact two-cycles-running-at-once race it
+ * exists to prevent). Every restart attempt in that window still returned
+ * this endpoint's unconditional 202 "Auto-remediation loop started" --
+ * `enqueueOrRunAutoLoop` is fire-and-forget, so the caller had no way to
+ * learn their request actually did nothing until polling the status
+ * endpoint and noticing `autoStartedAt` never changed. Checking the lock
+ * BEFORE responding, in both branches below, makes this endpoint honest
+ * about whether the loop can actually start right now, instead of
+ * reporting false success -- the lock's own staleness safety margin is
+ * left completely untouched.
+ */
+function lockHeldError(lockStatus: { lockedAt?: Date; source?: string }): AppError {
+  const retryAt = lockStatus.lockedAt ? new Date(lockStatus.lockedAt.getTime() + STALE_LOCK_MS) : undefined;
+  const retryHint = retryAt ? ` Try again after ${retryAt.toISOString()} if nothing resolves it sooner.` : '';
+  return AppError.conflict(
+    `Another remediation cycle (source: ${lockStatus.source ?? 'unknown'}) currently holds this job's lock -- the loop cannot start yet.${retryHint}`,
+    'REMEDIATION_CYCLE_LOCK_HELD'
+  );
+}
 
 export class PdfAutoModeController {
   /**
@@ -76,6 +104,11 @@ export class PdfAutoModeController {
           throw AppError.notFound('Trial not found.');
         }
 
+        const trialLockStatus = await remediationCycleLockService.getLockStatus(jobId);
+        if (trialLockStatus.inProgress) {
+          throw lockHeldError(trialLockStatus);
+        }
+
         // Fire-and-forget -- client polls the status endpoint below. Runs on
         // the worker process via the auto-remediation queue when available
         // (see enqueueOrRunAutoLoop above).
@@ -100,6 +133,11 @@ export class PdfAutoModeController {
         if (run?.autoStatus === 'running') {
           throw AppError.conflict('Auto mode is already running for this job.', 'AUTO_MODE_ALREADY_RUNNING');
         }
+      }
+
+      const jobRunLockStatus = await remediationCycleLockService.getLockStatus(jobId);
+      if (jobRunLockStatus.inProgress) {
+        throw lockHeldError(jobRunLockStatus);
       }
 
       const body = (req.body ?? {}) as NonNullable<StartAutoModeBody>;
