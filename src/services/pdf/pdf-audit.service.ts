@@ -10,6 +10,7 @@
 import fs from 'fs/promises';
 import os from 'os';
 import path from 'path';
+import pLimit from 'p-limit';
 import { PDFDocument } from 'pdf-lib';
 import { logger } from '../../lib/logger';
 import { pdfConfig } from '../../config/pdf.config';
@@ -972,21 +973,30 @@ class PdfAuditService extends BaseAuditService<PdfParseResult, PdfValidationResu
         }
       };
 
-      // Dispatch every lane concurrently. allSettled (not all) so one
-      // lane's own unexpected synchronous throw -- outside any of its
-      // internal try/catch blocks above -- can't preempt siblings; every
-      // lane already catches its own real validator errors internally, so
-      // in practice none of these should ever reject, but this is the same
-      // defensive choice the approved design called for.
+      // Dispatch every lane concurrently, bounded by auditLaneConcurrency.
+      // allSettled (not all) so one lane's own unexpected synchronous throw
+      // -- outside any of its internal try/catch blocks above -- can't
+      // preempt siblings; every lane already catches its own real validator
+      // errors internally, so in practice none of these should ever reject,
+      // but this is the same defensive choice the approved design called
+      // for. The pLimit wrap is new: all 8 lanes previously ran with no cap
+      // at all -- each lane is individually tuned and already frees its own
+      // per-item buffers, so no single lane looked like the cause, but
+      // their AGGREGATE peak, concurrent with whatever in-memory
+      // modifiedBuffer this same re-audit call is also holding, is the
+      // real suspect behind a hard container kill observed on large
+      // documents (see auditLaneConcurrency's own doc comment in
+      // pdf.config.ts for the specific incidents).
+      const laneLimit = pLimit(pdfConfig.auditLaneConcurrency);
       await Promise.allSettled([
-        runStructureLane(),
-        runAltTextLane(),
-        runFormulaAndTablesLane(),
-        runContrastLane(),
-        runLinksLane(),
-        runFormsLane(),
-        runBookmarksLane(),
-        runSupplementalLane(),
+        laneLimit(runStructureLane),
+        laneLimit(runAltTextLane),
+        laneLimit(runFormulaAndTablesLane),
+        laneLimit(runContrastLane),
+        laneLimit(runLinksLane),
+        laneLimit(runFormsLane),
+        laneLimit(runBookmarksLane),
+        laneLimit(runSupplementalLane),
       ]);
     } else {
       // Fallback to stub validators

@@ -132,6 +132,28 @@ describe('PdfAutoModeController', () => {
       expect(next).not.toHaveBeenCalled();
     });
 
+    /**
+     * Real incident (Whiting_186772, 2026-11-20): a crashed round left the
+     * remediation-cycle lock held but non-stale; every retry during that
+     * window got back this endpoint's unconditional 202 "started" even
+     * though the fire-and-forget loop silently did nothing (lock still
+     * held). Checking the lock before responding fixes that.
+     */
+    it('rejects with 409 when the remediation-cycle lock is currently held (not stale)', async () => {
+      vi.mocked(prisma.comparisonTrial.findUnique).mockResolvedValueOnce({ id: 'trial-1', mode: 'auto', autoStatus: 'stopped' } as any);
+      vi.mocked(prisma.job.findUnique).mockResolvedValueOnce({
+        remediationCycleLockedAt: new Date(),
+        remediationCycleLockedBy: 'auto-mode',
+        remediationCycleSource: 'auto_loop',
+      } as any);
+
+      await pdfAutoModeController.start(makeReq(), makeRes(), next);
+
+      expect(next).toHaveBeenCalledWith(expect.objectContaining({ statusCode: 409, code: 'REMEDIATION_CYCLE_LOCK_HELD' }));
+      expect(autoRemediationLoopService.startAutoLoop).not.toHaveBeenCalled();
+      expect(mockQueueAdd).not.toHaveBeenCalled();
+    });
+
     it('kicks off the loop and responds 202 when eligible, ignoring any request body (trial config is pre-set via the admin endpoint)', async () => {
       vi.mocked(prisma.comparisonTrial.findUnique).mockResolvedValue({ id: 'trial-1', mode: 'auto', autoStatus: null } as any);
       const res = makeRes();
@@ -268,6 +290,37 @@ describe('PdfAutoModeController', () => {
       expect(next).toHaveBeenCalledWith(expect.objectContaining({ statusCode: 409, code: 'AUTO_MODE_ALREADY_RUNNING' }));
       expect(autoRemediationLoopService.startAutoLoop).not.toHaveBeenCalled();
       expect(prisma.pdfAutoRemediationRun.upsert).not.toHaveBeenCalled();
+    });
+
+    it('rejects with 409 when the remediation-cycle lock is currently held (not stale) -- real incident, Whiting_186772, 2026-11-20', async () => {
+      vi.mocked(prisma.pdfAutoRemediationRun.findUnique).mockResolvedValueOnce({ id: 'run-1', jobId: 'job-1', autoStatus: 'stopped' } as any);
+      vi.mocked(prisma.job.findUnique).mockResolvedValueOnce({
+        remediationCycleLockedAt: new Date(),
+        remediationCycleLockedBy: 'auto-mode',
+        remediationCycleSource: 'auto_loop',
+      } as any);
+
+      await pdfAutoModeController.start(makeReq(), makeRes(), next);
+
+      expect(next).toHaveBeenCalledWith(expect.objectContaining({ statusCode: 409, code: 'REMEDIATION_CYCLE_LOCK_HELD' }));
+      expect(autoRemediationLoopService.startAutoLoop).not.toHaveBeenCalled();
+      expect(prisma.pdfAutoRemediationRun.upsert).not.toHaveBeenCalled();
+    });
+
+    it('allows a fresh start once the lock has gone stale, even though the column is still non-null', async () => {
+      vi.mocked(prisma.pdfAutoRemediationRun.findUnique).mockResolvedValueOnce({ id: 'run-1', jobId: 'job-1', autoStatus: 'stopped' } as any);
+      vi.mocked(prisma.job.findUnique).mockResolvedValueOnce({
+        remediationCycleLockedAt: new Date(Date.now() - 25 * 60 * 1000), // 25 min ago, past STALE_LOCK_MS (20 min)
+        remediationCycleLockedBy: 'auto-mode',
+        remediationCycleSource: 'auto_loop',
+      } as any);
+      vi.mocked(prisma.pdfAutoRemediationRun.upsert).mockResolvedValueOnce({ id: 'run-1', jobId: 'job-1' } as any);
+      const res = makeRes();
+
+      await pdfAutoModeController.start(makeReq(), res, next);
+
+      expect(next).not.toHaveBeenCalled();
+      expect(res.status).toHaveBeenCalledWith(202);
     });
 
     it('reconciles an orphaned job-run and allows a fresh start', async () => {
