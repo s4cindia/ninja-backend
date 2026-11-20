@@ -161,12 +161,70 @@ describe('PdfStructureWriterService.extendParentTree', () => {
     expect(() => pdfStructureWriterService.extendParentTree(doc, 1, [{ mcid: 1, structElementRef: elemRef }])).toThrow(/start at MCID 0/);
   });
 
-  it('throws when the page has no /StructParents entry at all', async () => {
-    const { doc } = await setup(); // no setStructParents call
-    attachStructTreeRoot(doc);
+  /**
+   * Was: throws. Real investigation finding (Whiting/Zaidi jobs,
+   * 2026-11-20): a page can be missing /StructParents entirely -- not a
+   * malformed document, just a page the original tagging pass never
+   * touched at all (e.g. a late-inserted plates section with zero MCIDs
+   * anywhere in its own content stream). Throwing here meant
+   * buildFigureFromImage could never build a Figure for ANY image on such
+   * a page, no matter how good its anchor resolution got. Now allocates a
+   * brand-new key (1 + the highest key used anywhere in the /ParentTree,
+   * or 0 when the tree is empty) and writes it onto the page instead.
+   */
+  it('allocates a brand-new /StructParents key (0, since the tree is empty) when the page has none at all, instead of throwing', async () => {
+    const { doc, page } = await setup(); // no setStructParents call
+    const structRoot = attachStructTreeRoot(doc);
 
     const elemRef = buildStructElem(doc);
-    expect(() => pdfStructureWriterService.extendParentTree(doc, 1, [{ mcid: 0, structElementRef: elemRef }])).toThrow(/no \/StructParents/);
+    expect(() => pdfStructureWriterService.extendParentTree(doc, 1, [{ mcid: 0, structElementRef: elemRef }])).not.toThrow();
+
+    const structParents = page.node.get(PDFName.of('StructParents'));
+    expect(structParents).toBeInstanceOf(PDFNumber);
+    expect((structParents as PDFNumber).asNumber()).toBe(0);
+
+    const parentTreeDict = getParentTreeDict(doc, structRoot);
+    const flat = numsFlat(doc, parentTreeDict);
+    expect(flat).toHaveLength(2);
+    expect((flat[0] as PDFNumber).asNumber()).toBe(0);
+    expect((flat[1] as PDFArray).asArray()).toEqual([elemRef]);
+  });
+
+  /**
+   * Same allocation, but against a HIERARCHICAL /Kids tree with existing
+   * keys -- confirms the new key is max+1 (not 0, not colliding with an
+   * existing page) and that the owning leaf's own /Limits upper bound is
+   * widened by exactly 1 so the normal leaf lookup finds it immediately,
+   * matching the real shape confirmed live on both Whiting (leaf [480,582])
+   * and Zaidi (leaf [160,219]).
+   */
+  it('allocates max-key-plus-one and widens the owning leaf\'s /Limits, for a hierarchical /Kids tree', async () => {
+    const { doc, page } = await setup(); // no setStructParents call
+    const elem5 = buildStructElem(doc);
+    const leafNums = doc.context.obj([PDFNumber.of(5), doc.context.obj([elem5])]);
+    const leafRef = doc.context.register(doc.context.obj({
+      Nums: leafNums,
+      Limits: doc.context.obj([PDFNumber.of(0), PDFNumber.of(5)]),
+    }));
+    attachStructTreeRoot(doc, {
+      ParentTree: doc.context.register(doc.context.obj({ Kids: doc.context.obj([leafRef]) })),
+    });
+
+    const elemRef = buildStructElem(doc);
+    pdfStructureWriterService.extendParentTree(doc, 1, [{ mcid: 0, structElementRef: elemRef }]);
+
+    const structParents = page.node.get(PDFName.of('StructParents'));
+    expect((structParents as PDFNumber).asNumber()).toBe(6); // max (5) + 1
+
+    const leafDict = doc.context.lookup(leafRef) as PDFDict;
+    const limits = leafDict.get(PDFName.of('Limits')) as PDFArray;
+    expect((limits.get(0) as PDFNumber).asNumber()).toBe(0); // lower bound untouched
+    expect((limits.get(1) as PDFNumber).asNumber()).toBe(6); // upper bound widened
+
+    const flat = (leafDict.get(PDFName.of('Nums')) as PDFArray).asArray();
+    expect(flat).toHaveLength(4); // original [5, [elem5]] + new [6, [elemRef]]
+    expect((flat[2] as PDFNumber).asNumber()).toBe(6);
+    expect((flat[3] as PDFArray).asArray()).toEqual([elemRef]);
   });
 
   it('throws when there is no structure tree root at all', async () => {

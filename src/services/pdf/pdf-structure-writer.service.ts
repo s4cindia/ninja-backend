@@ -64,7 +64,7 @@ import {
   type CellCoverageResult,
 } from './table-content-tagger';
 import type { TableCell, TableInfo } from './structure-analyzer.service';
-import { locateXObjectInvocation, findNearestMcidForPosition } from './figure-content-tagger';
+import { locateXObjectInvocation, findNearestMcidCandidatesForPosition } from './figure-content-tagger';
 import { locateTextRun, locateEnclosingTextObject, computeCtmAt, findPrecedingColor, type TextRunMatch } from './contrast-content-stream';
 import { MIN_APPLY_CONFIDENCE, resolveSourceColor } from './pdf-contrast-writer.service';
 import { verifyStillNoDetectableInk } from './color-contrast-verification';
@@ -2377,6 +2377,45 @@ export class PdfStructureWriterService {
   }
 
   /**
+   * One-time, whole-document index from page number -> that page's FIRST
+   * and LAST struct element (in document/traversal order) with its own
+   * direct /Pg pointing at that page. Built once per buildFigureFromImage
+   * call (not re-walked per image) since a full struct-tree walk costs the
+   * same regardless of how many images end up needing it.
+   *
+   * Deliberately direct-/Pg-only (no resolvesToPageViaMcid fallback, unlike
+   * findStructElementByMcid/findTargetTable) -- this index is itself only a
+   * last-resort anchor source (see buildFigureFromImage's own fallback,
+   * below), so staying cheap and conservative here is the right trade:
+   * missing an occasional /Pg-less element only means this fallback tries
+   * the next-nearest page instead, never a wrong result.
+   */
+  private buildPageAnchorIndex(
+    doc: PDFDocument,
+    structRoot: PDFDict
+  ): Map<number, { first: { dict: PDFDict; ref: PDFRef }; last: { dict: PDFDict; ref: PDFRef } }> {
+    const pageNumberByRefKey = new Map<string, number>();
+    doc.getPages().forEach((p, i) => pageNumberByRefKey.set(p.ref.toString(), i + 1));
+
+    const index = new Map<number, { first: { dict: PDFDict; ref: PDFRef }; last: { dict: PDFDict; ref: PDFRef } }>();
+    this.traverseStructTree(doc, structRoot, (node, ref) => {
+      if (!ref) return;
+      const pg = node.get(PDFName.of('Pg'));
+      if (!(pg instanceof PDFRef)) return;
+      const pageNum = pageNumberByRefKey.get(pg.toString());
+      if (pageNum === undefined) return;
+      const entry = index.get(pageNum);
+      if (!entry) {
+        index.set(pageNum, { first: { dict: node, ref }, last: { dict: node, ref } });
+      } else {
+        // Pre-order traversal -> later writes are later in document order.
+        entry.last = { dict: node, ref };
+      }
+    });
+    return index;
+  }
+
+  /**
    * Finds the struct element on `pageNumber` whose /K references `mcid` --
    * resolves a "nearest tagged content" MCID (from figure-content-tagger.ts's
    * findNearestMcidForPosition) back to the real struct element to anchor a
@@ -2478,6 +2517,11 @@ export class PdfStructureWriterService {
       byPage.set(img.pageNumber, list);
     }
 
+    // Built once, used only by the no-anchor-on-this-page fallback below --
+    // see buildPageAnchorIndex's own doc comment.
+    const pageAnchorIndex = this.buildPageAnchorIndex(doc, structRoot);
+    const totalPages = doc.getPages().length;
+
     const results: FixResult[] = [];
 
     for (const [pageNumber, pageImages] of byPage) {
@@ -2520,6 +2564,11 @@ export class PdfStructureWriterService {
         range: { start: number; end: number };
         anchorRef: PDFRef;
         parentRef: PDFRef;
+        // 'before' means anchorRef is this new Figure's RIGHT neighbor (the
+        // fallback crossed into a LATER page with no earlier content to
+        // anchor after) -- every other case is 'after', the pre-existing
+        // behavior. See the no-anchor-on-this-page fallback below.
+        anchorMode: 'after' | 'before';
       };
       const validEntries: ValidEntry[] = [];
       for (const img of pageImages) {
@@ -2543,14 +2592,48 @@ export class PdfStructureWriterService {
           results.push({ issueId: img.imageId, success: false, before: 'unknown', after: 'unknown', error: `No "/${xObjectName} Do" invocation found at occurrence ${occurrence} on page ${pageNumber}` });
           continue;
         }
-        const nearest = await findNearestMcidForPosition(parsedPdf, pageNumber, img.position);
-        if (!nearest) {
-          results.push({ issueId: img.imageId, success: false, before: 'unknown', after: 'unknown', error: `No existing tagged content found on page ${pageNumber} to anchor placement near` });
-          continue;
+        // Try every nearby-text MCID candidate, nearest first, not just the
+        // single closest one (real investigation finding, Whiting/Zaidi
+        // jobs, 2026-11-20: the single nearest MCID can itself be orphaned
+        // -- opened in the content stream but never linked into the
+        // structure tree -- even while OTHER real tagged content sits a
+        // little farther away on the exact same page).
+        const candidates = await findNearestMcidCandidatesForPosition(parsedPdf, pageNumber, img.position);
+        let anchor: { dict: PDFDict; ref: PDFRef } | null = null;
+        for (const candidate of candidates) {
+          anchor = this.findStructElementByMcid(doc, structRoot, pageNumber, candidate.mcid);
+          if (anchor) break;
         }
-        const anchor = this.findStructElementByMcid(doc, structRoot, pageNumber, nearest.mcid);
+        let anchorMode: 'after' | 'before' = 'after';
+
         if (!anchor) {
-          results.push({ issueId: img.imageId, success: false, before: 'unknown', after: 'unknown', error: `Nearest MCID ${nearest.mcid} did not resolve to a real struct element` });
+          // Nothing on this exact page resolves at all (either no nearby
+          // MCID was found, or every candidate found was itself orphaned) --
+          // last resort: the nearest OTHER page (either direction) that has
+          // ANY resolvable struct element, via the whole-document index
+          // built once above. Prefers an earlier page (anchor AFTER its
+          // last element, preserving forward reading order) over a later
+          // one at the same distance (anchor BEFORE its first element).
+          // Bounded by the document's own page count -- not an arbitrary
+          // cutoff, just "can't search past the ends of the document."
+          for (let distance = 1; distance <= totalPages && !anchor; distance++) {
+            const before = pageAnchorIndex.get(pageNumber - distance);
+            if (before) {
+              anchor = before.last;
+              anchorMode = 'after';
+              break;
+            }
+            const after = pageAnchorIndex.get(pageNumber + distance);
+            if (after) {
+              anchor = after.first;
+              anchorMode = 'before';
+              break;
+            }
+          }
+        }
+
+        if (!anchor) {
+          results.push({ issueId: img.imageId, success: false, before: 'unknown', after: 'unknown', error: `No existing tagged content found anywhere in the document to anchor placement near for page ${pageNumber}` });
           continue;
         }
         const parentRaw = anchor.dict.get(PDFName.of('P'));
@@ -2558,16 +2641,16 @@ export class PdfStructureWriterService {
           results.push({ issueId: img.imageId, success: false, before: 'unknown', after: 'unknown', error: 'Anchor struct element has no /P (parent) entry' });
           continue;
         }
-        // Preflight what insertIntoKidsAfter itself would need to succeed --
-        // a property of the document as it already stands (nothing mutates
-        // this parent's /K between here and the actual insertion below),
-        // fully knowable up front. kContainsChild accepts a single-child
-        // struct element's legitimate SCALAR /K (per spec, not wrapped in
-        // an array) too -- insertIntoKidsAfter now promotes that shape to
-        // a real array rather than declining (see its own doc comment);
-        // this preflight must agree exactly with what it will actually do,
-        // or a page that WOULD now succeed would still wrongly decline here
-        // first.
+        // Preflight what insertIntoKidsAfter/insertIntoKidsBefore itself
+        // would need to succeed -- a property of the document as it already
+        // stands (nothing mutates this parent's /K between here and the
+        // actual insertion below), fully knowable up front. kContainsChild
+        // accepts a single-child struct element's legitimate SCALAR /K (per
+        // spec, not wrapped in an array) too -- both insertion primitives
+        // now promote that shape to a real array rather than declining (see
+        // their own doc comments); this preflight must agree exactly with
+        // what they will actually do, or a page that WOULD now succeed would
+        // still wrongly decline here first.
         const parentDict = doc.context.lookup(parentRaw);
         if (!(parentDict instanceof PDFDict)) {
           results.push({ issueId: img.imageId, success: false, before: 'unknown', after: 'unknown', error: 'Anchor parent does not resolve to a dictionary' });
@@ -2578,7 +2661,7 @@ export class PdfStructureWriterService {
           results.push({ issueId: img.imageId, success: false, before: 'unknown', after: 'unknown', error: 'Anchor not found in its own parent /K (neither as an array member nor as a matching scalar)' });
           continue;
         }
-        validEntries.push({ img, range, anchorRef: anchor.ref, parentRef: parentRaw });
+        validEntries.push({ img, range, anchorRef: anchor.ref, parentRef: parentRaw, anchorMode });
       }
 
       if (validEntries.length === 0) continue;
@@ -2691,8 +2774,18 @@ export class PdfStructureWriterService {
           figureRefsByIndex.set(i, figureRef);
 
           const anchorKey = ve.anchorRef.objectNumber;
-          const insertAfter = lastInsertedByAnchor.get(anchorKey) ?? ve.anchorRef;
-          this.insertIntoKidsAfter(doc, ve.parentRef, insertAfter, figureRef);
+          const previouslyInserted = lastInsertedByAnchor.get(anchorKey);
+          if (previouslyInserted) {
+            // Second+ entry chained onto this anchor always goes AFTER the
+            // previously-inserted sibling, regardless of the anchor's own
+            // mode -- for 'before' mode this still lands correctly between
+            // the first-inserted Figure and the original anchor.
+            this.insertIntoKidsAfter(doc, ve.parentRef, previouslyInserted, figureRef);
+          } else if (ve.anchorMode === 'before') {
+            this.insertIntoKidsBefore(doc, ve.parentRef, ve.anchorRef, figureRef);
+          } else {
+            this.insertIntoKidsAfter(doc, ve.parentRef, ve.anchorRef, figureRef);
+          }
           lastInsertedByAnchor.set(anchorKey, figureRef);
 
           pageParentTreeEntries.push({ mcid, structElementRef: figureRef });
@@ -4297,6 +4390,46 @@ export class PdfStructureWriterService {
    * comment for why that residual case isn't attempted.
    */
   /**
+   * Finds the highest /StructParents-style key currently used ANYWHERE in a
+   * /ParentTree number-tree node's subtree (walking /Kids recursively, same
+   * XOR-with-/Nums shape findParentTreeLeafNums already assumes), plus the
+   * specific LEAF dict that key lives in (null for a flat root /Nums, which
+   * has no /Limits to widen). Used only by resolveParentTreeNumsArray's own
+   * "this page was never given a /StructParents key at all" fallback, to
+   * allocate a brand-new, guaranteed-unused key.
+   */
+  private findParentTreeMaxKeyAndLeaf(doc: PDFDocument, node: PDFDict): { maxKey: number; leaf: PDFDict | null } {
+    const numsRaw = node.get(PDFName.of('Nums'));
+    if (numsRaw) {
+      const looked = numsRaw instanceof PDFRef ? doc.context.lookup(numsRaw) : numsRaw;
+      if (!(looked instanceof PDFArray)) return { maxKey: -Infinity, leaf: null };
+      const flat = looked.asArray();
+      let maxKey = -Infinity;
+      for (let i = 0; i < flat.length; i += 2) {
+        const keyObj = flat[i] instanceof PDFRef ? doc.context.lookup(flat[i] as PDFRef) : flat[i];
+        if (keyObj instanceof PDFNumber) maxKey = Math.max(maxKey, keyObj.asNumber());
+      }
+      // A flat root (not itself inside a /Kids chain) has no /Limits to
+      // widen -- only a leaf reached THROUGH /Kids does. The caller
+      // disambiguates by checking whether it recursed via /Kids at all.
+      return { maxKey, leaf: node };
+    }
+    const kidsRaw = node.get(PDFName.of('Kids'));
+    if (!kidsRaw) return { maxKey: -Infinity, leaf: null };
+    const kidsLooked = kidsRaw instanceof PDFRef ? doc.context.lookup(kidsRaw) : kidsRaw;
+    if (!(kidsLooked instanceof PDFArray)) return { maxKey: -Infinity, leaf: null };
+
+    let best: { maxKey: number; leaf: PDFDict | null } = { maxKey: -Infinity, leaf: null };
+    for (const kidRaw of kidsLooked.asArray()) {
+      const kidDict = kidRaw instanceof PDFRef ? doc.context.lookup(kidRaw) : kidRaw;
+      if (!(kidDict instanceof PDFDict)) continue;
+      const result = this.findParentTreeMaxKeyAndLeaf(doc, kidDict);
+      if (result.maxKey > best.maxKey) best = result;
+    }
+    return best;
+  }
+
+  /**
    * Resolves (creating if wholly absent) the page's /StructParents key and
    * /StructTreeRoot /ParentTree /Nums array, validating every document-shape
    * assumption extendParentTree depends on -- WITHOUT touching any specific
@@ -4313,15 +4446,24 @@ export class PdfStructureWriterService {
    * being requested and can only be evaluated once real MCIDs exist (see
    * extendParentTree's own doc comment for why that residual case is
    * accepted, not preflighted).
+   *
+   * A page can be missing /StructParents entirely -- not a malformed
+   * document, just a page the original tagging pass never touched at all
+   * (real investigation finding, Whiting/Zaidi jobs, 2026-11-20: a wholesale-
+   * untagged page, e.g. a late-inserted plates section, with zero MCIDs
+   * anywhere in its own content stream). This used to throw unconditionally;
+   * now it allocates a brand-new key (1 + the highest key used ANYWHERE in
+   * the /ParentTree, via findParentTreeMaxKeyAndLeaf) and writes it onto the
+   * page. For a hierarchical tree, this also widens the leaf that owned the
+   * OLD max key by exactly 1 (safe: /Limits ranges are non-overlapping and
+   * sorted, so the globally-highest leaf is the only one that can legally
+   * claim the next integer up) so the normal findParentTreeLeafNums lookup
+   * below finds it immediately afterward -- never rebalances or creates a
+   * new leaf, matching this method's own established "locate, don't
+   * restructure" scope.
    */
   private resolveParentTreeNumsArray(doc: PDFDocument, pageNumber: number): { numsArr: PDFArray; pageKey: number } {
     const page = doc.getPage(pageNumber - 1);
-    const structParentsRaw = page.node.get(PDFName.of('StructParents'));
-    const structParents = structParentsRaw instanceof PDFRef ? doc.context.lookup(structParentsRaw) : structParentsRaw;
-    if (!(structParents instanceof PDFNumber)) {
-      throw new Error(`extendParentTree: page ${pageNumber} has no /StructParents entry -- cannot locate its ParentTree slot.`);
-    }
-    const pageKey = structParents.asNumber();
 
     const structRoot = this.getStructTreeRoot(doc);
     if (!structRoot) {
@@ -4339,6 +4481,28 @@ export class PdfStructureWriterService {
     } else {
       parentTreeDict = doc.context.obj({ Nums: doc.context.obj([]) }) as PDFDict;
       structRoot.set(PDFName.of('ParentTree'), doc.context.register(parentTreeDict));
+    }
+
+    const structParentsRaw = page.node.get(PDFName.of('StructParents'));
+    const structParents = structParentsRaw instanceof PDFRef ? doc.context.lookup(structParentsRaw) : structParentsRaw;
+    let pageKey: number;
+    if (structParents instanceof PDFNumber) {
+      pageKey = structParents.asNumber();
+    } else {
+      const { maxKey, leaf } = this.findParentTreeMaxKeyAndLeaf(doc, parentTreeDict);
+      pageKey = maxKey === -Infinity ? 0 : maxKey + 1;
+      if (leaf && parentTreeDict.get(PDFName.of('Kids'))) {
+        // Only widen when the max-key leaf was reached THROUGH /Kids (a
+        // real hierarchical leaf with its own /Limits) -- a flat root
+        // returned as `leaf` by findParentTreeMaxKeyAndLeaf has no /Limits
+        // to touch, and parentTreeDict IS that root already.
+        const limitsRaw = leaf.get(PDFName.of('Limits'));
+        const limitsArr = limitsRaw instanceof PDFRef ? doc.context.lookup(limitsRaw) : limitsRaw;
+        if (limitsArr instanceof PDFArray && limitsArr.size() === 2) {
+          limitsArr.set(1, PDFNumber.of(pageKey));
+        }
+      }
+      page.node.set(PDFName.of('StructParents'), PDFNumber.of(pageKey));
     }
 
     const numsRaw = parentTreeDict.get(PDFName.of('Nums'));

@@ -79,24 +79,34 @@ interface McidPositionCandidate {
 /**
  * Walks a page's pdfjs text content (with includeMarkedContent, the same
  * API this codebase's own table-content-tagger.test.ts helper already uses
- * to correlate MCIDs to shown text) and returns the MCID of whichever piece
- * of already-tagged content is positionally nearest to `target` -- {x, y} in
- * the SAME top-down page-coordinate convention image-extractor.service.ts's
+ * to correlate MCIDs to shown text) and returns every distinct MCID bound to
+ * visible text on the page, sorted nearest-first to `target` -- {x, y} in the
+ * SAME top-down page-coordinate convention image-extractor.service.ts's
  * ImageInfo.position already uses (viewport.height - transform[5], not the
  * raw bottom-up baseline TableCell.anchor used for a different, unrelated
  * purpose in the just-shipped Tables effort -- do not mix the two
- * conventions).
+ * conventions). Each MCID appears at most once, at its own closest text
+ * occurrence's distance.
  *
- * Returns null if the page has no MCID-bound text content at all (should be
+ * Returns [] if the page has no MCID-bound text content at all (should be
  * rare per this session's own reconnaissance -- 15/15 sampled genuinely-
  * untagged images had SOME text on their page -- but a real page could still
  * be text-free, e.g. a full-page diagram with no surrounding content).
+ *
+ * Plural, not just the single nearest: a real investigation (Whiting/Zaidi
+ * jobs, 2026-11-20) found cases where the SINGLE nearest MCID is itself
+ * orphaned -- opened in the content stream but never linked into the
+ * structure tree by whatever tagged the document, even though the SAME page
+ * has other, perfectly real tagged content a little farther away. Returning
+ * every candidate (not just #1) lets buildFigureFromImage's own anchor
+ * resolution keep trying progressively farther MCIDs on this exact page
+ * before giving up on it entirely.
  */
-export async function findNearestMcidForPosition(
+export async function findNearestMcidCandidatesForPosition(
   parsedPdf: ParsedPDF,
   pageNumber: number,
   target: { x: number; y: number }
-): Promise<{ mcid: number; distance: number } | null> {
+): Promise<Array<{ mcid: number; distance: number }>> {
   const page = await parsedPdf.pdfjsDoc.getPage(pageNumber);
   const viewport = page.getViewport({ scale: 1 });
   const textContent = await page.getTextContent({ includeMarkedContent: true });
@@ -128,17 +138,32 @@ export async function findNearestMcidForPosition(
     candidates.push({ mcid: activeMcid, x, y });
   }
 
-  if (candidates.length === 0) return null;
-
-  let best: McidPositionCandidate | null = null;
-  let bestDist = Infinity;
+  const bestDistByMcid = new Map<number, number>();
   for (const c of candidates) {
     const dist = Math.hypot(c.x - target.x, c.y - target.y);
-    if (dist < bestDist) {
-      bestDist = dist;
-      best = c;
+    const existing = bestDistByMcid.get(c.mcid);
+    if (existing === undefined || dist < existing) {
+      bestDistByMcid.set(c.mcid, dist);
     }
   }
-  if (!best) return null;
-  return { mcid: best.mcid, distance: bestDist };
+
+  return [...bestDistByMcid.entries()]
+    .map(([mcid, distance]) => ({ mcid, distance }))
+    .sort((a, b) => a.distance - b.distance);
+}
+
+/**
+ * Convenience wrapper over findNearestMcidCandidatesForPosition for callers
+ * that only ever want the single nearest candidate. Kept as its own function
+ * (rather than inlining `candidates[0]` at every call site) since its name
+ * alone documents the "just the best one" contract existing callers/tests
+ * already rely on.
+ */
+export async function findNearestMcidForPosition(
+  parsedPdf: ParsedPDF,
+  pageNumber: number,
+  target: { x: number; y: number }
+): Promise<{ mcid: number; distance: number } | null> {
+  const candidates = await findNearestMcidCandidatesForPosition(parsedPdf, pageNumber, target);
+  return candidates[0] ?? null;
 }
