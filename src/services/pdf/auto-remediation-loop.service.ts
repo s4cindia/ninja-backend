@@ -1128,7 +1128,7 @@ class AutoRemediationLoopService {
           break;
         }
 
-        const { actionableFound, resolvedCount } = await this.runRound(
+        const { actionableFound, resolvedCount, regressionCount } = await this.runRound(
           jobId,
           cycleNumber,
           tenantId,
@@ -1166,20 +1166,32 @@ class AutoRemediationLoopService {
 
         await driver.recordRoundProgress(roundsCompleted, costSpentUsd);
 
-        // Keyed on resolvedCount (re-audit-confirmed net progress), not the
-        // raw applied count -- a round can apply a handful of genuinely new,
-        // unrelated suggestions (keeping `applied` non-zero) while the
-        // re-audit still shows zero real progress, e.g. because most of what
-        // got "applied" was actually re-approved, permanently-failing
-        // suggestions from an earlier round net cancelling out against a
-        // small amount of real work. Real incident (Math_Olszewski_PDF.pdf,
-        // 2026-10-20): rounds 2 and 3 each applied 2 (non-zero), so this
-        // check never fired under the old `applied === 0` condition, even
-        // though the re-audit showed resolvedCount: 0, remainingCount: 948
-        // unchanged both times -- stop distinctly rather than let the
-        // round/cost ceiling silently absorb the real cause (see
-        // STALL_ROUND_LIMIT's doc comment above).
-        if (resolvedCount <= 0) {
+        // Keyed on resolvedCount minus regressionCount (re-audit-confirmed
+        // NET progress), not the raw applied count or resolvedCount alone --
+        // a round can apply a handful of genuinely new, unrelated
+        // suggestions (keeping `applied` non-zero) while the re-audit still
+        // shows zero real progress, e.g. because most of what got "applied"
+        // was actually re-approved, permanently-failing suggestions from an
+        // earlier round net cancelling out against a small amount of real
+        // work. Real incident (Math_Olszewski_PDF.pdf, 2026-10-20): rounds 2
+        // and 3 each applied 2 (non-zero), so this check never fired under
+        // the old `applied === 0` condition, even though the re-audit showed
+        // resolvedCount: 0, remainingCount: 948 unchanged both times -- stop
+        // distinctly rather than let the round/cost ceiling silently absorb
+        // the real cause (see STALL_ROUND_LIMIT's doc comment above).
+        //
+        // Subtracting regressionCount matters just as much as resolvedCount
+        // itself -- a bare `resolvedCount <= 0` check still misses a round
+        // that resolves one issue and regresses a different one, which looks
+        // identical to real progress by that check alone even though
+        // remainingCount hasn't moved. Real incident (Zaidi_189320,
+        // 2026-11-20): 7 consecutive rounds each resolved exactly 1 issue and
+        // regressed exactly 1 issue (remainingCount pinned at 290 throughout),
+        // but resolvedCount was 1 (never 0) every round, so consecutiveStalls
+        // kept resetting via the `else` branch below and never reached
+        // STALL_ROUND_LIMIT -- auto-escalate-on-stall never got a chance to
+        // fire before the run eventually hit its cost ceiling instead.
+        if (resolvedCount - regressionCount <= 0) {
           consecutiveStalls++;
           if (consecutiveStalls >= STALL_ROUND_LIMIT) {
             // One escalation attempt per run: if enabled and not already
@@ -1361,7 +1373,7 @@ class AutoRemediationLoopService {
     altTextModeOverride: AltTextMode | undefined,
     linkTextModeOverride: LinkTextMode | undefined,
     bookmarkModeOverride: BookmarkMode | undefined,
-  ): Promise<{ actionableFound: number; applied: number; resolvedCount: number }> {
+  ): Promise<{ actionableFound: number; applied: number; resolvedCount: number; regressionCount: number }> {
     const roundStartedAt = new Date();
     const analysis = await aiAnalysisService.analyzeJob(
       jobId,
@@ -1533,7 +1545,7 @@ class AutoRemediationLoopService {
       },
     });
     if (actionableFound === 0) {
-      return { actionableFound: 0, applied: 0, resolvedCount: 0 };
+      return { actionableFound: 0, applied: 0, resolvedCount: 0, regressionCount: 0 };
     }
 
     // Only flips 'pending' -> 'approved'; any leftover 'approved' row from a
@@ -1566,7 +1578,7 @@ class AutoRemediationLoopService {
     // OOM investigation: that buffer has no reason to outlive this point.
     const appliedCount = result.applied;
     if (appliedCount === 0 || !result.modifiedBuffer || !result.fileName) {
-      return { actionableFound, applied: appliedCount, resolvedCount: 0 };
+      return { actionableFound, applied: appliedCount, resolvedCount: 0, regressionCount: 0 };
     }
     const { modifiedBuffer, fileName } = result;
 
@@ -1624,7 +1636,7 @@ class AutoRemediationLoopService {
       throw new Error(comparison.error ?? 'Re-audit failed during auto-remediation round');
     }
 
-    return { actionableFound, applied: appliedCount, resolvedCount };
+    return { actionableFound, applied: appliedCount, resolvedCount, regressionCount };
   }
 }
 
