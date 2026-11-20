@@ -586,6 +586,66 @@ describe('PdfReauditService', () => {
       expect(result.success).toBe(false);
       expect(result.error).toContain('Re-audit failed');
     });
+
+    /**
+     * Real incident (Whiting_186772, 2026-11-20): the fresh audit pass
+     * failed twice, weeks apart, with pdfjs-dist's own raw "Invalid page
+     * request." (PDFDocumentProxy.getPage rejecting an out-of-range page
+     * number against its internal #pagesMapper), both times during a
+     * re-audit right after a round applied a large batch of fixes.
+     * Confirmed not a persistent corruption -- the job's own stored file
+     * parses and walks its /Pages tree with zero inconsistency -- so this
+     * is treated as a transient, non-deterministic parse hiccup worth one
+     * retry rather than failing the whole round outright.
+     */
+    it('retries once on pdfjs\'s transient "Invalid page request." error and succeeds the second time', async () => {
+      vi.mocked(prisma.job.findUnique).mockResolvedValue({
+        id: mockJobId,
+        output: { auditReport: mockOriginalAuditReport },
+      } as any);
+      vi.mocked(fileStorageService.saveRemediatedFile).mockResolvedValue('/path/to/remediated.pdf');
+      vi.mocked(pdfAuditService.runAuditFromBuffer)
+        .mockRejectedValueOnce(new Error('Invalid page request.'))
+        .mockResolvedValueOnce({
+          ...mockOriginalAuditReport,
+          jobId: `${mockJobId}-reaudit`,
+          issues: [],
+        });
+
+      const result = await pdfReauditService.reauditAndCompare(mockJobId, mockBuffer, mockFileName);
+
+      expect(pdfAuditService.runAuditFromBuffer).toHaveBeenCalledTimes(2);
+      expect(result.success).toBe(true);
+      expect(result.comparison.resolved.length).toBe(5);
+    });
+
+    it('does not retry a second time -- fails for real if the transient error recurs', async () => {
+      vi.mocked(prisma.job.findUnique).mockResolvedValue({
+        id: mockJobId,
+        output: { auditReport: mockOriginalAuditReport },
+      } as any);
+      vi.mocked(pdfAuditService.runAuditFromBuffer).mockRejectedValue(new Error('Invalid page request.'));
+
+      const result = await pdfReauditService.reauditAndCompare(mockJobId, mockBuffer, mockFileName);
+
+      expect(pdfAuditService.runAuditFromBuffer).toHaveBeenCalledTimes(2);
+      expect(result.success).toBe(false);
+      expect(result.error).toContain('Invalid page request.');
+    });
+
+    it('does not retry a non-transient audit failure', async () => {
+      vi.mocked(prisma.job.findUnique).mockResolvedValue({
+        id: mockJobId,
+        output: { auditReport: mockOriginalAuditReport },
+      } as any);
+      vi.mocked(pdfAuditService.runAuditFromBuffer).mockRejectedValue(new Error('Some other failure'));
+
+      const result = await pdfReauditService.reauditAndCompare(mockJobId, mockBuffer, mockFileName);
+
+      expect(pdfAuditService.runAuditFromBuffer).toHaveBeenCalledTimes(1);
+      expect(result.success).toBe(false);
+      expect(result.error).toContain('Some other failure');
+    });
   });
 
   describe('revertUnpersistedApplies', () => {

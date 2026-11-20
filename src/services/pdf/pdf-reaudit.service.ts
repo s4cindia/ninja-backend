@@ -18,6 +18,15 @@ import {
 } from '../../types/pdf-reaudit.types';
 
 /**
+ * pdfjs-dist's own raw error text for PDFDocumentProxy.getPage()/getDestination()
+ * rejecting an out-of-range or malformed request ("Invalid page request.",
+ * "Invalid pageIndex request.", "Invalid destination request." -- see
+ * pdf.mjs's own WorkerTransport class). See reauditAndCompare's own retry
+ * loop for the real incident this exists to work around.
+ */
+const PDFJS_TRANSIENT_PAGE_ERROR_RE = /Invalid (page|pageIndex|destination) request\./;
+
+/**
  * PDF Re-Audit Service
  *
  * Orchestrates re-auditing of remediated PDFs and comparison with original results.
@@ -149,26 +158,63 @@ class PdfReauditService {
         // misleadingly reading as "already done" during a potentially long
         // phase (CodeRabbit catch, PR #625 -- same reasoning now applied to
         // contrastPageProgress too).
-        await this.updateReauditProgress(jobId, {
-          currentPage: 0,
-          totalPages: 0,
-          completedValidators: 0,
-          totalValidators: 0,
-          altTextImageProgress: null,
-          contrastPageProgress: null,
-        });
+        //
+        // One retry, only for PDF_JS_TRANSIENT_PAGE_ERROR_RE: real incident
+        // (Whiting_186772, 2026-11-20) -- the fresh audit pass failed twice,
+        // weeks apart, with pdfjs-dist's own raw "Invalid page request."
+        // (thrown by PDFDocumentProxy.getPage when pageNumber exceeds its
+        // internal #pagesMapper.pagesNumber), both times during a re-audit
+        // immediately after a round applied a large batch of fixes (71
+        // alt-text-improvement that specific time). Confirmed NOT a
+        // persistent corruption: the job's own currently-stored file parses
+        // and walks its /Pages tree with zero inconsistency (408/408 by
+        // every measure -- pdf-lib, pdfjs numPages, declared /Count, and
+        // actual reachable leaf count all agree, every getPage(1..408)
+        // succeeds on a fresh parse). The failing buffer was the in-memory,
+        // not-yet-persisted result of applying this round's fixes --
+        // revertUnpersistedApplies (below) means it's already gone by the
+        // time anyone could inspect it, so the exact trigger (most likely a
+        // pdf-lib serialization edge case under a large single-pass batch of
+        // writes, intermittently confusing pdfjs-dist's lazy page-tree
+        // resolution on re-parse) couldn't be pinned down further. Retrying
+        // the same buffer once, rather than failing the whole round outright,
+        // is the cheapest safe mitigation for what's observed to be a
+        // transient, non-deterministic parse hiccup rather than a real
+        // defect in the buffer itself.
+        let reauditAttempt = 1;
+        while (true) {
+          await this.updateReauditProgress(jobId, {
+            currentPage: 0,
+            totalPages: 0,
+            completedValidators: 0,
+            totalValidators: 0,
+            altTextImageProgress: null,
+            contrastPageProgress: null,
+          });
 
-        reauditReport = await pdfAuditService.runAuditFromBuffer(
-          remediatedPdfBuffer,
-          `${jobId}-reaudit`,
-          fileName,
-          'comprehensive',
-          undefined,
-          onProgress,
-          onValidatorComplete,
-          onAltTextImageProgress,
-          onContrastPageProgress
-        );
+          try {
+            reauditReport = await pdfAuditService.runAuditFromBuffer(
+              remediatedPdfBuffer,
+              `${jobId}-reaudit`,
+              fileName,
+              'comprehensive',
+              undefined,
+              onProgress,
+              onValidatorComplete,
+              onAltTextImageProgress,
+              onContrastPageProgress
+            );
+            break;
+          } catch (auditError) {
+            const message = auditError instanceof Error ? auditError.message : 'Unknown error';
+            if (reauditAttempt === 1 && PDFJS_TRANSIENT_PAGE_ERROR_RE.test(message)) {
+              logger.warn(`[PdfReaudit] Transient pdfjs page error on job ${jobId}, retrying once: ${message}`);
+              reauditAttempt++;
+              continue;
+            }
+            throw auditError;
+          }
+        }
       } catch (auditError) {
         logger.error(`[PdfReaudit] Audit execution failed:`, auditError);
         return {
