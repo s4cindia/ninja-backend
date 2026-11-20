@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { locateTextRun, locateTextRunsForPage, locateEnclosingTextObject, findPrecedingColor, findSiblingRuns, deviceComponentsToRgb } from '../../../../src/services/pdf/contrast-content-stream';
+import { locateTextRun, locateTextRunsForPage, locateEnclosingTextObject, findPrecedingColor, findSiblingRuns, deviceComponentsToRgb, prepareClipExclusionCheck } from '../../../../src/services/pdf/contrast-content-stream';
 
 // Same shape as content-stream.test.ts's twoLineStream (verified pdf-lib output
 // shape: q BT … Tm … Tj … ET Q). Line 1 anchor (50,150), line 2 anchor (50,120).
@@ -476,6 +476,104 @@ ET
       // would mean the old `|| 1` fallback treated the offset as unscaled.
       expect(locateTextRun(stream, { x: 70, baselineY: 700 })).toBeNull();
     });
+  });
+});
+
+describe('prepareClipExclusionCheck', () => {
+  // Real incident this closes: an InDesign prepress tracking stamp sits
+  // inside its own tight `re`+`W n` clip whose rectangle does NOT include
+  // the stamp's own draw position -- confirmed live by re-rendering the
+  // page, which produced zero visible pixels for anything drawn in that
+  // scope. Clip rect here spans y:[100,400]; the text is drawn at y=50,
+  // below it.
+  it('flags a text run drawn outside its own active clip rectangle', () => {
+    const content = `q
+0 100 200 300 re
+W n
+BT
+1 0 0 1 10 50 Tm
+<537461 6D70> Tj
+ET
+Q
+`;
+    const isClippedOut = prepareClipExclusionCheck(content);
+    expect(isClippedOut(10, 50)).toBe(true);
+  });
+
+  it('does not flag a text run drawn inside its own active clip rectangle', () => {
+    const content = `q
+0 100 200 300 re
+W n
+BT
+1 0 0 1 10 150 Tm
+<48656C6C6F> Tj
+ET
+Q
+`;
+    const isClippedOut = prepareClipExclusionCheck(content);
+    expect(isClippedOut(10, 150)).toBe(false);
+  });
+
+  it('does not flag anything when no clip is active at all (existing behavior unaffected)', () => {
+    const isClippedOut = prepareClipExclusionCheck(twoLineStream);
+    expect(isClippedOut(50, 150)).toBe(false);
+    expect(isClippedOut(50, 120)).toBe(false);
+  });
+
+  it('restores the outer clip after Q pops an inner, tighter one', () => {
+    // Outer clip y:[0,500]; an inner q narrows it to y:[100,200] then Q
+    // pops back to the outer clip BEFORE the real text run. y=450 is
+    // outside the (already-popped) inner clip but inside the outer one --
+    // correct only if Q genuinely restored the outer clip rather than
+    // leaving the inner one active or clearing the clip entirely.
+    const content = `q
+0 0 200 500 re
+W n
+q
+0 100 200 100 re
+W n
+Q
+BT
+1 0 0 1 10 450 Tm
+<41> Tj
+ET
+Q
+`;
+    const isClippedOut = prepareClipExclusionCheck(content);
+    expect(isClippedOut(10, 450)).toBe(false);
+  });
+
+  it('does not flag a query point with no nearby text run to check against', () => {
+    const content = `q
+0 100 200 300 re
+W n
+BT
+1 0 0 1 10 50 Tm
+<41> Tj
+ET
+Q
+`;
+    const isClippedOut = prepareClipExclusionCheck(content);
+    // Far from the only known run anchor (10,50) -- "not clipped" is the
+    // correct, conservative answer when there's nothing to check against.
+    expect(isClippedOut(500, 500)).toBe(false);
+  });
+
+  it('does not flag a run when only an unrecognized (non-rectangle) clip path is active', () => {
+    // No `re` before `W n` -- this walker only recognizes the common
+    // rectangle-clip shape (see TextUnit.clipRect's own doc comment) and
+    // must stay permissive (not guess) for anything else, so the run is
+    // never incorrectly hidden.
+    const content = `q
+W n
+BT
+1 0 0 1 10 50 Tm
+<41> Tj
+ET
+Q
+`;
+    const isClippedOut = prepareClipExclusionCheck(content);
+    expect(isClippedOut(10, 50)).toBe(false);
   });
 });
 
