@@ -124,6 +124,29 @@ interface TextUnit {
    * subscript/superscript glyph -- see SUBSCRIPT_SCALE_RATIO_THRESHOLD.
    */
   scaleY: number;
+  /**
+   * The active clip rectangle (device space, axis-aligned only -- same
+   * convention as this file's CTM tracking) in effect when this run's first
+   * show op fired, or null if no `re`+`W`/`W*` clip is active at that point.
+   * Only the common `x y w h re` + `W n` pattern is recognized; a `W`/`W*`
+   * with no preceding `re` since the last operator leaves this unchanged
+   * (permissive -- see prepareClipExclusionCheck's own doc comment for why
+   * under-detecting a clip is the safe failure mode here, not over-detecting
+   * one).
+   */
+  clipRect: Rect | null;
+}
+
+/** Device-space axis-aligned rectangle (see TextUnit.clipRect). */
+interface Rect { x: number; y: number; w: number; h: number }
+
+function intersectRect(a: Rect | null, b: Rect): Rect {
+  if (!a) return b;
+  const x1 = Math.max(a.x, b.x);
+  const y1 = Math.max(a.y, b.y);
+  const x2 = Math.min(a.x + a.w, b.x + b.w);
+  const y2 = Math.min(a.y + a.h, b.y + b.h);
+  return { x: x1, y: y1, w: Math.max(0, x2 - x1), h: Math.max(0, y2 - y1) };
 }
 
 const num = (t: { t: string; v: string } | undefined): number => (t && t.t === 'n' ? parseFloat(t.v) : 0);
@@ -241,6 +264,16 @@ function findTextUnits(tokens: Token[]): TextUnit[] {
   type Ctm = { a: number; d: number; e: number; f: number };
   let ctm: Ctm = { a: 1, d: 1, e: 0, f: 0 };
   const ctmStack: Ctm[] = [];
+  // Active clip region (see TextUnit.clipRect) -- pushed/popped by q/Q
+  // exactly like ctm, since a clip path is graphics state too
+  // (PDF32000-1:2008 8.5.4).
+  let currentClip: Rect | null = null;
+  const clipStack: Array<Rect | null> = [];
+  // The most recent `re` rectangle's device-space box, remembered only until
+  // the next operator fires (cleared below) -- committed into currentClip
+  // when immediately followed by `W`/`W*`, the only clip-construction shape
+  // this walker recognizes (see TextUnit.clipRect's own doc comment).
+  let pendingClipRect: Rect | null = null;
   let tld = 0;
   let tmE = 0;
   let tmF = 0;
@@ -269,16 +302,18 @@ function findTextUnits(tokens: Token[]): TextUnit[] {
   let runAnchorY: number | null = null;
   let runLastShowEnd: number | null = null;
   let runScaleY = 1;
+  let runClipRect: Rect | null = null;
 
   const deviceX = (tE: number): number => ctm.a * tE + ctm.e;
   const deviceY = (tF: number): number => ctm.d * tF + ctm.f;
 
   const flushRun = (endPos: number): void => {
-    if (runHasShow) units.push({ start: runStart, end: endPos, anchorX: runAnchorX, anchorY: runAnchorY, lastShowEnd: runLastShowEnd, scaleY: runScaleY });
+    if (runHasShow) units.push({ start: runStart, end: endPos, anchorX: runAnchorX, anchorY: runAnchorY, lastShowEnd: runLastShowEnd, scaleY: runScaleY, clipRect: runClipRect });
     runHasShow = false;
     runAnchorX = null;
     runAnchorY = null;
     runLastShowEnd = null;
+    runClipRect = null;
   };
 
   // A run's `end` must land BEFORE the next positioning op's own operands
@@ -303,8 +338,12 @@ function findTextUnits(tokens: Token[]): TextUnit[] {
     if (tk.t !== 'op') { operands.push(tk); continue; }
     const op = tk.v;
     switch (op) {
-      case 'q': ctmStack.push({ ...ctm }); break;
-      case 'Q': { const p = ctmStack.pop(); if (p) ctm = { ...p }; break; }
+      case 'q': ctmStack.push({ ...ctm }); clipStack.push(currentClip); break;
+      case 'Q': {
+        const p = ctmStack.pop(); if (p) ctm = { ...p };
+        currentClip = clipStack.length > 0 ? clipStack.pop()! : currentClip;
+        break;
+      }
       case 'cm': {
         const a = num(operands[operands.length - 6]);
         const d = num(operands[operands.length - 3]);
@@ -313,7 +352,31 @@ function findTextUnits(tokens: Token[]): TextUnit[] {
         ctm = { a: ctm.a * a, d: ctm.d * d, e: ctm.a * e + ctm.e, f: ctm.d * f + ctm.f };
         break;
       }
-      case 'BT': tmE = 0; tmF = 0; tlmA = 1; tlmD = 1; runStart = tk.end; runHasShow = false; runAnchorX = null; runAnchorY = null; runLastShowEnd = null; break;
+      // Only the common `x y w h re` rectangle-clip shape is recognized --
+      // remembered until the very next operator (cleared below), committed
+      // into currentClip only when that next operator is W/W*. An arbitrary
+      // polygon clip (moveto/lineto) is never captured, leaving currentClip
+      // unchanged -- see TextUnit.clipRect's doc comment for why that's the
+      // safe failure mode.
+      case 're': {
+        const rx = num(operands[operands.length - 4]);
+        const ry = num(operands[operands.length - 3]);
+        const rw = num(operands[operands.length - 2]);
+        const rh = num(operands[operands.length - 1]);
+        const corners: Array<[number, number]> = [[rx, ry], [rx + rw, ry], [rx, ry + rh], [rx + rw, ry + rh]];
+        let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+        for (const [ux, uy] of corners) {
+          const dx = deviceX(ux), dy = deviceY(uy);
+          if (dx < minX) minX = dx; if (dx > maxX) maxX = dx;
+          if (dy < minY) minY = dy; if (dy > maxY) maxY = dy;
+        }
+        pendingClipRect = { x: minX, y: minY, w: maxX - minX, h: maxY - minY };
+        break;
+      }
+      case 'W': case 'W*':
+        if (pendingClipRect) currentClip = intersectRect(currentClip, pendingClipRect);
+        break;
+      case 'BT': tmE = 0; tmF = 0; tlmA = 1; tlmD = 1; runStart = tk.end; runHasShow = false; runAnchorX = null; runAnchorY = null; runLastShowEnd = null; runClipRect = null; break;
       case 'TL': tld = num(operands[operands.length - 1]); break;
       // A positioning op only ends the current run if a show op has already
       // fired since it began — otherwise this is still the run's lead-in
@@ -362,7 +425,7 @@ function findTextUnits(tokens: Token[]): TextUnit[] {
         tmF -= tlmD * tld;
         break;
       case 'Tj': case 'TJ': {
-        if (!runHasShow) { runAnchorX = deviceX(tmE); runAnchorY = deviceY(tmF); runScaleY = Math.abs(tlmD); runHasShow = true; }
+        if (!runHasShow) { runAnchorX = deviceX(tmE); runAnchorY = deviceY(tmF); runScaleY = Math.abs(tlmD); runClipRect = currentClip; runHasShow = true; }
         runLastShowEnd = tk.end;
         break;
       }
@@ -389,6 +452,7 @@ function findTextUnits(tokens: Token[]): TextUnit[] {
         runAnchorX = deviceX(tmE);
         runAnchorY = deviceY(tmF);
         runScaleY = Math.abs(tlmD);
+        runClipRect = currentClip;
         runHasShow = true;
         runLastShowEnd = tk.end;
         break;
@@ -396,6 +460,7 @@ function findTextUnits(tokens: Token[]): TextUnit[] {
       case 'ET': flushRun(tk.start); break;
       default: break;
     }
+    if (op !== 're') pendingClipRect = null;
     operands.length = 0;
   }
 
@@ -609,6 +674,64 @@ export function locateTextRun(
   const tokens = tokenize(content);
   const units = findTextUnits(tokens);
   return locateTextRunFromUnits(tokens, units, target, tolerancePt);
+}
+
+/**
+ * One-time per-page preparation for a cheap, repeated check of whether a
+ * text item's own reported device-space position is excluded by an active
+ * PDF clip path in effect at that point in the content stream -- i.e.
+ * whether the renderer is geometrically guaranteed to paint nothing there,
+ * regardless of the item's own fill color.
+ *
+ * Real incident, confirmed by directly re-rendering the page (not inferred
+ * from the content stream alone): several COLOR-CONTRAST issues targeted an
+ * InDesign prepress tracking-stamp text run sitting inside its own tight
+ * `q / <rect> re / W n / BT...ET / Q` clip scope, whose rectangle did not
+ * include the run's own draw position -- splicing an unmistakable fill
+ * color into that exact scope and re-rendering produced zero visible
+ * pixels, while the identical splice with no enclosing clip rendered fully.
+ * pdf-contrast.validator.ts's own pixel-sampling pass has no notion of this
+ * at all: it samples whatever pixels happen to render at the text item's
+ * geometric box (page-template noise, JPEG/antialiasing texture, or a flat
+ * background) and reports a specific-looking but meaningless ratio for ink
+ * that was never actually drawn -- a permanently unfixable false positive,
+ * since no amount of color escalation (moderate -> black/white -> backplate)
+ * can ever make anything render inside an excluding clip.
+ *
+ * Tokenizes and walks the content stream exactly once (shared across every
+ * item on the page, matching locateTextRunsForPage's own one-walk-per-page
+ * convention) rather than once per item, which this validator's per-page,
+ * per-item call pattern would otherwise make prohibitively expensive on a
+ * large document.
+ *
+ * Deliberately conservative: only the common `re` + `W`/`W*` rectangle-clip
+ * shape is recognized (see TextUnit.clipRect); any other clip construction
+ * (an arbitrary polygon, a clip set via a form XObject's own BBox) is
+ * invisible to this walker, which simply reports "not clipped out" for a
+ * run in that scope -- consistent with this whole module's "decline rather
+ * than guess" discipline. That only risks under-detecting (a real clipped-
+ * out run still gets flagged as before, no regression), never over-
+ * detecting (incorrectly hiding a genuinely visible, genuinely failing run).
+ */
+export function prepareClipExclusionCheck(
+  content: string
+): (x: number, baselineY: number, tolerancePt?: number) => boolean {
+  const tokens = tokenize(content);
+  const units = findTextUnits(tokens).filter(
+    (u): u is TextUnit & { anchorX: number; anchorY: number } => u.anchorX !== null && u.anchorY !== null
+  );
+
+  return (x: number, baselineY: number, tolerancePt = 12): boolean => {
+    let best: (typeof units)[number] | null = null;
+    let bestDist = Infinity;
+    for (const u of units) {
+      const dist = Math.hypot(u.anchorX - x, u.anchorY - baselineY);
+      if (dist <= tolerancePt && dist < bestDist) { best = u; bestDist = dist; }
+    }
+    if (!best || !best.clipRect) return false;
+    const { x: cx, y: cy, w: cw, h: ch } = best.clipRect;
+    return x < cx || x > cx + cw || baselineY < cy || baselineY > cy + ch;
+  };
 }
 
 /**

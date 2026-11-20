@@ -11,10 +11,13 @@
 
 import { createCanvas } from '@napi-rs/canvas';
 import * as pdfjsLib from 'pdfjs-dist/legacy/build/pdf.mjs';
+import { PDFDocument } from 'pdf-lib';
 import { logger } from '../../../lib/logger';
 import { AuditIssue } from '../../audit/base-audit.service';
 import { PdfParseResult } from '../pdf-comprehensive-parser.service';
 import { pdfConfig } from '../../../config/pdf.config';
+import { prepareClipExclusionCheck } from '../contrast-content-stream';
+import { decodePageContent } from '../pdf-content-stream-io';
 
 /**
  * RGB color representation
@@ -42,6 +45,14 @@ interface ContrastPageRenderResult {
   artifactTextItemIndices: Set<number>;
   allItemBoxes: Array<{ x: number; y: number; w: number; h: number } | null>;
   viewportTransform: number[];
+  /**
+   * Raw content-stream text for this page (via decodePageContent), used
+   * only for the clip-exclusion check in scorePageContrast -- null when the
+   * page's content couldn't be decoded, or trivially unavailable. Decoding
+   * failure here must never fail the page's own render/scoring; see its
+   * call site in renderPageForContrast.
+   */
+  contentStream: string | null;
 }
 
 
@@ -427,7 +438,7 @@ export class PdfContrastValidator {
           continue;
         }
         try {
-          renderResults[i] = await this.renderPageForContrast(parsedPdf.pdfjsDoc, page);
+          renderResults[i] = await this.renderPageForContrast(parsedPdf.pdfjsDoc, parsedPdf.pdfLibDoc, page);
         } catch (err) {
           logger.warn(
             `[PdfContrastValidator] Page ${page.pageNumber} failed to render (non-fatal): ` +
@@ -462,6 +473,7 @@ export class PdfContrastValidator {
    */
   private async renderPageForContrast(
     pdfjsDoc: pdfjsLib.PDFDocumentProxy,
+    pdfLibDoc: PDFDocument,
     page: PdfParseResult['pages'][0]
   ): Promise<ContrastPageRenderResult> {
     const pdfjsPage = await pdfjsDoc.getPage(page.pageNumber);
@@ -520,6 +532,10 @@ export class PdfContrastValidator {
         }
       }
 
+      // null when undecodable -- scorePageContrast's isClippedOut then
+      // falls back to "never clipped", the exact pre-existing behavior.
+      const contentStream = decodePageContent(pdfLibDoc, page.pageNumber);
+
       return {
         page,
         data,
@@ -530,6 +546,7 @@ export class PdfContrastValidator {
         artifactTextItemIndices,
         allItemBoxes,
         viewportTransform: viewport.transform,
+        contentStream,
       };
     } finally {
       // Releases pdfjs-dist's own internal per-page caches (rendered
@@ -562,7 +579,7 @@ export class PdfContrastValidator {
    * pool above.
    */
   private scorePageContrast(rendered: ContrastPageRenderResult): AuditIssue[] {
-    const { page, data, cw, ch, textItems, styles, artifactTextItemIndices, allItemBoxes, viewportTransform } = rendered;
+    const { page, data, cw, ch, textItems, styles, artifactTextItemIndices, allItemBoxes, viewportTransform, contentStream } = rendered;
 
     const issues: AuditIssue[] = [];
     const usedBoxes: Array<{ x: number; y: number; w: number; h: number }> = [];
@@ -571,6 +588,18 @@ export class PdfContrastValidator {
     // items are done, so a signature repeated across multiple items on the
     // SAME page counts as one page-occurrence, not several.
     const signaturesSeenThisPage = new Set<string>();
+    // One content-stream walk for the whole page (see
+    // prepareClipExclusionCheck's own doc comment) -- lets each item below
+    // cheaply check whether its own render position is excluded by an
+    // active clip, rather than re-tokenizing the stream per item. Disabled
+    // (falls back to "never clipped", the pre-existing behavior) when the
+    // content couldn't be decoded, or the page is rotated -- this module's
+    // CTM tracking is axis-aligned only, same guard pdf-contrast-writer.
+    // service.ts's own callers already apply before trusting this file's
+    // content-stream correlation.
+    const isClippedOut = (contentStream !== null && page.rotation === 0)
+      ? prepareClipExclusionCheck(contentStream)
+      : (): boolean => false;
 
     let textItemIndex = -1;
     for (const rawItem of textItems) {
@@ -592,6 +621,15 @@ export class PdfContrastValidator {
       const pdfX = item.transform[4];
       const pdfY = item.transform[5];
       const fontSize = this.textItemFontSize(item.transform);
+
+      // This run's own content-stream position falls inside an active clip
+      // that excludes it -- the renderer paints nothing here regardless of
+      // its fill color, so whatever pixels happen to be sampled at this
+      // geometric position are unrelated noise, not this run's own ink. See
+      // prepareClipExclusionCheck's doc comment for the real incident this
+      // closes (a permanently-unfixable false positive no color escalation
+      // could ever resolve).
+      if (isClippedOut(pdfX, pdfY)) continue;
 
       // Canvas-space axis-aligned box for this item's glyph run, correct for
       // any rotation (see computeItemCanvasBox's doc comment) -- NOT simply
