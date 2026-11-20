@@ -16,7 +16,7 @@ async function buildParsedPdf(pageContents: string[]): Promise<ParsedPDF> {
   const doc = await PDFDocument.create();
   const fontDict = doc.context.obj({ Type: PDFName.of('Font'), Subtype: PDFName.of('Type1'), BaseFont: PDFName.of('Helvetica') });
   const fontRef = doc.context.register(fontDict);
-  for (const content of pageContents) {
+  for (let i = 0; i < pageContents.length; i++) {
     const page = doc.addPage([612, 792]);
     page.node.set(PDFName.of('Resources'), doc.context.obj({ Font: { F1: fontRef } }));
   }
