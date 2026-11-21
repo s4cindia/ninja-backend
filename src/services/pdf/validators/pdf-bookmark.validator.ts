@@ -44,6 +44,23 @@ const MIN_PAGES_FOR_BOOKMARKS = 10;
 const MIN_PAGES_FOR_COVERAGE = 20;
 // One bookmark per this many pages is the minimum recommended ratio
 const PAGES_PER_BOOKMARK = 15;
+// A document's bookmark outline starting beyond this page leaves a real,
+// navigable gap at the front of the document -- confirmed real via
+// Karsaklian_189165_9781606497623_R4_1.pdf: 67 real, correctly-nested,
+// correctly-titled bookmarks (generateBookmarksFromHeadings + its own title
+// regeneration both working as intended), but the FIRST one targets page 25
+// -- pages 1-24 (title page, copyright, dedication, table of contents; all
+// present in the struct tree, just under publisher-specific InDesign style
+// names like COPF/TPAU/DEF/CFM that don't resolve to a literal H1-H9 role)
+// have zero bookmark coverage, and nothing in this validator caught it:
+// BOOKMARK-INSUFFICIENT only looks at total bookmark COUNT vs. page count,
+// and 67 bookmarks is plenty for a ~190-page book -- it is silent about
+// WHERE those bookmarks are concentrated. Deliberately detect-only, not an
+// auto-fix: which custom role names represent "Title Page" vs. "Copyright"
+// vs. "Dedication" is publisher-specific and not safe to guess (same
+// "decline rather than guess" convention as cross-reference-link resolution
+// and the heading-style-mismatch classifier elsewhere in this codebase).
+const MAX_PAGES_BEFORE_FIRST_BOOKMARK = 10;
 
 class PdfBookmarkValidator {
   name = 'PdfBookmarkValidator';
@@ -120,6 +137,31 @@ class PdfBookmarkValidator {
       });
     }
 
+    // BOOKMARK-MISSING-FRONT-MATTER: the outline exists and may well have
+    // plenty of bookmarks overall, but none of them cover the start of the
+    // document -- see MAX_PAGES_BEFORE_FIRST_BOOKMARK's own comment.
+    const firstBookmarkedPage = this.earliestDestination(outline);
+    if (firstBookmarkedPage !== null && firstBookmarkedPage > MAX_PAGES_BEFORE_FIRST_BOOKMARK + 1) {
+      const uncoveredPages = firstBookmarkedPage - 1;
+      issues.push({
+        id: `bookmark-${++this.issueCounter}`,
+        source: 'bookmark-validator',
+        severity: 'moderate',
+        code: 'BOOKMARK-MISSING-FRONT-MATTER',
+        message: `Bookmark outline begins on page ${firstBookmarkedPage}, leaving the first ${uncoveredPages} page(s) without any bookmark coverage`,
+        wcagCriteria: ['2.4.5'],
+        location: 'Document',
+        category: 'bookmarks',
+        suggestion:
+          'Add bookmark entries for the uncovered front matter (e.g., Title Page, Copyright, Dedication, Table of Contents) ' +
+          'so the full document, not just the body chapters, is reachable from the bookmarks panel.',
+        context: `First bookmarked page: ${firstBookmarkedPage}, Pages without coverage: 1-${uncoveredPages}`,
+        // Same whole-document anchoring as BOOKMARK-MISSING/BOOKMARK-INSUFFICIENT above.
+        pageNumber: 1,
+      });
+      logger.info(`[PdfBookmarkValidator] Found BOOKMARK-MISSING-FRONT-MATTER (first bookmark on page ${firstBookmarkedPage})`);
+    }
+
     // BOOKMARK-GENERIC-TEXT: walk outline and flag generic titles
     this.walkOutline(outline, issues);
 
@@ -160,6 +202,29 @@ class PdfBookmarkValidator {
       const childCount = item.children ? this.countBookmarks(item.children) : 0;
       return count + 1 + childCount;
     }, 0);
+  }
+
+  /** Earliest page any bookmark in the tree targets, or null if none has a
+   *  resolvable page destination. Walks the whole tree rather than trusting
+   *  the first top-level entry alone -- generateBookmarksFromHeadings always
+   *  emits headings in document order so its own trees are already sorted,
+   *  but a source PDF's pre-existing outline (never rebuilt by that method,
+   *  only title-regenerated -- see regenerateGenericBookmarkTitles' own doc
+   *  comment) carries no such guarantee. */
+  private earliestDestination(items: PDFOutlineItem[]): number | null {
+    let earliest: number | null = null;
+    for (const item of items) {
+      if (item.destination !== undefined && (earliest === null || item.destination < earliest)) {
+        earliest = item.destination;
+      }
+      if (item.children?.length) {
+        const childEarliest = this.earliestDestination(item.children);
+        if (childEarliest !== null && (earliest === null || childEarliest < earliest)) {
+          earliest = childEarliest;
+        }
+      }
+    }
+    return earliest;
   }
 }
 
