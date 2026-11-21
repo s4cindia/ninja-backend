@@ -5,6 +5,7 @@
  * Phase 3 BE-T1: Re-audit service and before/after comparison logic.
  */
 
+import path from 'path';
 import { Prisma } from '@prisma/client';
 import { logger } from '../../lib/logger';
 import prisma from '../../lib/prisma';
@@ -207,10 +208,24 @@ class PdfReauditService {
             break;
           } catch (auditError) {
             const message = auditError instanceof Error ? auditError.message : 'Unknown error';
-            if (reauditAttempt === 1 && PDFJS_TRANSIENT_PAGE_ERROR_RE.test(message)) {
+            const isTransientPageError = PDFJS_TRANSIENT_PAGE_ERROR_RE.test(message);
+            if (reauditAttempt === 1 && isTransientPageError) {
               logger.warn(`[PdfReaudit] Transient pdfjs page error on job ${jobId}, retrying once: ${message}`);
               reauditAttempt++;
               continue;
+            }
+            if (isTransientPageError) {
+              // Recurred on the retry too -- confirmed live, DuBrin_FOB_8e.pdf
+              // and Whiting_186772, 2026-11-20: identical failure both
+              // attempts, which argues against pure non-determinism and for
+              // something reproducible about THIS specific buffer. The
+              // buffer that actually triggers this is otherwise unrecoverable
+              // -- revertUnpersistedApplies (below) discards it on every
+              // failure, so every past occurrence destroyed its own evidence.
+              // Best-effort and non-fatal: a storage failure here must never
+              // mask or replace the real audit error being thrown right
+              // after it.
+              await this.saveDiagnosticBuffer(jobId, fileName, remediatedPdfBuffer, message);
             }
             throw auditError;
           }
@@ -659,6 +674,39 @@ class PdfReauditService {
       });
     } catch (err) {
       logger.warn(`[PdfReaudit] Failed to update progress for job ${jobId}: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  /**
+   * Saves the exact buffer that just failed pdfjs-dist's "Invalid {page,
+   * pageIndex,destination} request." a second time (retry exhausted) to a
+   * clearly-marked diagnostic key -- NOT the original or remediated-file
+   * slot, so it can never be mistaken for either and never gets served back
+   * to a user. Real incident (DuBrin_FOB_8e.pdf and Whiting_186772, both
+   * 2026-11-20): this exact failure recurred identically on the retry both
+   * times, which argues against pure pdfjs-dist non-determinism and for
+   * something reproducible about the specific buffer -- but
+   * revertUnpersistedApplies discards that buffer on every failure, so every
+   * past occurrence destroyed its own evidence before anyone could inspect
+   * it. One saved sample is enough to finally run the same page-tree
+   * consistency check (pdf-lib count vs pdfjs numPages vs declared /Count vs
+   * actual reachable leaves) against the ACTUAL failing bytes instead of the
+   * job's current (already-reverted-back-to-good) stored file.
+   *
+   * Best-effort and intentionally swallows its own errors -- called from
+   * inside an existing catch block that's about to re-throw the real audit
+   * error; a storage failure here must never mask or replace that.
+   */
+  private async saveDiagnosticBuffer(jobId: string, fileName: string, buffer: Buffer, errorMessage: string): Promise<void> {
+    try {
+      const diagnosticFileName = `diagnostic-reaudit-failure-${Date.now()}-${path.basename(fileName)}`;
+      const key = await fileStorageService.saveFile(jobId, diagnosticFileName, buffer);
+      logger.error(
+        `[PdfReaudit] Saved diagnostic copy of the failing buffer for job ${jobId} at ${key} (${buffer.length} bytes) -- ` +
+        `"${errorMessage}" recurred after one retry; inspect this exact buffer's /Pages tree to root-cause it.`
+      );
+    } catch (err) {
+      logger.warn(`[PdfReaudit] Failed to save diagnostic buffer for job ${jobId} (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 }
