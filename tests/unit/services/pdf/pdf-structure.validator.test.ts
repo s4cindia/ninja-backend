@@ -955,6 +955,55 @@ describe('PDFStructureValidator', () => {
 
       expect(result.issues.find(i => i.code === 'CONTENT-STREAM-MALFORMED-OPERATOR')).toBeDefined();
     });
+
+    /**
+     * Real, confirmed-live incident (Whiting_186772, Zaidi_189320,
+     * DuBrin_FOB_8e, all 2026-11-21): a naive content.split(/\s+/) treats
+     * PDF32000 7.3.4.2's own string-literal line-continuation escape
+     * (REVERSE SOLIDUS immediately followed by an end-of-line, which
+     * renders as no character at all) as a token boundary, splitting an
+     * ordinary word like "pedaling" (shown via Tj/TJ) into two fake
+     * tokens the instant its tail collides with a tracked operator name --
+     * here "pedalin\<CR>g" becomes "pedalin\" and "g", and "g" gets
+     * flagged as a standalone fill-color operator with 0 operands. All 14
+     * real-world findings of this code across those 3 documents were this
+     * exact false positive, not a real defect.
+     */
+    it('does NOT flag an ordinary word ending in a tracked operator name, split across a string-literal line-continuation escape', async () => {
+      // "pedalin\<CR>g c)" -- renders as "pedalin" + "g" + " " + "c" = "pedaling c" with no real character at the escape.
+      const { mockParsedPdf } = await docWithPageContent('BT\n(the pedalin\\\rg c)-15 (ycle)Tj\nET\n', true);
+      vi.mocked(pdfParserService.parse).mockResolvedValue(mockParsedPdf);
+      vi.mocked(pdfParserService.close).mockResolvedValue(undefined);
+      vi.mocked(structureAnalyzerService.analyzeStructure).mockResolvedValue(mockStructureFor(true));
+
+      const result = await pdfStructureValidator.validateFromFile('/path/to/test.pdf');
+
+      expect(result.issues.filter(i => i.code === 'CONTENT-STREAM-MALFORMED-OPERATOR')).toHaveLength(0);
+    });
+
+    it('does NOT flag a unit abbreviation ("6 cm proximal") inside ordinary prose, even though a real number precedes it', async () => {
+      const { mockParsedPdf } = await docWithPageContent('BT\n(about 6 cm proximal)Tj\nET\n', true);
+      vi.mocked(pdfParserService.parse).mockResolvedValue(mockParsedPdf);
+      vi.mocked(pdfParserService.close).mockResolvedValue(undefined);
+      vi.mocked(structureAnalyzerService.analyzeStructure).mockResolvedValue(mockStructureFor(true));
+
+      const result = await pdfStructureValidator.validateFromFile('/path/to/test.pdf');
+
+      expect(result.issues.filter(i => i.code === 'CONTENT-STREAM-MALFORMED-OPERATOR')).toHaveLength(0);
+    });
+
+    it('still flags a REAL malformed operator sitting right next to a string literal containing operator-like text', async () => {
+      const { mockParsedPdf } = await docWithPageContent('BT\n(about 6 cm proximal)Tj\nET\n0.5 0.5 rg\n', true);
+      vi.mocked(pdfParserService.parse).mockResolvedValue(mockParsedPdf);
+      vi.mocked(pdfParserService.close).mockResolvedValue(undefined);
+      vi.mocked(structureAnalyzerService.analyzeStructure).mockResolvedValue(mockStructureFor(true));
+
+      const result = await pdfStructureValidator.validateFromFile('/path/to/test.pdf');
+
+      const findings = result.issues.filter(i => i.code === 'CONTENT-STREAM-MALFORMED-OPERATOR');
+      expect(findings).toHaveLength(1);
+      expect(findings[0].message).toContain("'rg' operator has 2 preceding numeric operand(s), expected 3");
+    });
   });
 
   describe('heading validation', () => {
