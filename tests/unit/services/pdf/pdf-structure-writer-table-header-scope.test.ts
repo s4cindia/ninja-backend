@@ -210,6 +210,77 @@ describe('PdfStructureWriterService.fixTableHeaderScope', () => {
     expect(scopeOf(doc, repeatedHeaderCol0)).toBe('Row');
   });
 
+  /**
+   * Real, confirmed-live gap on Whiting_186772 (4 tables, identical shape):
+   * row 0 is a LONE spanning TH (a table title/caption, not a real
+   * per-column header), and row 1 is the actual column-header row -- 2 TH
+   * cells describing the table's 2 data columns. Column 0 of row 1 was
+   * already correctly scoped by the plain isHeaderCol rule; column 1 fell
+   * through every existing case (not row 0, not column 0, not a
+   * row-0-shaped repeated header row) and was left unscoped. 0/4 declines
+   * after this fix, verified against the real document.
+   */
+  it('writes scope="Column" to a second-level header row when row 0 is a lone spanning title cell, matching the real Whiting_186772 shape', async () => {
+    const doc = await PDFDocument.create();
+    const page = doc.addPage([612, 792]);
+
+    const titleRow0 = [cell(doc, 'TH', page.ref)];
+    const headerCol0 = cell(doc, 'TH', page.ref);
+    const headerCol1 = cell(doc, 'TH', page.ref);
+    const dataRow2 = [cell(doc, 'TD', page.ref), cell(doc, 'TD', page.ref)];
+    const dataRow3 = [cell(doc, 'TD', page.ref), cell(doc, 'TD', page.ref)];
+
+    const tableRef = doc.context.register(doc.context.obj({
+      S: PDFName.of('Table'), Pg: page.ref,
+      K: [
+        row(doc, titleRow0),
+        row(doc, [headerCol0, headerCol1]),
+        row(doc, dataRow2),
+        row(doc, dataRow3),
+      ],
+    }));
+    const docRef = doc.context.register(doc.context.obj({ S: PDFName.of('Document'), K: [tableRef] }));
+    doc.catalog.set(PDFName.of('StructTreeRoot'), doc.context.register(doc.context.obj({ Type: PDFName.of('StructTreeRoot'), K: [docRef] })));
+
+    const results = pdfStructureWriterService.fixTableHeaderScope(doc, [issueFor('table_p1_0')]);
+
+    expect(results[0].success).toBe(true);
+    expect(results[0].after).not.toContain('outside row 0/column 0 left unscoped');
+    // The title cell itself is an unrelated, pre-existing corner-cell case
+    // (row 0 AND column 0 at once) -- unchanged by this fix: a TH at
+    // column 0 elsewhere (headerCol0, row 1) is real evidence of a header
+    // column, so the corner gets scope="Row" under the existing, untouched
+    // heuristic. Only headerCol1 (the genuinely new case) is under test here.
+    expect(scopeOf(doc, titleRow0[0])).toBe('Row');
+    expect(scopeOf(doc, headerCol0)).toBe('Row');
+    expect(scopeOf(doc, headerCol1)).toBe('Column');
+  });
+
+  it('does NOT treat row 1 as a second-level header row when row 0 has more than one cell (an ordinary single-row header, not a spanning title)', async () => {
+    const doc = await PDFDocument.create();
+    const page = doc.addPage([612, 792]);
+
+    // row 0 has 2 cells (not a lone spanning title), so the new case should
+    // never fire regardless of row 1's own shape. row 1's lone TH sits
+    // outside column 0 with no matching evidence anywhere else, so it's
+    // genuinely left unscoped.
+    const headerRow0 = [cell(doc, 'TH', page.ref), cell(doc, 'TH', page.ref)];
+    const row1 = [cell(doc, 'TD', page.ref), cell(doc, 'TH', page.ref), cell(doc, 'TD', page.ref)];
+    const dataRow2 = [cell(doc, 'TD', page.ref), cell(doc, 'TD', page.ref), cell(doc, 'TD', page.ref)];
+
+    const tableRef = doc.context.register(doc.context.obj({
+      S: PDFName.of('Table'), Pg: page.ref,
+      K: [row(doc, headerRow0), row(doc, row1), row(doc, dataRow2)],
+    }));
+    const docRef = doc.context.register(doc.context.obj({ S: PDFName.of('Document'), K: [tableRef] }));
+    doc.catalog.set(PDFName.of('StructTreeRoot'), doc.context.register(doc.context.obj({ Type: PDFName.of('StructTreeRoot'), K: [docRef] })));
+
+    const results = pdfStructureWriterService.fixTableHeaderScope(doc, [issueFor('table_p1_0')]);
+
+    expect(results[0].after).toContain('outside row 0/column 0 left unscoped');
+    expect(scopeOf(doc, row1[1])).toBeUndefined();
+  });
+
   it('does NOT treat a row with the same cell count as row 0 but only PARTIAL TH coverage as a repeated header row', async () => {
     const doc = await PDFDocument.create();
     const page = doc.addPage([612, 792]);
