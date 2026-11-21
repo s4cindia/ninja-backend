@@ -216,4 +216,76 @@ describe('PdfStructureWriterService.fixActualTextMissingMcid', () => {
     expect(newSpanDict.get(PDFName.of('S'))?.toString()).toBe('/Span');
     expect((kidsAfter[1] as PDFRef).objectNumber).toBe(rightRef.objectNumber);
   });
+
+  /**
+   * Real, confirmed-live incident (DuBrin_FOB_8e.pdf, 2026-11-21): all 121
+   * ACTUALTEXT-MISSING-MCID declines on this document were this exact
+   * shape -- the run's left and right tagged neighbors are sibling /LI
+   * elements under the SAME /L, not unrelated content. The old check only
+   * compared the neighbors' own immediate /P (the two different /LI
+   * refs), so it declined every one of these as "ambiguous" even though
+   * walking up one more level finds a real, single, unambiguous shared
+   * ancestor (the /L both /LI are children of). findSharedAncestorAnchor
+   * fixes this: 0/121 declines after the fix, verified against the real
+   * document.
+   */
+  it('anchors under the shared /L grandparent when left/right neighbors are sibling /LI elements, instead of declining as ambiguous', async () => {
+    const doc = await PDFDocument.create();
+    const page = doc.addPage([612, 792]);
+    page.node.set(PDFName.of('StructParents'), doc.context.obj(0));
+    const content = `/P <</MCID 0 >>BDC\n(Before)Tj\nEMC\n${DESCRIPTION_RUN}/P <</MCID 1 >>BDC\n(After)Tj\nEMC\n`;
+    writePageContent(doc, 1, content);
+
+    const leftLBodyRef = doc.context.register(doc.context.obj({ Type: PDFName.of('StructElem'), S: PDFName.of('LBody'), Pg: page.ref, K: 0 }));
+    const rightLBodyRef = doc.context.register(doc.context.obj({ Type: PDFName.of('StructElem'), S: PDFName.of('LBody'), Pg: page.ref, K: 1 }));
+    const leftLiRef = doc.context.register(doc.context.obj({ Type: PDFName.of('StructElem'), S: PDFName.of('LI'), K: [leftLBodyRef] }));
+    const rightLiRef = doc.context.register(doc.context.obj({ Type: PDFName.of('StructElem'), S: PDFName.of('LI'), K: [rightLBodyRef] }));
+    const listRef = doc.context.register(doc.context.obj({ Type: PDFName.of('StructElem'), S: PDFName.of('L'), K: [leftLiRef, rightLiRef] }));
+    doc.context.lookup(leftLBodyRef, PDFDict).set(PDFName.of('P'), leftLiRef);
+    doc.context.lookup(rightLBodyRef, PDFDict).set(PDFName.of('P'), rightLiRef);
+    doc.context.lookup(leftLiRef, PDFDict).set(PDFName.of('P'), listRef);
+    doc.context.lookup(rightLiRef, PDFDict).set(PDFName.of('P'), listRef);
+
+    const structTreeRootRef = doc.context.register(doc.context.obj({ Type: PDFName.of('StructTreeRoot'), K: [listRef] }));
+    doc.catalog.set(PDFName.of('StructTreeRoot'), structTreeRootRef);
+    setFlatParentTree(doc, structTreeRootRef, [leftLBodyRef, rightLBodyRef]);
+
+    const result = pdfStructureWriterService.fixActualTextMissingMcid(doc, issueForPage(1));
+    expect(result.success).toBe(true);
+
+    // New /Span spliced into the shared /L's own /K, between the two /LI siblings.
+    const listKids = kidsOf(doc, listRef).filter((k): k is PDFRef => k instanceof PDFRef);
+    expect(listKids).toHaveLength(3);
+    expect(listKids[0].objectNumber).toBe(leftLiRef.objectNumber);
+    expect(listKids[2].objectNumber).toBe(rightLiRef.objectNumber);
+
+    const newSpanDict = doc.context.lookup(listKids[1], PDFDict);
+    expect(newSpanDict.get(PDFName.of('S'))?.toString()).toBe('/Span');
+    expect(newSpanDict.get(PDFName.of('P'))?.toString()).toBe(listRef.toString());
+  });
+
+  it('still declines when left/right neighbors share no ancestor at all within the search depth', async () => {
+    const doc = await PDFDocument.create();
+    const page = doc.addPage([612, 792]);
+    page.node.set(PDFName.of('StructParents'), doc.context.obj(0));
+    const content = `/P <</MCID 0 >>BDC\n(Before)Tj\nEMC\n${DESCRIPTION_RUN}/P <</MCID 1 >>BDC\n(After)Tj\nEMC\n`;
+    writePageContent(doc, 1, content);
+
+    // Two completely separate top-level trees, each its own direct child of
+    // /StructTreeRoot -- no shared ancestor anywhere.
+    const leftRef = doc.context.register(doc.context.obj({ Type: PDFName.of('StructElem'), S: PDFName.of('P'), Pg: page.ref, K: 0 }));
+    const rightRef = doc.context.register(doc.context.obj({ Type: PDFName.of('StructElem'), S: PDFName.of('P'), Pg: page.ref, K: 1 }));
+    const leftTreeRef = doc.context.register(doc.context.obj({ Type: PDFName.of('StructElem'), S: PDFName.of('Sect'), K: [leftRef] }));
+    const rightTreeRef = doc.context.register(doc.context.obj({ Type: PDFName.of('StructElem'), S: PDFName.of('Sect'), K: [rightRef] }));
+    doc.context.lookup(leftRef, PDFDict).set(PDFName.of('P'), leftTreeRef);
+    doc.context.lookup(rightRef, PDFDict).set(PDFName.of('P'), rightTreeRef);
+
+    const structTreeRootRef = doc.context.register(doc.context.obj({ Type: PDFName.of('StructTreeRoot'), K: [leftTreeRef, rightTreeRef] }));
+    doc.catalog.set(PDFName.of('StructTreeRoot'), structTreeRootRef);
+    setFlatParentTree(doc, structTreeRootRef, [leftRef, rightRef]);
+
+    const result = pdfStructureWriterService.fixActualTextMissingMcid(doc, issueForPage(1));
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('no shared ancestor nearby');
+  });
 });

@@ -6728,6 +6728,71 @@ export class PdfStructureWriterService {
     return { content, pairs };
   }
 
+  /** [ref, P(ref), P(P(ref)), ...], stopping at maxDepth entries or wherever the /P chain ends -- see findSharedAncestorAnchor's own doc comment for why this exists. */
+  private buildAncestorChain(doc: PDFDocument, ref: PDFRef, maxDepth: number): PDFRef[] {
+    const chain: PDFRef[] = [ref];
+    let cur: PDFRef = ref;
+    for (let i = 0; i < maxDepth; i++) {
+      const dict = doc.context.lookup(cur, PDFDict);
+      const p = dict?.get(PDFName.of('P'));
+      if (!(p instanceof PDFRef)) break;
+      chain.push(p);
+      cur = p;
+    }
+    return chain;
+  }
+
+  /**
+   * Finds the nearest shared ancestor of two struct-tree leaves and returns
+   * where a new sibling struct element should be anchored between them --
+   * generalizes the "same immediate parent" check fixActualTextMissingMcid
+   * used to require before anchoring to a resolved neighbor.
+   *
+   * Real incident (DuBrin_FOB_8e.pdf, confirmed live 2026-11-21): all 121
+   * ACTUALTEXT-MISSING-MCID declines on this document were the exact same
+   * shape -- a run's left and right tagged neighbors were sibling /LI
+   * elements under the SAME /L, not unrelated content. The original check
+   * only compared leftEntry's and rightEntry's OWN immediate /P, so it
+   * declined every one of these as "ambiguous" even though walking up one
+   * more level finds a real, single, unambiguous shared ancestor -- not a
+   * guess, just one level deeper than the original check looked.
+   *
+   * Walks both sides' /P chains (bounded by maxDepth) and returns the pair
+   * of nodes -- one from each side -- with the smallest combined distance
+   * from their respective leaves whose own immediate parents are the SAME
+   * object; that shared parent becomes flowParent, and the right-side node
+   * of the pair becomes anchorRef (anchorBefore: true), mirroring the
+   * original depth-0 convention of preferring the right neighbor. Depth 0
+   * (leftEntry's and rightEntry's own immediate parents already matching)
+   * is naturally the first case this checks, so this subsumes the original
+   * logic exactly rather than replacing it with different behavior.
+   *
+   * Returns null if no shared ancestor exists within maxDepth -- preserves
+   * the original conservative decline for genuinely disconnected content
+   * (e.g. two different, unrelated top-level sections) rather than
+   * anchoring under something as unspecific as the Document root.
+   */
+  private findSharedAncestorAnchor(
+    doc: PDFDocument,
+    leftEntry: PDFRef,
+    rightEntry: PDFRef,
+    maxDepth = 6
+  ): { flowParent: PDFRef; anchorRef: PDFRef; anchorBefore: boolean } | null {
+    const leftChain = this.buildAncestorChain(doc, leftEntry, maxDepth);
+    const rightChain = this.buildAncestorChain(doc, rightEntry, maxDepth);
+
+    let best: { i: number; j: number } | null = null;
+    for (let i = 0; i < leftChain.length - 1; i++) {
+      for (let j = 0; j < rightChain.length - 1; j++) {
+        if (leftChain[i + 1].objectNumber === rightChain[j + 1].objectNumber) {
+          if (!best || i + j < best.i + best.j) best = { i, j };
+        }
+      }
+    }
+    if (!best) return null;
+    return { flowParent: rightChain[best.j + 1], anchorRef: rightChain[best.j], anchorBefore: true };
+  }
+
   /**
    * ACTUALTEXT-MISSING-MCID fix: the real fix findArtifactActualTextSibling
    * above turned out NOT to be -- confirmed live after that fix shipped
@@ -6819,20 +6884,22 @@ export class PdfStructureWriterService {
       const rightCandidate = positionedMcids.find((p) => p.start > run.runEnd);
       const leftEntry = resolveEntry(leftCandidate?.mcid);
       const rightEntry = resolveEntry(rightCandidate?.mcid);
-      const leftParent = resolveParentOf(leftEntry);
-      const rightParent = resolveParentOf(rightEntry);
-
-      if (leftParent && rightParent && leftParent.objectNumber !== rightParent.objectNumber) {
-        return fail('Run\'s left/right tagged neighbors resolve to different document-flow parents -- ambiguous, declining rather than guessing');
-      }
 
       let flowParent: PDFRef | null = null;
       let anchorRef: PDFRef | null = null;
       let anchorBefore = false;
-      if (rightParent && rightEntry) {
-        flowParent = rightParent; anchorRef = rightEntry; anchorBefore = true;
-      } else if (leftParent && leftEntry) {
-        flowParent = leftParent; anchorRef = leftEntry; anchorBefore = false;
+      if (leftEntry && rightEntry) {
+        const shared = this.findSharedAncestorAnchor(doc, leftEntry, rightEntry);
+        if (!shared) {
+          return fail('Run\'s left/right tagged neighbors resolve to different document-flow parents with no shared ancestor nearby -- ambiguous, declining rather than guessing');
+        }
+        flowParent = shared.flowParent; anchorRef = shared.anchorRef; anchorBefore = shared.anchorBefore;
+      } else if (rightEntry) {
+        const rightParent = resolveParentOf(rightEntry);
+        if (rightParent) { flowParent = rightParent; anchorRef = rightEntry; anchorBefore = true; }
+      } else if (leftEntry) {
+        const leftParent = resolveParentOf(leftEntry);
+        if (leftParent) { flowParent = leftParent; anchorRef = leftEntry; anchorBefore = false; }
       }
 
       if (!flowParent || !anchorRef) {
