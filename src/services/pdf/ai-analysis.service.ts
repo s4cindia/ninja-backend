@@ -33,6 +33,7 @@ import {
 } from './heading-style-classifier';
 import { fontToUnicodeService } from './font-tounicode.service';
 import { decodePageContent } from './pdf-content-stream-io';
+import { REDUNDANT_ALT_TEXT_PREFIXES } from './validators/pdf-alttext.validator';
 import { pdfContrastWriterService, resolveColorContrastTargets } from './pdf-contrast-writer.service';
 import { remediationCycleHistoryService } from './remediation-cycle-history.service';
 import { sseService } from '../../sse/sse.service';
@@ -138,6 +139,16 @@ const MANUAL_IF_COMPLEX_IMAGE_TYPES = new Set(['chart', 'diagram']);
 
 const ALT_TEXT_MISSING_CODES = new Set(['MATTERHORN-13-001', 'MATTERHORN-13-002', 'ALT-TEXT-MISSING']);
 const ALT_TEXT_IMPROVE_CODES = new Set(['MATTERHORN-13-004', 'MATTERHORN-13-003', 'ALT-TEXT-QUALITY', 'ALT-TEXT-GENERIC']);
+// ALT-TEXT-REDUNDANT-PREFIX: pdf-alttext.validator.ts's own REDUNDANT_PREFIXES
+// list ("image of", "picture of", etc.) is finite and fixed -- stripping a
+// literal match from the START of the image's own existing alt text needs
+// no AI judgment call at all, unlike ALT_TEXT_IMPROVE_CODES above (which can
+// rewrite the WHOLE alt text and genuinely needs a model's read of the
+// image). Had no dispatch entry at all before this -- not a narrow-pattern
+// bug like several other codes fixed this session, a genuinely missing
+// fixer (every instance fell through to this file's generic guidance-only
+// default).
+const ALT_TEXT_REDUNDANT_PREFIX_CODES = new Set(['ALT-TEXT-REDUNDANT-PREFIX']);
 // MATTERHORN-15-003 ("irregular table structure" per its own message text) was previously
 // excluded here on the assumption it flags a real structural defect distinct from a missing
 // summary -- it doesn't. pdf-table.validator.ts emits it via
@@ -312,6 +323,31 @@ function looksLikePrintProductionSlugLine(context: string | undefined): boolean 
   const match = /^Text: "([^"]*)"/.exec(context);
   if (!match) return false;
   return PRINT_PRODUCTION_SLUG_LINE_RE.test(match[1]);
+}
+
+/**
+ * Strips a leading redundant prefix ("Image of", "Picture of", etc. -- see
+ * REDUNDANT_ALT_TEXT_PREFIXES's own doc comment) from an image's existing
+ * alt text, matching pdf-alttext.validator.ts's own detection exactly
+ * (case-insensitive startsWith on the trimmed text) so this never strips a
+ * prefix the validator itself wouldn't have flagged. Also trims one
+ * immediately-following punctuation/whitespace run (": ", " - ", ", ") left
+ * behind by the prefix, e.g. "Image of: a cat sleeping" -> "a cat sleeping".
+ * Returns null (decline) when there's no alt text to work with, no
+ * REDUNDANT_ALT_TEXT_PREFIXES entry actually matches (the issue no longer
+ * applies -- the document changed since it was raised), or stripping the
+ * prefix would leave nothing behind (an alt text that's ONLY the prefix,
+ * e.g. "Image of." -- that's ALT-TEXT-QUALITY's/the generic-text check's
+ * own territory, not this one's).
+ */
+function stripRedundantAltTextPrefix(altText: string | undefined): string | null {
+  if (!altText) return null;
+  const trimmed = altText.trim();
+  const lower = trimmed.toLowerCase();
+  const prefix = REDUNDANT_ALT_TEXT_PREFIXES.find(p => lower.startsWith(p));
+  if (!prefix) return null;
+  const rest = trimmed.slice(prefix.length).replace(/^[\s:,.-]+/, '').trim();
+  return rest.length > 0 ? rest : null;
 }
 const LINK_CODES = new Set(['LINK-NOT-DESCRIPTIVE', 'LINK-URL-AS-TEXT', 'LINK-GENERIC-TEXT']);
 // pdfa11y-sourced (UA-28-025 -> 28-004): a Link annotation with neither a
@@ -1580,6 +1616,21 @@ class AiAnalysisService {
       const imgWithBase64 = img?.base64 ? img : await this.fallbackToPageRender(img, issue, parsed, pageRenderCache);
       if (!imgWithBase64) return null;
       return this.analyzeAltTextImprovement(issue, imgWithBase64, config.altTextMode);
+    }
+
+    if (ALT_TEXT_REDUNDANT_PREFIX_CODES.has(code)) {
+      const img = issue.element ? imageById.get(issue.element) : undefined;
+      const stripped = stripRedundantAltTextPrefix(img?.altText);
+      if (stripped === null) return null;
+      return {
+        suggestionType: 'alt-text-strip-prefix',
+        value: stripped,
+        guidance: `This image's alt text starts with a redundant prefix a screen reader's own image role already announces -- it will be stripped: "${stripped}"`,
+        confidence: 1.0,
+        rationale: 'Deterministic fix -- pdf-alttext.validator.ts\'s own REDUNDANT_ALT_TEXT_PREFIXES list is finite and fixed; stripping a literal, case-insensitive match from the start of the existing alt text needs no AI judgment call',
+        model: 'rule-based',
+        applyMode: config.altTextMode === 'guidance-only' ? 'guidance-only' : 'apply-to-pdf',
+      };
     }
 
     if (TABLE_SUMMARY_CODES.has(code)) {
@@ -4864,7 +4915,7 @@ class AiAnalysisService {
             ? { success: true, description: retag.after }
             // Hardcoded '' rather than the stored value -- matches applyAll/applySuggestion.
             : await pdfModifierService.setAltText(doc, elementId, '');
-        } else if (suggestionType === 'alt-text' || suggestionType === 'alt-text-improvement' || suggestionType === 'alt-text-glyph' || suggestionType === 'alt-text-formula-transcript') {
+        } else if (suggestionType === 'alt-text' || suggestionType === 'alt-text-improvement' || suggestionType === 'alt-text-glyph' || suggestionType === 'alt-text-formula-transcript' || suggestionType === 'alt-text-strip-prefix') {
           modification = await pdfModifierService.setAltText(doc, elementId, value!);
         } else if (suggestionType === 'table-summary') {
           modification = await pdfModifierService.setTableSummary(doc, elementId, value!);

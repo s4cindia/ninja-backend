@@ -90,6 +90,22 @@ export interface AltTextValidationResult {
  * Validates alternative text for images and figures in PDF documents
  * following WCAG 1.1.1 and Matterhorn Protocol standards.
  */
+// Exported so the ALT-TEXT-REDUNDANT-PREFIX fixer (ai-analysis.service.ts's
+// own dispatch, pdfModifierService.setAltText as the apply target) strips
+// the SAME literal prefixes this validator flags, rather than risking drift
+// between two independently-maintained copies -- same convention pdf-
+// bookmark.validator.ts's own exported GENERIC_TITLE_RE already uses for
+// its sibling fixer.
+export const REDUNDANT_ALT_TEXT_PREFIXES = [
+  'image of',
+  'picture of',
+  'photo of',
+  'graphic of',
+  'figure of',
+  'illustration of',
+  'screenshot of',
+];
+
 class PDFAltTextValidator {
   private issueCounter = 0;
   private readonly GENERIC_ALT_TEXT = [
@@ -102,15 +118,7 @@ class PDFAltTextValidator {
     'icon',
     'logo',
   ];
-  private readonly REDUNDANT_PREFIXES = [
-    'image of',
-    'picture of',
-    'photo of',
-    'graphic of',
-    'figure of',
-    'illustration of',
-    'screenshot of',
-  ];
+  private readonly REDUNDANT_PREFIXES = REDUNDANT_ALT_TEXT_PREFIXES;
   private readonly MIN_ALT_TEXT_LENGTH = 3;
   private readonly MAX_ALT_TEXT_LENGTH = 150;
   private readonly RECOMMENDED_MAX_LENGTH = 125;
