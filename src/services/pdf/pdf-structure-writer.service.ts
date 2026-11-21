@@ -3697,6 +3697,23 @@ export class PdfStructureWriterService {
           });
         }
 
+        // Row 0 a LONE spanning TH (a table title/caption, not a real
+        // per-column header) immediately followed by a full-width TH row --
+        // that second row is the actual column-header row, not row 0.
+        // Confirmed real on Whiting_186772 (4 tables, identical shape): row
+        // 0 is always a single TH; row 1 is always 2 TH cells describing
+        // the table's 2 data columns. Column 0 of row 1 is already covered
+        // by the existing isHeaderCol check below regardless of this flag;
+        // this only reaches cells at row 1 that aren't column 0, which
+        // every other case above declines to touch. Deliberately narrow --
+        // row 0 having exactly one cell is the actual discriminator (a real
+        // single-column table's row 0 would also have exactly one cell, but
+        // then there IS no "column 1" for this to ever apply to).
+        const secondLevelHeaderRowIndex =
+          row0Cells.length === 1 && row0Cells[0]?.tag === 'TH' && (rowCells[1]?.length ?? 0) > 1 && rowCells[1].every(c => c.tag === 'TH')
+            ? 1
+            : -1;
+
         let fixedCount = 0;
         let skippedCount = 0;
         rowCells.forEach((cells, rowIndex) => {
@@ -3711,14 +3728,16 @@ export class PdfStructureWriterService {
             // in, and giving it Column scope too would contradict that
             // existing, already-correct handling.
             const isRepeatedHeaderRow = colIndex !== 0 && repeatedHeaderRowIndices.has(rowIndex);
-            if (!isHeaderRow && !isHeaderCol && !isRepeatedHeaderRow) { skippedCount++; return; }
+            // colIndex 0 excluded here too, same reasoning as isRepeatedHeaderRow above.
+            const isSecondLevelHeaderRow = colIndex !== 0 && rowIndex === secondLevelHeaderRowIndex;
+            if (!isHeaderRow && !isHeaderCol && !isRepeatedHeaderRow && !isSecondLevelHeaderRow) { skippedCount++; return; }
 
             let scope: 'Row' | 'Column' | 'Both';
             if (isHeaderRow && isHeaderCol) {
               scope = hasHeaderColumnBeyondRow0
                 ? (hasHeaderRowBeyondCol0 ? 'Both' : 'Row')
                 : 'Column';
-            } else if (isRepeatedHeaderRow) {
+            } else if (isRepeatedHeaderRow || isSecondLevelHeaderRow) {
               scope = 'Column';
             } else {
               scope = isHeaderRow ? 'Column' : 'Row';
