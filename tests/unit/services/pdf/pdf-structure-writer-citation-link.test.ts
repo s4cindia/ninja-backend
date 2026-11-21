@@ -17,7 +17,7 @@
  * font-aware decode, which would silently break author-name matching.
  */
 import { describe, it, expect } from 'vitest';
-import { PDFDocument, PDFName, PDFRef, PDFDict, PDFHexString } from 'pdf-lib';
+import { PDFDocument, PDFName, PDFRef, PDFDict, PDFHexString, PDFArray } from 'pdf-lib';
 import { pdfStructureWriterService } from '../../../../src/services/pdf/pdf-structure-writer.service';
 import { writePageContent } from '../../../../src/services/pdf/pdf-content-stream-io';
 import type { AuditIssue } from '../../../../src/services/audit/base-audit.service';
@@ -255,6 +255,34 @@ describe('fixCitationLink', () => {
     );
 
     expect(result.success).toBe(false);
+  });
+
+  // Real, live-confirmed shape on Whiting_186772_E9778: its own bibliography
+  // uses the lowercase custom style "/ref" (454 occurrences, role-mapping to
+  // generic /P), not uppercase "/REF" -- the exact-match lookup this method
+  // used before found zero reference-list entries on this document at all,
+  // declining every one of 60 real CITATION-MISSING-LINK issues, none of
+  // which were actually ambiguous.
+  it('resolves a citation against a lowercase "/ref"-tagged entry, not just uppercase "/REF" (real Whiting_186772_E9778 shape)', async () => {
+    const { doc } = await buildDoc('(Karsaklian 2017)', [
+      { actualText: 'Karsaklian, E. 2017. Sustainable Negotiation. Emerald.' },
+    ]);
+    // buildDoc's own refEntries always tag with PDFName.of('REF') -- retag
+    // the one it created to the real lowercase shape this test targets.
+    const structRootRaw = doc.catalog.get(PDFName.of('StructTreeRoot'));
+    const structRoot = doc.context.lookup(structRootRaw as PDFRef, PDFDict);
+    const kids = structRoot.get(PDFName.of('K'));
+    expect(kids).toBeInstanceOf(PDFArray);
+    const refElementRef = (kids as InstanceType<typeof PDFArray>).get(1) as PDFRef;
+    const refElement = doc.context.lookup(refElementRef, PDFDict);
+    expect(refElement.get(PDFName.of('S'))?.toString()).toBe('/REF');
+    refElement.set(PDFName.of('S'), PDFName.of('ref'));
+
+    const result = pdfStructureWriterService.fixCitationLink(
+      doc, citationIssue(1, { authorText: 'Karsaklian', year: '2017', fullText: '(Karsaklian 2017)' })
+    );
+
+    expect(result.success).toBe(true);
   });
 
   it('declines cleanly when the issue has no citationData', async () => {

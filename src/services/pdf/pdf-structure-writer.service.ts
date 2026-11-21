@@ -1867,6 +1867,34 @@ export class PdfStructureWriterService {
   }
 
   /**
+   * Same as findRawTaggedElements, but matched case-INsensitively -- for
+   * callers (resolveCitationDestination below) that are guessing at a
+   * conventional custom-style NAME, not reading it back out of this
+   * document's own /RoleMap dict the way fixDegenerateRoleMapEntry does.
+   * Confirmed real on Whiting_186772_E9778: its own bibliography uses the
+   * lowercase custom style "/ref" (454 occurrences, role-mapping to generic
+   * /P) -- findRawTaggedElements(doc, structRoot, 'REF') found zero matches
+   * on this document even though a real, usable reference list exists,
+   * silently declining every one of 60 CITATION-MISSING-LINK issues as
+   * "no /REF entries" rather than the genuine ambiguous-match declines this
+   * method is meant to reserve for. Same convention as pdf-rolemap-
+   * integrity.validator.ts's own FOOTNOTE_PATTERN (`/^TFN$/i`) -- a
+   * publisher's own custom-style spelling of a structural role varies in
+   * case far more often than it varies in spelling.
+   */
+  private findRawTaggedElementsCaseInsensitive(doc: PDFDocument, structRoot: PDFDict, rawTag: string): Array<{ ref: PDFRef; dict: PDFDict }> {
+    const target = rawTag.toLowerCase();
+    const found: Array<{ ref: PDFRef; dict: PDFDict }> = [];
+    this.traverseStructTree(doc, structRoot, (node, ref) => {
+      if (!ref) return;
+      const sRaw = node.get(PDFName.of('S'));
+      if (!sRaw) return;
+      if (sRaw.toString().replace(/^\//, '').toLowerCase() === target) found.push({ ref, dict: node });
+    });
+    return found;
+  }
+
+  /**
    * Writes `<< /O /FENote /NoteType /Footnote >>` into the element's own
    * /A (attributes). Same established shape as writeScopeAttribute/
    * makeTableAttrDict above (owner /Table, field /Scope) -- find-or-append
@@ -10408,10 +10436,12 @@ export class PdfStructureWriterService {
    * /Link annotation + structure element machinery as
    * fixLinkMissingAnnotation/fixCrossReferenceLink, via
    * buildLinkAnnotationFix) for an in-text citation ("(Karsaklian 2017)")
-   * ONLY when it matches EXACTLY ONE raw /REF-tagged bibliography entry,
-   * document-wide -- same "bail rather than guess" posture as
-   * fixCrossReferenceLink: a citation whose own author+year matches zero
-   * or more than one reference-list entry is declined, never guessed.
+   * ONLY when it matches EXACTLY ONE raw /REF-tagged (case-insensitive --
+   * see findRawTaggedElementsCaseInsensitive's own doc comment)
+   * bibliography entry, document-wide -- same "bail rather than guess"
+   * posture as fixCrossReferenceLink: a citation whose own author+year
+   * matches zero or more than one reference-list entry is declined, never
+   * guessed.
    */
   fixCitationLink(doc: PDFDocument, issue: AuditIssue): FixResult {
     const fail = (error: string): FixResult => ({ issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error });
@@ -10470,7 +10500,7 @@ export class PdfStructureWriterService {
     const yearBase = yearMatch[1];
     const yearSuffix = yearMatch[2] ?? '';
 
-    const refElements = this.findRawTaggedElements(doc, structRoot, 'REF');
+    const refElements = this.findRawTaggedElementsCaseInsensitive(doc, structRoot, 'REF');
     if (refElements.length === 0) return null;
 
     const pageByRef = new Map<string, number>();
