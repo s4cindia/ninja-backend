@@ -15,6 +15,7 @@ import { structureAnalyzerService, DocumentStructure } from '../structure-analyz
 import { pdfParserService, ParsedPDF } from '../pdf-parser.service';
 import { isFilenameLike } from '../pdf-modifier.service';
 import { decodePageContent } from '../pdf-content-stream-io';
+import { tokenize as tokenizeContentStream } from '../../zone-extractor/seam-c/content-stream';
 import { findUntaggedPathRuns, type UntaggedPathRun, findTaggedContentInsideArtifact, findOversizedArtifactSpans, findPlacedPdfSpans, findArtifactWrappedActualTextSiblings, findActualTextRunsMissingMcid } from '../pdf-artifact-tagger';
 import { logger } from '../../../lib/logger';
 
@@ -1214,9 +1215,27 @@ class PDFStructureValidator {
    * service.ts's element-creation helpers), since that's the real risk
    * surface the incident came from. Checks operand COUNT only, not operand
    * values -- exactly the defect shape PAC flagged and this incident
-   * produced. Same tokenization approach hand-verified against the real
-   * incident this session (a scratchpad investigation script), promoted
-   * here into the real validator.
+   * produced.
+   *
+   * CORRECTION (real incident, confirmed live 2026-11-21): the original
+   * version of this check tokenized via a naive `content.split(/\s+/)`,
+   * with no awareness of PDF string-literal boundaries at all. All 14
+   * "malformed operator" issues found across Whiting_186772, Zaidi_189320
+   * and DuBrin_FOB_8e were false positives of the exact same shape:
+   * ordinary English words ending in a letter sequence that collides with
+   * a tracked operator name ('...pedaling', '...peak', '...prepare', '6
+   * cm proximal') inside a Tj/TJ string literal, where the raw bytes use
+   * PDF32000 7.3.4.2's own string-literal line-continuation escape
+   * (REVERSE SOLIDUS immediately followed by an end-of-line, which
+   * renders as NO character at all) to wrap the string across a raw line
+   * boundary -- e.g. "pedalin\<CR>g c)". A whitespace split treats that
+   * escaped EOL as a token boundary, isolating "g" as if it were its own
+   * standalone operator with zero preceding numeric operands. Now
+   * tokenizes with the real, shared content-stream tokenizer (already
+   * used by Seam C) instead, which keeps an entire string literal as one
+   * 's'-type token -- operator-name-like substrings inside a string can
+   * never be emitted as their own token, eliminating this false-positive
+   * class by construction rather than special-casing the escape.
    */
   private validateContentStreamWellFormedness(parsedPdf: ParsedPDF): AuditIssue[] {
     const issues: AuditIssue[] = [];
@@ -1229,8 +1248,6 @@ class PDFStructureValidator {
       return issues;
     }
 
-    const numberPattern = /^[-+]?\d*\.?\d+([eE][-+]?\d+)?$/;
-
     for (let pageNumber = 1; pageNumber <= pageCount; pageNumber++) {
       let content: string | null;
       try {
@@ -1241,25 +1258,30 @@ class PDFStructureValidator {
       }
       if (!content) continue;
 
-      const tokens = content.split(/\s+/);
+      // Real, proper content-stream tokenizer (already shared with Seam C),
+      // not a naive content.split(/\s+/) -- see this method's own doc
+      // comment below for why a whitespace split false-positives on any
+      // ordinary word ending in 'g'/'k'/'cm', or "re", shown via Tj/TJ.
+      const tokens = tokenizeContentStream(content);
       for (let i = 0; i < tokens.length; i++) {
-        const expected = CONTENT_STREAM_OPERATOR_OPERAND_COUNTS[tokens[i]];
+        if (tokens[i].t !== 'op') continue;
+        const expected = CONTENT_STREAM_OPERATOR_OPERAND_COUNTS[tokens[i].v];
         if (expected === undefined) continue;
 
         let j = i - 1;
         let actual = 0;
-        while (j >= 0 && numberPattern.test(tokens[j])) {
+        while (j >= 0 && tokens[j].t === 'n') {
           actual++;
           j--;
         }
         if (actual === expected) continue;
 
-        const snippet = tokens.slice(Math.max(0, i - 6), i + 2).join(' ');
+        const snippet = tokens.slice(Math.max(0, i - 6), i + 2).map((t) => t.v).join(' ');
         issues.push(this.createIssue({
           source: 'pdf-structure',
           severity: 'critical',
           code: 'CONTENT-STREAM-MALFORMED-OPERATOR',
-          message: `Page ${pageNumber}: '${tokens[i]}' operator has ${actual} preceding numeric operand(s), expected ${expected} -- near "...${snippet}..."`,
+          message: `Page ${pageNumber}: '${tokens[i].v}' operator has ${actual} preceding numeric operand(s), expected ${expected} -- near "...${snippet}..."`,
           wcagCriteria: ['1.3.1'],
           location: `Page ${pageNumber}`,
           suggestion: 'This content stream has a malformed operator invocation. External conformance tools (e.g. PAC) can refuse to open a document with this defect. Needs manual review and a targeted repair -- no safe automated fix exists for arbitrary malformed syntax.',
