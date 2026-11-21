@@ -40,6 +40,7 @@ import { findFloatInterruptions } from './reading-order-float';
 import { findStructureParentMismatches } from './structure-parent-mismatch';
 import { findSpanIllegalNestingViolations } from './span-illegal-nesting';
 import { findDuplicateFigureTiles } from './duplicate-figure-tiles';
+import { extractTocRowCandidates, type TocRowCandidate } from './toc-entry-extractor';
 import { buildContentIdBBoxMap, type ContentIdMaps } from '../zone-extractor/tagged-pdf-extractor';
 import { parseIssueElement as parseHeadingStyleMismatchIssueElement } from './heading-style-classifier';
 import { buildFormXObjectResolver } from './validators/pdf-figure-structtree.validator';
@@ -131,6 +132,28 @@ interface IndexRun {
   parentRef: PDFRef;
   parentDict: PDFDict;
   items: IndexRunItem[];
+}
+
+// One TOC row's own existing struct element, already resolved (see
+// resolveTocRowElements) to a confirmed, unambiguous match for a specific
+// TocRowCandidate -- see fixTocStructure/findTocRuns/applyTocRunFix.
+// rawTag is captured up front (not re-read at rollback time) since
+// different rows on one page routinely carry different raw custom tags
+// (e.g. /CFM vs /CCT vs /CBM, all RoleMap-resolving to /P) -- unlike
+// IndexRunItem, there's no `level` here: unlike nested /L/LI/LBody, a
+// /TOCI has no nesting level of its own to track.
+interface TocRunItem {
+  ref: PDFRef;
+  dict: PDFDict;
+  rawTag: string;
+}
+
+// One maximal contiguous run of TocRunItems sharing a common parent -- see
+// fixTocStructure/findTocRuns.
+interface TocRun {
+  parentRef: PDFRef;
+  parentDict: PDFDict;
+  items: TocRunItem[];
 }
 
 // ─── Service ─────────────────────────────────────────────────────────────────
@@ -1663,6 +1686,391 @@ export class PdfStructureWriterService {
 
       if (!this.isReachableFromRoot(doc, indexRef)) {
         throw new Error('New /Index element is not reachable from the structure tree root after splicing -- not committing');
+      }
+
+      return { ok: true };
+    } catch (err) {
+      for (const item of mutatedItems) {
+        item.dict.set(PDFName.of('S'), PDFName.of(item.rawTag));
+        item.dict.set(PDFName.of('P'), parentRef);
+      }
+      if (originalParentK !== undefined) parentDict.set(PDFName.of('K'), originalParentK);
+      else parentDict.delete(PDFName.of('K'));
+      for (const ref of createdRefs) this.deleteElement(doc, ref);
+      return { ok: false, reason: err instanceof Error ? err.message : String(err) };
+    }
+  }
+
+  /**
+   * TOC-STRUCTURE-MISSING fix -- S4 Carlisle manual QC, Round 2, item #4
+   * ("The TOC structure was not generated correctly"), Matterhorn checkpoint
+   * 09-006. See pdf-toc.validator.ts's own header comment for the full
+   * defect and why TOC-LINK-MISSING (the sibling issue -- building the
+   * actual /Link from a row's label to its target page, via
+   * fixTocEntryLink) is explicitly out of scope here: this fix is
+   * structure-only, retagging a TOC page's rows into real /TOC > /TOCI
+   * structure (ISO 32000-1 Table 333).
+   *
+   * One level shallower than fixIndexStructure's /Index > /L > /LI > /LBody
+   * build, because -- confirmed real on Karsaklian_189165_9781606497623.pdf,
+   * both of its real TOC pages -- a TOC row is already exactly ONE existing
+   * struct element: its own /K already bundles title + dot-leader + label
+   * MCIDs together (e.g. one /CFM element with /K [36,37,38] for a row
+   * whose label span alone is MCID 38). No splitting and no new nesting
+   * level is needed, only a rename (/CFM -> /TOCI, same MCID-safe-only-
+   * changes-/S guarantee renameElement already provides) and regrouping
+   * under one new /TOC per contiguous run -- reusing findIndexRuns'
+   * contiguous-run-over-a-parent's-/K shape (see findTocRuns) and
+   * applyIndexRunFix's splice-at-original-position mechanics (see
+   * applyTocRunFix), just without the level-tracking stack that method
+   * needs and this one doesn't.
+   *
+   * Three phases, same shape as fixIndexStructure's own run-finding ->
+   * per-run-fix split:
+   *   A. resolveTocRowElements -- read-only. For each row extractTocRowCandidates
+   *      found on this page, locate its own existing struct element and
+   *      verify it's a safe, unambiguous match (see that method's own doc
+   *      comment for the exact-vs-suffix matching rule). Declines a row
+   *      independently of its siblings -- one bad row never blocks the
+   *      others.
+   *   B. findTocRuns -- read-only. Groups the resolved rows' own struct
+   *      elements into maximal contiguous runs per shared parent. A non-row
+   *      sibling (the page's own /FRMH heading, an /H1A sub-heading like
+   *      page 9's "List of Figures" / "List of Tables" split) breaks a run,
+   *      the same way a non-IDX sibling breaks an Index run -- this is what
+   *      correctly produces TWO separate /TOC elements on page 9 rather
+   *      than requiring a page-wide decline.
+   *   C. applyTocRunFix -- mutates, with per-run independent try/catch +
+   *      rollback (its own method, not reused wholesale from
+   *      applyIndexRunFix -- no level stack, no /LBody rename, no lazily-
+   *      created intermediate /L levels).
+   *
+   * Aggregated into one FixResult per this file's own established
+   * convention (fixIndexStructure, fixDegenerateRoleMapEntry): success only
+   * when at least one row was fixed and zero rows/runs declined, even
+   * though a safely-fixed subset stays committed either way.
+   */
+  fixTocStructure(doc: PDFDocument, issue: AuditIssue): FixResult {
+    const fail = (error: string): FixResult => ({ issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error });
+
+    if (!issue.pageNumber) return fail('Issue has no pageNumber');
+    const pageNumber = issue.pageNumber;
+
+    const structRoot = this.getStructTreeRoot(doc);
+    if (!structRoot) return fail('No structure tree root found');
+
+    const content = decodePageContent(doc, pageNumber);
+    if (!content) return fail(`Page ${pageNumber} has no content stream`);
+
+    const rows = extractTocRowCandidates(content);
+    if (rows.length === 0) return fail(`No TOC row candidates found on page ${pageNumber}`);
+
+    const { resolved, declined } = this.resolveTocRowElements(doc, structRoot, pageNumber, rows);
+    if (resolved.length === 0) {
+      return fail(
+        `Found ${rows.length} TOC row candidate(s) on page ${pageNumber}, but none resolved to a safe, ` +
+        `unambiguous struct element (${declined.map(d => d.reason).join('; ')})`
+      );
+    }
+
+    const catalogStructTreeRootRaw = doc.catalog.get(PDFName.of('StructTreeRoot'));
+    const structRootRef = catalogStructTreeRootRaw instanceof PDFRef ? catalogStructTreeRootRaw : null;
+    const resolvedRefNumbers = new Set(resolved.map(r => r.ref.objectNumber));
+    const runs = this.findTocRuns(doc, structRoot, structRootRef, resolvedRefNumbers);
+
+    let runsFixed = 0;
+    let rowsFixed = 0;
+    const runDeclines: string[] = [];
+    for (const run of runs) {
+      const result = this.applyTocRunFix(doc, run);
+      if (result.ok) {
+        runsFixed++;
+        rowsFixed += run.items.length;
+      } else {
+        runDeclines.push(`run of ${run.items.length} starting with /${run.items[0].rawTag}: ${result.reason}`);
+      }
+    }
+
+    const success = runsFixed > 0 && declined.length === 0 && runDeclines.length === 0;
+    const declineSummary = [
+      ...declined.map(d => `row "${d.row.label}": ${d.reason}`),
+      ...runDeclines,
+    ];
+
+    return {
+      issueId: issue.id,
+      success,
+      before: `${rows.length} TOC row candidate(s) on page ${pageNumber}, tagged as plain /P (or a custom style ` +
+        'RoleMap-resolving to /P), no /TOC or /TOCI structure',
+      after: success
+        ? `Built ${runsFixed} new /TOC > /TOCI container(s) covering ${rowsFixed} row(s)`
+        : `${runsFixed}/${runs.length} run(s) fixed (${rowsFixed} row(s)); ${declineSummary.length} decline(s)`,
+      error: declineSummary.length > 0 ? declineSummary.join('; ') : undefined,
+    };
+  }
+
+  /**
+   * Phase A (read-only) of fixTocStructure: resolves each TocRowCandidate
+   * to its own existing struct element, or declines that row independently.
+   *
+   * Finds every struct element on `pageNumber` whose own /K directly
+   * contains `row.labelMcid` (a collect-ALL variant of
+   * findStructElementByMcid, which deliberately stops at the first match --
+   * ambiguity detection here needs every match, not just one). Declines
+   * unless exactly one such element exists.
+   *
+   * Having found the unique candidate, requires its own full MCID set
+   * (collectLeafMcids) to match row.mcids exactly -- with ONE narrow,
+   * verified exception. TocRowCandidate.mcids' own doc comment explains why
+   * an exception is needed at all: content before a TOC page's own heading
+   * gets swept into the FIRST row only, as a leading prefix (e.g.
+   * row.mcids = [35, 36, 37, 38] where 35 is the page heading itself, not
+   * part of this row, while the struct element's own real /K is just
+   * [36, 37, 38]).
+   *
+   * The exception is NOT "accept any trailing-suffix match" -- that alone
+   * can't be trusted, because a row whose title got split into a separate
+   * element the label-owning element never covers produces the EXACT same
+   * signature (a leading gap of smaller MCID numbers) as real heading
+   * contamination, and declining that split-title case is the whole point
+   * of this check. The gap is only accepted once it's PROVEN to belong to
+   * something else: some OTHER single struct element on the page whose own
+   * complete MCID set exactly equals the gap (the page heading, in the real
+   * case). An unexplained gap -- nothing else on the page owns exactly
+   * those MCIDs -- declines, the same as any other mismatch.
+   */
+  private resolveTocRowElements(
+    doc: PDFDocument,
+    structRoot: PDFDict,
+    pageNumber: number,
+    rows: TocRowCandidate[],
+  ): {
+    resolved: Array<{ ref: PDFRef; dict: PDFDict; row: TocRowCandidate }>;
+    declined: Array<{ row: TocRowCandidate; reason: string }>;
+  } {
+    let pageRef: PDFRef;
+    try {
+      pageRef = doc.getPage(pageNumber - 1).ref;
+    } catch {
+      return { resolved: [], declined: rows.map(row => ({ row, reason: `Page ${pageNumber} does not exist` })) };
+    }
+
+    const resolved: Array<{ ref: PDFRef; dict: PDFDict; row: TocRowCandidate }> = [];
+    const declined: Array<{ row: TocRowCandidate; reason: string }> = [];
+
+    for (const row of rows) {
+      const candidates: Array<{ ref: PDFRef; dict: PDFDict }> = [];
+      this.traverseStructTree(doc, structRoot, (node, ref) => {
+        if (!ref || !this.structElemHasMcid(doc, node, row.labelMcid)) return;
+        const pg = this.resolveElementPageRef(doc, node);
+        const onPage = pg ? pg.toString() === pageRef.toString() : this.resolvesToPageViaMcid(doc, node, pageNumber);
+        if (onPage) candidates.push({ ref, dict: node });
+      });
+
+      if (candidates.length === 0) {
+        declined.push({ row, reason: `No struct element's own /K contains MCID ${row.labelMcid} (label "${row.label}") on page ${pageNumber}` });
+        continue;
+      }
+      if (candidates.length > 1) {
+        declined.push({ row, reason: `${candidates.length} struct elements' own /K all contain MCID ${row.labelMcid} -- ambiguous, declining rather than guessing` });
+        continue;
+      }
+
+      const [{ ref, dict }] = candidates;
+      const elementMcids = this.collectLeafMcids(doc, dict);
+
+      // Exact match -- the common case for every row except possibly the
+      // first on a page.
+      if (elementMcids.length === row.mcids.length && elementMcids.every((m, i) => m === row.mcids[i])) {
+        resolved.push({ ref, dict, row });
+        continue;
+      }
+
+      // Not exact -- only tolerable shape is a leading-prefix gap (the
+      // documented page-heading sweep; see TocRowCandidate.mcids' own doc
+      // comment), and even then ONLY when that exact prefix is fully
+      // accounted for by one or more OTHER struct elements' own complete
+      // MCID sets, not just "numerically smaller". Comparing prefix length
+      // alone (e.g. accepting any elementMcids that forms *a* trailing
+      // suffix of row.mcids) would also wrongly accept a row whose title
+      // got split into a separate element the label-owning element never
+      // covers -- that shape produces the exact same "leading gap, numbers
+      // all smaller" signature as real heading contamination, and the only
+      // way to tell them apart is whether something else on the page
+      // actually, provably owns that gap.
+      //
+      // Confirmed real on Karsaklian_189165_9781606497623.pdf's own page 9:
+      // the first figure row's gap is TWO elements' worth, not one -- the
+      // page's own /FRMH heading (MCID 89) AND the "List of Figures" /H1A
+      // sub-heading (MCID 90) both precede it. explainGapWithOtherElements
+      // consumes the gap greedily from the front, one other element's own
+      // complete MCID set at a time, so this generalizes to any number of
+      // preceding siblings, not just exactly one.
+      const isTrailingSubset = elementMcids.length > 0
+        && elementMcids.length <= row.mcids.length
+        && row.mcids.slice(row.mcids.length - elementMcids.length).every((m, i) => m === elementMcids[i]);
+      const gap = isTrailingSubset ? row.mcids.slice(0, row.mcids.length - elementMcids.length) : null;
+      const gapExplained = gap !== null && (gap.length === 0 || this.explainGapWithOtherElements(doc, structRoot, ref, gap));
+
+      if (!gap || !gapExplained) {
+        declined.push({
+          row,
+          reason: `Struct element's own MCID set [${elementMcids.join(',')}] does not match row "${row.label}"'s ` +
+            `own content-stream MCIDs [${row.mcids.join(',')}] -- declining rather than guessing`,
+        });
+        continue;
+      }
+
+      resolved.push({ ref, dict, row });
+    }
+
+    return { resolved, declined };
+  }
+
+  /**
+   * Greedily consumes `gap` (a row's leading, non-real-content MCID prefix
+   * -- see resolveTocRowElements' own doc comment) from the front, one
+   * OTHER struct element's own complete MCID set at a time. Each round,
+   * finds any element (excluding `excludeRef`, the row's own matched
+   * candidate) whose collectLeafMcids exactly equals the REMAINING gap's
+   * own leading N entries (N = that element's own MCID count), and trims
+   * that many entries off the front. Returns true only once the whole gap
+   * is fully consumed this way -- a gap partially explained, or with any
+   * unexplained leftover, is NOT accepted (same "bail rather than guess"
+   * posture as every other ambiguity check in this file). Bounded by
+   * `gap.length` iterations, since each successful round consumes at least
+   * one entry.
+   */
+  private explainGapWithOtherElements(doc: PDFDocument, structRoot: PDFDict, excludeRef: PDFRef, gap: number[]): boolean {
+    let remaining = gap;
+    for (let i = 0; i < gap.length && remaining.length > 0; i++) {
+      let consumed = 0;
+      this.traverseStructTree(doc, structRoot, (node, ref) => {
+        if (!ref || ref.objectNumber === excludeRef.objectNumber) return;
+        const mcids = this.collectLeafMcids(doc, node);
+        if (mcids.length > 0 && mcids.length <= remaining.length && mcids.every((m, j) => m === remaining[j])) {
+          consumed = mcids.length;
+          return true;
+        }
+      });
+      if (consumed === 0) return false;
+      remaining = remaining.slice(consumed);
+    }
+    return remaining.length === 0;
+  }
+
+  /**
+   * Phase B (read-only) of fixTocStructure: groups resolveTocRowElements'
+   * own resolved rows into maximal contiguous runs per shared parent --
+   * same findIndexRuns shape (reusing normalizeKidsForIndexScan as-is for
+   * the per-parent /K normalization), with membership swapped from a raw-
+   * tag regex to "this ref's own object number is one of the rows Phase A
+   * already resolved for this page". A TOC page's own heading (/FRMH) and
+   * any sub-heading splitting it into named groups (page 9's /H1A "List of
+   * Figures" / "List of Tables") are never themselves TOC rows, so they
+   * break a run exactly the way a non-IDX sibling already breaks an Index
+   * run -- this is what correctly produces two separate /TOC elements on
+   * page 9 (one per group) rather than one /TOC spanning both, or a
+   * page-wide decline.
+   */
+  private findTocRuns(
+    doc: PDFDocument,
+    structRoot: PDFDict,
+    structRootRef: PDFRef | null,
+    rowRefNumbers: Set<number>,
+  ): TocRun[] {
+    const runs: TocRun[] = [];
+
+    this.traverseStructTree(doc, structRoot, (node, ref) => {
+      const parentRef = ref ?? structRootRef;
+      if (!parentRef) return;
+
+      const kids = this.normalizeKidsForIndexScan(doc, node.get(PDFName.of('K')));
+      let current: TocRunItem[] = [];
+      const flush = () => {
+        if (current.length > 0) {
+          runs.push({ parentRef, parentDict: node, items: current });
+        }
+        current = [];
+      };
+
+      for (const kid of kids) {
+        if (kid && rowRefNumbers.has(kid.ref.objectNumber)) {
+          const rawTag = kid.dict.get(PDFName.of('S'))?.toString().replace(/^\//, '') ?? '';
+          current.push({ ref: kid.ref, dict: kid.dict, rawTag });
+        } else {
+          flush();
+        }
+      }
+      flush();
+    });
+
+    return runs;
+  }
+
+  /**
+   * Phase C of fixTocStructure: builds one run's own /TOC > /TOCI subtree
+   * and splices it into the run's original parent, replacing the run in
+   * place -- same splice-at-original-position mechanics as
+   * applyIndexRunFix (authoritative rewrite of the parent's own /K, not
+   * relying solely on reparentElement's own removeFromKids side effect,
+   * which has a known bare-scalar-/K gap -- see that method's own doc
+   * comment), minus the level-tracking stack and /LBody rename that method
+   * needs and this one doesn't: each row's own flat content is already
+   * exactly what a /TOCI needs, just under a new tag name.
+   */
+  private applyTocRunFix(doc: PDFDocument, run: TocRun): { ok: true } | { ok: false; reason: string } {
+    const { parentRef, parentDict, items } = run;
+
+    const originalParentK = parentDict.get(PDFName.of('K'));
+    const originalEntries = originalParentK instanceof PDFArray
+      ? originalParentK.asArray()
+      : originalParentK !== undefined ? [originalParentK as PDFObject] : [];
+    const lastItemRef = items[items.length - 1].ref;
+    const lastIdx = originalEntries.findIndex((e) => e instanceof PDFRef && e.objectNumber === lastItemRef.objectNumber);
+    const afterRefRaw = lastIdx !== -1 && lastIdx + 1 < originalEntries.length ? originalEntries[lastIdx + 1] : undefined;
+    const afterRef = afterRefRaw instanceof PDFRef ? afterRefRaw : undefined;
+
+    const pageRef = this.resolveElementPageRef(doc, items[0].dict);
+
+    const createdRefs: PDFRef[] = [];
+    const mutatedItems: TocRunItem[] = [];
+
+    try {
+      const tocDict = doc.context.obj({
+        Type: PDFName.of('StructElem'),
+        S: PDFName.of('TOC'),
+        P: parentRef,
+        ...(pageRef ? { Pg: pageRef } : {}),
+      }) as PDFDict;
+      const tocRef = doc.context.register(tocDict);
+      createdRefs.push(tocRef);
+
+      for (const item of items) {
+        this.renameElement(doc, item.ref, 'TOCI');
+        this.reparentElement(doc, item.ref, tocRef);
+        mutatedItems.push(item);
+      }
+
+      // Authoritative rewrite of the ORIGINAL parent's own /K -- see
+      // applyIndexRunFix's own doc comment for why this doesn't just trust
+      // reparentElement's own removeFromKids side effect.
+      const runRefNumbers = new Set(items.map((i) => i.ref.objectNumber));
+      const currentKRaw = parentDict.get(PDFName.of('K'));
+      const currentEntries = currentKRaw instanceof PDFArray
+        ? currentKRaw.asArray()
+        : currentKRaw !== undefined ? [currentKRaw as PDFObject] : [];
+      const withoutRunItems = currentEntries.filter((e) => !(e instanceof PDFRef && runRefNumbers.has(e.objectNumber)));
+      let spliceIdx = withoutRunItems.length;
+      if (afterRef) {
+        const idx = withoutRunItems.findIndex((e) => e instanceof PDFRef && e.objectNumber === afterRef.objectNumber);
+        if (idx !== -1) spliceIdx = idx;
+      }
+      withoutRunItems.splice(spliceIdx, 0, tocRef);
+      parentDict.set(PDFName.of('K'), doc.context.obj(withoutRunItems));
+
+      if (!this.isReachableFromRoot(doc, tocRef)) {
+        throw new Error('New /TOC element is not reachable from the structure tree root after splicing -- not committing');
       }
 
       return { ok: true };

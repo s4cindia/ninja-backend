@@ -197,4 +197,48 @@ describe('extractTocRowCandidates', () => {
   it('returns an empty list for a page with no bare-MCID spans at all', () => {
     expect(extractTocRowCandidates('q /GS0 gs Q')).toEqual([]);
   });
+
+  // Real, live-confirmed shape on Karsaklian_189165_9781606497623.pdf: a
+  // row's own existing struct element bundles title + dot-leader + label
+  // MCIDs together in its own /K (e.g. one /CFM element with /K [36,37,38]
+  // for the "ix" row below, whose label span alone is MCID 38). mcids must
+  // include the dot-leader's MCID (37) even though titleText's own filtering
+  // drops its TEXT -- omitting it here would make a struct-tree-match check
+  // against that struct element fail for every row, not just this one.
+  it('includes the dot-leader span\'s MCID in each row\'s own mcids, not just title+label', () => {
+    const rows = extractTocRowCandidates(PAGE7_EXCERPT);
+
+    // The SECOND row onward isn't contaminated by anything before the page's
+    // own heading -- see the next test for why the FIRST row is different.
+    const xiRow = rows.find(r => r.label === 'xi');
+    expect(xiRow!.mcids).toEqual([39, 40, 41]);
+
+    const chapterRow = rows.find(r => r.label === '1');
+    expect(chapterRow!.mcids).toEqual([45, 46, 47]);
+  });
+
+  // Same documented residual as titleText's own doc comment already accepts
+  // ("page heading/section-divider text gets swept into the FIRST row's
+  // title") -- mcids inherits the identical sweep, since both accumulators
+  // start from page start, not from the first row boundary. This is a
+  // PREFIX contamination only (the page heading's MCID is always smaller
+  // than, and never interleaved with, the first row's own real MCIDs) --
+  // pdf-structure-writer.service.ts's fixTocStructure must match on the
+  // SUFFIX of a row's mcids, not full-array equality, specifically to
+  // tolerate this for row #1 of every TOC page while still catching a real
+  // mismatch (extra TRAILING or interleaved MCIDs, which this prefix-only
+  // shape never produces).
+  it('sweeps the page heading\'s own MCID into the FIRST row only, as a leading prefix', () => {
+    const rows = extractTocRowCandidates(PAGE7_EXCERPT);
+    const ixRow = rows.find(r => r.label === 'ix');
+    expect(ixRow!.mcids).toEqual([35, 36, 37, 38]);
+    // The real row content (title+dot-leader+label) is the trailing suffix.
+    expect(ixRow!.mcids.slice(-3)).toEqual([36, 37, 38]);
+  });
+
+  it('sweeps page 9\'s own heading MCID into its first (only) row the same way', () => {
+    const rows = extractTocRowCandidates(PAGE9_EXCERPT);
+    expect(rows[0].mcids).toEqual([89, 91, 92, 93]);
+    expect(rows[0].mcids.slice(-3)).toEqual([91, 92, 93]);
+  });
 });

@@ -18,23 +18,24 @@
  * every page) -- so clicking a TOC entry does nothing at all. Two distinct
  * sub-defects, both flagged here, with two different safety verdicts:
  *
- *   (a) TOC-STRUCTURE-MISSING (detect-only): the TOC page's content isn't
- *       tagged with the standard TOC/TOCI structure types ISO 32000-1
- *       Table 333 defines for exactly this purpose (Matterhorn checkpoint
- *       09-006, "A TOC-related structure element is used in a way that
- *       does not conform to Table 333 in ISO 32000-1" -- the PDF
- *       Association's own Tagged PDF school and axe-core's dedicated
- *       "toc-tagging" rule independently confirm this is a real,
- *       machine-checkable requirement, not a Matterhorn-only nicety; see
- *       this file's own git history for the sources checked). Retagging
- *       ~20-60 flat sibling /P elements per page into a correctly-nested
- *       /TOC > /TOCI > (title, Link) tree is a from-scratch structural
- *       rebuild on the scale of this codebase's own MATTERHORN-15-001
- *       table-retagging effort (6 slices across several PRs) -- genuinely
- *       too large and too risky to build and ship as a same-PR auto-fix,
- *       so this stays manual-review-only, same scope-boundary choice this
- *       codebase already made once for "real index page-reference link-
- *       building" (PR #811).
+ *   (a) TOC-STRUCTURE-MISSING (auto-fixable per row, declines rather than
+ *       guesses): the TOC page's content isn't tagged with the standard
+ *       TOC/TOCI structure types ISO 32000-1 Table 333 defines for exactly
+ *       this purpose (Matterhorn checkpoint 09-006, "A TOC-related
+ *       structure element is used in a way that does not conform to
+ *       Table 333 in ISO 32000-1" -- the PDF Association's own Tagged PDF
+ *       school and axe-core's dedicated "toc-tagging" rule independently
+ *       confirm this is a real, machine-checkable requirement, not a
+ *       Matterhorn-only nicety; see this file's own git history for the
+ *       sources checked). Originally scoped out as too large/risky to
+ *       build (a from-scratch rebuild on the scale of this codebase's own
+ *       MATTERHORN-15-001 table-retagging effort), but direct inspection
+ *       of the real file found each row is already exactly ONE existing
+ *       struct element -- no splitting needed, only a rename + regrouping
+ *       under a new /TOC, reusing this codebase's own /Index > /L > /LI
+ *       wrapper-building machinery (PR #811) one level shallower. See
+ *       pdfStructureWriterService.fixTocStructure's own doc comment for
+ *       the full algorithm and its per-row/per-run decline conditions.
  *
  *   (b) TOC-LINK-MISSING (auto-fixable where resolvable): each TOC row's
  *       own trailing page-number/roman-numeral label -- "25", "ix" -- is
@@ -290,11 +291,10 @@ class PdfTocValidator {
       location: `Page ${pageNumber}`,
       category: 'structure',
       suggestion:
-        'Re-export the document from the authoring tool with proper TOC export settings, or manually retag this ' +
-        'page\'s entries as /TOC containing /TOCI children (ISO 32000-1 Table 333) -- each /TOCI should in turn ' +
-        'contain a /Link to its target section. Manual review recommended: converting this document\'s existing ' +
-        'flat paragraph tags into correctly nested TOC/TOCI structure is a large structural rewrite, not a safe ' +
-        'same-pass automated fix.',
+        'This page\'s rows will be retagged as /TOC containing /TOCI children (ISO 32000-1 Table 333), one /TOC ' +
+        'per contiguous run of rows -- a row is only retagged once its own existing struct element is an ' +
+        'unambiguous match; any row or run that isn\'t gets declined rather than guessed, and the rest still ' +
+        'proceed.',
       context: 'Detected as a TOC page by content heuristics (dot-leaders + a high ratio of trailing page numbers), ' +
         'but no /TOC or /TOCI structure element is anchored to it.',
       pageNumber,

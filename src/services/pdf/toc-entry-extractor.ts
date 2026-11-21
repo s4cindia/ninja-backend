@@ -114,6 +114,32 @@ export interface TocRowCandidate {
   labelOriginX: number;
   labelOriginY: number;
   labelFontSize: number;
+  /**
+   * Every span's MCID since the previous label (or page start), in content-
+   * stream order, INCLUDING the label's own MCID at the end and the
+   * decorative dot-leader span(s) titleText's own filtering drops -- unlike
+   * titleText (display-only, cosmetic), this is read by
+   * pdf-structure-writer.service.ts's fixTocStructure as a structural fact:
+   * the MCID set a row's own existing struct element must match before that
+   * element is trusted to BE this row (and only this row). Confirmed real
+   * on Karsaklian_189165_9781606497623.pdf: a row's struct element's own /K
+   * already bundles title + dot-leader + label MCIDs together (e.g. one
+   * /CFM element with /K [36,37,38] for a row whose label span alone is
+   * MCID 38) -- omitting the dot-leader MCID here would make every single
+   * row fail a structural match against that struct element, a silent,
+   * total false-decline rather than a narrow edge case.
+   *
+   * Inherits titleText's own documented residual: content before the TOC
+   * page's own heading gets swept into the FIRST row only, as a leading
+   * PREFIX (e.g. [35, 36, 37, 38] where 35 is the page heading "Contents"
+   * itself, not part of this row) -- fixTocStructure matches on the
+   * trailing SUFFIX of mcids against a candidate struct element's own real
+   * MCID set, not full-array equality, specifically to tolerate this for
+   * row #1 of every page while still declining a genuine mismatch (this
+   * shape never produces extra TRAILING or interleaved MCIDs, only a
+   * leading prefix, so a suffix match stays safe).
+   */
+  mcids: number[];
 }
 
 /** Average glyph width as a fraction of font size, for a proportional Latin
@@ -244,8 +270,14 @@ export function extractTocRowCandidates(content: string): TocRowCandidate[] {
   const spans = extractTocSpans(content);
   const rows: TocRowCandidate[] = [];
   let titleParts: string[] = [];
+  // Unconditional (unlike titleParts): every span's MCID since the previous
+  // label, including dot-leader/empty ones titleText's own filtering drops
+  // below -- see TocRowCandidate.mcids' own doc comment for why this can't
+  // reuse titleParts' filtered accumulation.
+  let mcidsSinceLastLabel: number[] = [];
 
   for (const span of spans) {
+    mcidsSinceLastLabel.push(span.mcid);
     const text = span.text.trim();
     if (text.length === 0 || DOT_LEADER_ONLY_RE.test(text)) continue;
 
@@ -257,8 +289,10 @@ export function extractTocRowCandidates(content: string): TocRowCandidate[] {
         labelOriginX: span.originX,
         labelOriginY: span.originY,
         labelFontSize: span.fontSize,
+        mcids: mcidsSinceLastLabel,
       });
       titleParts = [];
+      mcidsSinceLastLabel = [];
     } else {
       titleParts.push(text);
     }
