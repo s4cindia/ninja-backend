@@ -181,11 +181,39 @@ class PDFAltTextValidator {
     // pages/images loop) so a pool of workers can pull from one shared
     // queue -- see the concurrency comment below for why this isn't a
     // plain sequential loop any more.
-    const allImages: Array<{ image: ImageInfo; pageSize: { width: number; height: number } }> = [];
+    //
+    // Images sharing a non-null figureGroupKey (see ImageInfo's own doc
+    // comment) resolve to the SAME real /Figure struct element -- the SAME
+    // Alt/ActualText in the PDF, not independent per-image values. Only the
+    // FIRST image in each such group gets its own entry here; later images
+    // in the same group are merged into it (their ids collected into
+    // groupImageIds) rather than queued as their own independent image.
+    // Without this, a shared Figure with N images would run N redundant
+    // AI-vision calls against N different crops, raise N issues all
+    // describing "the same" alt text, and applying more than one of their
+    // suggestions would silently clobber the shared /Alt (setAltText
+    // resolves every one of those N ids to the identical dict -- last
+    // write wins). Confirmed real and live on Whiting_186772_E9778: 18
+    // Figures shared by 2-40 images each, including one group where an
+    // unrelated stock photo was swept into the same span as a genuine
+    // anatomy diagram, producing an AI "quality improvement" suggestion
+    // that accurately described the stock photo while being presented as a
+    // fix for the whole shared Figure's alt text.
+    const allImages: Array<{ image: ImageInfo; pageSize: { width: number; height: number }; groupImageIds: string[] }> = [];
+    const groupEntryIndexByKey = new Map<string, number>();
     for (const pageImages of documentImages.pages) {
       for (const image of pageImages.images) {
         const pageSize = pageDims.get(image.pageNumber) ?? { width: 0, height: 0 };
-        allImages.push({ image, pageSize });
+        if (image.figureGroupKey != null) {
+          const groupKey = `${image.pageNumber}:${image.figureGroupKey}`;
+          const existingIndex = groupEntryIndexByKey.get(groupKey);
+          if (existingIndex !== undefined) {
+            allImages[existingIndex].groupImageIds.push(image.id);
+            continue;
+          }
+          groupEntryIndexByKey.set(groupKey, allImages.length);
+        }
+        allImages.push({ image, pageSize, groupImageIds: [image.id] });
       }
     }
 
@@ -236,9 +264,16 @@ class PDFAltTextValidator {
       while (true) {
         const i = nextIndex++;
         if (i >= allImages.length) return;
-        const { image, pageSize } = allImages[i];
-        resultsByIndex[i] = await this.validateImage(image, useAI, pageSize);
-        imagesCompleted++;
+        const { image, pageSize, groupImageIds } = allImages[i];
+        resultsByIndex[i] = await this.validateImage(image, useAI, pageSize, groupImageIds);
+        // +groupImageIds.length, not +1 -- a merged shared-Figure entry is
+        // one work unit but covers several real images, and totalImages
+        // above is the real per-image count (documentImages.totalImages),
+        // not the deduplicated work-unit count. Incrementing by 1 here
+        // would make imagesCompleted permanently undershoot totalImages
+        // whenever any group was merged, so the isLast flush above would
+        // never fire and the reported percentage would stall below 100%.
+        imagesCompleted += groupImageIds.length;
         maybeReportProgress();
       }
     };
@@ -280,14 +315,19 @@ class PDFAltTextValidator {
   /**
    * Validate a single image for alt text
    *
-   * @param image - Image information
+   * @param image - Image information (the representative of its group, when shared)
    * @param useAI - Whether to use AI for quality assessment
-   * @returns Array of issues for this image
+   * @param groupImageIds - Every image id resolving to the same /Figure as
+   * `image` (including `image.id` itself); length 1 when unshared. See
+   * ImageInfo's own figureGroupKey doc comment and the allImages
+   * construction above for why a shared group is collapsed to one call.
+   * @returns Array of issues for this image (and implicitly, its whole group)
    */
   private async validateImage(
     image: ImageInfo,
     useAI: boolean,
-    pageSize: { width: number; height: number }
+    pageSize: { width: number; height: number },
+    groupImageIds: string[] = [image.id]
   ): Promise<AuditIssue[]> {
     const issues: AuditIssue[] = [];
 
@@ -304,12 +344,28 @@ class PDFAltTextValidator {
       return issues;
     }
 
+    // A shared Figure's alt text describes the group as a whole -- no
+    // single image's crop can stand in for "does this accurately describe
+    // the image" (confirmed real on Whiting_186772_E9778: one shared
+    // Figure's AI-vision check against one specific crop correctly
+    // described an unrelated stock photo that had been swept into the same
+    // marked-content span as the real anatomy diagram, which would have
+    // read as a "fix" for the whole group's shared alt text). AI-vision
+    // calls below are gated on `!isShared`; the deterministic text-only
+    // checks (generic text, redundant prefix, length) still run normally,
+    // since those only read `image.altText`, identical across the group.
+    const isShared = groupImageIds.length > 1;
+    const otherGroupIds = groupImageIds.filter(id => id !== image.id);
+    const sharedNote = isShared
+      ? ` (this Figure's alt text is shared with ${otherGroupIds.length} other image placement(s) on this page: ${otherGroupIds.join(', ')} -- fixing or reviewing this one issue covers the whole group)`
+      : '';
+
     // Check if image has alt text
     if (!image.altText) {
       let suggestion: string;
       let triage: IssueTriage | undefined;
 
-      if (useAI && image.base64) {
+      if (useAI && image.base64 && !isShared) {
         const classified = await this.classifyAndGenerateAltText(image);
         if (classified.blocked) {
           // Content flagged by Gemini's safety filter -- no classification
@@ -339,6 +395,8 @@ class PDFAltTextValidator {
             ? 'Image appears decorative — set alt="" in the authoring tool'
             : `AI-generated alt text: "${classified.altText}"`;
         }
+      } else if (isShared) {
+        suggestion = `Add descriptive alternative text to the image. Alt text should convey the same information as the image.${sharedNote} AI could not draft this automatically -- no single image placement can represent the whole group.`;
       } else {
         suggestion = 'Add descriptive alternative text to the image. Alt text should convey the same information as the image.';
       }
@@ -347,7 +405,7 @@ class PDFAltTextValidator {
         source: 'pdf-alttext',
         severity: 'critical',
         code: 'MATTERHORN-13-001',
-        message: `Image on page ${image.pageNumber} has no alternative text`,
+        message: `Image on page ${image.pageNumber} has no alternative text${sharedNote}`,
         wcagCriteria: ['1.1.1'],
         location: `Page ${image.pageNumber}, Image ${image.index + 1}`,
         suggestion,
@@ -371,8 +429,9 @@ class PDFAltTextValidator {
       return issues;
     }
 
-    // Assess alt text quality
-    const quality = await this.assessAltTextQuality(image, useAI);
+    // Assess alt text quality. useAI gated on !isShared -- see this
+    // method's own isShared doc comment above.
+    const quality = await this.assessAltTextQuality(image, useAI && !isShared);
 
     // Check for generic alt text (serious issue)
     if (quality.hasGenericText) {
@@ -380,13 +439,13 @@ class PDFAltTextValidator {
         source: 'pdf-alttext',
         severity: 'serious',
         code: 'MATTERHORN-13-004',
-        message: `Image on page ${image.pageNumber} has generic alt text: "${image.altText}"`,
+        message: `Image on page ${image.pageNumber} has generic alt text: "${image.altText}"${sharedNote}`,
         wcagCriteria: ['1.1.1'],
         location: `Page ${image.pageNumber}, Image ${image.index + 1}`,
         suggestion: quality.suggestedAltText || 'Replace generic alt text with a meaningful description of the image content.',
         category: 'alt-text',
         element: image.id,
-        context: `Current alt text: "${image.altText}"`,
+        context: `Current alt text: "${image.altText}"${sharedNote}`,
         pageNumber: image.pageNumber,
         matterhornCheckpoint: '13-004',
         matterhornHow: 'M',
@@ -409,13 +468,13 @@ class PDFAltTextValidator {
         source: 'pdf-alttext',
         severity: 'moderate',
         code: 'ALT-TEXT-QUALITY',
-        message: `Image on page ${image.pageNumber} has alt text quality issues: ${issueDescription}`,
+        message: `Image on page ${image.pageNumber} has alt text quality issues: ${issueDescription}${sharedNote}`,
         wcagCriteria: ['1.1.1'],
         location: `Page ${image.pageNumber}, Image ${image.index + 1}`,
         suggestion: quality.suggestedAltText || this.getQualityImprovementSuggestion(quality),
         category: 'alt-text',
         element: image.id,
-        context: `Current alt text: "${image.altText}"`,
+        context: `Current alt text: "${image.altText}"${sharedNote}`,
         pageNumber: image.pageNumber,
         boundingBox: {
           x: image.position.x,
@@ -434,13 +493,13 @@ class PDFAltTextValidator {
         source: 'pdf-alttext',
         severity: 'minor',
         code: 'ALT-TEXT-REDUNDANT-PREFIX',
-        message: `Image on page ${image.pageNumber} has redundant prefix in alt text`,
+        message: `Image on page ${image.pageNumber} has redundant prefix in alt text${sharedNote}`,
         wcagCriteria: ['1.1.1'],
         location: `Page ${image.pageNumber}, Image ${image.index + 1}`,
         suggestion: `Remove the redundant prefix. Alt text: "${image.altText}"`,
         category: 'alt-text',
         element: image.id,
-        context: `Current alt text: "${image.altText}"`,
+        context: `Current alt text: "${image.altText}"${sharedNote}`,
         pageNumber: image.pageNumber,
         boundingBox: {
           x: image.position.x,
