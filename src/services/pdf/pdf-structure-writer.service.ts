@@ -54,6 +54,7 @@ import {
   buildArtifactSplitEdits,
   findPlacedPdfSpans,
   buildPlacedPdfRetagEdit,
+  buildComplexArtifactFigureRetagEdit,
   findArtifactWrappedActualTextSiblings,
   findActualTextRunsMissingMcid,
   collectTopLevelMarkedContentSpans,
@@ -6913,6 +6914,181 @@ export class PdfStructureWriterService {
       success: true,
       before: `${spans.length} complex oversized /Artifact span(s) swallowing real content alongside decorative drawing`,
       after: `${totalSegments} real text segment(s) split out into their own /Span structure tag(s); the decorative drawing stays Artifact-wrapped`,
+    };
+  }
+
+  /**
+   * ARTIFACT-SWALLOWS-CONTENT-COMPLEX Tier 2 fix: retags the confirmed-
+   * meaningful-diagram complex span(s) ai-analysis.service.ts's
+   * analyzeComplexArtifactAsFigure identified (one AI vision call per
+   * span, surfaced for review rather than silently auto-applied -- see
+   * that method's own doc comment) as real `/Figure` struct elements. No
+   * `/Alt` set -- same deliberate hand-off to the existing alt-text
+   * pipeline's next pass as retagPlacedPdfAsFigure above, for the same
+   * reason: this fixer only ever decides "is this reachable from the
+   * structure tree at all", never "what should its alt text say".
+   *
+   * Re-derives spans fresh from the CURRENT page bytes (never trusts the
+   * issue's own analysis-time snapshot) and matches against `issue.value`
+   * (a JSON array of each confirmed span's own normalized content
+   * signature) by exact signature, not raw byte offset -- robust to
+   * another fix having shifted this page's byte offsets first, same
+   * "re-confirm fresh" discipline as every other value-based fixer here.
+   *
+   * Document-flow anchoring mirrors fixArtifactSwallowsContentComplex
+   * exactly: resolves each span's own nearest EXISTING tagged neighbors by
+   * content-stream position (using the span's own tagNameStart as the left
+   * boundary, same convention retagPlacedPdfAsFigure's own tagStart-based
+   * left-candidate search uses), requires left/right agreement, and
+   * chains every span on the page off their own anchor point in order.
+   *
+   * All-or-nothing per page, same rollback convention as every other
+   * content-stream-plus-struct-tree fix in this file.
+   */
+  fixComplexArtifactAsFigure(doc: PDFDocument, issue: AuditIssue, storedValue: string | null): FixResult {
+    const fail = (error: string): FixResult => ({ issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error });
+
+    if (!issue.pageNumber) return fail('Issue has no pageNumber');
+    const pageNumber = issue.pageNumber;
+
+    let confirmedSignatures: string[];
+    try {
+      const parsed: unknown = JSON.parse(storedValue ?? '');
+      if (!Array.isArray(parsed) || parsed.some((s) => typeof s !== 'string')) throw new Error('not a string array');
+      confirmedSignatures = parsed as string[];
+    } catch {
+      return fail('Issue has no valid confirmed-span value -- cannot determine which span(s) to retag');
+    }
+    if (confirmedSignatures.length === 0) return fail('Issue carries an empty confirmed-span list');
+
+    let originalContent: string | null;
+    try {
+      originalContent = decodePageContent(doc, pageNumber);
+    } catch (err) {
+      return fail(`Could not decode page ${pageNumber}: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    if (!originalContent) return fail(`Page ${pageNumber} has no content stream`);
+
+    const signatureSet = new Set(confirmedSignatures);
+    const targetSpans = findOversizedArtifactSpans(originalContent)
+      .filter((s) => s.hasPathOps)
+      .filter((s) => signatureSet.has(originalContent!.slice(s.contentStart, s.closeOpStart).replace(/\s+/g, ' ').trim()));
+    if (targetSpans.length === 0) {
+      return fail('No complex oversized Artifact span on this page still matches the confirmed signature(s) -- already fixed, or the page changed since the AI assessment');
+    }
+
+    const structRoot = this.getStructTreeRoot(doc);
+    if (!structRoot) return fail('No /StructTreeRoot found');
+    const pageArr = this.resolveParentTreePageArray(doc, pageNumber);
+    if (!pageArr) return fail(`No /ParentTree entry found for page ${pageNumber}`);
+    const pageArrRaw = pageArr.asArray();
+    const positionedMcids = orderedPageContentMcids(originalContent);
+
+    const resolveEntry = (mcid: number | undefined): PDFRef | null => {
+      if (mcid === undefined) return null;
+      const entry = pageArrRaw[mcid];
+      return entry instanceof PDFRef ? entry : null;
+    };
+    const resolveParentOf = (entryRef: PDFRef | null): PDFRef | null => {
+      if (!entryRef) return null;
+      const dict = doc.context.lookup(entryRef, PDFDict);
+      const p = dict?.get(PDFName.of('P'));
+      return p instanceof PDFRef ? p : null;
+    };
+
+    interface PlannedFigure {
+      mcid: number;
+      flowParent: PDFRef;
+      anchorRef: PDFRef;
+      anchorBefore: boolean;
+    }
+
+    const existingMcids = pageContentMcids(doc, pageNumber) ?? new Set<number>();
+    let nextMcid = existingMcids.size > 0 ? Math.max(...existingMcids) + 1 : 0;
+
+    const allEdits: Array<{ offset: number; deleteThrough: number; text: string }> = [];
+    const planned: PlannedFigure[] = [];
+
+    for (const span of targetSpans) {
+      const leftCandidate = [...positionedMcids].reverse().find((p) => p.start < span.tagNameStart);
+      const rightCandidate = positionedMcids.find((p) => p.start > span.closeOpEnd);
+      const leftEntry = resolveEntry(leftCandidate?.mcid);
+      const rightEntry = resolveEntry(rightCandidate?.mcid);
+      const leftParent = resolveParentOf(leftEntry);
+      const rightParent = resolveParentOf(rightEntry);
+
+      if (leftParent && rightParent && leftParent.objectNumber !== rightParent.objectNumber) {
+        return fail('Span\'s left/right tagged neighbors resolve to different document-flow parents -- ambiguous, declining rather than guessing');
+      }
+
+      let flowParent: PDFRef | null = null;
+      let anchorRef: PDFRef | null = null;
+      let anchorBefore = false;
+      if (rightParent && rightEntry) {
+        flowParent = rightParent; anchorRef = rightEntry; anchorBefore = true;
+      } else if (leftParent && leftEntry) {
+        flowParent = leftParent; anchorRef = leftEntry; anchorBefore = false;
+      }
+
+      if (!flowParent || !anchorRef) {
+        return fail('Span has no usable tagged neighbor on this page to anchor its document-flow position to -- declining rather than guessing');
+      }
+
+      const mcid = nextMcid;
+      allEdits.push(buildComplexArtifactFigureRetagEdit(span, mcid));
+      planned.push({ mcid, flowParent, anchorRef, anchorBefore });
+      nextMcid++;
+    }
+
+    allEdits.sort((a, b) => b.offset - a.offset);
+    let newContent = originalContent;
+    for (const e of allEdits) {
+      newContent = newContent.slice(0, e.offset) + e.text + newContent.slice(e.deleteThrough);
+    }
+
+    const pageRef = doc.getPages()[pageNumber - 1].ref;
+    const createdRefs: PDFRef[] = [];
+    const parentTreeEntries: Array<{ mcid: number; structElementRef: PDFRef }> = [];
+    const lastInsertedByAnchor = new Map<number, PDFRef>();
+
+    try {
+      for (const p of planned) {
+        const figureObj = doc.context.obj({
+          Type: PDFName.of('StructElem'),
+          S: PDFName.of('Figure'),
+          P: p.flowParent,
+          Pg: pageRef,
+          K: PDFNumber.of(p.mcid),
+        });
+        const figureRef = doc.context.register(figureObj as PDFDict);
+        createdRefs.push(figureRef);
+
+        if (p.anchorBefore) {
+          this.insertIntoKidsBefore(doc, p.flowParent, p.anchorRef, figureRef);
+        } else {
+          const insertAfter = lastInsertedByAnchor.get(p.anchorRef.objectNumber) ?? p.anchorRef;
+          this.insertIntoKidsAfter(doc, p.flowParent, insertAfter, figureRef);
+          lastInsertedByAnchor.set(p.anchorRef.objectNumber, figureRef);
+        }
+
+        parentTreeEntries.push({ mcid: p.mcid, structElementRef: figureRef });
+      }
+
+      writePageContent(doc, pageNumber, newContent);
+      parentTreeEntries.sort((a, b) => a.mcid - b.mcid);
+      this.extendParentTree(doc, pageNumber, parentTreeEntries);
+    } catch (err) {
+      // Same full-rollback reasoning as fixArtifactSwallowsContentComplex above.
+      writePageContent(doc, pageNumber, originalContent);
+      for (const ref of createdRefs) this.deleteElement(doc, ref);
+      return fail(err instanceof Error ? err.message : String(err));
+    }
+
+    return {
+      issueId: issue.id,
+      success: true,
+      before: `${targetSpans.length} complex oversized /Artifact span(s) confirmed (by AI vision) to be meaningful diagram(s)`,
+      after: `Retagged as ${targetSpans.length} real /Figure struct element(s), reachable via /ParentTree -- no /Alt set yet, picked up by the existing alt-text pipeline on the next pass`,
     };
   }
 
