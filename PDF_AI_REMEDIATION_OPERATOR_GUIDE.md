@@ -136,6 +136,47 @@ There is **no bulk select/delete/audit on the Jobs page** — every action here 
 
 This is the spine of the guide. Follow it top to bottom on a normal job; the branch points are called out explicitly.
 
+### At a Glance — The Full Sequence
+
+Two inversions trip up new operators more than anything else in this guide:
+
+- **"Re-run Audit" is not a required step in the middle of the normal loop.** Both Auto Remediation and Apply Fixes already trigger their own automatic post-action re-audit internally. The manual **Re-run Audit** button is only for when you've made a change *outside* this normal flow (e.g. after uploading an Acrobat-Pro-fixed file — though even that path auto re-audits itself) and want a fresh, from-scratch structural re-validation on demand.
+- **Bulk "Apply Fixes" and clicking an individual suggestion's card are alternatives, not a two-step sequence.** Pick one mechanism per suggestion — applying a suggestion both ways is redundant, not an extra safety step.
+
+```mermaid
+flowchart TD
+    A["Upload PDF via PDF Accessibility"] --> B["Automatic: Initial Audit + first AI Analysis pass"]
+    B --> C{"Step 2: Does the client supply<br/>their own alt text?"}
+    C -->|"No — let AI generate"| D["Start Auto Remediation<br/>(Alt text: Generate AI alt text)"]
+    C -->|"Yes — client supplies"| E["Start Auto Remediation<br/>(Alt text: Guidance only)"]
+    D --> F["Auto Mode loop (runs itself):<br/>Analyze → Auto-approve → Apply → Re-audit<br/>repeats every round, no clicks needed"]
+    E --> F
+    F --> G{"Auto Mode stops —<br/>which of 5 reasons?"}
+    G -->|"Converged"| H["Manual loop (below)"]
+    G -->|"Round limit / Budget limit"| I{"Resolved count still<br/>trending down each round?"}
+    I -->|"Yes"| J["Start Auto Remediation again<br/>(raise Max rounds / Cost limit)"]
+    J --> F
+    I -->|"No — plateaued"| H
+    G -->|"Stalled"| H
+    G -->|"Error"| K["Note exact error text,<br/>escalate to engineering/support"]
+    H --> L["Re-run AI Analysis<br/>(one pass; set checkboxes:<br/>color-contrast / link-text / client-alt-text)"]
+    L --> M["Apply Fixes:<br/>bulk 'Apply Fixes (N)' OR<br/>an individual card's Apply<br/>— pick ONE per item, not both"]
+    M --> N["Automatic post-fix re-audit<br/>(no manual Re-run Audit needed here)"]
+    N --> O["Check Apply Failure Report<br/>('Failed (N)' chip)"]
+    O --> P{"Fixable now = 0, remaining residue is<br/>small, and 'Needs investigation'<br/>bucket stopped shrinking?"}
+    P -->|"No — more progress possible"| L
+    P -->|"Yes"| Q["Download AI-Fixed PDF"]
+    Q --> R["Fix remaining residue<br/>by hand in Acrobat Pro"]
+    R --> S["Upload Acrobat-Pro-fixed PDF<br/>back into Ninja<br/>(automatic full re-audit)"]
+    S --> T["Re-run AI Analysis once more<br/>(refreshes guidance-only counts)"]
+    T --> U["Run real PAC Desktop<br/>on your own machine"]
+    U --> V["Upload External PAC Report<br/>into Ninja (PAC Report modal)"]
+    V --> W["Settings → Generate ACR"]
+    W --> X["Sign-off: confirm via<br/>Guided Remediation Checklist"]
+```
+
+The numbered steps below (1–17) are the detailed reference for every box in this diagram.
+
 ### Step 1 — Upload
 
 From the sidebar, go to **PDF Accessibility** and upload the document. This kicks off the **initial audit** automatically — Ninja's own structure/content/contrast/table/link/bookmark validators run against the document, followed immediately by the first **AI Analysis** pass (using your tenant's current default settings for alt-text/color-contrast/link-text — see Part 10). You land on the **Audit Results page** (Part 5) once this completes.
