@@ -106,7 +106,21 @@ export interface FixResult {
 // classifyDegenerateRoleMapEntry, just with the digit captured so
 // fixIndexStructure can tell nesting levels apart -- that validator only
 // ever needs to know "is this an index-shaped custom tag at all".
-const INDEX_LEVEL_PATTERN = /^IDX([1-3])/i;
+//
+// `[-_]?` between "IDX" and the digit -- confirmed real on
+// Zaidi_189320_9781685691233's own /RoleMap: its real index entries are
+// named /IDX-1, /IDX-2, /IDX-3 (374 elements total: 103+198+73), a hyphen
+// variant the original digit-immediately-after-IDX pattern (built against
+// Karsaklian_189165_9781606497623's own un-hyphenated /IDX1 convention)
+// never matched -- ROLEMAP-INDEX-FLATTENED correctly DETECTED all 374 as
+// degenerate (pdf-rolemap-integrity.validator.ts's own INDEX_PATTERN,
+// /^IDX/i, is prefix-only and already tolerant of this), but
+// fixIndexStructure found zero contiguous runs to fix, every time, on this
+// document. Doesn't match /IDX-ALPHA (this same document's own alphabetical
+// section-divider style, 20 elements) -- that's correctly left as a
+// non-member, breaking a run exactly the way any other non-IDX sibling
+// does, not a numbered level this method's leveled nesting applies to.
+const INDEX_LEVEL_PATTERN = /^IDX[-_]?([1-3])/i;
 
 // A footnote struct element's own leading content run qualifies as an
 // /Lbl candidate only if it decodes to NOTHING but a bare number plus an

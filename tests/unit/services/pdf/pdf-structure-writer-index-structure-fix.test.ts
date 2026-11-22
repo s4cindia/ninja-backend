@@ -102,6 +102,68 @@ describe('PdfStructureWriterService.fixIndexStructure', () => {
     expect(result.error).toContain('No contiguous run');
   });
 
+  // Real, live-confirmed shape on Zaidi_189320_9781685691233's own
+  // /RoleMap: its real index entries are named /IDX-1, /IDX-2, /IDX-3 (a
+  // hyphen between "IDX" and the digit), not Karsaklian's own un-hyphenated
+  // /IDX1 convention this suite's other tests use. pdf-rolemap-integrity.
+  // validator.ts's own prefix-only INDEX_PATTERN (/^IDX/i) detected all
+  // 374 of them as degenerate, but fixIndexStructure found zero contiguous
+  // runs to fix on this document before this test's own fix.
+  it('wraps a flat run of hyphenated /IDX-1 entries the same way as un-hyphenated /IDX1', async () => {
+    const doc = await PDFDocument.create();
+    doc.addPage([400, 600]);
+    const a = buildLeaf(doc, 'IDX-1', 0);
+    const b = buildLeaf(doc, 'IDX-1', 1);
+    const sectRef = doc.context.register(
+      doc.context.obj({ S: PDFName.of('Sect'), K: doc.context.obj([a, b]) })
+    );
+    for (const kid of [a, b]) doc.context.lookup(kid, PDFDict).set(PDFName.of('P'), sectRef);
+    const structTreeRootRef = doc.context.register(
+      doc.context.obj({ Type: PDFName.of('StructTreeRoot'), K: doc.context.obj([sectRef]) })
+    );
+    doc.catalog.set(PDFName.of('StructTreeRoot'), structTreeRootRef);
+
+    const result = pdfStructureWriterService.fixIndexStructure(doc, indexIssue());
+
+    expect(result.success).toBe(true);
+    const sectKids = kidsOf(doc, sectRef);
+    expect(sectKids).toHaveLength(1);
+    expect(tagOf(doc, sectKids[0])).toBe('Index');
+    const topLRef = kidsOf(doc, sectKids[0])[0];
+    expect(kidsOf(doc, topLRef)).toHaveLength(2);
+  });
+
+  // Confirmed real, same document: a 20-element /IDX-ALPHA alphabetical
+  // section-divider style is interleaved between numbered /IDX-N runs --
+  // it must NOT be swept into a run itself (it has no numbered level this
+  // method's nesting stack applies to), but must also not block a
+  // DIFFERENT, adjacent numbered run from being found and fixed.
+  it('does not sweep a non-numbered /IDX-ALPHA divider into a run, and does not let it block an adjacent numbered run', async () => {
+    const doc = await PDFDocument.create();
+    doc.addPage([400, 600]);
+    const divider = buildLeaf(doc, 'IDX-ALPHA', 0);
+    const a = buildLeaf(doc, 'IDX-1', 1);
+    const b = buildLeaf(doc, 'IDX-1', 2);
+    const sectRef = doc.context.register(
+      doc.context.obj({ S: PDFName.of('Sect'), K: doc.context.obj([divider, a, b]) })
+    );
+    for (const kid of [divider, a, b]) doc.context.lookup(kid, PDFDict).set(PDFName.of('P'), sectRef);
+    const structTreeRootRef = doc.context.register(
+      doc.context.obj({ Type: PDFName.of('StructTreeRoot'), K: doc.context.obj([sectRef]) })
+    );
+    doc.catalog.set(PDFName.of('StructTreeRoot'), structTreeRootRef);
+
+    const result = pdfStructureWriterService.fixIndexStructure(doc, indexIssue());
+
+    expect(result.success).toBe(true);
+    const sectKids = kidsOf(doc, sectRef);
+    // [divider, Index] -- divider untouched, numbered run wrapped after it.
+    expect(sectKids).toHaveLength(2);
+    expect(sectKids[0].objectNumber).toBe(divider.objectNumber);
+    expect(tagOf(doc, sectKids[0])).toBe('IDX-ALPHA');
+    expect(tagOf(doc, sectKids[1])).toBe('Index');
+  });
+
   it('wraps a simple flat run of IDX1 entries only -- all become top-level /LI', async () => {
     const doc = await PDFDocument.create();
     doc.addPage([400, 600]);
