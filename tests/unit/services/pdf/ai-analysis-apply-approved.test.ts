@@ -792,6 +792,36 @@ describe('aiAnalysisService.applyApprovedSuggestions', () => {
   });
 
   /**
+   * Same real bug class as the three regressions above, but caught as a
+   * PRE-EXISTING gap rather than a new addition: toc-structure-fix's own
+   * dispatch branch and fixTocStructure writer call shipped with no
+   * `value` (same rule-based/no-value shape as every case above), but
+   * 'toc-structure-fix' was never added to STRUCTURE_WRITER_TYPES -- every
+   * real apply attempt for it would have failed with "No value and not a
+   * structure-writer type" before ever reaching fixTocStructure below.
+   */
+  it('dispatches a toc-structure-fix suggestion (no value, rule-based) to fixTocStructure', async () => {
+    vi.mocked(prisma.aiAnalysis.findMany).mockResolvedValue([
+      { issueId: 'toc-structure-1', suggestionType: 'toc-structure-fix' },
+    ] as any);
+    vi.mocked(fileStorageService.getRemediatedFile).mockResolvedValue(Buffer.from('pdf'));
+    vi.mocked(pdfModifierService.loadPDF).mockResolvedValue({} as any);
+    vi.mocked(pdfModifierService.savePDF).mockResolvedValue(Buffer.from('modified-pdf'));
+    vi.mocked(fileStorageService.saveRemediatedFile).mockResolvedValue('s3://remediated/doc.pdf');
+
+    const { pdfStructureWriterService } = await import('../../../../src/services/pdf/pdf-structure-writer.service');
+    vi.mocked(pdfStructureWriterService.fixTocStructure).mockReturnValue(
+      { issueId: 'toc-structure-1', success: true, before: 'TOC rows tagged as plain custom styles', after: 'Built 1 new /TOC > /TOCI container(s)' },
+    );
+
+    const result = await aiAnalysisService.applyApprovedSuggestions('job-1', 1, 'user-1', 'apply_all');
+
+    expect(pdfStructureWriterService.fixTocStructure).toHaveBeenCalled();
+    expect(result.applied).toBe(1);
+    expect(result.failed).toBe(0);
+  });
+
+  /**
    * Regression: a suggestion's issueId is a per-audit sequential counter
    * that gets reassigned whenever a re-audit replaces the audit report --
    * a suggestion approved against an older audit pass can carry an issueId
