@@ -89,4 +89,50 @@ describe('PdfBookmarkValidator', () => {
 
     expect(issues.find(i => i.code === 'BOOKMARK-GENERIC-TEXT')).toBeUndefined();
   });
+
+  it('flags BOOKMARK-MISSING-FRONT-MATTER when the outline is otherwise plentiful but starts well past page 1 -- the real shape found on Karsaklian_189165_9781606497623_R4_1.pdf (67 real, correctly-nested bookmarks, first one targeting page 25, pages 1-24 uncovered)', async () => {
+    const outline: PDFOutlineItem[] = [
+      {
+        title: 'Definitions from Armstrong and Kotler (2023)',
+        destination: 25,
+        children: [
+          { title: 'The Marketing Mix', destination: 30, children: [] },
+        ],
+      },
+    ];
+    const issues = await pdfBookmarkValidator.validate(makeParsed(190, outline));
+
+    const gap = issues.find(i => i.code === 'BOOKMARK-MISSING-FRONT-MATTER');
+    expect(gap).toBeTruthy();
+    expect(gap!.pageNumber).toBe(1);
+    expect(gap!.message).toContain('page 25');
+    expect(gap!.message).toContain('24 page(s)');
+  });
+
+  it('does not flag BOOKMARK-MISSING-FRONT-MATTER when the first bookmark is near the start of the document', async () => {
+    const outline: PDFOutlineItem[] = [
+      { title: 'Chapter 1: Introduction', destination: 3, children: [] },
+    ];
+    const issues = await pdfBookmarkValidator.validate(makeParsed(190, outline));
+
+    expect(issues.find(i => i.code === 'BOOKMARK-MISSING-FRONT-MATTER')).toBeUndefined();
+  });
+
+  it('finds the true earliest page across nested children, not just the first top-level entry', async () => {
+    // A pre-existing (not Ninja-generated) outline isn't guaranteed to be in
+    // document order -- the nested child here targets an earlier page than
+    // its own top-level parent.
+    const outline: PDFOutlineItem[] = [
+      {
+        title: 'Chapter 3',
+        destination: 60,
+        children: [
+          { title: 'Appendix note', destination: 2, children: [] },
+        ],
+      },
+    ];
+    const issues = await pdfBookmarkValidator.validate(makeParsed(190, outline));
+
+    expect(issues.find(i => i.code === 'BOOKMARK-MISSING-FRONT-MATTER')).toBeUndefined();
+  });
 });
