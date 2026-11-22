@@ -448,6 +448,14 @@ const CROSS_REFERENCE_MISSING_LINK_CODES = new Set(['CROSS-REFERENCE-MISSING-LIN
 // unambiguously via this document's own /PageLabels before ever producing
 // this issue; see fixTocEntryLink's own doc comment for the apply-time gate.
 const TOC_LINK_MISSING_CODES = new Set(['TOC-LINK-MISSING']);
+// TOC-STRUCTURE-MISSING: pdfStructureWriterService.fixTocStructure retags a
+// TOC page's rows into real /TOC > /TOCI structure (ISO 32000-1 Table 333).
+// Deterministic, but unlike ROLEMAP_INDEX_CODES' 0.9 -- Table 333 defines a
+// normative /TOC > /TOCI shape (no unspecified-internal-shape residual the
+// way /Index's own invented-but-reasonable v1 shape has), and every applied
+// instance passed fixTocStructure's own per-row exact-MCID-match gate (see
+// its own doc comment), so this carries the same 1.0 as a straight retarget.
+const TOC_STRUCTURE_MISSING_CODES = new Set(['TOC-STRUCTURE-MISSING']);
 // CITATION-MISSING-LINK: pdfStructureWriterService.fixCitationLink --
 // same deterministic-but-declines-most-real-cases shape as the two codes
 // above (resolveCitationDestination is the real gate: unambiguous single
@@ -2265,6 +2273,18 @@ class AiAnalysisService {
         guidance: `This TOC entry has no link to its target section -- a real internal Link annotation will be created to page ${issue.tocLinkData.targetPageIndex + 1}.`,
         confidence: 1.0,
         rationale: 'Deterministic fix -- the validator already resolved this entry\'s own page-number label to exactly one real page via this document\'s own /PageLabels, and already identified the exact, already-isolated MCID span to wrap; no AI judgment needed',
+        model: 'rule-based',
+        applyMode: 'apply-to-pdf',
+      };
+    }
+
+    if (TOC_STRUCTURE_MISSING_CODES.has(code)) {
+      if (!issue.pageNumber) return null;
+      return {
+        suggestionType: 'toc-structure-fix',
+        guidance: 'This Table of Contents page\'s rows will be retagged into real /TOC > /TOCI structure (ISO 32000-1 Table 333), wrapping each maximal contiguous run of rows under one new /TOC element.',
+        confidence: 1.0,
+        rationale: 'Deterministic structural retag -- a row is only retagged once its own existing struct element\'s MCID set exactly matches that row\'s content-stream-derived MCID set (as a trailing suffix, tolerating the one known page-heading-sweep case); declines per-row and per-run, not page-wide, otherwise',
         model: 'rule-based',
         applyMode: 'apply-to-pdf',
       };
@@ -4662,6 +4682,13 @@ class AiAnalysisService {
           // Struct-tree-only (no content-stream bytes touched, no new MCIDs) --
           // see fixIndexStructure's own doc comment for the full algorithm.
           const result = pdfStructureWriterService.fixIndexStructure(doc, originalIssue);
+          modification = { success: result.success, description: result.after, error: result.error };
+        } else if (suggestionType === 'toc-structure-fix') {
+          // Struct-tree-only (no content-stream bytes touched, no new MCIDs --
+          // the content stream is only ever READ, via decodePageContent +
+          // extractTocRowCandidates, to re-derive the row list) -- see
+          // fixTocStructure's own doc comment for the full algorithm.
+          const result = pdfStructureWriterService.fixTocStructure(doc, originalIssue);
           modification = { success: result.success, description: result.after, error: result.error };
         } else if (suggestionType === 'footnote-structure-fix') {
           // Struct-tree-only (no content-stream bytes touched, no new MCIDs;
