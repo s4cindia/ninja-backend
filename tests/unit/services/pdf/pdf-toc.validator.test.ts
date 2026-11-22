@@ -50,6 +50,13 @@ interface BuildOptions {
   /** Add an extra /TOC struct element anchored to the TOC page (already
    *  correctly tagged -- nothing to flag). */
   withTocTag?: boolean;
+  /** Add an extra raw /IDX1 struct element anchored to the TOC page -- the
+   *  real back-of-book-index shape, pre-fixIndexStructure, confirmed live
+   *  on Karsaklian_189165_9781606497623.pdf's actual index pages. */
+  withRawIdxTag?: boolean;
+  /** Add an extra resolved /Index struct element anchored to the TOC page
+   *  -- the post-fixIndexStructure shape. */
+  withIndexTag?: boolean;
 }
 
 async function buildDoc(opts: BuildOptions = {}): Promise<PDFDocument> {
@@ -70,6 +77,12 @@ async function buildDoc(opts: BuildOptions = {}): Promise<PDFDocument> {
   }
   if (opts.withTocTag) {
     refs.push(doc.context.register(doc.context.obj({ Type: PDFName.of('StructElem'), S: PDFName.of('TOC'), Pg: tocPage.ref, K: 0 })));
+  }
+  if (opts.withRawIdxTag) {
+    refs.push(doc.context.register(doc.context.obj({ Type: PDFName.of('StructElem'), S: PDFName.of('IDX1'), Pg: tocPage.ref, K: 0 })));
+  }
+  if (opts.withIndexTag) {
+    refs.push(doc.context.register(doc.context.obj({ Type: PDFName.of('StructElem'), S: PDFName.of('Index'), Pg: tocPage.ref, K: 0 })));
   }
 
   const structTreeRootRef = doc.context.register(doc.context.obj({ Type: PDFName.of('StructTreeRoot'), K: refs }));
@@ -130,6 +143,20 @@ describe('PdfTocValidator', () => {
 
   it('does not flag TOC-STRUCTURE-MISSING when the page is tagged as /Table -- already owned by smart-triage\'s own TOC-TAGGING reclassification', async () => {
     const doc = await buildDoc({ withTableTag: true });
+    const issues = await pdfTocValidator.validate(buildParsed(doc));
+
+    expect(issues.find(i => i.code === 'TOC-STRUCTURE-MISSING')).toBeUndefined();
+  });
+
+  it('does not flag TOC-STRUCTURE-MISSING when the page carries a raw /IDX1 element -- a real back-of-book index page TocDetector\'s own heuristic can\'t tell apart from a TOC', async () => {
+    const doc = await buildDoc({ withRawIdxTag: true });
+    const issues = await pdfTocValidator.validate(buildParsed(doc));
+
+    expect(issues.find(i => i.code === 'TOC-STRUCTURE-MISSING')).toBeUndefined();
+  });
+
+  it('does not flag TOC-STRUCTURE-MISSING when the page already has a real /Index element (post-fixIndexStructure)', async () => {
+    const doc = await buildDoc({ withIndexTag: true });
     const issues = await pdfTocValidator.validate(buildParsed(doc));
 
     expect(issues.find(i => i.code === 'TOC-STRUCTURE-MISSING')).toBeUndefined();
