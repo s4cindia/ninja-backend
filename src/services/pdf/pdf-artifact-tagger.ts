@@ -427,6 +427,8 @@ export function splitArtifactAroundTaggedContent(content: string): { content: st
 }
 
 export interface OversizedArtifactSpan {
+  /** Offset of the top-level Artifact's own TAG NAME operand (e.g. `/Artifact`) -- the real start of the whole "/Artifact [<<props>>] BDC|BMC" opening sequence, same convention as PlacedPdfSpan.tagStart. NOT the same as openOpStart (the operator keyword's own offset, which sits AFTER the tag name and any properties dict). */
+  tagNameStart: number;
   /** Offset of the top-level Artifact's own opening BDC/BMC operator. */
   openOpStart: number;
   /** Offset right after that opening operator -- where the span's own content begins. */
@@ -439,6 +441,22 @@ export interface OversizedArtifactSpan {
   opCount: number;
   /** True if any PATH-painting operator (not just text) was found inside -- see findOversizedArtifactSpans's own doc comment for why this gates auto-fix eligibility. */
   hasPathOps: boolean;
+  /**
+   * True if any path-CONSTRUCTION operator inside this span (depth 1) is a
+   * Bezier curve (`c`/`v`/`y`) rather than only straight lines/rectangles
+   * (`m`/`l`/`re`/`h`) -- same signal, same justification, as
+   * UntaggedPathRun.hasCurves above: real swallowed content needing a
+   * geometry-only (no-text) judgment overwhelmingly needs curves to render
+   * anything but a grid of straight ruling lines. Confirmed real on
+   * Karsaklian_189165_9781606497623.pdf's own 3 complex spans with zero
+   * real text (pages 65, 83, 147): all three are dense data tables --
+   * repeating `q cm m l S Q` straight-line grid rulings plus a single
+   * filled header rect, zero curves -- not diagrams. See
+   * ai-analysis.service.ts's ARTIFACT_SWALLOWS_CONTENT_COMPLEX_CODES
+   * routing for how this gates the Tier 1 (geometric, no AI cost) vs
+   * Tier 2 (AI vision, only for the genuine curved residual) split.
+   */
+  hasCurves: boolean;
 }
 
 // Real legitimate decorative spans (page numbers, running heads) confirmed
@@ -480,7 +498,7 @@ export function findOversizedArtifactSpans(
   const spans: OversizedArtifactSpan[] = [];
 
   let depth = 0;
-  let current: { openOpStart: number; contentStart: number; opCount: number; hasPathOps: boolean } | null = null;
+  let current: { tagNameStart: number; openOpStart: number; contentStart: number; opCount: number; hasPathOps: boolean; hasCurves: boolean } | null = null;
   const operands: Token[] = [];
 
   for (let k = 0; k < tokens.length; k++) {
@@ -491,7 +509,7 @@ export function findOversizedArtifactSpans(
     if (op === 'BDC' || op === 'BMC') {
       const tagName = operands.length ? operands[0].v : '';
       if (depth === 0 && tagName === '/Artifact') {
-        current = { openOpStart: tk.start, contentStart: tk.end, opCount: 0, hasPathOps: false };
+        current = { tagNameStart: operands[0].start, openOpStart: tk.start, contentStart: tk.end, opCount: 0, hasPathOps: false, hasCurves: false };
       }
       depth++;
       operands.length = 0;
@@ -502,12 +520,14 @@ export function findOversizedArtifactSpans(
       if (depth === 0 && current) {
         if (current.opCount > opThreshold) {
           spans.push({
+            tagNameStart: current.tagNameStart,
             openOpStart: current.openOpStart,
             contentStart: current.contentStart,
             closeOpStart: tk.start,
             closeOpEnd: tk.end,
             opCount: current.opCount,
             hasPathOps: current.hasPathOps,
+            hasCurves: current.hasCurves,
           });
         }
         current = null;
@@ -527,9 +547,13 @@ export function findOversizedArtifactSpans(
       continue;
     }
 
-    if (depth === 1 && current && (TEXT_SHOW_OPS.has(op) || PATH_PAINT_OPS.has(op))) {
-      current.opCount++;
-      if (PATH_PAINT_OPS.has(op)) current.hasPathOps = true;
+    if (depth === 1 && current) {
+      if (TEXT_SHOW_OPS.has(op) || PATH_PAINT_OPS.has(op)) {
+        current.opCount++;
+        if (PATH_PAINT_OPS.has(op)) current.hasPathOps = true;
+      } else if (CURVE_OPS.has(op)) {
+        current.hasCurves = true;
+      }
     }
     operands.length = 0;
   }
@@ -903,6 +927,28 @@ export function findPlacedPdfSpans(content: string): PlacedPdfSpan[] {
 export function buildPlacedPdfRetagEdit(span: PlacedPdfSpan, mcid: number): { offset: number; deleteThrough: number; text: string } {
   return {
     offset: span.tagStart,
+    deleteThrough: span.contentStart,
+    text: `/Figure <</MCID ${mcid}>> BDC `,
+  };
+}
+
+/**
+ * Builds the single content-stream edit that retags one complex oversized
+ * /Artifact span (findOversizedArtifactSpans, hasPathOps true, no real text
+ * -- see ai-analysis.service.ts's ARTIFACT_SWALLOWS_CONTENT_COMPLEX_CODES
+ * Tier 2 routing) as a real /Figure: a plain replace of the whole
+ * "/Artifact [<<props>>] BDC|BMC" opening (from the tag name itself through
+ * the end of the opening operator -- tagNameStart..contentStart, same
+ * "replace the whole opening, never touch the pre-existing closing EMC"
+ * shape as buildPlacedPdfRetagEdit) with "/Figure <</MCID n>> BDC ". Mirrors
+ * buildPlacedPdfRetagEdit exactly -- both leave /Alt unset, handing the new
+ * Figure to the existing alt-text pipeline's next pass rather than guessing
+ * at a description themselves (see retagPlacedPdfAsFigure's own doc comment
+ * for why that hand-off is deliberate, not a shortcut).
+ */
+export function buildComplexArtifactFigureRetagEdit(span: OversizedArtifactSpan, mcid: number): { offset: number; deleteThrough: number; text: string } {
+  return {
+    offset: span.tagNameStart,
     deleteThrough: span.contentStart,
     text: `/Figure <</MCID ${mcid}>> BDC `,
   };

@@ -12,6 +12,7 @@ import {
   buildArtifactSplitEdits,
   findPlacedPdfSpans,
   buildPlacedPdfRetagEdit,
+  buildComplexArtifactFigureRetagEdit,
   findArtifactWrappedActualTextSiblings,
   findActualTextRunsMissingMcid,
 } from '../../../../src/services/pdf/pdf-artifact-tagger';
@@ -398,6 +399,64 @@ describe('findOversizedArtifactSpans', () => {
   it('does not corrupt an inline image by parsing its binary payload as content ops', () => {
     const content = `/Artifact BMC\nBI\n/W 2/H 1/BPC 8/CS/G\nID \x00m 0 0 l S\x00\nEI\nEMC\n`;
     expect(findOversizedArtifactSpans(content, 0)).toHaveLength(0);
+  });
+
+  it('reports hasCurves false for a span built entirely from straight lines/rectangles (the real Karsaklian_189165_9781606497623.pdf table-grid shape)', () => {
+    const gridLine = '0 0 m\n100 0 l\nS\n';
+    const content = `/Artifact BMC\n${Array.from({ length: 17 }, () => gridLine).join('')}EMC\n`;
+    const spans = findOversizedArtifactSpans(content, 5);
+    expect(spans).toHaveLength(1);
+    expect(spans[0].hasPathOps).toBe(true);
+    expect(spans[0].hasCurves).toBe(false);
+  });
+
+  it('reports hasCurves true when a Bezier curve-construction operator (c/v/y) appears inside', () => {
+    const content = `/Artifact BMC\n${Array.from({ length: 17 }, (_, i) => `0 0 m\n10 10 20 20 30 30 c\n${i % 2 === 0 ? 'f' : 'S'}\n`).join('')}EMC\n`;
+    const spans = findOversizedArtifactSpans(content, 5);
+    expect(spans).toHaveLength(1);
+    expect(spans[0].hasPathOps).toBe(true);
+    expect(spans[0].hasCurves).toBe(true);
+  });
+
+  it('captures tagNameStart as the tag-name operand\'s own offset, not the BDC/BMC operator\'s', () => {
+    const content = `/Artifact BMC\nBT\n${Array.from({ length: 10 }, (_, i) => `(line ${i})Tj\n`).join('')}ET\nEMC\n`;
+    const spans = findOversizedArtifactSpans(content, 5);
+    expect(spans).toHaveLength(1);
+    expect(spans[0].tagNameStart).toBe(content.indexOf('/Artifact'));
+    expect(spans[0].openOpStart).toBe(content.indexOf('BMC'));
+    expect(spans[0].tagNameStart).toBeLessThan(spans[0].openOpStart);
+  });
+
+  it('captures tagNameStart correctly when the Artifact tag carries a properties dict', () => {
+    const content = `/Artifact <</O /Layout>> BDC\nBT\n${Array.from({ length: 10 }, (_, i) => `(line ${i})Tj\n`).join('')}ET\nEMC\n`;
+    const spans = findOversizedArtifactSpans(content, 5);
+    expect(spans).toHaveLength(1);
+    expect(spans[0].tagNameStart).toBe(content.indexOf('/Artifact'));
+    expect(spans[0].contentStart).toBe(content.indexOf('BDC') + 'BDC'.length);
+  });
+});
+
+describe('buildComplexArtifactFigureRetagEdit', () => {
+  it('replaces the whole "/Artifact BMC" opening with a fresh MCID-bearing /Figure tag, leaving the pre-existing closing EMC untouched', () => {
+    const gridLine = '0 0 m\n100 0 l\nS\n';
+    const content = `/Artifact BMC\n${Array.from({ length: 17 }, () => gridLine).join('')}EMC\n`;
+    const spans = findOversizedArtifactSpans(content, 5);
+    const edit = buildComplexArtifactFigureRetagEdit(spans[0], 9);
+
+    expect(edit).toEqual({ offset: content.indexOf('/Artifact'), deleteThrough: content.indexOf('BMC') + 3, text: '/Figure <</MCID 9>> BDC ' });
+
+    const result = content.slice(0, edit.offset) + edit.text + content.slice(edit.deleteThrough);
+    expect(result.startsWith('/Figure <</MCID 9>> BDC ')).toBe(true);
+    expect((result.match(/EMC/g) ?? []).length).toBe(1);
+  });
+
+  it('replaces a properties-dict-carrying "/Artifact <<props>> BDC" opening the same way', () => {
+    const content = `/Artifact <</O /Layout>> BDC\n0 0 m\n10 10 l\nS\nEMC\n`;
+    const spans = findOversizedArtifactSpans(content, 0);
+    const edit = buildComplexArtifactFigureRetagEdit(spans[0], 3);
+
+    const result = content.slice(0, edit.offset) + edit.text + content.slice(edit.deleteThrough);
+    expect(result).toBe(`/Figure <</MCID 3>> BDC \n0 0 m\n10 10 l\nS\nEMC\n`);
   });
 });
 

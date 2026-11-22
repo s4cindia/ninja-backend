@@ -16,7 +16,7 @@ import { pdfParserService, ParsedPDF } from '../pdf-parser.service';
 import { isFilenameLike } from '../pdf-modifier.service';
 import { decodePageContent } from '../pdf-content-stream-io';
 import { tokenize as tokenizeContentStream } from '../../zone-extractor/seam-c/content-stream';
-import { findUntaggedPathRuns, type UntaggedPathRun, findTaggedContentInsideArtifact, findOversizedArtifactSpans, findPlacedPdfSpans, findArtifactWrappedActualTextSiblings, findActualTextRunsMissingMcid } from '../pdf-artifact-tagger';
+import { findUntaggedPathRuns, type UntaggedPathRun, findTaggedContentInsideArtifact, findOversizedArtifactSpans, findRealTextSegmentsInSpan, findPlacedPdfSpans, findArtifactWrappedActualTextSiblings, findActualTextRunsMissingMcid } from '../pdf-artifact-tagger';
 import { logger } from '../../../lib/logger';
 
 // validateUntaggedContent's own recurring-decorative-curve refinement (see
@@ -812,6 +812,19 @@ class PDFStructureValidator {
       return issues;
     }
 
+    // First pass: decode + detect once per page (spans cached for reuse
+    // below), and tally which pages each curve-containing, text-free
+    // complex span's own normalized content recurs on -- same two-pass
+    // shape as validateUntaggedContent above, applied here to the subset
+    // this check actually needs a geometric judgment call for (a complex
+    // span WITH real text already has an unambiguous, deterministic
+    // apply-to-pdf fix -- see ai-analysis.service.ts's
+    // ARTIFACT_SWALLOWS_CONTENT_COMPLEX_CODES routing -- so it's excluded
+    // from this signature tracking entirely, not just from the final
+    // "confirmed decorative" classification below).
+    const perPage: Array<{ pageNumber: number; content: string; spans: ReturnType<typeof findOversizedArtifactSpans> }> = [];
+    const signaturePages = new Map<string, Set<number>>();
+
     for (let pageNumber = 1; pageNumber <= pageCount; pageNumber++) {
       let content: string | null;
       try {
@@ -824,15 +837,52 @@ class PDFStructureValidator {
 
       const spans = findOversizedArtifactSpans(content);
       if (spans.length === 0) continue;
+      perPage.push({ pageNumber, content, spans });
 
-      const hasPathOps = spans.some((s) => s.hasPathOps);
-      const totalOps = spans.reduce((sum, s) => sum + s.opCount, 0);
+      for (const span of spans) {
+        if (!span.hasPathOps || !span.hasCurves) continue;
+        if (findRealTextSegmentsInSpan(content, span).length > 0) continue;
+        const signature = content.slice(span.contentStart, span.closeOpStart).replace(/\s+/g, ' ').trim();
+        if (!signaturePages.has(signature)) signaturePages.set(signature, new Set());
+        signaturePages.get(signature)!.add(pageNumber);
+      }
+    }
+
+    // Second pass: classify using the now-complete cross-page signature
+    // table.
+    for (const { pageNumber, content, spans } of perPage) {
+      // Tier 1 (geometric, no AI cost): a complex span with no real text
+      // inside it is "confirmed decorative, nothing swallowed" -- and this
+      // issue need not even be reported for it -- when it has no curves at
+      // all (straight-line/rectangle geometry only, the exact same signal
+      // already trusted elsewhere in this file for UNTAGGED-CONTENT's own
+      // auto-apply gate -- see that method's own doc comment), OR when a
+      // curve it does contain recurs identically across
+      // RECURRING_SIGNATURE_THRESHOLD+ distinct pages (a confirmed
+      // recurring template element, not a one-off diagram). A span that
+      // fails both tests is the genuine residual this check exists to
+      // protect -- reported as -COMPLEX below for Tier 2 (AI vision
+      // judgment, ai-analysis.service.ts) to take a shot at.
+      const isConfirmedDecorative = (span: (typeof spans)[number]): boolean => {
+        if (!span.hasPathOps) return false; // not a complex span at all
+        if (findRealTextSegmentsInSpan(content, span).length > 0) return false; // real content -- not this tier's concern
+        if (!span.hasCurves) return true;
+        const signature = content.slice(span.contentStart, span.closeOpStart).replace(/\s+/g, ' ').trim();
+        const pages = signaturePages.get(signature);
+        return !!pages && pages.size >= RECURRING_SIGNATURE_THRESHOLD;
+      };
+
+      const remainingSpans = spans.filter((s) => !isConfirmedDecorative(s));
+      if (remainingSpans.length === 0) continue; // every span on this page is either simple-and-fine or Tier-1-confirmed decorative
+
+      const hasPathOps = remainingSpans.some((s) => s.hasPathOps);
+      const totalOps = remainingSpans.reduce((sum, s) => sum + s.opCount, 0);
 
       issues.push(this.createIssue({
         source: 'pdf-structure',
         severity: 'serious',
         code: hasPathOps ? 'ARTIFACT-SWALLOWS-CONTENT-COMPLEX' : 'ARTIFACT-SWALLOWS-CONTENT',
-        message: `${spans.length} /Artifact span(s) on this page are far larger than a legitimate decorative header/footer (${totalOps} content operation(s) total) -- likely swallowing real, never-tagged content` +
+        message: `${remainingSpans.length} /Artifact span(s) on this page are far larger than a legitimate decorative header/footer (${totalOps} content operation(s) total) -- likely swallowing real, never-tagged content` +
           (hasPathOps ? ', including vector graphics (needs manual review to confirm the real-content boundary)' : ''),
         wcagCriteria: ['1.3.1'],
         location: `Page ${pageNumber}`,

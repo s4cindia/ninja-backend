@@ -551,6 +551,91 @@ describe('PDFStructureValidator', () => {
       expect(issues[0].message).toContain('2 /Artifact span');
       expect(issues[0].message).toContain('40 content operation');
     });
+
+    // Tier 1 (geometric, no AI cost) of the -COMPLEX split: a complex span
+    // with NO real text inside it is "confirmed decorative, nothing
+    // swallowed" -- and this check need not even report it -- when it has
+    // no curves at all, or a curve it does contain recurs identically
+    // across RECURRING_SIGNATURE_THRESHOLD+ distinct pages. See
+    // ai-analysis.service.ts's ARTIFACT_SWALLOWS_CONTENT_COMPLEX_CODES
+    // Tier 2 for the genuine residual (AI vision judgment) this leaves
+    // behind.
+    const gridLine = '0 0 m\n100 0 l\nS\n';
+    const straightLineGrid = (count: number): string => Array.from({ length: count }, () => gridLine).join('');
+
+    it('does not report a complex span with no real text and no curves at all (confirmed real: Karsaklian_189165_9781606497623.pdf\'s own table-grid pages)', async () => {
+      const content = `/Artifact BMC\n${straightLineGrid(17)}EMC\n`;
+      const pdfLibDoc = await validateWithRealPage(content);
+      const mockParsedPdf = { ...createMockParsedPdf({ isTagged: true, hasLanguage: true, hasTitle: true }), pdfLibDoc };
+      const mockStructure = createMockStructure({
+        isTaggedPDF: true, hasProperHeadingHierarchy: true, hasDocumentLanguage: true, hasLogicalReadingOrder: true,
+      });
+      vi.mocked(pdfParserService.parse).mockResolvedValue(mockParsedPdf);
+      vi.mocked(pdfParserService.close).mockResolvedValue(undefined);
+      vi.mocked(structureAnalyzerService.analyzeStructure).mockResolvedValue(mockStructure);
+
+      const result = await pdfStructureValidator.validateFromFile('/path/to/test.pdf');
+
+      expect(result.issues.find(i => i.code === 'ARTIFACT-SWALLOWS-CONTENT-COMPLEX')).toBeUndefined();
+      expect(result.issues.find(i => i.code === 'ARTIFACT-SWALLOWS-CONTENT')).toBeUndefined();
+    });
+
+    it('still reports a complex span with no real text when it DOES contain a curve seen on fewer than the recurring-signature threshold\'s worth of pages', async () => {
+      const curvedShape = `0 0 m\n10 10 20 20 30 30 c\nf\n`;
+      const content = `/Artifact BMC\n${straightLineGrid(10)}${curvedShape}${straightLineGrid(10)}EMC\n`;
+      const pdfLibDoc = await validateWithRealPage(content);
+      const mockParsedPdf = { ...createMockParsedPdf({ isTagged: true, hasLanguage: true, hasTitle: true }), pdfLibDoc };
+      const mockStructure = createMockStructure({
+        isTaggedPDF: true, hasProperHeadingHierarchy: true, hasDocumentLanguage: true, hasLogicalReadingOrder: true,
+      });
+      vi.mocked(pdfParserService.parse).mockResolvedValue(mockParsedPdf);
+      vi.mocked(pdfParserService.close).mockResolvedValue(undefined);
+      vi.mocked(structureAnalyzerService.analyzeStructure).mockResolvedValue(mockStructure);
+
+      const result = await pdfStructureValidator.validateFromFile('/path/to/test.pdf');
+
+      const issue = result.issues.find(i => i.code === 'ARTIFACT-SWALLOWS-CONTENT-COMPLEX');
+      expect(issue).toBeDefined();
+    });
+
+    it('does not report a curve-containing complex span whose own normalized content recurs identically across 3+ distinct pages (confirmed recurring decorative template element, not a one-off diagram)', async () => {
+      const curvedShape = `0 0 m\n10 10 20 20 30 30 c\nf\n`;
+      const content = `/Artifact BMC\n${straightLineGrid(10)}${curvedShape}${straightLineGrid(10)}EMC\n`;
+
+      const doc = await PDFDocument.create();
+      for (let i = 0; i < 3; i++) {
+        doc.addPage([612, 792]);
+        writePageContent(doc, i + 1, content);
+      }
+      const mockParsedPdf = { ...createMockParsedPdf({ isTagged: true, hasLanguage: true, hasTitle: true }), pdfLibDoc: doc };
+      const mockStructure = createMockStructure({
+        isTaggedPDF: true, hasProperHeadingHierarchy: true, hasDocumentLanguage: true, hasLogicalReadingOrder: true,
+      });
+      vi.mocked(pdfParserService.parse).mockResolvedValue(mockParsedPdf);
+      vi.mocked(pdfParserService.close).mockResolvedValue(undefined);
+      vi.mocked(structureAnalyzerService.analyzeStructure).mockResolvedValue(mockStructure);
+
+      const result = await pdfStructureValidator.validateFromFile('/path/to/test.pdf');
+
+      expect(result.issues.find(i => i.code === 'ARTIFACT-SWALLOWS-CONTENT-COMPLEX')).toBeUndefined();
+      expect(result.issues.find(i => i.code === 'ARTIFACT-SWALLOWS-CONTENT')).toBeUndefined();
+    });
+
+    it('still reports a complex span with real text interleaved, even when it also has no curves (Tier 1 never applies to the real-text case -- that already has its own deterministic apply-to-pdf fix)', async () => {
+      const content = `/Artifact BMC\n${straightLineGrid(10)}BT\n${manyTj(5)}ET\n${straightLineGrid(10)}EMC\n`;
+      const pdfLibDoc = await validateWithRealPage(content);
+      const mockParsedPdf = { ...createMockParsedPdf({ isTagged: true, hasLanguage: true, hasTitle: true }), pdfLibDoc };
+      const mockStructure = createMockStructure({
+        isTaggedPDF: true, hasProperHeadingHierarchy: true, hasDocumentLanguage: true, hasLogicalReadingOrder: true,
+      });
+      vi.mocked(pdfParserService.parse).mockResolvedValue(mockParsedPdf);
+      vi.mocked(pdfParserService.close).mockResolvedValue(undefined);
+      vi.mocked(structureAnalyzerService.analyzeStructure).mockResolvedValue(mockStructure);
+
+      const result = await pdfStructureValidator.validateFromFile('/path/to/test.pdf');
+
+      expect(result.issues.find(i => i.code === 'ARTIFACT-SWALLOWS-CONTENT-COMPLEX')).toBeDefined();
+    });
   });
 
   describe('real letters mis-marked /Artifact beside an ActualText sibling (ARTIFACT-HIDES-ACTUALTEXT-SIBLING)', () => {

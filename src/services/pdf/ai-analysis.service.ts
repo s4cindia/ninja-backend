@@ -49,6 +49,7 @@ import type { ParsedPDF } from './pdf-parser.service';
 import type { TextRunMatch } from './contrast-content-stream';
 import { computeCompliantColor } from './color-contrast-correction';
 import { findOversizedArtifactSpans, extractArtifactTextRuns, computeHeuristicBoundaryIndex, findRealTextSegmentsInSpan } from './pdf-artifact-tagger';
+import { locateByteRangeBoundingBox } from './mcid-bounding-box';
 import { photoAltGenerator } from '../alt-text/photo-alt-generator.service';
 import { assertAiAltTextAllowed, PrhAiDisabledError } from '../prh/prh-config.service';
 
@@ -745,6 +746,28 @@ const ArtifactBoundaryResult = z.object({
   firstRealContentIndex: z.number(),
   confidence: z.number(),
   rationale: z.string().optional(),
+});
+
+// Tier 2 of ARTIFACT_SWALLOWS_CONTENT_COMPLEX_CODES' routing (see that
+// Set's own doc comment): a complex span with no real text AND no
+// geometric Tier 1 signal (pdf-structure.validator.ts's own
+// isConfirmedDecorative -- no curves, or a curve recurring across enough
+// pages) is the genuine residual this AI vision call exists for. Same
+// MAX_TOKENS-truncation trap as FORMULA_ACTUALTEXT_SCHEMA/ARTIFACT_BOUNDARY_SCHEMA
+// above -- schema-constrained decoding + a 2048 budget, not a smaller one.
+const COMPLEX_ARTIFACT_FIGURE_SCHEMA: Schema = {
+  type: SchemaType.OBJECT,
+  properties: {
+    isMeaningfulDiagram: { type: SchemaType.BOOLEAN },
+    description: { type: SchemaType.STRING },
+    confidence: { type: SchemaType.NUMBER },
+  },
+  required: ['isMeaningfulDiagram', 'confidence'],
+};
+const ComplexArtifactFigureResult = z.object({
+  isMeaningfulDiagram: z.boolean(),
+  description: z.string().optional(),
+  confidence: z.number(),
 });
 
 // Same MAX_TOKENS-truncation trap as FORMULA_ACTUALTEXT_SCHEMA above, confirmed
@@ -2228,6 +2251,13 @@ class AiAnalysisService {
             applyMode: 'apply-to-pdf',
           };
         }
+        // No real text -- by construction (pdf-structure.validator.ts's own
+        // isConfirmedDecorative already suppressed the no-curves/recurring-
+        // signature cases before this issue was even emitted), every span
+        // still reaching here is a genuine Tier 2 candidate: take an actual
+        // look at the rendered region rather than declining blind.
+        const tier2Result = await this.analyzeComplexArtifactAsFigure(issue, parsed.parsedPdf);
+        if (tier2Result) return tier2Result;
       }
       return {
         suggestionType: 'artifact-unwrap-review',
@@ -4034,6 +4064,156 @@ class AiAnalysisService {
   }
 
   /**
+   * Tier 2 of ARTIFACT_SWALLOWS_CONTENT_COMPLEX_CODES' routing: for a
+   * complex span confirmed to have no real text (findRealTextSegmentsInSpan)
+   * AND no Tier 1 geometric signal (pdf-structure.validator.ts's own
+   * isConfirmedDecorative already filtered out the no-curves/recurring-
+   * signature cases before this issue was ever emitted -- see that
+   * method's own doc comment), the remaining judgment -- is this span's
+   * drawing a meaningful chart/diagram, or genuinely unique decorative
+   * art -- needs an actual look at the rendered page, not just its raw
+   * operator bytes. Re-derives spans fresh from the current page bytes
+   * (never trusts a stale validation-time result, same convention as
+   * analyzeArtifactSwallowsContent above), and runs one vision call PER
+   * qualifying span (a page can carry more than one).
+   *
+   * On "yes": returns an apply-to-pdf suggestion whose `value` is the
+   * confirmed span(s)' own normalized content signature(s) -- the apply-
+   * time fixer (fixComplexArtifactAsFigure) re-matches by this same
+   * signature against a fresh scan, same "re-confirm fresh" discipline as
+   * every other value-based fixer in this pipeline, rather than trusting a
+   * raw byte offset that could have shifted if another fix touched this
+   * page first. On "no" (or no qualifying spans survive re-derivation):
+   * falls through to the existing guidance-only manual-review outcome,
+   * now enriched with the vision model's own description/reasoning where
+   * available -- the SAME conservative "decline rather than guess"
+   * posture as before this tier existed, just better-informed.
+   */
+  private async analyzeComplexArtifactAsFigure(issue: AuditIssue, parsedPdf: ParsedPDF): Promise<AiSuggestionResult | null> {
+    if (!issue.pageNumber) return null;
+    const pageNumber = issue.pageNumber;
+    const content = decodePageContent(parsedPdf.pdfLibDoc, pageNumber);
+    if (!content) return null;
+
+    const spans = findOversizedArtifactSpans(content).filter((s) => s.hasPathOps);
+    const candidates = spans.filter((s) => findRealTextSegmentsInSpan(content, s).length === 0);
+    if (candidates.length === 0) return null; // already fixed or moved since validation
+
+    const confirmedSignatures: string[] = [];
+    const descriptions: string[] = [];
+    const declineNotes: string[] = [];
+    let lowestConfidence = 1.0;
+    let totalUsage: { promptTokens: number; completionTokens: number } | undefined;
+    let anyCallFailed = false;
+
+    const { height: pageHeight } = parsedPdf.pdfLibDoc.getPage(pageNumber - 1).getSize();
+
+    for (const span of candidates) {
+      const box = locateByteRangeBoundingBox(content, { start: span.contentStart, end: span.closeOpStart });
+      if (!box) {
+        declineNotes.push('one span\'s geometry could not be located for rendering');
+        continue;
+      }
+      // Device (bottom-left) -> top-left PDF-point region renderRegionToBase64
+      // expects -- same flip formula as pdf-figure-structtree.validator.ts's
+      // own boundingBox assignment (that method's own doc comment has the
+      // /Rotate 0 + zero-origin-MediaBox caveat this shares).
+      const region = {
+        x: box.minX,
+        y: pageHeight - box.maxY,
+        width: box.maxX - box.minX,
+        height: box.maxY - box.minY,
+      };
+      if (region.width <= 0 || region.height <= 0) {
+        declineNotes.push('one span\'s own geometry has zero extent');
+        continue;
+      }
+
+      const base64 = await this.renderRegionToBase64(parsedPdf, pageNumber, region);
+      if (!base64) {
+        declineNotes.push('one span could not be rendered to an image');
+        continue;
+      }
+
+      const prompt =
+        'This image is a region cropped from a PDF page -- a vector-graphics region the document\'s own producer ' +
+        'marked as decorative ("Artifact"), oversized enough that it may actually be swallowing real, informative ' +
+        'content instead.\n\n' +
+        'Does this image show a MEANINGFUL chart, diagram, map, or illustration that conveys information a reader ' +
+        'would need (e.g. a bar chart, a flowchart, a labeled diagram) -- or is it genuinely decorative (a grid of ' +
+        'ruling lines, a background shape, a plain border or divider)?\n\n' +
+        'Respond ONLY with JSON: {"isMeaningfulDiagram": true|false, "description": "brief, 1 sentence", "confidence": 0.0-1.0}';
+
+      let data: { isMeaningfulDiagram: boolean; description?: string; confidence: number };
+      let usage: { promptTokens: number; completionTokens: number } | undefined;
+      try {
+        const result = await geminiService.analyzeImageWithSchema(
+          base64,
+          'image/png',
+          prompt,
+          ComplexArtifactFigureResult,
+          {
+            model: 'flash',
+            temperature: 0.2,
+            maxOutputTokens: 2048,
+            responseSchema: COMPLEX_ARTIFACT_FIGURE_SCHEMA,
+          },
+          { maxRetries: 2 }
+        );
+        data = result.data;
+        usage = result.usage;
+      } catch (err) {
+        anyCallFailed = true;
+        declineNotes.push(`AI vision call failed: ${err instanceof Error ? err.message : String(err)}`);
+        continue;
+      }
+
+      if (usage) {
+        totalUsage = totalUsage
+          ? { promptTokens: totalUsage.promptTokens + usage.promptTokens, completionTokens: totalUsage.completionTokens + usage.completionTokens }
+          : { ...usage };
+      }
+
+      if (data.isMeaningfulDiagram) {
+        const signature = content.slice(span.contentStart, span.closeOpStart).replace(/\s+/g, ' ').trim();
+        confirmedSignatures.push(signature);
+        if (data.description) descriptions.push(data.description);
+        lowestConfidence = Math.min(lowestConfidence, typeof data.confidence === 'number' ? data.confidence : 0.5);
+      } else if (data.description) {
+        declineNotes.push(data.description);
+      }
+    }
+
+    if (confirmedSignatures.length === 0) {
+      return {
+        suggestionType: 'artifact-unwrap-review',
+        guidance: `This page has ${candidates.length} oversized /Artifact span(s) with no extractable text -- AI vision assessment: ${
+          declineNotes.length > 0 ? declineNotes.join('; ') : 'appears to be decorative, not a meaningful diagram'
+        }. Review manually if you believe otherwise.`,
+        confidence: 0.3,
+        rationale: 'AI vision judgment on the rendered region -- probabilistic, not a deterministic structural fact',
+        model: anyCallFailed ? 'rule-based' : 'gemini-flash',
+        applyMode: 'guidance-only',
+        requiresManualReview: true,
+      };
+    }
+
+    return {
+      suggestionType: 'artifact-complex-figure-fix',
+      value: JSON.stringify(confirmedSignatures),
+      guidance: `${confirmedSignatures.length} of this page's oversized /Artifact span(s) appear to be meaningful diagram(s)` +
+        (descriptions.length > 0 ? ` (${descriptions.join('; ')})` : '') +
+        ' -- will be retagged as a real /Figure so the existing alt-text pipeline can describe it on the next pass.',
+      confidence: Math.min(0.7, lowestConfidence),
+      rationale: 'AI vision assessment of the rendered span -- a probabilistic judgment call, surfaced for review rather than silently auto-applied',
+      model: 'gemini-flash',
+      applyMode: 'apply-to-pdf',
+      requiresManualReview: true,
+      usage: totalUsage,
+    };
+  }
+
+  /**
    * Render a page region (top-left PDF-point boundingBox) to a cropped PNG
    * base64. Renders the whole page at `scale`, then crops with a small pad so
    * the model sees a little context around the formula.
@@ -4802,6 +4982,13 @@ class AiAnalysisService {
           }
         } else if (suggestionType === 'artifact-unwrap-complex-fix') {
           const r = pdfStructureWriterService.fixArtifactSwallowsContentComplex(doc, originalIssue);
+          modification = { success: r.success, description: r.after, error: r.error };
+          // Same content-stream-rewrite reasoning as artifact-unwrap-fix above.
+          if (r.success && originalIssue.pageNumber !== undefined) {
+            pagesRewrittenSincePreResolve.add(originalIssue.pageNumber);
+          }
+        } else if (suggestionType === 'artifact-complex-figure-fix') {
+          const r = pdfStructureWriterService.fixComplexArtifactAsFigure(doc, originalIssue, value);
           modification = { success: r.success, description: r.after, error: r.error };
           // Same content-stream-rewrite reasoning as artifact-unwrap-fix above.
           if (r.success && originalIssue.pageNumber !== undefined) {

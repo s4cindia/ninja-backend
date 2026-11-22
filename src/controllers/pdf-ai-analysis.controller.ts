@@ -641,6 +641,9 @@ export class PdfAiAnalysisController {
       } else if (suggestionType === 'artifact-unwrap-complex-fix') {
         const r = pdfStructureWriterService.fixArtifactSwallowsContentComplex(doc, originalIssue);
         modification = { success: r.success, description: r.after, error: r.error };
+      } else if (suggestionType === 'artifact-complex-figure-fix') {
+        const r = pdfStructureWriterService.fixComplexArtifactAsFigure(doc, originalIssue, value);
+        modification = { success: r.success, description: r.after, error: r.error };
       } else if (suggestionType === 'artifact-actualtext-fix') {
         const r = pdfStructureWriterService.fixArtifactActualTextSibling(doc, originalIssue);
         modification = { success: r.success, description: r.after, error: r.error };
