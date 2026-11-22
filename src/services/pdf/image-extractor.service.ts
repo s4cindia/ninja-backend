@@ -370,6 +370,24 @@ export interface ImageInfo {
   isDecorative?: boolean;
   base64?: string;
   mimeType: string;
+  /**
+   * Identifies the real /Figure struct element this image resolved to
+   * (resolveFigureForImage), scoped to one extractImages call -- null when
+   * unresolved. Two images sharing the same (non-null) key share the SAME
+   * Alt/ActualText in the PDF itself (a real, common authoring pattern:
+   * composite/exploded diagrams painting several XObjects inside one
+   * Figure's marked-content span). Confirmed real and live on
+   * Whiting_186772_E9778: 18 distinct Figures each shared by 2-40 images,
+   * including one case where an unrelated stock photo was swept into the
+   * same span as a genuine anatomy diagram. pdf-alttext.validator.ts uses
+   * this to process each such group once instead of once per image --
+   * without it, N redundant AI-vision calls run against N different crops
+   * of what the validator would otherwise treat as N independent issues
+   * all describing "the same" alt text, and applying more than one of
+   * their suggestions would silently clobber the shared /Alt via
+   * setAltText (last write wins, since all N ids resolve to one dict).
+   */
+  figureGroupKey?: number | null;
 }
 
 export interface PageImages {
@@ -430,6 +448,27 @@ class ImageExtractorService {
     // re-walking the entire struct tree once per image instead of once here).
     const precomputedFigures = pdfModifierService.getAllFigureElements(parsedPdf.pdfLibDoc);
 
+    // Assigns a stable small integer to each distinct Figure dict instance
+    // resolveFigureForImage returns during this call -- see ImageInfo's own
+    // figureGroupKey doc comment for why this exists. Relies on
+    // doc.context.lookup returning the SAME cached PDFDict instance for
+    // repeat lookups of the same ref (confirmed: this is how every other
+    // resolveFigureForImage caller in this codebase already treats its
+    // return value, e.g. setAltText's exact-match identity checks). A plain
+    // Map (not WeakMap) is fine -- the figure count per document is small
+    // and this map is discarded when extractImages returns.
+    const figureGroupKeysByDict = new Map<PDFDict, number>();
+    let nextFigureGroupKey = 1;
+    const assignFigureGroupKey = (figureDict: PDFDict | undefined): number | null => {
+      if (!figureDict) return null;
+      let key = figureGroupKeysByDict.get(figureDict);
+      if (key === undefined) {
+        key = nextFigureGroupKey++;
+        figureGroupKeysByDict.set(figureDict, key);
+      }
+      return key;
+    };
+
     // Process pages in parallel batches (smaller batch — images are memory-intensive)
     const IMAGE_BATCH_SIZE = 5;
     for (let i = startPage; i <= endPage; i += IMAGE_BATCH_SIZE) {
@@ -444,6 +483,7 @@ class ImageExtractorService {
             minWidth,
             minHeight,
             precomputedFigures,
+            assignFigureGroupKey,
           })
         )
       );
@@ -488,6 +528,7 @@ class ImageExtractorService {
       minWidth: number;
       minHeight: number;
       precomputedFigures?: PDFDict[];
+      assignFigureGroupKey?: (figureDict: PDFDict | undefined) => number | null;
     }
   ): Promise<PageImages> {
     const images: ImageInfo[] = [];
@@ -602,6 +643,7 @@ class ImageExtractorService {
                     const structInfo: FigureAltInfo | undefined = figureDict
                       ? this.extractFigureInfo(figureDict)
                       : undefined;
+                    const figureGroupKey = options.assignFigureGroupKey?.(figureDict ?? undefined) ?? null;
 
                     const imageInfo = await this.processImage(
                       xObject,
@@ -612,7 +654,8 @@ class ImageExtractorService {
                       viewport,
                       options,
                       structInfo?.altText,
-                      structInfo?.isDecorative
+                      structInfo?.isDecorative,
+                      figureGroupKey
                     );
 
                     // Real incident (2026-09-26): processImage -> decodeStreamBytes
@@ -832,7 +875,8 @@ class ImageExtractorService {
     viewport: pdfjsLib.PageViewport,
     options: { includeBase64: boolean; maxImageSize: number },
     altText?: string,
-    isDecorative?: boolean
+    isDecorative?: boolean,
+    figureGroupKey?: number | null
   ): Promise<ImageInfo | null> {
     try {
       const dict = xObject.dict;
@@ -921,6 +965,7 @@ class ImageExtractorService {
         mimeType,
         altText,
         isDecorative,
+        figureGroupKey,
       };
 
       if (options.includeBase64 && imageData && (format === 'jpeg' || format === 'png')) {
