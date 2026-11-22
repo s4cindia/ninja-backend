@@ -116,6 +116,62 @@ describe('PdfStructureWriterService.fixReadingOrderFloatInterruption', () => {
     expect(result.error).toContain('Unrecognized element id');
   });
 
+  it('relocates into a deeper parent when the split point is only found one level inside a single /LI (regression: the old single-level anchor search could never resolve this, declining every such instance permanently)', async () => {
+    const doc = await PDFDocument.create();
+    const page1 = doc.addPage([400, 600]);
+    const page2 = doc.addPage([400, 600]);
+    writePageContent(
+      doc,
+      1,
+      '/P <</MCID 0>> BDC (x)Tj EMC\n' +
+      '/P <</MCID 1>> BDC (misplaced H4)Tj EMC\n' +
+      '/P <</MCID 2>> BDC (y)Tj EMC\n'
+    );
+    writePageContent(doc, 2, '/P <</MCID 3>> BDC (sibling LI content)Tj EMC\n');
+
+    const x = makeLeaf(doc, 'TX', page1.ref, 0);
+    const y = makeLeaf(doc, 'TX', page1.ref, 2);
+    const targetLI = doc.context.register(doc.context.obj({ S: PDFName.of('LI'), K: doc.context.obj([x, y]) }));
+
+    const siblingLiContent = makeLeaf(doc, 'TX', page2.ref, 3);
+    const siblingLI = doc.context.register(doc.context.obj({ S: PDFName.of('LI'), K: siblingLiContent }));
+
+    const listRef = doc.context.register(doc.context.obj({ S: PDFName.of('L'), K: doc.context.obj([targetLI, siblingLI]) }));
+    const misplaced = makeLeaf(doc, 'H4', page1.ref, 1);
+
+    const rootRef = doc.context.register(doc.context.obj({ S: PDFName.of('Document'), K: doc.context.obj([listRef, misplaced]) }));
+    const structRoot = doc.context.register(doc.context.obj({ Type: PDFName.of('StructTreeRoot'), K: rootRef }));
+    doc.catalog.set(PDFName.of('StructTreeRoot'), structRoot);
+
+    const result = pdfStructureWriterService.fixReadingOrderFloatInterruption(doc, floatIssue(misplaced.objectNumber));
+
+    expect(result.success).toBe(true);
+    expect(result.after).toContain('/LI');
+
+    // Root no longer holds the misplaced element directly.
+    const rootDict = doc.context.lookup(rootRef) as PDFDict;
+    const rootK = rootDict.get(PDFName.of('K')) as PDFArray;
+    expect(rootK.size()).toBe(1);
+    expect((rootK.get(0) as PDFRef).objectNumber).toBe(listRef.objectNumber);
+
+    // Spliced into targetLI's own /K (the deeper parent), immediately after x --
+    // NOT into listRef's own /K (which is what the pre-fix single-level
+    // search would have required, and could never find here).
+    const targetLIDict = doc.context.lookup(targetLI) as PDFDict;
+    const targetLIK = targetLIDict.get(PDFName.of('K')) as PDFArray;
+    const kRefs = targetLIK.asArray().map(r => (r as PDFRef).objectNumber);
+    expect(kRefs).toEqual([x.objectNumber, misplaced.objectNumber, y.objectNumber]);
+
+    // listRef's own /K is untouched aside from no longer being the splice target.
+    const listDict = doc.context.lookup(listRef) as PDFDict;
+    const listK = (listDict.get(PDFName.of('K')) as PDFArray).asArray().map(r => (r as PDFRef).objectNumber);
+    expect(listK).toEqual([targetLI.objectNumber, siblingLI.objectNumber]);
+
+    // /P updated to the actual splice parent (targetLI), not listRef.
+    const misplacedDict = doc.context.lookup(misplaced) as PDFDict;
+    expect((misplacedDict.get(PDFName.of('P')) as PDFRef).objectNumber).toBe(targetLI.objectNumber);
+  });
+
   it('declines (no mutation) when the re-confirmed interruption has no anchor', async () => {
     const doc = await PDFDocument.create();
     const page1 = doc.addPage([400, 600]);
