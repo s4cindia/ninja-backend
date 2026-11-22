@@ -16,9 +16,9 @@ export interface ArtifactRegion {
 }
 
 // Top 12% of page height is treated as header zone (PDF bottom-left origin: high y values)
-const HEADER_HEIGHT_RATIO = 0.12;
+export const HEADER_HEIGHT_RATIO = 0.12;
 // Bottom 10% of page height is treated as footer zone (PDF bottom-left origin: low y values)
-const FOOTER_HEIGHT_RATIO = 0.10;
+export const FOOTER_HEIGHT_RATIO = 0.10;
 
 export class ArtifactMarker {
   /**

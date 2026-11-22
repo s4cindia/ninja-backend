@@ -20,7 +20,7 @@
  * the same space these tests place text in.
  */
 import { describe, it, expect } from 'vitest';
-import { PDFDocument, PDFFont, PDFPage, StandardFonts, rgb } from 'pdf-lib';
+import { PDFDocument, PDFFont, PDFPage, PDFName, PDFNumber, StandardFonts, rgb } from 'pdf-lib';
 import { pdfHeaderFooterContentValidator } from '../../../../src/services/pdf/validators/pdf-header-footer-content.validator';
 import { pdfComprehensiveParserService, PdfParseResult } from '../../../../src/services/pdf/pdf-comprehensive-parser.service';
 import { pdfParserService } from '../../../../src/services/pdf/pdf-parser.service';
@@ -155,5 +155,123 @@ describe('PdfHeaderFooterContentValidator', () => {
     const sibling = issues.find((i) => i.element === 'running footer two');
     expect(sibling).toBeDefined();
     expect(sibling?.context).toBe('Pages: 1, 2, 3, 4, 5, 6');
+  });
+
+  // Second-pass (HEADER-FOOTER-VARYING-TAGGED-AS-CONTENT) coverage -- see
+  // header-footer-varying-content.ts's own header comment for why this
+  // pass needs a REAL struct tree + MCID-wrapped content (unlike the
+  // pdfjs-drawText-only fixtures above, which correctly never trigger it:
+  // no struct tree at all). One BDC/EMC per PAGE here (not letter-by-letter
+  // like the real Karsaklian incident) is deliberate: it keeps this fixture
+  // simple while still exercising the real struct-tree-native code path --
+  // the letter-fragmentation-specific behavior already has its own
+  // dedicated coverage in header-footer-varying-content.test.ts.
+  describe('second pass: per-chapter-varying running heads', () => {
+    // Draws via page.drawText() first (so pdf-lib sets up a real font
+    // resource + Tf operator -- without it, pdfjs's own text extraction
+    // silently sees nothing there, confirmed real while writing this test),
+    // saves + reloads (pdf-lib's own drawText content isn't readable via
+    // decodePageContent until a save/reload round-trip, same reason the
+    // existing "does not flag text already wrapped in /Artifact" test above
+    // builds on a separate `src` and reloads before calling
+    // wrapRunInArtifact), THEN wraps each page's drawn run in
+    // /Span <</MCID n>> BDC...EMC and builds a matching struct element --
+    // letting BOTH the pdfjs-based sibling loop AND this pass's own
+    // struct-tree-native reader see the identical text.
+    // A null entry is a blank page (no drawn text, no candidate) -- used to
+    // pad out totalPages so a variant's own page count stays below the
+    // sibling exact-match loop's 50%-of-document floor without changing
+    // which pages actually carry recurring text at the slot under test.
+    async function buildVaryingHeaderFooterDoc(pageTexts: Array<string | null>, x: number, y: number): Promise<PDFDocument> {
+      const src = await PDFDocument.create();
+      const font = await src.embedFont(StandardFonts.Helvetica);
+      for (const text of pageTexts) {
+        const page = addPage(src);
+        if (text !== null) draw(page, text, x, y, font);
+      }
+      const doc = await PDFDocument.load(await src.save());
+
+      const candidateRefs = pageTexts.flatMap((text, i) => {
+        if (text === null) return [];
+        const pageNumber = i + 1;
+        const raw = decodePageContent(doc, pageNumber);
+        if (raw === null) throw new Error(`Could not decode content for page ${pageNumber}`);
+        const marker = `1 0 0 1 ${x} ${y} Tm`;
+        const markerPos = raw.indexOf(marker);
+        if (markerPos === -1) throw new Error(`Tm marker "${marker}" not found on page ${pageNumber}`);
+        const start = raw.lastIndexOf('BT', markerPos);
+        const end = raw.indexOf('ET', markerPos) + 'ET'.length;
+        const wrapped = `${raw.slice(0, start)}/Span <</MCID 0>> BDC\n${raw.slice(start, end)}\nEMC\n${raw.slice(end)}`;
+        writePageContent(doc, pageNumber, wrapped);
+        return [doc.context.register(doc.context.obj({ S: PDFName.of('Span'), Pg: doc.getPage(i).ref, K: PDFNumber.of(0) }))];
+      });
+
+      const rootRef = doc.context.register(doc.context.obj({ S: PDFName.of('Document'), K: doc.context.obj(candidateRefs) }));
+      const structRoot = doc.context.register(doc.context.obj({ Type: PDFName.of('StructTreeRoot'), K: rootRef }));
+      doc.catalog.set(PDFName.of('StructTreeRoot'), structRoot);
+
+      return doc;
+    }
+
+    it('flags two distinct, independently-qualifying variants at the same slot', async () => {
+      const pageTexts: Array<string | null> = [
+        ...Array.from({ length: 6 }, () => 'Chapter One'),
+        ...Array.from({ length: 3 }, () => 'Chapter Two'),
+        // Padding (no header-band content at all) so neither variant's own
+        // page count reaches the SIBLING exact-match loop's 50%-of-document
+        // floor on its own (6/19 ≈ 32%, 3/19 ≈ 16%) -- isolates this test to
+        // the varying pass's own thresholds specifically.
+        ...Array.from({ length: 10 }, () => null),
+      ];
+      const doc = await buildVaryingHeaderFooterDoc(pageTexts, 60, HEADER_Y);
+
+      const issues = await parseAndRun(doc);
+      const varying = issues.filter((i) => i.code === 'HEADER-FOOTER-VARYING-TAGGED-AS-CONTENT');
+
+      expect(varying.find((i) => i.element === 'chapter one')).toBeDefined();
+      expect(varying.find((i) => i.element === 'chapter one')?.context).toBe('Region: header; Pages: 1, 2, 3, 4, 5, 6');
+      expect(varying.find((i) => i.element === 'chapter two')).toBeDefined();
+      expect(varying.find((i) => i.element === 'chapter two')?.context).toBe('Region: header; Pages: 7, 8, 9');
+    });
+
+    it('does not flag a variant that fails the minimum-pages-per-variant threshold, even though its slot sibling qualifies', async () => {
+      const pageTexts: Array<string | null> = [
+        ...Array.from({ length: 6 }, () => 'Chapter One'),
+        ...Array.from({ length: 2 }, () => 'Chapter Two'), // only 2 pages -- below MIN_VARIANT_PAGES
+        // Padding, same reasoning as the test above (6/13 ≈ 46% < 50%).
+        ...Array.from({ length: 5 }, () => null),
+      ];
+      const doc = await buildVaryingHeaderFooterDoc(pageTexts, 60, HEADER_Y);
+
+      const issues = await parseAndRun(doc);
+      const varying = issues.filter((i) => i.code === 'HEADER-FOOTER-VARYING-TAGGED-AS-CONTENT');
+
+      expect(varying.find((i) => i.element === 'chapter one')).toBeDefined();
+      expect(varying.find((i) => i.element === 'chapter two')).toBeUndefined();
+    });
+
+    it('does not double-flag a variant that already independently clears the exact-match sibling\'s own thresholds, but still flags a slot sibling that only clears the varying thresholds', async () => {
+      const pageTexts = [
+        // 10 of 20 pages (50% ratio, >=5 absolute) -- clears the SIBLING
+        // exact-match loop's own thresholds on its own merits.
+        ...Array.from({ length: 10 }, () => 'Same Text Everywhere'),
+        // 3 pages -- clears ONLY this pass's own thresholds (3 >= MIN_VARIANT_PAGES,
+        // contiguous), never the sibling's (3 < 5 absolute, 3/20 = 15% < 50%).
+        ...Array.from({ length: 3 }, () => 'Only Varying Qualifies'),
+        // Pad out to 20 total pages (unrelated, non-recurring content).
+        ...Array.from({ length: 7 }, (_, i) => `Unrelated ${i}`),
+      ];
+      const doc = await buildVaryingHeaderFooterDoc(pageTexts, 60, HEADER_Y);
+
+      const issues = await parseAndRun(doc);
+
+      const exactMatch = issues.find((i) => i.code === 'HEADER-FOOTER-TAGGED-AS-CONTENT' && i.element === 'same text everywhere');
+      expect(exactMatch).toBeDefined();
+      // Never ALSO emitted under the varying code for the same text/position.
+      expect(issues.find((i) => i.code === 'HEADER-FOOTER-VARYING-TAGGED-AS-CONTENT' && i.element === 'same text everywhere')).toBeUndefined();
+
+      const varyingOnly = issues.find((i) => i.code === 'HEADER-FOOTER-VARYING-TAGGED-AS-CONTENT' && i.element === 'only varying qualifies');
+      expect(varyingOnly).toBeDefined();
+    });
   });
 });

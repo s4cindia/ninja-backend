@@ -102,6 +102,7 @@ import { artifactMarker } from '../smart-triage/artifact-marker';
 import { decodePageContent } from '../pdf-content-stream-io';
 import { tokenize } from '../../zone-extractor/seam-c/content-stream';
 import { logger } from '../../../lib/logger';
+import { findVaryingHeaderFooterCandidates } from '../header-footer-varying-content';
 
 type Token = ReturnType<typeof tokenize>[number];
 
@@ -119,12 +120,28 @@ const MIN_RECURRENCE_ABSOLUTE_PAGES = 5;
 // comment) rather than snapped to a fixed bucket.
 const POSITION_TOLERANCE_PT = 8;
 
+// Per-chapter-varying running head thresholds (HEADER-FOOTER-VARYING-
+// TAGGED-AS-CONTENT, see this file's own header comment's reference to
+// header-footer-varying-content.ts for why this needs a second,
+// struct-tree-native pass rather than an extension of the exact-match
+// grouping above). Each variant (a distinct normalized text recurring at
+// the same slot) must appear on at least this many pages...
+const MIN_VARIANT_PAGES = 3;
+// ...AND its own pages must be reasonably contiguous (not scattered across
+// the whole document) -- verified against Karsaklian_189165_9781606497623.pdf:
+// the two real motivating variants ("become a marketing negotiator", 67
+// pages spanning 145; "who really needs marketers", 6 pages spanning 11)
+// clear this with room (0.462 and 0.545), while a short two-page coincidence
+// (e.g. a front/back-matter section title recurring at the same slot) does
+// not reliably clear it.
+const MIN_VARIANT_CONTIGUITY_RATIO = 0.4;
+
 const DIGIT_RUN_RE = /\d+/g;
 const DIGIT_PLACEHOLDER = '#';
 
 const TEXT_SHOW_OPS = new Set(["Tj", 'TJ', "'", '"']);
 
-function normalizeForComparison(text: string): string {
+export function normalizeForComparison(text: string): string {
   return text.trim().toLowerCase().replace(DIGIT_RUN_RE, DIGIT_PLACEHOLDER);
 }
 
@@ -247,6 +264,25 @@ function findOrCreateGroup(
   return g;
 }
 
+/** A position-only slot (region + x/y tolerance), tracking every distinct normalized text seen there and its own page set -- see this file's own header comment on the second, struct-tree-native pass this feeds. */
+interface VaryingSlot {
+  region: 'header' | 'footer';
+  x: number;
+  y: number;
+  variants: Map<string, Set<number>>;
+}
+
+function findOrCreateVaryingSlot(slots: VaryingSlot[], region: 'header' | 'footer', x: number, y: number): VaryingSlot {
+  for (const s of slots) {
+    if (s.region === region && Math.abs(s.x - x) <= POSITION_TOLERANCE_PT && Math.abs(s.y - y) <= POSITION_TOLERANCE_PT) {
+      return s;
+    }
+  }
+  const s: VaryingSlot = { region, x, y, variants: new Map() };
+  slots.push(s);
+  return s;
+}
+
 class PdfHeaderFooterContentValidator {
   private issueCounter = 0;
 
@@ -342,6 +378,99 @@ class PdfHeaderFooterContentValidator {
         matterhornCheckpoint: '01-001',
         matterhornHow: 'H',
       });
+    }
+
+    // Second pass: per-chapter-varying running heads (see
+    // header-footer-varying-content.ts's own header comment for why this
+    // needs a struct-tree-native data source rather than an extension of
+    // the pdfjs-item-based grouping above). Independent of the exact-match
+    // groups/loop above -- nothing here is read or written by it.
+    if (parsed.parsedPdf?.pdfLibDoc) {
+      const candidates = findVaryingHeaderFooterCandidates(parsed.parsedPdf.pdfLibDoc);
+      const slots: VaryingSlot[] = [];
+      for (const c of candidates) {
+        // c.y is device-space, bottom-left origin (see header-footer-varying-
+        // content.ts). Converted to top-left origin here so this pass's own
+        // slot anchors are directly comparable to CandidateGroup's anchorY
+        // (built from PdfTextContent.position.y, which is already top-left --
+        // see this file's own header comment, adaptation 1) for the dedup
+        // check below, without a second, inconsistent coordinate convention
+        // living in this same validate() method.
+        const pageHeight = parsed.pages[c.page - 1]?.height ?? 0;
+        const topLeftY = pageHeight - c.y;
+        const slot = findOrCreateVaryingSlot(slots, c.region, c.x, topLeftY);
+        const normalized = normalizeForComparison(c.text);
+        if (!normalized) continue;
+        const pages = slot.variants.get(normalized) ?? new Set<number>();
+        pages.add(c.page);
+        slot.variants.set(normalized, pages);
+      }
+
+      for (const slot of slots) {
+        // A single-variant slot is already fully covered by the exact-match
+        // loop above on its own merits (or correctly doesn't qualify there) --
+        // only a slot with genuinely DIFFERENT recurring text per occurrence
+        // is this pass's own concern.
+        if (slot.variants.size < 2) continue;
+
+        for (const [normalizedText, pages] of slot.variants) {
+          const pageCount = pages.size;
+          if (pageCount < MIN_VARIANT_PAGES) continue;
+          const sortedPages = [...pages].sort((a, b) => a - b);
+          const span = sortedPages[sortedPages.length - 1] - sortedPages[0] + 1;
+          const contiguityRatio = pageCount / span;
+          if (contiguityRatio < MIN_VARIANT_CONTIGUITY_RATIO) continue;
+
+          // Dedup: this exact (region, text, position) may have ALSO
+          // independently cleared the exact-match loop's own whole-document
+          // thresholds above -- never double-flag the same text under both
+          // codes. Must re-check the SAME threshold the loop above used to
+          // decide whether to actually push an issue (not just whether a
+          // matching entry exists in `groups`) -- `groups` holds every
+          // candidate position/text pairing ever observed regardless of
+          // whether it cleared that threshold, so a merely-observed-but-
+          // never-qualifying group (e.g. recurring on only 3 of 9 pages,
+          // below the sibling's own 50%-of-document floor) would otherwise
+          // be wrongly treated as "already flagged" and silently dropped
+          // here too, even though the sibling loop never actually emitted
+          // an issue for it.
+          const alreadyExactMatched = groups.some((g) => {
+            if (
+              g.region !== slot.region ||
+              g.normalizedText !== normalizedText ||
+              Math.abs(g.anchorX - slot.x) > POSITION_TOLERANCE_PT ||
+              Math.abs(g.anchorY - slot.y) > POSITION_TOLERANCE_PT
+            ) {
+              return false;
+            }
+            const ratio = g.pages.size / totalPages;
+            return g.pages.size >= MIN_RECURRENCE_ABSOLUTE_PAGES && ratio >= MIN_RECURRENCE_RATIO;
+          });
+          if (alreadyExactMatched) continue;
+
+          issues.push({
+            id: `header-footer-content-${++this.issueCounter}`,
+            source: 'pdf-header-footer-content',
+            severity: 'minor',
+            code: 'HEADER-FOOTER-VARYING-TAGGED-AS-CONTENT',
+            message:
+              `A recurring, per-chapter-varying ${slot.region} text ("${normalizedText}") is tagged as real ` +
+              `content on ${pageCount} pages instead of being marked as a PDF Artifact -- this pollutes reading ` +
+              'order and screen-reader output with page furniture that changes per chapter/section.',
+            wcagCriteria: ['1.3.1'],
+            location: `Document-wide (${slot.region} region, varies per chapter/section, recurs on ${pageCount} pages)`,
+            suggestion:
+              `Ask the author or InDesign operator to mark this recurring ${slot.region} text as a background/` +
+              'decorative Artifact (not real content) in the authoring tool\'s export settings, so assistive ' +
+              'technology skips it.',
+            category: 'structure',
+            element: normalizedText,
+            context: `Region: ${slot.region}; Pages: ${sortedPages.join(', ')}`,
+            matterhornCheckpoint: '01-001',
+            matterhornHow: 'H',
+          });
+        }
+      }
     }
 
     logger.info(`[PdfHeaderFooterContentValidator] Found ${issues.length} recurring header/footer issue(s)`);

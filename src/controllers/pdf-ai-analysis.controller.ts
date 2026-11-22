@@ -608,6 +608,9 @@ export class PdfAiAnalysisController {
       } else if (suggestionType === 'toc-structure-fix') {
         const result = pdfStructureWriterService.fixTocStructure(doc, originalIssue);
         modification = { success: result.success, description: result.after, error: result.error };
+      } else if (suggestionType === 'header-footer-varying-artifact-fix') {
+        const result = pdfStructureWriterService.fixHeaderFooterVaryingTaggedAsContent(doc, originalIssue);
+        modification = { success: result.success, description: result.after, error: result.error };
       } else if (suggestionType === 'footnote-structure-fix') {
         const result = pdfStructureWriterService.fixFootnoteStructure(doc, originalIssue);
         modification = { success: result.success, description: result.after, error: result.error };
