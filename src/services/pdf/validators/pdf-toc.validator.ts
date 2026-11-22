@@ -80,6 +80,15 @@ import { logger } from '../../../lib/logger';
  *  of these is correctly tagged, nothing to flag. */
 const TOC_TAGS = new Set(['TOC', 'TOCI']);
 
+/** Same raw-tag family pdf-rolemap-integrity.validator.ts's own
+ *  INDEX_PATTERN uses to recognize back-of-book index entries
+ *  (IDX1/IDX2/IDX3, and their *F "first on page" variants) -- reused here,
+ *  not duplicated as a content heuristic, because it's the authoritative
+ *  structural signal for "this is a real index page", pre- or post-fix (a
+ *  page fixIndexStructure has already retagged carries a resolved /Index
+ *  element instead, which the Pages-with-/Index-already check below covers). */
+const INDEX_RAW_TAG_PATTERN = /^IDX/i;
+
 interface PageTagScan {
   /** Pages hosting at least one real /TOC or /TOCI (RoleMap-resolved) element. */
   tocTaggedPages: Set<number>;
@@ -89,6 +98,18 @@ interface PageTagScan {
    *  must not double-flag the same page with a second, differently-worded
    *  structure issue. */
   tableTaggedPages: Set<number>;
+  /** Pages hosting a raw /IDX1-3(F)? struct element OR an already-built
+   *  /Index element -- a genuine back-of-book index page, not a Table of
+   *  Contents. Confirmed live on Karsaklian_189165_9781606497623.pdf:
+   *  TocDetector's own dot-leader/page-ref-ratio heuristic can't tell an
+   *  index entry ("Term, 5, 67-68") from a TOC row ("Chapter One....5") --
+   *  both trivially score >= HIGH_CONFIDENCE -- so without this exclusion
+   *  every real index page gets a spurious TOC-STRUCTURE-MISSING issue that
+   *  can never resolve (an index entry's own struct shape never matches a
+   *  TOC row's, so fixTocStructure correctly, permanently declines every
+   *  row on it). Same double-flag-prevention idiom as tableTaggedPages
+   *  above, just for the Index/TOC overlap instead of the Table/TOC one. */
+  indexPages: Set<number>;
 }
 
 class PdfTocValidator {
@@ -112,11 +133,11 @@ class PdfTocValidator {
       return issues;
     }
 
-    const { tocTaggedPages, tableTaggedPages } = this.scanExistingTags(doc);
+    const { tocTaggedPages, tableTaggedPages, indexPages } = this.scanExistingTags(doc);
     const pageLabels = pdfParserService.extractPageLabels(doc, parsed.metadata.pageCount);
 
     for (const pageNumber of [...tocPages].sort((a, b) => a - b)) {
-      if (!tocTaggedPages.has(pageNumber) && !tableTaggedPages.has(pageNumber)) {
+      if (!tocTaggedPages.has(pageNumber) && !tableTaggedPages.has(pageNumber) && !indexPages.has(pageNumber)) {
         issues.push(this.createStructureIssue(pageNumber));
       }
 
@@ -136,10 +157,11 @@ class PdfTocValidator {
   private scanExistingTags(doc: PDFDocument): PageTagScan {
     const tocTaggedPages = new Set<number>();
     const tableTaggedPages = new Set<number>();
+    const indexPages = new Set<number>();
 
     const structRootRaw = doc.catalog.get(PDFName.of('StructTreeRoot'));
     const structRoot = structRootRaw instanceof PDFRef ? doc.context.lookup(structRootRaw) : structRootRaw;
-    if (!(structRoot instanceof PDFDict)) return { tocTaggedPages, tableTaggedPages };
+    if (!(structRoot instanceof PDFDict)) return { tocTaggedPages, tableTaggedPages, indexPages };
 
     const roleMap = new Map<string, string>();
     const rmRaw = structRoot.get(PDFName.of('RoleMap'));
@@ -182,12 +204,14 @@ class PdfTocValidator {
       if (node instanceof PDFDict) {
         const sRaw = node.get(PDFName.of('S'));
         if (sRaw) {
-          const resolved = resolve(sRaw.toString().replace(/^\//, ''));
+          const rawTag = sRaw.toString().replace(/^\//, '');
+          const resolved = resolve(rawTag);
           const pgRaw = node.get(PDFName.of('Pg'));
           const pageNumber = pgRaw instanceof PDFRef ? pageRefToNumber.get(pgRaw.objectNumber) : undefined;
           if (pageNumber !== undefined) {
             if (TOC_TAGS.has(resolved)) tocTaggedPages.add(pageNumber);
             else if (resolved === 'Table') tableTaggedPages.add(pageNumber);
+            if (resolved === 'Index' || INDEX_RAW_TAG_PATTERN.test(rawTag)) indexPages.add(pageNumber);
           }
         }
         const kids = node.get(PDFName.of('K'));
@@ -196,7 +220,7 @@ class PdfTocValidator {
     };
     walk(structRoot, 0);
 
-    return { tocTaggedPages, tableTaggedPages };
+    return { tocTaggedPages, tableTaggedPages, indexPages };
   }
 
   private findMissingLinks(
