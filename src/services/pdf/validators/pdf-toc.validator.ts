@@ -188,37 +188,55 @@ class PdfTocValidator {
     pages.forEach((p, idx) => pageRefToNumber.set(p.ref.objectNumber, idx + 1));
 
     const visited = new Set<string>();
-    const walk = (node: unknown, depth: number): void => {
+    // insideIndex carries down through recursion once we enter a subtree
+    // rooted at a real /Index or raw /IDX* element -- confirmed necessary
+    // live on Karsaklian_189165_9781606497623.pdf: fixIndexStructure builds
+    // ONE /Index tree that can span several pages as one contiguous run
+    // (not one /Index element per page), so only its TOP element carries
+    // the literal /Index tag -- every other page the SAME run covers is
+    // reached through ordinary /L > /LI > /LBody children, tagged like any
+    // other list. Matching on tag name alone (as a first pass here did)
+    // only caught the top element's own page; this containment check
+    // instead marks a page as an index page whenever it's reached WHILE
+    // inside that one subtree, regardless of which specific node's /Pg
+    // resolves there. Matching bare /LI//LBody/L tags page-wide (without
+    // this containment gate) would be wrong in the other direction -- those
+    // same tags back perfectly ordinary, unrelated lists elsewhere in the
+    // document, and would spuriously suppress a real TOC-STRUCTURE-MISSING
+    // finding on any page that merely happens to also host some list.
+    const walk = (node: unknown, depth: number, insideIndex: boolean): void => {
       if (depth > 200) return;
       if (node instanceof PDFRef) {
         const key = node.toString();
         if (visited.has(key)) return;
         visited.add(key);
-        walk(doc.context.lookup(node), depth + 1);
+        walk(doc.context.lookup(node), depth + 1, insideIndex);
         return;
       }
       if (node instanceof PDFArray) {
-        for (let i = 0; i < node.size(); i++) walk(node.get(i), depth + 1);
+        for (let i = 0; i < node.size(); i++) walk(node.get(i), depth + 1, insideIndex);
         return;
       }
       if (node instanceof PDFDict) {
         const sRaw = node.get(PDFName.of('S'));
+        let childrenInsideIndex = insideIndex;
         if (sRaw) {
           const rawTag = sRaw.toString().replace(/^\//, '');
           const resolved = resolve(rawTag);
+          if (resolved === 'Index' || INDEX_RAW_TAG_PATTERN.test(rawTag)) childrenInsideIndex = true;
           const pgRaw = node.get(PDFName.of('Pg'));
           const pageNumber = pgRaw instanceof PDFRef ? pageRefToNumber.get(pgRaw.objectNumber) : undefined;
           if (pageNumber !== undefined) {
             if (TOC_TAGS.has(resolved)) tocTaggedPages.add(pageNumber);
             else if (resolved === 'Table') tableTaggedPages.add(pageNumber);
-            if (resolved === 'Index' || INDEX_RAW_TAG_PATTERN.test(rawTag)) indexPages.add(pageNumber);
+            if (childrenInsideIndex) indexPages.add(pageNumber);
           }
         }
         const kids = node.get(PDFName.of('K'));
-        if (kids) walk(kids, depth + 1);
+        if (kids) walk(kids, depth + 1, childrenInsideIndex);
       }
     };
-    walk(structRoot, 0);
+    walk(structRoot, 0, false);
 
     return { tocTaggedPages, tableTaggedPages, indexPages };
   }
