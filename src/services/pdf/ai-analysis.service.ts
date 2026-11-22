@@ -504,6 +504,18 @@ const TOC_STRUCTURE_MISSING_CODES = new Set(['TOC-STRUCTURE-MISSING']);
 // auto-fix), so it falls through to this file's existing generic
 // guidance-only default, same as every other un-special-cased code.
 const CITATION_MISSING_LINK_CODES = new Set(['CITATION-MISSING-LINK']);
+// HEADER-FOOTER-VARYING-TAGGED-AS-CONTENT: pdf-header-footer-content.validator.ts's
+// own second, struct-tree-native detection pass (see header-footer-varying-
+// content.ts's own header comment). pdfStructureWriterService.
+// fixHeaderFooterVaryingTaggedAsContent retags every confirmed occurrence as
+// /Artifact. Unlike the two TOC codes and CITATION-MISSING-LINK above, this
+// is NOT confidence-1.0-deterministic: the underlying signal is a recurrence
+// heuristic (position + distinct-variant-count + page-contiguity), not an
+// exact, provably-unique match, and the fix DELETES a struct element rather
+// than renaming/reparenting one -- see this file's own no-auto-apply
+// exclusion list for 'header-footer-varying-artifact-fix', added for the
+// same reason as 'alt-text-decorative'.
+const HEADER_FOOTER_VARYING_CODES = new Set(['HEADER-FOOTER-VARYING-TAGGED-AS-CONTENT']);
 
 // Document-level codes always produce the same result for the whole document,
 // so the suggestion cache below keys them by code alone.
@@ -1369,13 +1381,19 @@ class AiAnalysisService {
           // silently makes real content permanently invisible to screen readers — a
           // worse failure mode than most other auto-apply mistakes — so it also always
           // requires an explicit human click regardless of tenant auto-apply settings.
+          // header-footer-varying-artifact-fix is excluded for the same reason: it
+          // deletes a struct element and nulls its /ParentTree entry on a position +
+          // recurring-text heuristic (not an exact document-wide match), so a false
+          // positive silently destroys real content the same way alt-text-decorative's
+          // does — always requires an explicit human click too.
           let effectiveApplyMode = suggestion.applyMode;
           if (
             config.autoApplyHighConfidence &&
             suggestion.confidence >= 0.90 &&
             suggestion.applyMode === 'apply-to-pdf' &&
             suggestion.suggestionType !== 'color-contrast-fix' &&
-            suggestion.suggestionType !== 'alt-text-decorative'
+            suggestion.suggestionType !== 'alt-text-decorative' &&
+            suggestion.suggestionType !== 'header-footer-varying-artifact-fix'
           ) {
             effectiveApplyMode = 'apply-to-pdf';
           }
@@ -2368,6 +2386,19 @@ class AiAnalysisService {
         rationale: 'Deterministic structural retag -- a row is only retagged once its own existing struct element\'s MCID set exactly matches that row\'s content-stream-derived MCID set (as a trailing suffix, tolerating the one known page-heading-sweep case); declines per-row and per-run, not page-wide, otherwise',
         model: 'rule-based',
         applyMode: 'apply-to-pdf',
+      };
+    }
+
+    if (HEADER_FOOTER_VARYING_CODES.has(code)) {
+      if (!issue.context || !issue.element) return null;
+      return {
+        suggestionType: 'header-footer-varying-artifact-fix',
+        guidance: `This recurring, per-chapter-varying running head/footer ("${issue.element}") will be retagged as /Artifact on every confirmed occurrence and removed from the structure tree.`,
+        confidence: 0.75,
+        rationale: 'Position + distinct-variant-count + page-contiguity recurrence heuristic (not an exact, provably-unique match) -- re-derives and confirms each occurrence fresh at apply time, declining any page whose occurrence can no longer be unambiguously re-located',
+        model: 'rule-based',
+        applyMode: 'apply-to-pdf',
+        requiresManualReview: true,
       };
     }
 
@@ -4711,7 +4742,7 @@ class AiAnalysisService {
     // documents were all missing. 'span-illegal-nesting-fix' (S4 QC R3,
     // 2026-11-17) follows the same discipline: added in the same change as
     // its own dispatch branch and apply-time writer call, not after.
-    const STRUCTURE_WRITER_TYPES = new Set(['heading-fix', 'list-fix', 'table-header-fix', 'table-header-fix-column', 'table-header-scope-fix', 'table-artifact-fix', 'table-from-layout-fix', 'bookmark-generate', 'heading-multiple-h1-fix', 'pdfua-identifier', 'color-contrast-fix', 'alt-text-decorative', 'untagged-content-fix', 'invisible-text-artifact-fix', 'figure-caption-reattach-fix', 'inline-figure-reattach-fix', 'tagged-content-artifact-split-fix', 'table-cell-reattach-fix', 'table-row-reattach-fix', 'font-tounicode-synthesis-fix', 'font-tounicode-extend-fix', 'artifact-unwrap-complex-fix', 'placedpdf-retag-fix', 'link-missing-annotation-fix', 'artifact-actualtext-fix', 'actualtext-missing-mcid-fix', 'tab-order-fix', 'mcid-page-mismatch-fix', 'display-doc-title-fix', 'rolemap-target-fix', 'index-structure-fix', 'footnote-structure-fix', 'bookmark-title-regenerate', 'cross-reference-link-fix', 'reading-order-float-fix', 'toc-link-fix', 'citation-link-fix', 'structure-parent-mismatch-fix', 'heading-promote-fix', 'span-illegal-nesting-fix', 'duplicate-figure-tiles-fix']);
+    const STRUCTURE_WRITER_TYPES = new Set(['heading-fix', 'list-fix', 'table-header-fix', 'table-header-fix-column', 'table-header-scope-fix', 'table-artifact-fix', 'table-from-layout-fix', 'bookmark-generate', 'heading-multiple-h1-fix', 'pdfua-identifier', 'color-contrast-fix', 'alt-text-decorative', 'untagged-content-fix', 'invisible-text-artifact-fix', 'figure-caption-reattach-fix', 'inline-figure-reattach-fix', 'tagged-content-artifact-split-fix', 'table-cell-reattach-fix', 'table-row-reattach-fix', 'font-tounicode-synthesis-fix', 'font-tounicode-extend-fix', 'artifact-unwrap-complex-fix', 'placedpdf-retag-fix', 'link-missing-annotation-fix', 'artifact-actualtext-fix', 'actualtext-missing-mcid-fix', 'tab-order-fix', 'mcid-page-mismatch-fix', 'display-doc-title-fix', 'rolemap-target-fix', 'index-structure-fix', 'footnote-structure-fix', 'bookmark-title-regenerate', 'cross-reference-link-fix', 'reading-order-float-fix', 'toc-link-fix', 'citation-link-fix', 'structure-parent-mismatch-fix', 'heading-promote-fix', 'span-illegal-nesting-fix', 'duplicate-figure-tiles-fix', 'header-footer-varying-artifact-fix']);
 
     let applied = 0;
     let failed = 0;
@@ -4920,6 +4951,13 @@ class AiAnalysisService {
           // extractTocRowCandidates, to re-derive the row list) -- see
           // fixTocStructure's own doc comment for the full algorithm.
           const result = pdfStructureWriterService.fixTocStructure(doc, originalIssue);
+          modification = { success: result.success, description: result.after, error: result.error };
+        } else if (suggestionType === 'header-footer-varying-artifact-fix') {
+          // Re-derives every occurrence fresh from the current struct tree
+          // (never trusts stale analysis-time data) and fixes each page
+          // independently -- see fixHeaderFooterVaryingTaggedAsContent's own
+          // doc comment for the full algorithm.
+          const result = pdfStructureWriterService.fixHeaderFooterVaryingTaggedAsContent(doc, originalIssue);
           modification = { success: result.success, description: result.after, error: result.error };
         } else if (suggestionType === 'footnote-structure-fix') {
           // Struct-tree-only (no content-stream bytes touched, no new MCIDs;

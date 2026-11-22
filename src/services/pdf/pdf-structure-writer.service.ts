@@ -37,6 +37,8 @@ import { pageContentMcids, orderedPageContentMcids, findBdcTagSpanForMcid, decod
 import { locateMcidBoundingBoxes, locateByteRangeBoundingBox, type DeviceBoundingBox } from './mcid-bounding-box';
 import { findMcidPageMismatches } from './mcid-page-mismatch';
 import { findFloatInterruptions } from './reading-order-float';
+import { findVaryingHeaderFooterCandidates } from './header-footer-varying-content';
+import { normalizeForComparison } from './validators/pdf-header-footer-content.validator';
 import { findStructureParentMismatches } from './structure-parent-mismatch';
 import { findSpanIllegalNestingViolations } from './span-illegal-nesting';
 import { findDuplicateFigureTiles } from './duplicate-figure-tiles';
@@ -3839,6 +3841,124 @@ export class PdfStructureWriterService {
       success: true,
       before: 'Figure with an empty /Alt (decorative, PAC flags empty as missing)',
       after: `Retagged as /Artifact (MCID ${mcid} removed from the structure tree and /ParentTree)`,
+    };
+  }
+
+  /**
+   * HEADER-FOOTER-VARYING-TAGGED-AS-CONTENT fix: retags every real,
+   * currently-confirmed occurrence of a per-chapter-varying running
+   * head/footer (see header-footer-varying-content.ts's own header comment
+   * for the real incident and why it needs a struct-tree-native data
+   * source) as /Artifact, removing each one's struct element from the tree
+   * and nulling its own /ParentTree slot(s). Mechanics are the same
+   * already-proven pattern as retagDecorativeFigureAsArtifact just above
+   * (content-stream BDC retag -> deleteElement -> pageTreeArr.set(mcid,
+   * PDFNull)), generalized to an ARRAY of MCIDs per occurrence (this
+   * producer tags each letter of a running head individually) and to MANY
+   * page-occurrences per issue (the issue is document-wide, one per
+   * recurring variant -- see the validator's own second detection pass).
+   *
+   * Re-derives every occurrence fresh from the CURRENT struct tree (never
+   * trusts stale analysis-time data, same discipline findFloatInterruptions
+   * and fixArtifactSwallowsContent already use) and fixes each page
+   * independently: one page's precondition failure or mid-mutation error
+   * only declines that page, never blocks the others already committed or
+   * still to come -- same per-occurrence rollback scope fixIndexStructure
+   * uses for its own many-runs-per-issue shape, just at page granularity.
+   */
+  fixHeaderFooterVaryingTaggedAsContent(doc: PDFDocument, issue: AuditIssue): FixResult {
+    const contextMatch = /^Region:\s*(header|footer);\s*Pages:\s*(.+)$/.exec(issue.context ?? '');
+    if (!contextMatch) {
+      return { issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error: 'Issue context is not in the expected "Region: ...; Pages: ..." form' };
+    }
+    const region = contextMatch[1] as 'header' | 'footer';
+    const pages = contextMatch[2].split(',').map((p) => parseInt(p.trim(), 10)).filter((p) => !isNaN(p));
+    const normalizedText = issue.element;
+    if (!normalizedText) {
+      return { issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error: 'Issue has no element (normalized running-head text) to match against' };
+    }
+    if (pages.length === 0) {
+      return { issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error: 'No pages parsed from issue context' };
+    }
+
+    const candidatesByPage = new Map<number, ReturnType<typeof findVaryingHeaderFooterCandidates>[number][]>();
+    for (const c of findVaryingHeaderFooterCandidates(doc)) {
+      if (c.region !== region) continue;
+      if (normalizeForComparison(c.text) !== normalizedText) continue;
+      const list = candidatesByPage.get(c.page) ?? [];
+      list.push(c);
+      candidatesByPage.set(c.page, list);
+    }
+
+    let pagesFixed = 0;
+    const declines: string[] = [];
+
+    for (const pageNumber of pages) {
+      const matches = candidatesByPage.get(pageNumber) ?? [];
+      if (matches.length !== 1) {
+        declines.push(`page ${pageNumber}: ${matches.length === 0 ? 'no matching occurrence found' : 'ambiguous -- more than one matching occurrence found'}`);
+        continue;
+      }
+      const candidate = matches[0];
+
+      let originalContent: string | null;
+      try {
+        originalContent = decodePageContent(doc, pageNumber);
+      } catch (err) {
+        declines.push(`page ${pageNumber}: could not decode content -- ${err instanceof Error ? err.message : String(err)}`);
+        continue;
+      }
+      if (!originalContent) {
+        declines.push(`page ${pageNumber}: no content stream`);
+        continue;
+      }
+
+      const spans: Array<{ start: number; end: number }> = [];
+      let preconditionsOk = true;
+      for (const mcid of candidate.mcids) {
+        const span = findBdcTagSpanForMcid(originalContent, mcid);
+        if (!span) {
+          declines.push(`page ${pageNumber}: could not re-locate BDC span for MCID ${mcid}`);
+          preconditionsOk = false;
+          break;
+        }
+        spans.push(span);
+      }
+      if (!preconditionsOk) continue;
+
+      const pageTreeArr = this.resolveParentTreePageArray(doc, pageNumber);
+      if (!pageTreeArr || candidate.mcids.some((mcid) => mcid >= pageTreeArr.size())) {
+        declines.push(`page ${pageNumber}: /ParentTree has no slot for one or more of this occurrence's MCIDs`);
+        continue;
+      }
+
+      try {
+        const sortedSpansDesc = [...spans].sort((a, b) => b.start - a.start);
+        let newContent = originalContent;
+        for (const span of sortedSpansDesc) {
+          newContent = newContent.slice(0, span.start) + '/Artifact BMC' + newContent.slice(span.end);
+        }
+        writePageContent(doc, pageNumber, newContent);
+        this.deleteElement(doc, candidate.ref);
+        for (const mcid of candidate.mcids) {
+          pageTreeArr.set(mcid, PDFNull);
+        }
+        pagesFixed++;
+      } catch (err) {
+        writePageContent(doc, pageNumber, originalContent);
+        declines.push(`page ${pageNumber}: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+
+    const success = pagesFixed > 0 && declines.length === 0;
+    return {
+      issueId: issue.id,
+      success,
+      before: `Running head/footer "${issue.element}" tagged as real content on ${pages.length} page(s)`,
+      after: success
+        ? `${pagesFixed} occurrence(s) retagged as /Artifact, removed from the structure tree and /ParentTree`
+        : `${pagesFixed}/${pages.length} page(s) fixed; ${declines.length} declined`,
+      error: declines.length > 0 ? declines.join('; ') : undefined,
     };
   }
 
