@@ -549,8 +549,34 @@ export class PdfAiAnalysisController {
             await pdfParserService.close(parsedForBookmarks).catch(() => {});
           }
         }
+      } else if (suggestionType === 'bookmark-title-regenerate') {
+        // Same on-demand parse need as bookmark-generate above: this runs
+        // document-wide regardless of which specific BOOKMARK-GENERIC-TEXT
+        // issue triggered it, bailing per-bookmark on its own rather than
+        // guessing -- see regenerateGenericBookmarkTitles's own doc comment.
+        let parsedForBookmarkTitles: ParsedPDF | null = null;
+        try {
+          parsedForBookmarkTitles = await pdfParserService.parseBuffer(pdfBuffer, fileName);
+          const result = await pdfStructureWriterService.regenerateGenericBookmarkTitles(doc, parsedForBookmarkTitles);
+          modification = {
+            success: result.updated > 0,
+            description: `Regenerated ${result.updated} bookmark title(s) from real heading text`,
+            error: result.updated === 0 ? 'No unambiguous tagged-heading match found for any generic bookmark' : undefined,
+          };
+        } finally {
+          if (parsedForBookmarkTitles) {
+            await pdfParserService.close(parsedForBookmarkTitles).catch(() => {});
+          }
+        }
       } else if (suggestionType === 'heading-multiple-h1-fix') {
         const result = pdfStructureWriterService.fixMultipleH1(doc, originalIssue);
+        modification = { success: result.success, description: result.after, error: result.error };
+      } else if (suggestionType === 'heading-promote-fix') {
+        // value carries the AI-inferred level as a string (e.g. "2") -- see
+        // analyzeHeadingStyleMismatch's own doc comment for why level
+        // inference lives there rather than being re-derived here.
+        const level = parseInt(value ?? '', 10);
+        const result = pdfStructureWriterService.fixHeadingPromoteFix(doc, originalIssue, level);
         modification = { success: result.success, description: result.after, error: result.error };
       } else if (suggestionType === 'tab-order-fix') {
         const result = pdfStructureWriterService.fixTabOrder(doc, originalIssue);
@@ -560,6 +586,30 @@ export class PdfAiAnalysisController {
         modification = { success: result.success, description: result.after, error: result.error };
       } else if (suggestionType === 'reading-order-float-fix') {
         const result = pdfStructureWriterService.fixReadingOrderFloatInterruption(doc, originalIssue);
+        modification = { success: result.success, description: result.after, error: result.error };
+      } else if (suggestionType === 'structure-parent-mismatch-fix') {
+        const result = pdfStructureWriterService.fixStructureElementWrongParent(doc, originalIssue);
+        modification = { success: result.success, description: result.after, error: result.error };
+      } else if (suggestionType === 'span-illegal-nesting-fix') {
+        const result = pdfStructureWriterService.fixSpanIllegalNesting(doc, originalIssue);
+        modification = { success: result.success, description: result.after, error: result.error };
+      } else if (suggestionType === 'duplicate-figure-tiles-fix') {
+        const result = pdfStructureWriterService.fixDuplicateFigureTiles(doc, originalIssue);
+        modification = { success: result.success, description: result.after, error: result.error };
+      } else if (suggestionType === 'hyphenated-line-break-fix') {
+        const result = pdfStructureWriterService.fixHyphenatedLineBreak(doc, originalIssue);
+        modification = { success: result.success, description: result.after, error: result.error };
+      } else if (suggestionType === 'rolemap-target-fix') {
+        const result = pdfStructureWriterService.fixDegenerateRoleMapEntry(doc, originalIssue);
+        modification = { success: result.success, description: result.after, error: result.error };
+      } else if (suggestionType === 'index-structure-fix') {
+        const result = pdfStructureWriterService.fixIndexStructure(doc, originalIssue);
+        modification = { success: result.success, description: result.after, error: result.error };
+      } else if (suggestionType === 'toc-structure-fix') {
+        const result = pdfStructureWriterService.fixTocStructure(doc, originalIssue);
+        modification = { success: result.success, description: result.after, error: result.error };
+      } else if (suggestionType === 'footnote-structure-fix') {
+        const result = pdfStructureWriterService.fixFootnoteStructure(doc, originalIssue);
         modification = { success: result.success, description: result.after, error: result.error };
       } else if (suggestionType === 'untagged-content-fix') {
         const results = pdfStructureWriterService.fixUntaggedContent(doc, [originalIssue]);
@@ -572,6 +622,56 @@ export class PdfAiAnalysisController {
       } else if (suggestionType === 'inline-figure-reattach-fix') {
         const results = pdfStructureWriterService.reattachInlineFigure(doc, [originalIssue]);
         const r = results[0];
+        modification = { success: r.success, description: r.after, error: r.error };
+      } else if (suggestionType === 'table-cell-reattach-fix') {
+        const results = pdfStructureWriterService.reattachTableCell(doc, [originalIssue]);
+        const r = results[0];
+        modification = { success: r.success, description: r.after, error: r.error };
+      } else if (suggestionType === 'table-row-reattach-fix') {
+        const results = pdfStructureWriterService.reattachTableRow(doc, [originalIssue]);
+        const r = results[0];
+        modification = { success: r.success, description: r.after, error: r.error };
+      } else if (suggestionType === 'tagged-content-artifact-split-fix') {
+        const results = pdfStructureWriterService.fixTaggedContentInsideArtifact(doc, [originalIssue]);
+        const r = results[0];
+        modification = { success: r.success, description: r.after, error: r.error };
+      } else if (suggestionType === 'artifact-unwrap-fix') {
+        const r = pdfStructureWriterService.fixArtifactSwallowsContent(doc, originalIssue, value);
+        modification = { success: r.success, description: r.after, error: r.error };
+      } else if (suggestionType === 'artifact-unwrap-complex-fix') {
+        const r = pdfStructureWriterService.fixArtifactSwallowsContentComplex(doc, originalIssue);
+        modification = { success: r.success, description: r.after, error: r.error };
+      } else if (suggestionType === 'artifact-actualtext-fix') {
+        const r = pdfStructureWriterService.fixArtifactActualTextSibling(doc, originalIssue);
+        modification = { success: r.success, description: r.after, error: r.error };
+      } else if (suggestionType === 'actualtext-missing-mcid-fix') {
+        const r = pdfStructureWriterService.fixActualTextMissingMcid(doc, originalIssue);
+        modification = { success: r.success, description: r.after, error: r.error };
+      } else if (suggestionType === 'link-missing-annotation-fix') {
+        const r = pdfStructureWriterService.fixLinkMissingAnnotation(doc, originalIssue);
+        modification = { success: r.success, description: r.after, error: r.error };
+      } else if (suggestionType === 'cross-reference-link-fix') {
+        // Needs real pdfjs-decoded heading text to resolve a "chapter"/
+        // "section" reference's destination -- same on-demand parse pattern
+        // as bookmark-generate/table-from-layout-fix above.
+        let parsedForCrossReference: ParsedPDF | null = null;
+        try {
+          parsedForCrossReference = await pdfParserService.parseBuffer(pdfBuffer, fileName);
+          const r = await pdfStructureWriterService.fixCrossReferenceLink(doc, originalIssue, parsedForCrossReference);
+          modification = { success: r.success, description: r.after, error: r.error };
+        } finally {
+          if (parsedForCrossReference) {
+            await pdfParserService.close(parsedForCrossReference).catch(() => {});
+          }
+        }
+      } else if (suggestionType === 'toc-link-fix') {
+        const r = pdfStructureWriterService.fixTocEntryLink(doc, originalIssue);
+        modification = { success: r.success, description: r.after, error: r.error };
+      } else if (suggestionType === 'citation-link-fix') {
+        const r = pdfStructureWriterService.fixCitationLink(doc, originalIssue);
+        modification = { success: r.success, description: r.after, error: r.error };
+      } else if (suggestionType === 'placedpdf-retag-fix') {
+        const r = pdfStructureWriterService.retagPlacedPdfAsFigure(doc, originalIssue);
         modification = { success: r.success, description: r.after, error: r.error };
       } else if (suggestionType === 'invisible-text-artifact-fix') {
         const results = await pdfStructureWriterService.fixInvisibleTextArtifact(doc, [originalIssue]);
@@ -644,13 +744,14 @@ export class PdfAiAnalysisController {
           // path rather than duplicated).
           await aiAnalysisService.ensureFigureForImages(doc, pdfBuffer, fileName, [elementId]);
           modification = await pdfModifierService.setAltText(doc, elementId, value);
-        } else if (suggestionType === 'alt-text-glyph' || suggestionType === 'alt-text-formula-transcript') {
-          // Unlike alt-text/alt-text-improvement, this suggestion only ever
-          // exists for a Figure pdf-figure-structtree.validator.ts's own
-          // struct-tree walk already found -- the element is guaranteed to
-          // exist already, so skip ensureFigureForImages's own (otherwise
-          // pointless for a figure_p-prefixed id) full document re-parse +
-          // image-extraction pass entirely.
+        } else if (suggestionType === 'alt-text-glyph' || suggestionType === 'alt-text-formula-transcript' || suggestionType === 'alt-text-strip-prefix') {
+          // Unlike alt-text/alt-text-improvement, each of these only ever
+          // exists for a Figure that already has alt text (glyph/formula:
+          // pdf-figure-structtree.validator.ts's own struct-tree walk
+          // already found it; strip-prefix: it's rewriting EXISTING alt
+          // text) -- the element is guaranteed to exist already, so skip
+          // ensureFigureForImages's own (otherwise pointless) full
+          // document re-parse + image-extraction pass entirely.
           modification = await pdfModifierService.setAltText(doc, elementId, value);
         } else if (suggestionType === 'table-summary') {
           modification = await pdfModifierService.setTableSummary(doc, elementId, value);
