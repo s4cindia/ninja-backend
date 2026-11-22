@@ -89,16 +89,17 @@ export interface FloatInterruption {
   minPage: number;
   maxPage: number;
   /**
-   * An unambiguous position among containerRef's OWN direct children to
-   * insert misplacedRef immediately after, or null when none exists
-   * (misplacedRef's range doesn't fall cleanly between two consecutive
-   * children, or exactly adjacent to the container's own first/last child
-   * -- e.g. it's nested inside one of them -- so no safe auto-fix position
-   * can be determined). insertIntoKidsAfter only ever needs the one ref to
-   * splice after; a `beforeRef` isn't separately required by the fixer, so
-   * isn't carried here.
+   * An unambiguous position to insert misplacedRef immediately after, or
+   * null when none exists at any depth tried (see findAnchorRecursive's own
+   * doc comment). `spliceParent` is whichever element's own /K the fix
+   * actually splices into -- containerRef itself when the split point is
+   * found among its own direct children, or a descendant of containerRef
+   * when misplacedRef's range is nested one or more levels deeper and the
+   * split point is only found there. insertIntoKidsAfter only ever needs
+   * the one ref to splice after; a `beforeRef` isn't separately required by
+   * the fixer, so isn't carried here.
    */
-  anchor: { afterRef: PDFRef } | null;
+  anchor: { afterRef: PDFRef; spliceParent: PDFRef } | null;
 }
 
 interface SubtreeRange {
@@ -284,6 +285,73 @@ export function findFloatInterruptions(doc: PDFDocument): FloatInterruption[] {
     return null;
   }
 
+  /** True when `inner` falls entirely inside `outer` on both page and MCID
+   *  bounds -- the exact same containment test the top-level pairing loop
+   *  below uses, factored out so findAnchorRecursive can reuse it one or
+   *  more levels deeper without drifting out of sync with it. */
+  function isContained(outer: SubtreeRange, inner: SubtreeRange): boolean {
+    return (
+      outer.minPage <= inner.minPage &&
+      inner.maxPage <= outer.maxPage &&
+      outer.minMcid <= inner.minMcid &&
+      inner.maxMcid <= outer.maxMcid
+    );
+  }
+
+  /**
+   * Recursive generalization of findAnchor: when `target` doesn't fall
+   * cleanly between two of `containerRef`'s own direct children, but IS
+   * fully nested inside exactly one of them, descends into that one
+   * child's own direct children and retries there -- continuing to
+   * descend as long as target stays nested inside exactly one child at
+   * each level, until either a valid between-two-siblings split point is
+   * found at some depth, or the nesting stops being unambiguous (target's
+   * range isn't fully contained in any single child there, or is
+   * contained in more than one -- an overlapping/malformed shape no real
+   * instance has shown).
+   *
+   * Confirmed real and necessary on Karsaklian_189165_9781606497623.pdf:
+   * every one of its 24 currently-reconfirmed float interruptions declined
+   * at the single-level findAnchor check, and every one of those is nested
+   * exactly one level deep (e.g. inside one specific /LI of an /L list, or
+   * one /TX of a /TX run) with a clean between-two-siblings split point
+   * available at that next level down -- not a hypothetical shape.
+   *
+   * Depth-bounded (not unbounded) as a defensive bound against a malformed
+   * or cyclic tree, matching this file's own established convention
+   * elsewhere in this codebase (collectCellMcids's maxDepth=4,
+   * collectLeafMcids's maxDepth=8) -- every real instance confirmed so far
+   * resolves at depth 1.
+   */
+  function findAnchorRecursive(
+    containerRef: PDFRef,
+    containerDict: PDFDict,
+    target: SubtreeRange,
+    depth: number,
+  ): { afterRef: PDFRef; spliceParent: PDFRef } | null {
+    if (depth > 4) return null;
+
+    const children = directStructChildren(containerDict).map(c => ({
+      ref: c.ref,
+      dict: c.dict,
+      range: computeRange(c.ref, c.dict, null),
+    }));
+
+    const direct = findAnchor(children.map(c => ({ ref: c.ref, range: c.range })), target);
+    if (direct) return { afterRef: direct.afterRef, spliceParent: containerRef };
+
+    let hostIndex = -1;
+    for (let i = 0; i < children.length; i++) {
+      const childRange = children[i].range;
+      if (!childRange || !isContained(childRange, target)) continue;
+      if (hostIndex !== -1) return null; // contained in more than one -- ambiguous, bail
+      hostIndex = i;
+    }
+    if (hostIndex === -1) return null;
+
+    return findAnchorRecursive(children[hostIndex].ref, children[hostIndex].dict, target, depth + 1);
+  }
+
   const results: FloatInterruption[] = [];
   const visitedParents = new Set<string>();
 
@@ -336,18 +404,9 @@ export function findFloatInterruptions(doc: PDFDocument): FloatInterruption[] {
           // own doc comment for why a looser "exactly adjacent" shape is
           // deliberately NOT also accepted here (tried and reverted: real
           // false-positive flood at unrelated nesting levels).
-          const contained =
-            container.range.minPage <= target.range.minPage &&
-            target.range.maxPage <= container.range.maxPage &&
-            container.range.minMcid <= target.range.minMcid &&
-            target.range.maxMcid <= container.range.maxMcid;
-          if (!contained) continue;
+          if (!isContained(container.range, target.range)) continue;
 
-          const containerChildren = directStructChildren(children[i].dict).map(c => ({
-            ref: c.ref,
-            range: computeRange(c.ref, c.dict, null),
-          }));
-          const anchor = findAnchor(containerChildren, target.range);
+          const anchor = findAnchorRecursive(container.ref, children[i].dict, target.range, 0);
 
           results.push({
             misplacedRef: target.ref,

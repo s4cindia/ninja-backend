@@ -3426,16 +3426,22 @@ export class PdfStructureWriterService {
     if (!target.anchor) {
       return {
         issueId: issue.id, success: false, before: 'unknown', after: 'unknown',
-        error: `No unambiguous splice point for object ${objectNumber} -- its range doesn't fall cleanly between two of the main flow container's own direct children`,
+        error: `No unambiguous splice point for object ${objectNumber} -- its range doesn't fall cleanly between two consecutive children at any level inside /${target.containerS}`,
       };
     }
 
+    const spliceParent = target.anchor.spliceParent;
+    const spliceParentDict = doc.context.lookup(spliceParent);
+    const spliceParentTag = spliceParentDict instanceof PDFDict
+      ? (spliceParentDict.get(PDFName.of('S'))?.toString().replace(/^\//, '') ?? 'Unknown')
+      : 'Unknown';
+
     try {
       this.removeFromKids(doc, target.parentRef, target.misplacedRef);
-      this.insertIntoKidsAfter(doc, target.containerRef, target.anchor.afterRef, target.misplacedRef);
+      this.insertIntoKidsAfter(doc, spliceParent, target.anchor.afterRef, target.misplacedRef);
       const misplacedDict = doc.context.lookup(target.misplacedRef);
       if (misplacedDict instanceof PDFDict) {
-        misplacedDict.set(PDFName.of('P'), target.containerRef);
+        misplacedDict.set(PDFName.of('P'), spliceParent);
       }
     } catch (err) {
       return { issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error: err instanceof Error ? err.message : String(err) };
@@ -3445,7 +3451,7 @@ export class PdfStructureWriterService {
       issueId: issue.id,
       success: true,
       before: `/${target.misplacedS} (page${target.minPage === target.maxPage ? ` ${target.minPage}` : `s ${target.minPage}-${target.maxPage}`}) was a top-level sibling positioned after /${target.containerS}'s entire remaining span`,
-      after: `Relocated into /${target.containerS}'s own /K array, immediately after its confirmed neighbor there`,
+      after: `Relocated into /${spliceParentTag}'s own /K array, immediately after its confirmed neighbor there`,
     };
   }
 

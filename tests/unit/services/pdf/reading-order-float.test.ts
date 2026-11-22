@@ -171,6 +171,52 @@ describe('findFloatInterruptions', () => {
     expect(results[0].anchor).toBeNull();
   });
 
+  it('finds an anchor one level deeper when the misplaced range is nested inside a single /LI of an /L list (the real, common Karsaklian shape)', async () => {
+    const doc = await PDFDocument.create();
+    const page1 = doc.addPage([400, 600]);
+    const page2 = doc.addPage([400, 600]);
+    writePageContent(
+      doc,
+      1,
+      '/P <</MCID 0>> BDC (x)Tj EMC\n' +
+      '/P <</MCID 1>> BDC (misplaced H4)Tj EMC\n' +
+      '/P <</MCID 2>> BDC (y)Tj EMC\n'
+    );
+    writePageContent(doc, 2, '/P <</MCID 3>> BDC (sibling LI content)Tj EMC\n');
+
+    const x = makeLeaf(doc, 'TX', page1.ref, 0);
+    const y = makeLeaf(doc, 'TX', page1.ref, 2);
+    const targetLI = doc.context.register(doc.context.obj({ S: PDFName.of('LI'), K: doc.context.obj([x, y]) }));
+
+    const siblingLiContent = makeLeaf(doc, 'TX', page2.ref, 3);
+    const siblingLI = doc.context.register(doc.context.obj({ S: PDFName.of('LI'), K: siblingLiContent }));
+
+    // The /L itself is the top-level container -- multi-page (page1 via
+    // targetLI, page2 via siblingLI) so it directly qualifies as a
+    // candidate container, no extra wrapper needed; matches the real shape
+    // ("container: /L obj1471 ... NESTED inside one direct child: /LI").
+    const listRef = doc.context.register(doc.context.obj({ S: PDFName.of('L'), K: doc.context.obj([targetLI, siblingLI]) }));
+
+    const misplaced = makeLeaf(doc, 'H4', page1.ref, 1);
+
+    const rootRef = doc.context.register(doc.context.obj({ S: PDFName.of('Document'), K: doc.context.obj([listRef, misplaced]) }));
+    const structRoot = doc.context.register(doc.context.obj({ Type: PDFName.of('StructTreeRoot'), K: rootRef }));
+    doc.catalog.set(PDFName.of('StructTreeRoot'), structRoot);
+
+    const results = findFloatInterruptions(doc);
+
+    expect(results).toHaveLength(1);
+    expect(results[0].misplacedRef.objectNumber).toBe(misplaced.objectNumber);
+    expect(results[0].containerRef.objectNumber).toBe(listRef.objectNumber);
+    expect(results[0].anchor).not.toBeNull();
+    // The split point is only found one level down, inside targetLI's own
+    // children -- NOT among listRef's own direct children (targetLI vs.
+    // siblingLI), which is exactly the shape the old single-level findAnchor
+    // could never resolve.
+    expect(results[0].anchor!.afterRef.objectNumber).toBe(x.objectNumber);
+    expect(results[0].anchor!.spliceParent.objectNumber).toBe(targetLI.objectNumber);
+  });
+
   it('returns no results for a document with no structure tree', async () => {
     const doc = await PDFDocument.create();
     doc.addPage([400, 600]);
