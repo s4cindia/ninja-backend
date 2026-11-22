@@ -57,6 +57,15 @@ interface BuildOptions {
   /** Add an extra resolved /Index struct element anchored to the TOC page
    *  -- the post-fixIndexStructure shape. */
   withIndexTag?: boolean;
+  /** Build a multi-page /Index subtree whose TOP element is anchored to
+   *  page 3 (NOT the TOC page under test), with one /LBody CHILD of that
+   *  Index element anchored to the TOC page itself -- the real shape
+   *  confirmed live on Karsaklian_189165_9781606497623.pdf: fixIndexStructure
+   *  built one /Index tree spanning several pages as a single contiguous
+   *  run, so only its topmost element carries the literal /Index tag; every
+   *  other page that run covers is reached through ordinary /LBody/LI/L
+   *  children, indistinguishable by tag name alone from any other list. */
+  withMultiPageIndexSubtree?: boolean;
 }
 
 async function buildDoc(opts: BuildOptions = {}): Promise<PDFDocument> {
@@ -83,6 +92,11 @@ async function buildDoc(opts: BuildOptions = {}): Promise<PDFDocument> {
   }
   if (opts.withIndexTag) {
     refs.push(doc.context.register(doc.context.obj({ Type: PDFName.of('StructElem'), S: PDFName.of('Index'), Pg: tocPage.ref, K: 0 })));
+  }
+  if (opts.withMultiPageIndexSubtree) {
+    const page3 = doc.getPages()[2];
+    const lbodyRef = doc.context.register(doc.context.obj({ Type: PDFName.of('StructElem'), S: PDFName.of('LBody'), Pg: tocPage.ref, K: 0 }));
+    refs.push(doc.context.register(doc.context.obj({ Type: PDFName.of('StructElem'), S: PDFName.of('Index'), Pg: page3.ref, K: [lbodyRef] })));
   }
 
   const structTreeRootRef = doc.context.register(doc.context.obj({ Type: PDFName.of('StructTreeRoot'), K: refs }));
@@ -157,6 +171,13 @@ describe('PdfTocValidator', () => {
 
   it('does not flag TOC-STRUCTURE-MISSING when the page already has a real /Index element (post-fixIndexStructure)', async () => {
     const doc = await buildDoc({ withIndexTag: true });
+    const issues = await pdfTocValidator.validate(buildParsed(doc));
+
+    expect(issues.find(i => i.code === 'TOC-STRUCTURE-MISSING')).toBeUndefined();
+  });
+
+  it('does not flag TOC-STRUCTURE-MISSING when the page is reached only through an /Index subtree whose TOP element is anchored to a DIFFERENT page', async () => {
+    const doc = await buildDoc({ withMultiPageIndexSubtree: true });
     const issues = await pdfTocValidator.validate(buildParsed(doc));
 
     expect(issues.find(i => i.code === 'TOC-STRUCTURE-MISSING')).toBeUndefined();
