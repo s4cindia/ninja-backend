@@ -222,4 +222,103 @@ describe('findFloatInterruptions', () => {
     doc.addPage([400, 600]);
     expect(findFloatInterruptions(doc)).toHaveLength(0);
   });
+
+  // tryGeometricAnchor coverage -- the real incident (Karsaklian_189165_
+  // 9781606497623.pdf, page 40, /H4 obj376 nested inside /LI > /Lbl): a
+  // host's own 2 children are listed in an order that does NOT match their
+  // own MCID order, so findAnchorRecursive's array-order "between two"
+  // check can never bracket the target no matter how deep it recurses.
+  // Fixture shape below mirrors that exactly: hostLI's own children array
+  // is [A (MCID 10), B (MCID 5)] -- array-first but numerically LAST.
+  describe('tryGeometricAnchor fallback (MCID-sorted bracket + geometric confirmation)', () => {
+    async function buildDoc(aY: number, bY: number, targetY: number): Promise<{
+      doc: PDFDocument; aRef: PDFRef; bRef: PDFRef; targetRef: PDFRef; hostLIRef: PDFRef;
+    }> {
+      const doc = await PDFDocument.create();
+      const page1 = doc.addPage([400, 800]);
+      const page2 = doc.addPage([400, 800]);
+      writePageContent(
+        doc,
+        1,
+        `/P <</MCID 10>> BDC\nBT\n1 0 0 1 60 ${aY} Tm\n(A)Tj\nET\nEMC\n` +
+        `/P <</MCID 5>> BDC\nBT\n1 0 0 1 60 ${bY} Tm\n(B)Tj\nET\nEMC\n` +
+        `/P <</MCID 7>> BDC\nBT\n1 0 0 1 60 ${targetY} Tm\n(Target)Tj\nET\nEMC\n`
+      );
+      writePageContent(doc, 2, '/P <</MCID 20>> BDC (sibling)Tj EMC\n');
+
+      const a = makeLeaf(doc, 'P', page1.ref, 10);
+      const b = makeLeaf(doc, 'P', page1.ref, 5);
+      const hostLIRef = doc.context.register(doc.context.obj({ S: PDFName.of('LI'), K: doc.context.obj([a, b]) }));
+      const siblingLeaf = makeLeaf(doc, 'P', page2.ref, 20);
+      const flowRef = doc.context.register(doc.context.obj({ S: PDFName.of('L'), K: doc.context.obj([hostLIRef, siblingLeaf]) }));
+
+      const targetRef = makeLeaf(doc, 'H4', page1.ref, 7);
+
+      const rootRef = doc.context.register(doc.context.obj({ S: PDFName.of('Document'), K: doc.context.obj([flowRef, targetRef]) }));
+      const structRoot = doc.context.register(doc.context.obj({ Type: PDFName.of('StructTreeRoot'), K: rootRef }));
+      doc.catalog.set(PDFName.of('StructTreeRoot'), structRoot);
+
+      return { doc, aRef: a, bRef: b, targetRef, hostLIRef };
+    }
+
+    it('finds a geometrically-confirmed anchor when the MCID-sorted bracket matches real on-page position', async () => {
+      // B (MCID 5, drawn HIGH at y=600) ... Target (y=550) ... A (MCID 10, drawn LOW at y=500)
+      // -- MCID order (B < target < A) matches real reading-order position.
+      const { doc, bRef, targetRef, hostLIRef } = await buildDoc(500, 600, 550);
+
+      const results = findFloatInterruptions(doc);
+      expect(results).toHaveLength(1);
+      expect(results[0].misplacedRef.objectNumber).toBe(targetRef.objectNumber);
+      expect(results[0].anchor).not.toBeNull();
+      expect(results[0].anchor!.afterRef.objectNumber).toBe(bRef.objectNumber);
+      expect(results[0].anchor!.spliceParent.objectNumber).toBe(hostLIRef.objectNumber);
+    });
+
+    it('declines when the MCID-sorted bracket exists but real geometry contradicts it (the actual Karsaklian shape)', async () => {
+      // Same MCID-sorted bracket (B=5 < target=7 < A=10), but A is drawn
+      // ABOVE both B and target (y=650) instead of below -- geometry says
+      // A does NOT come after target in reading order, so this must decline
+      // rather than splice into a visually wrong position.
+      const { doc, targetRef } = await buildDoc(650, 600, 550);
+
+      const results = findFloatInterruptions(doc);
+      expect(results).toHaveLength(1);
+      expect(results[0].misplacedRef.objectNumber).toBe(targetRef.objectNumber);
+      expect(results[0].anchor).toBeNull();
+    });
+
+    it('declines when the target spans more than one page (kept to the simple, common shape only)', async () => {
+      const doc = await PDFDocument.create();
+      const page1 = doc.addPage([400, 800]);
+      const page2 = doc.addPage([400, 800]);
+      writePageContent(
+        doc,
+        1,
+        '/P <</MCID 10>> BDC\nBT\n1 0 0 1 60 500 Tm\n(A)Tj\nET\nEMC\n' +
+        '/P <</MCID 5>> BDC\nBT\n1 0 0 1 60 600 Tm\n(B)Tj\nET\nEMC\n' +
+        '/P <</MCID 7>> BDC\nBT\n1 0 0 1 60 550 Tm\n(TargetStart)Tj\nET\nEMC\n'
+      );
+      writePageContent(doc, 2, '/P <</MCID 8>> BDC (TargetEnd)Tj EMC\n/P <</MCID 20>> BDC (sibling)Tj EMC\n');
+
+      const a = makeLeaf(doc, 'P', page1.ref, 10);
+      const b = makeLeaf(doc, 'P', page1.ref, 5);
+      const hostLIRef = doc.context.register(doc.context.obj({ S: PDFName.of('LI'), K: doc.context.obj([a, b]) }));
+      const siblingLeaf = makeLeaf(doc, 'P', page2.ref, 20);
+      const flowRef = doc.context.register(doc.context.obj({ S: PDFName.of('L'), K: doc.context.obj([hostLIRef, siblingLeaf]) }));
+
+      // Target spans MCID 7 (page1) through MCID 8 (page2) -- multi-page.
+      const targetStart = makeLeaf(doc, 'TX', page1.ref, 7);
+      const targetEnd = makeLeaf(doc, 'TX', page2.ref, 8);
+      const targetRef = doc.context.register(doc.context.obj({ S: PDFName.of('H4'), K: doc.context.obj([targetStart, targetEnd]) }));
+
+      const rootRef = doc.context.register(doc.context.obj({ S: PDFName.of('Document'), K: doc.context.obj([flowRef, targetRef]) }));
+      const structRoot = doc.context.register(doc.context.obj({ Type: PDFName.of('StructTreeRoot'), K: rootRef }));
+      doc.catalog.set(PDFName.of('StructTreeRoot'), structRoot);
+
+      const results = findFloatInterruptions(doc);
+      expect(results).toHaveLength(1);
+      expect(results[0].misplacedRef.objectNumber).toBe(targetRef.objectNumber);
+      expect(results[0].anchor).toBeNull();
+    });
+  });
 });
