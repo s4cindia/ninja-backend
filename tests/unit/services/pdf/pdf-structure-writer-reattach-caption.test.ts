@@ -362,4 +362,141 @@ describe('PdfStructureWriterService.reattachFigureCaption', () => {
       expect(results[0].error).toContain('unexpected position');
     });
   });
+
+  /**
+   * Confirmed real on Whiting_186772_E9778 (7 further cases, round
+   * 2026-11-22): when BOTH a preceding AND a following figure exist on the
+   * page, neither convention is tried in only one fixed direction any
+   * more -- each is tried against whichever neighbor actually qualifies.
+   */
+  describe('reattachFigureCaption -- bidirectional fallback when both neighbors exist', () => {
+    it('skips a preceding multi-figure group that already has a DIFFERENT caption attached, and reattaches into the following group instead', async () => {
+      const doc = await PDFDocument.create();
+      const page = doc.addPage([612, 792]);
+      page.node.set(PDFName.of('StructParents'), doc.context.obj(0));
+
+      // Preceding group A: 2 figures, ALREADY correctly captioned by a
+      // different /fc (its Story is the group's 3rd child) -- the exact
+      // shape that made convention #1/#2 correctly refuse this group on
+      // real Whiting pages (90, 275, 288, 300).
+      const figA1 = doc.context.register(doc.context.obj({ S: PDFName.of('Figure'), Pg: page.ref, K: 0 }));
+      const figA2 = doc.context.register(doc.context.obj({ S: PDFName.of('Figure'), Pg: page.ref, K: 1 }));
+      const otherFcRef = doc.context.register(doc.context.obj({ S: PDFName.of('fc'), K: 2 }));
+      const otherStoryRef = doc.context.register(doc.context.obj({ S: PDFName.of('Story'), K: otherFcRef }));
+      const sectARef = doc.context.register(doc.context.obj({ S: PDFName.of('Sect'), K: [figA1, figA2, otherStoryRef] }));
+      doc.context.lookup(figA1, PDFDict).set(PDFName.of('P'), sectARef);
+      doc.context.lookup(figA2, PDFDict).set(PDFName.of('P'), sectARef);
+      doc.context.lookup(otherFcRef, PDFDict).set(PDFName.of('P'), otherStoryRef);
+      doc.context.lookup(otherStoryRef, PDFDict).set(PDFName.of('P'), sectARef);
+
+      // Our disconnected caption, between the two groups.
+      const fcRef = doc.context.register(doc.context.obj({ S: PDFName.of('fc'), Pg: page.ref, K: 3 }));
+      const storyRef = doc.context.register(doc.context.obj({ S: PDFName.of('Story'), K: fcRef }));
+      doc.context.lookup(fcRef, PDFDict).set(PDFName.of('P'), storyRef);
+
+      // Following group B: 2 figures, NOT yet captioned.
+      const figB1 = doc.context.register(doc.context.obj({ S: PDFName.of('Figure'), Pg: page.ref, K: 4 }));
+      const figB2 = doc.context.register(doc.context.obj({ S: PDFName.of('Figure'), Pg: page.ref, K: 5 }));
+      const sectBRef = doc.context.register(doc.context.obj({ S: PDFName.of('Sect'), K: [figB1, figB2] }));
+      doc.context.lookup(figB1, PDFDict).set(PDFName.of('P'), sectBRef);
+      doc.context.lookup(figB2, PDFDict).set(PDFName.of('P'), sectBRef);
+
+      const structTreeRootRef = doc.context.register(doc.context.obj({ Type: PDFName.of('StructTreeRoot'), K: [sectARef, sectBRef] }));
+      const pageArr = doc.context.obj([figA1, figA2, otherFcRef, fcRef, figB1, figB2]);
+      const parentTree = doc.context.obj({ Nums: [0, pageArr] });
+      doc.context.lookup(structTreeRootRef, PDFDict).set(PDFName.of('ParentTree'), parentTree);
+      doc.catalog.set(PDFName.of('StructTreeRoot'), structTreeRootRef);
+
+      const results = pdfStructureWriterService.reattachFigureCaption(doc, [issueFor('caption_p1_mc3')]);
+
+      expect(results[0].success).toBe(true);
+      const sectBDict = doc.context.lookup(sectBRef, PDFDict);
+      const kids = (sectBDict.get(PDFName.of('K')) as PDFArray).asArray();
+      expect(kids).toHaveLength(3);
+      expect((kids[kids.length - 1] as PDFRef).objectNumber).toBe(storyRef.objectNumber);
+      const storyDict = doc.context.lookup(storyRef, PDFDict);
+      expect((storyDict.get(PDFName.of('P')) as PDFRef).objectNumber).toBe(sectBRef.objectNumber);
+
+      // Group A's own, already-correct caption must be untouched.
+      const sectADict = doc.context.lookup(sectARef, PDFDict);
+      expect((sectADict.get(PDFName.of('K')) as PDFArray).asArray()).toHaveLength(3);
+    });
+
+    it('reattaches into a preceding multi-figure group as a last resort when no following figure exists at all on the page', async () => {
+      const doc = await PDFDocument.create();
+      const page = doc.addPage([612, 792]);
+      page.node.set(PDFName.of('StructParents'), doc.context.obj(0));
+
+      const fig1 = doc.context.register(doc.context.obj({ S: PDFName.of('Figure'), Pg: page.ref, K: 0 }));
+      const fig2 = doc.context.register(doc.context.obj({ S: PDFName.of('Figure'), Pg: page.ref, K: 1 }));
+      const fig3 = doc.context.register(doc.context.obj({ S: PDFName.of('Figure'), Pg: page.ref, K: 2 }));
+      const sectRef = doc.context.register(doc.context.obj({ S: PDFName.of('Sect'), K: [fig1, fig2, fig3] }));
+      doc.context.lookup(fig1, PDFDict).set(PDFName.of('P'), sectRef);
+      doc.context.lookup(fig2, PDFDict).set(PDFName.of('P'), sectRef);
+      doc.context.lookup(fig3, PDFDict).set(PDFName.of('P'), sectRef);
+
+      // Our caption is the LAST mcid on the page -- nothing follows it.
+      const fcRef = doc.context.register(doc.context.obj({ S: PDFName.of('fc'), Pg: page.ref, K: 3 }));
+      const storyRef = doc.context.register(doc.context.obj({ S: PDFName.of('Story'), K: fcRef }));
+      doc.context.lookup(fcRef, PDFDict).set(PDFName.of('P'), storyRef);
+
+      const structTreeRootRef = doc.context.register(doc.context.obj({ Type: PDFName.of('StructTreeRoot'), K: [sectRef] }));
+      const pageArr = doc.context.obj([fig1, fig2, fig3, fcRef]);
+      const parentTree = doc.context.obj({ Nums: [0, pageArr] });
+      doc.context.lookup(structTreeRootRef, PDFDict).set(PDFName.of('ParentTree'), parentTree);
+      doc.catalog.set(PDFName.of('StructTreeRoot'), structTreeRootRef);
+
+      const results = pdfStructureWriterService.reattachFigureCaption(doc, [issueFor('caption_p1_mc3')]);
+
+      expect(results[0].success).toBe(true);
+      const sectDict = doc.context.lookup(sectRef, PDFDict);
+      const kids = (sectDict.get(PDFName.of('K')) as PDFArray).asArray();
+      expect(kids).toHaveLength(4);
+      expect((kids[kids.length - 1] as PDFRef).objectNumber).toBe(storyRef.objectNumber);
+      const storyDict = doc.context.lookup(storyRef, PDFDict);
+      expect((storyDict.get(PDFName.of('P')) as PDFRef).objectNumber).toBe(sectRef.objectNumber);
+    });
+
+    it('reattaches into a following bare-single-figure group when the preceding figure\'s own parent does not qualify for either convention', async () => {
+      const doc = await PDFDocument.create();
+      const page = doc.addPage([612, 792]);
+      page.node.set(PDFName.of('StructParents'), doc.context.obj(0));
+
+      // Preceding figure's own parent has TWO children, one of which is
+      // neither /Figure nor /Story -- disqualifies both conventions for
+      // this direction (the exact shape confirmed real on Whiting page 178).
+      const precedingFig = doc.context.register(doc.context.obj({ S: PDFName.of('Figure'), Pg: page.ref, K: 0 }));
+      const otherChildRef = doc.context.register(doc.context.obj({ S: PDFName.of('P'), Pg: page.ref, K: 99 }));
+      const precedingSectRef = doc.context.register(doc.context.obj({ S: PDFName.of('Sect'), K: [precedingFig, otherChildRef] }));
+      doc.context.lookup(precedingFig, PDFDict).set(PDFName.of('P'), precedingSectRef);
+
+      const fcRef = doc.context.register(doc.context.obj({ S: PDFName.of('fc'), Pg: page.ref, K: 1 }));
+      const storyRef = doc.context.register(doc.context.obj({ S: PDFName.of('Story'), K: fcRef }));
+      doc.context.lookup(fcRef, PDFDict).set(PDFName.of('P'), storyRef);
+
+      // Following figure: a clean bare-single-figure /Sect.
+      const followingFig = doc.context.register(doc.context.obj({ S: PDFName.of('Figure'), Pg: page.ref, K: 2 }));
+      const followingSectRef = doc.context.register(doc.context.obj({ S: PDFName.of('Sect'), K: followingFig }));
+      doc.context.lookup(followingFig, PDFDict).set(PDFName.of('P'), followingSectRef);
+
+      const structTreeRootRef = doc.context.register(doc.context.obj({ Type: PDFName.of('StructTreeRoot'), K: [precedingSectRef, followingSectRef] }));
+      const pageArr = doc.context.obj([precedingFig, fcRef, followingFig]);
+      const parentTree = doc.context.obj({ Nums: [0, pageArr] });
+      doc.context.lookup(structTreeRootRef, PDFDict).set(PDFName.of('ParentTree'), parentTree);
+      doc.catalog.set(PDFName.of('StructTreeRoot'), structTreeRootRef);
+
+      const results = pdfStructureWriterService.reattachFigureCaption(doc, [issueFor('caption_p1_mc1')]);
+
+      expect(results[0].success).toBe(true);
+      const followingSectDict = doc.context.lookup(followingSectRef, PDFDict);
+      const kArr = followingSectDict.get(PDFName.of('K'));
+      expect(kArr).toBeInstanceOf(PDFArray);
+      const kids = (kArr as PDFArray).asArray();
+      expect(kids).toHaveLength(2);
+      expect((kids[0] as PDFRef).objectNumber).toBe(followingFig.objectNumber);
+      expect((kids[1] as PDFRef).objectNumber).toBe(storyRef.objectNumber);
+      const storyDict = doc.context.lookup(storyRef, PDFDict);
+      expect((storyDict.get(PDFName.of('P')) as PDFRef).objectNumber).toBe(followingSectRef.objectNumber);
+    });
+  });
 });
