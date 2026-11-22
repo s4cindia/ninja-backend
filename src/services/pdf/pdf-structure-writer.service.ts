@@ -1902,7 +1902,33 @@ export class PdfStructureWriterService {
         continue;
       }
 
-      const [{ ref, dict }] = candidates;
+      const [{ ref: matchedRef, dict: matchedDict }] = candidates;
+
+      // A prior TOC-LINK-MISSING fix (fixTocEntryLink) splices a new /Link
+      // struct element in as a CHILD of the row's own real owning element
+      // (/CFM, /CCT, /CBM, etc.), wrapping just the label's own MCID --
+      // applyLinkSplice's own doc comment confirms this is always a splice
+      // INTO the existing enclosing element's /K, never a replacement of it
+      // or an insertion elsewhere. structElemHasMcid only checks an
+      // element's own DIRECT /K entries (by design -- see its own doc
+      // comment), so once that /Link exists, it becomes the only element
+      // whose own /K directly contains labelMcid; the row's real owner,
+      // one level up, is never found at all. Confirmed real on
+      // Karsaklian_189165_9781606497623.pdf (job had already run a
+      // TOC-LINK-MISSING round before this one): the row's /CFM element's
+      // own /K is [36, 37, 38, ref(/Link)], and that /Link's own /K is
+      // [89, ...] -- every single row on the page declined before this
+      // walk-up, permanently, since re-running this fixer again can never
+      // un-wrap a /Link that's already there. Walking up one level to find
+      // whichever element's own /K directly references this /Link recovers
+      // the row's real, full MCID set (collectLeafMcids already recurses
+      // through the /Link child once the search starts from its parent).
+      const matchedTag = matchedDict.get(PDFName.of('S'));
+      const isLinkWrapper = matchedTag instanceof PDFName && matchedTag.asString() === '/Link';
+      const owner = isLinkWrapper ? this.findParentStructElement(doc, structRoot, matchedRef) : null;
+      const ref = owner?.ref ?? matchedRef;
+      const dict = owner?.dict ?? matchedDict;
+
       const elementMcids = this.collectLeafMcids(doc, dict);
 
       // Exact match -- the common case for every row except possibly the
@@ -1967,6 +1993,34 @@ export class PdfStructureWriterService {
    * `gap.length` iterations, since each successful round consumes at least
    * one entry.
    */
+  /**
+   * Finds the struct element whose own /K directly references `childRef`
+   * as one of its children (the literal, one-level-up parent in the
+   * struct tree -- not a recursive ancestor search). Used by
+   * resolveTocRowElements to walk up from a /Link wrapper a prior
+   * TOC-LINK-MISSING fix spliced in, back to the row's real owning
+   * element -- see that method's own doc comment for why this is needed
+   * at all. Returns null if nothing on the page references it (shouldn't
+   * happen for a /Link applyLinkSplice itself created, but this fixer
+   * declines rather than guesses on an unexpected shape, same as every
+   * other check in this file).
+   */
+  private findParentStructElement(doc: PDFDocument, structRoot: PDFDict, childRef: PDFRef): { ref: PDFRef; dict: PDFDict } | null {
+    let found: { ref: PDFRef; dict: PDFDict } | null = null;
+    this.traverseStructTree(doc, structRoot, (node, ref) => {
+      if (!ref) return;
+      const kRaw = node.get(PDFName.of('K'));
+      const kids = kRaw instanceof PDFArray ? kRaw.asArray() : kRaw ? [kRaw] : [];
+      for (const kid of kids) {
+        if (kid instanceof PDFRef && kid.objectNumber === childRef.objectNumber) {
+          found = { ref, dict: node };
+          return true;
+        }
+      }
+    });
+    return found;
+  }
+
   private explainGapWithOtherElements(doc: PDFDocument, structRoot: PDFDict, excludeRef: PDFRef, gap: number[]): boolean {
     let remaining = gap;
     for (let i = 0; i < gap.length && remaining.length > 0; i++) {

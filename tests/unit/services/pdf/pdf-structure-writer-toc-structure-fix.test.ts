@@ -389,6 +389,30 @@ EMC
     }
   });
 
+  it('resolves a row whose label MCID is nested inside a /Link child, walking up to the row\'s real owning element (regression: a prior TOC-LINK-MISSING fix wraps just the label in a new /Link struct element, which used to make the matcher land on that /Link itself -- a single-MCID element that could never match the row\'s full MCID set -- declining every row on the page, permanently, confirmed live on Karsaklian_189165_9781606497623.pdf)', async () => {
+    const { doc, row1Ref } = await buildDoc();
+
+    // Simulate fixTocEntryLink having already run on this row: splices a
+    // new /Link struct element in as a CHILD of row1, wrapping just the
+    // label's own MCID (38) -- row1's own /K no longer has 38 as a bare
+    // int, only a ref to the /Link.
+    const linkRef = doc.context.register(
+      doc.context.obj({ S: PDFName.of('Link'), K: doc.context.obj([38]) })
+    );
+    doc.context.lookup(linkRef, PDFDict).set(PDFName.of('P'), row1Ref);
+    doc.context.lookup(row1Ref, PDFDict).set(PDFName.of('K'), doc.context.obj([36, 37, linkRef]));
+
+    const result = pdfStructureWriterService.fixTocStructure(doc, tocStructureIssue(1));
+
+    expect(result.success).toBe(true);
+    expect(result.after).toContain('2 row(s)');
+    // row1 itself (not the /Link) is the element that gets retagged --
+    // its own /K, including the nested /Link, is left completely alone.
+    expect(tagOf(doc, row1Ref)).toBe('TOCI');
+    expect(kidsOf(doc, row1Ref).map((r) => r.objectNumber)).toEqual([linkRef.objectNumber]);
+    expect(tagOf(doc, linkRef)).toBe('Link');
+  });
+
   it('preserves MCID -> struct-element resolution via /ParentTree after the fix (same object, new ancestor)', async () => {
     const { doc, row1Ref } = await buildDoc();
 
