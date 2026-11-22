@@ -10615,14 +10615,21 @@ export class PdfStructureWriterService {
    * codebase's established "bail rather than guess" convention
    * (findPrecedingColor, locateXObjectInvocation, generateBookmarksFromHeadings)
    * applies identically here.
+   *
+   * `parsedPdf`, when the caller has one on hand, lets a "chapter"/"section"
+   * reference resolve against a heading's own REAL text via
+   * resolveRealHeadingInfo's pdfjs fallback, not just its /ActualText/Alt --
+   * see that method's own doc comment for the real incident this closes.
+   * Optional and defaults to null (today's direct-extraction-only
+   * behavior) since not every caller has a fresh ParsedPDF in hand.
    */
-  fixCrossReferenceLink(doc: PDFDocument, issue: AuditIssue): FixResult {
+  async fixCrossReferenceLink(doc: PDFDocument, issue: AuditIssue, parsedPdf: ParsedPDF | null = null): Promise<FixResult> {
     const fail = (error: string): FixResult => ({ issueId: issue.id, success: false, before: 'unknown', after: 'unknown', error });
 
     if (!issue.crossReferenceData) return fail('Issue has no crossReferenceData');
     if (!issue.boundingBox) return fail('Issue has no boundingBox -- cannot place a Link annotation without one');
 
-    const dest = this.resolveCrossReferenceDestination(doc, issue.crossReferenceData);
+    const dest = await this.resolveCrossReferenceDestination(doc, issue.crossReferenceData, parsedPdf);
     if (!dest) {
       return fail(
         `Could not unambiguously resolve "${issue.crossReferenceData.fullText}" to a single real destination -- ` +
@@ -10663,10 +10670,11 @@ export class PdfStructureWriterService {
    *   investigated) -- always returns null, same as any other unresolvable
    *   case.
    */
-  private resolveCrossReferenceDestination(
+  private async resolveCrossReferenceDestination(
     doc: PDFDocument,
     data: NonNullable<AuditIssue['crossReferenceData']>,
-  ): PDFArray | null {
+    parsedPdf: ParsedPDF | null,
+  ): Promise<PDFArray | null> {
     const pages = doc.getPages();
     const { keyword, number } = data;
 
@@ -10691,9 +10699,26 @@ export class PdfStructureWriterService {
       // Case-insensitive, requires the heading text to actually start with
       // "keyword number" (e.g. "Chapter 3: Financial Risk Assessment"
       // matches "see Chapter 3") -- a heading that merely CONTAINS "3"
-      // somewhere unrelated must not match.
+      // somewhere unrelated must not match. A bare .startsWith(needle)
+      // isn't enough on its own, though: "chapter 1" is also a string-
+      // prefix of "chapter 10", "chapter 11", etc. Confirmed real on
+      // Karsaklian_189165_9781606497623.pdf -- its own "CHAPTER 1" (page 21)
+      // and "CHAPTER 10" (page 143) headings both matched a "chapter 1"
+      // reference, so it declined as ambiguous even though only one heading
+      // was ever the real target. needleBoundaryRe requires the character
+      // right after the number to NOT be another digit -- same "word
+      // boundary right after the matched text" requirement
+      // resolveCitationDestination's own referenceEntryMatches already
+      // enforces for author-surname matching ("Smith" must not match
+      // "Smithson").
       const needle = `${keyword} ${number}`.toLowerCase();
-      const matches: number[] = [];
+      const needleBoundaryRe = new RegExp(`^${needle.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?!\\d)`);
+
+      // Pass 1 (sync): collect candidate H1-H9 headings in document order --
+      // resolveRealHeadingInfo needs an async pdfjs page read, which
+      // traverseStructTree's own synchronous visitor can't do inline (same
+      // two-pass split generateBookmarksFromHeadings already uses).
+      const candidates: Array<{ node: PDFDict; pageIndex: number }> = [];
       this.traverseStructTree(doc, structRoot, (node, ref) => {
         if (!ref) return;
         const rawTag = node.get(PDFName.of('S'))?.toString().replace(/^\//, '');
@@ -10706,10 +10731,39 @@ export class PdfStructureWriterService {
         const pageIndex = pageRefToIndex.get(pgRaw.objectNumber);
         if (pageIndex === undefined) return;
 
-        const extracted = this.extractTextFromStructElem(doc, node);
-        if (!extracted) return;
-        if (extracted.trim().toLowerCase().startsWith(needle)) matches.push(pageIndex);
+        candidates.push({ node, pageIndex });
       });
+
+      // Pass 2 (async): resolve each candidate's REAL text. Real incident
+      // (Whiting_186772_E9778, confirmed live): this branch used to call
+      // extractTextFromStructElem alone, the same incomplete lookup
+      // generateBookmarksFromHeadings' own doc comment documents as unable
+      // to read ordinary rendered-glyph text (no /ActualText or /Alt on an
+      // ordinary heading) -- on this document NONE of its real H1-H4
+      // headings carry either attribute. resolveRealHeadingInfo (parsedPdf's
+      // own pdfjs MCID->text fallback) is the same fix already proven for
+      // bookmark generation/title-regeneration on this exact class of
+      // document -- confirmed to genuinely turn declines into real matches
+      // on Karsaklian_189165_9781606497623.pdf (0/10 chapters resolved
+      // before this fix, 9/10 after). Whiting_186772_E9778's own 55
+      // remaining "in chapter N" references are a SEPARATE, correctly-
+      // declined case this fix does not touch: that document's real
+      // chapters are headed "PART I" / "OBJECTIVES" etc., never literally
+      // "Chapter N" at all, so no heading text could ever match regardless
+      // of extraction quality -- genuinely unresolvable by this keyword-
+      // prefix strategy, not a bug. Skipped entirely (falls back to the
+      // direct-only extraction, same as before) when no parsedPdf is
+      // available, so a caller without one still gets today's behavior
+      // rather than an error.
+      const matches: number[] = [];
+      const pageMapsCache = new Map<number, ContentIdMaps>();
+      for (const { node, pageIndex } of candidates) {
+        const extracted = parsedPdf
+          ? (await this.resolveRealHeadingInfo(doc, parsedPdf, node, pageIndex, pageMapsCache)).text
+          : this.extractTextFromStructElem(doc, node);
+        if (!extracted) continue;
+        if (needleBoundaryRe.test(extracted.trim().toLowerCase())) matches.push(pageIndex);
+      }
 
       if (matches.length !== 1) return null;
       return doc.context.obj([pages[matches[0]].ref, PDFName.of('XYZ'), null, null, null]) as PDFArray;

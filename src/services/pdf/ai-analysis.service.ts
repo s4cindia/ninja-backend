@@ -4792,11 +4792,23 @@ class AiAnalysisService {
           // Same buildLinkAnnotationFix core (and same content-stream-
           // rewrite tracking need) as link-missing-annotation-fix above --
           // see fixCrossReferenceLink's own doc comment for the
-          // destination-resolution gate this adds on top.
-          const r = pdfStructureWriterService.fixCrossReferenceLink(doc, originalIssue);
-          modification = { success: r.success, description: r.after, error: r.error };
-          if (r.success && originalIssue.pageNumber !== undefined) {
-            pagesRewrittenSincePreResolve.add(originalIssue.pageNumber);
+          // destination-resolution gate this adds on top. Same fresh-
+          // ParsedPDF-for-real-heading-text need (and parse/close shape) as
+          // bookmark-title-regenerate above -- a "chapter"/"section"
+          // reference can only match a heading's own REAL text via the
+          // pdfjs fallback when a parsedPdf is actually on hand.
+          let parsedForCrossReference: ParsedPDF | null = null;
+          try {
+            parsedForCrossReference = await pdfParserService.parseBuffer(pdfBuffer, fileName);
+            const r = await pdfStructureWriterService.fixCrossReferenceLink(doc, originalIssue, parsedForCrossReference);
+            modification = { success: r.success, description: r.after, error: r.error };
+            if (r.success && originalIssue.pageNumber !== undefined) {
+              pagesRewrittenSincePreResolve.add(originalIssue.pageNumber);
+            }
+          } finally {
+            if (parsedForCrossReference) {
+              await pdfParserService.close(parsedForCrossReference).catch(() => {});
+            }
           }
         } else if (suggestionType === 'toc-link-fix') {
           // Same buildLinkAnnotationFix/applyLinkSplice core (and same
