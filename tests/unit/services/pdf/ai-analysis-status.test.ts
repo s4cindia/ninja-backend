@@ -192,6 +192,75 @@ describe('resolveSuggestionStatus', () => {
       expect(result.status).toBe('applied');
       expect(result.appliedButUnresolved).toBe(false);
     });
+
+    // (i) Real bug caught in review, 2026-11-23: a flagged row's own status
+    // is reset to defaultStatus ('pending'), which is neither 'applied' nor
+    // 'failed' -- without the dedicated appliedButUnresolved carry-forward
+    // branch, THIS row would fall into the function's first early-exit
+    // branch on the very next analysis pass and silently lose the flag. In
+    // Auto Mode, which re-analyzes every round, that re-enables the exact
+    // re-apply loop this flag exists to stop, on alternate rounds.
+    it('(i) a SECOND analysis run on an already-flagged row, with the same finding still present, keeps the flag -- the bug this guards against would otherwise clear it and re-enable the auto-loop', () => {
+      // The row as it sits after round N's analysis already flagged it:
+      // status was reset away from 'applied' to the default, and the flag
+      // is set. appliedAt is still the ORIGINAL apply timestamp (carried
+      // forward by resolveCarriedAppliedAt, per findingUnchanged).
+      const alreadyFlaggedRow = {
+        status: 'pending',
+        suggestionType: 'alt-text',
+        value: 'A red apple',
+        issueFingerprint: FP,
+        appliedAt,
+        appliedButUnresolved: true,
+      };
+      // Round N+1's analysis: same finding, same fingerprint -- the auto
+      // loop must have skipped applying this row in between (it's excluded
+      // while flagged), so nothing about the underlying finding changed.
+      const sameSuggestionStillFound = { suggestionType: 'alt-text', value: 'A red apple' };
+
+      const result = resolveSuggestionStatus(
+        alreadyFlaggedRow, sameSuggestionStillFound, FP, 'apply-to-pdf', new Date('2026-11-22T00:00:00Z')
+      );
+
+      expect(result.appliedButUnresolved).toBe(true);
+      expect(result.findingUnchanged).toBe(true);
+      expect(result.status).toBe('pending');
+    });
+
+    it('(i) clears the flag when the fingerprint changes -- a genuinely new finding landed at this id/fingerprint-driven lookup', () => {
+      const alreadyFlaggedRow = {
+        status: 'pending',
+        suggestionType: 'alt-text',
+        value: 'A red apple',
+        issueFingerprint: FP,
+        appliedAt,
+        appliedButUnresolved: true,
+      };
+      const differentFinding = { suggestionType: 'alt-text', value: 'A blue banana' };
+
+      const result = resolveSuggestionStatus(alreadyFlaggedRow, differentFinding, 'A-DIFFERENT-FINGERPRINT', 'apply-to-pdf', null);
+
+      expect(result.appliedButUnresolved).toBe(false);
+      expect(result.findingUnchanged).toBe(false);
+      expect(result.status).toBe('pending');
+    });
+
+    it('(i) keeps the flag even when the AI suggestion\'s own wording changes for the same fingerprint -- only a fingerprint change (a new finding) or a reject clears it, not a reworded suggestion', () => {
+      const alreadyFlaggedRow = {
+        status: 'pending',
+        suggestionType: 'alt-text',
+        value: 'A red apple',
+        issueFingerprint: FP,
+        appliedAt,
+        appliedButUnresolved: true,
+      };
+      const rewordedSameFinding = { suggestionType: 'alt-text', value: 'A shiny red apple on a table' };
+
+      const result = resolveSuggestionStatus(alreadyFlaggedRow, rewordedSameFinding, FP, 'apply-to-pdf', null);
+
+      expect(result.appliedButUnresolved).toBe(true);
+      expect(result.findingUnchanged).toBe(true);
+    });
   });
 });
 

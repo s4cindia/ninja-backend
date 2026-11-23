@@ -662,15 +662,37 @@ export function buildIssueFingerprint(
  * row, or one whose apply predates this column) or a missing
  * `reportAuditedAt` never trips the flag -- same self-healing "decline
  * rather than guess" convention as a null issueFingerprint above.
+ *
+ * Once flagged, `appliedButUnresolved` must survive every later analysis
+ * pass on its own, independent of the applied/failed-only branch below --
+ * flagging a row resets its own `status` to `defaultStatus`, which is
+ * neither 'applied' nor 'failed', so without this it would fall straight
+ * into the first branch below and silently lose the flag (and appliedAt)
+ * on the very next re-analysis. In Auto Mode, which re-analyzes every
+ * round, that re-enables the exact re-apply loop this flag exists to stop,
+ * just on alternate rounds (real bug, caught in review, 2026-11-23). Carries
+ * forward on fingerprint match alone -- not the full suggestionType+value
+ * `unchanged` check below -- so the AI regenerating slightly different
+ * suggestion wording for the SAME underlying finding never spuriously
+ * clears it; only a genuinely different finding at this id (a new
+ * fingerprint) or a human reject does.
  */
 export function resolveSuggestionStatus(
-  existing: { status: string; suggestionType: string; value: string | null; issueFingerprint: string | null; appliedAt?: Date | null } | null,
+  existing: { status: string; suggestionType: string; value: string | null; issueFingerprint: string | null; appliedAt?: Date | null; appliedButUnresolved?: boolean } | null,
   suggestion: Pick<AiSuggestionResult, 'suggestionType' | 'value'>,
   issueFingerprint: string,
   effectiveApplyMode: AiSuggestionResult['applyMode'],
   reportAuditedAt?: Date | null
 ): { status: string; appliedButUnresolved: boolean; findingUnchanged: boolean } {
   const defaultStatus = effectiveApplyMode === 'auto-resolve' ? 'approved' : 'pending';
+
+  if (existing?.appliedButUnresolved === true) {
+    const sameFingerprint = existing.issueFingerprint === issueFingerprint;
+    return sameFingerprint
+      ? { status: existing.status, appliedButUnresolved: true, findingUnchanged: true }
+      : { status: defaultStatus, appliedButUnresolved: false, findingUnchanged: false };
+  }
+
   if (!existing || (existing.status !== 'applied' && existing.status !== 'failed')) {
     return { status: defaultStatus, appliedButUnresolved: false, findingUnchanged: false };
   }
@@ -1517,7 +1539,7 @@ class AiAnalysisService {
           const issueFingerprint = buildIssueFingerprint(issue);
           let existing = await prisma.aiAnalysis.findUnique({
             where: { jobId_issueId: { jobId, issueId: issue.id } },
-            select: { status: true, suggestionType: true, value: true, issueFingerprint: true, failedAttempts: true, lastErrorReason: true, appliedAt: true },
+            select: { status: true, suggestionType: true, value: true, issueFingerprint: true, failedAttempts: true, lastErrorReason: true, appliedAt: true, appliedButUnresolved: true },
           });
           // Fallback: issue.id can be stale even for THIS issue. An intervening
           // re-audit (e.g. applyAll's internal reauditAndCompare) regenerates every
@@ -1532,7 +1554,7 @@ class AiAnalysisService {
           if (!existing || existing.issueFingerprint !== issueFingerprint) {
             const byFingerprint = await prisma.aiAnalysis.findFirst({
               where: { jobId, issueFingerprint },
-              select: { status: true, suggestionType: true, value: true, issueFingerprint: true, failedAttempts: true, lastErrorReason: true, appliedAt: true },
+              select: { status: true, suggestionType: true, value: true, issueFingerprint: true, failedAttempts: true, lastErrorReason: true, appliedAt: true, appliedButUnresolved: true },
               // Stale rows can accumulate under successive old ids sharing this
               // fingerprint across repeated re-audits — take the most recently
               // written one, not an arbitrary one.
