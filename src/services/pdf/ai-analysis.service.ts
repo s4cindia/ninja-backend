@@ -23,6 +23,7 @@ import { pdfConfig } from '../../config/pdf.config';
 import { fileStorageService } from '../storage/file-storage.service';
 import type { PDFDocument } from 'pdf-lib';
 import { pdfModifierService } from './pdf-modifier.service';
+import { extractStructureTagsForPage } from './structure-tag-inventory.service';
 import { pdfStructureWriterService, type FixResult } from './pdf-structure-writer.service';
 import {
   collectHeadingStyleData,
@@ -823,6 +824,71 @@ export async function clearStaleRowForReusedId(jobId: string, issue: Pick<AuditI
       OR: [{ issueFingerprint: { not: issueFingerprint } }, { issueFingerprint: null }],
     },
   });
+}
+
+/** Overlap area divided by the SMALLER of the two boxes' own area -- a
+ * fraction close to 1 means one box is nearly entirely inside the other
+ * (a real overlaid label/caption); a small fraction means the two boxes
+ * merely abut or clip at an edge (adjacent body text), which must not count
+ * as "overlaid content". Top-left-origin convention, same as every other
+ * bbox in this codebase (structure-tag-inventory.service.ts's own). */
+export function boundingBoxOverlapFraction(
+  a: { x: number; y: number; width: number; height: number },
+  b: { x: number; y: number; width: number; height: number }
+): number {
+  const overlapX = Math.min(a.x + a.width, b.x + b.width) - Math.max(a.x, b.x);
+  const overlapY = Math.min(a.y + a.height, b.y + b.height) - Math.max(a.y, b.y);
+  if (overlapX <= 0 || overlapY <= 0) return 0;
+  const smallerArea = Math.min(a.width * a.height, b.width * b.height);
+  return smallerArea > 0 ? (overlapX * overlapY) / smallerArea : 0;
+}
+
+/**
+ * QC brief Theme B1a (docs/qc/2026-11-23-ninja-qc-karsaklian-brief.md): does
+ * this Figure have real text/vector content overlaid on it that its own
+ * embedded XObject raster alone would never show vision? Two independent
+ * signals, confirmed against the real failures:
+ *   1. The Figure's own subtree directly owns a readable text-show MCID --
+ *      the BATNA-box shape (F-09): one marked-content span wraps BOTH the
+ *      image's own Do call and literal text drawn directly over it, so the
+ *      raw XObject raster alone ("light grey cabinet door...") is all
+ *      analyzeAltText's raster-only path ever sees.
+ *   2. A DIFFERENT (non-Figure, non-Caption) struct element on the page
+ *      substantially overlaps this Figure's own bbox -- a real overlaid
+ *      label, not a Caption (expected sibling, not "overlaid content") or
+ *      body text merely abutting the Figure's edge (boundingBoxOverlapFraction's
+ *      own small-fraction floor excludes that).
+ * A missing boundingBox declines outright (never guesses from no geometry
+ * at all) -- same "decline rather than guess" convention as the rest of
+ * this fix.
+ */
+export function figureHasOverlaidContent(
+  doc: PDFDocument,
+  pageNumber: number,
+  figureElement: string,
+  figureBbox: { x: number; y: number; width: number; height: number } | undefined
+): boolean {
+  if (!figureBbox) return false;
+
+  const figureDict = pdfModifierService.resolveFigureForImage(doc, figureElement);
+  if (figureDict) {
+    const mcids = pdfStructureWriterService.collectLeafMcids(doc, figureDict);
+    if (mcids.length > 0) {
+      const content = decodePageContent(doc, pageNumber);
+      if (content && mcids.some((mcid) => pdfStructureWriterService.hasReadableTextInSpan(content, mcid))) {
+        return true;
+      }
+    }
+  }
+
+  const OVERLAP_MIN_FRACTION = 0.3;
+  const siblings = extractStructureTagsForPage(doc, pageNumber);
+  return siblings.some(
+    (sibling) =>
+      sibling.tag !== 'Figure' &&
+      sibling.tag !== 'Caption' &&
+      boundingBoxOverlapFraction(figureBbox, sibling.bbox) >= OVERLAP_MIN_FRACTION
+  );
 }
 // TABLE_LIKELY_FORMULA_CODE is a heuristic redirect (see its own doc comment
 // in pdf-table.validator.ts) — routed through the same AI-drafting path as
@@ -1813,8 +1879,22 @@ class AiAnalysisService {
         }
       }
 
+      // QC brief Theme B1a: a Figure CAN have a real XObject raster
+      // (img?.base64 truthy) and STILL need the page-render crop instead --
+      // when its own span or the page around it also carries real text/
+      // vector content the raster alone never shows (the BATNA-box shape,
+      // F-09: raster-only vision only ever saw "light grey cabinet door...",
+      // never the overlaid label). Only overrides when there's a bbox to
+      // crop to in the first place; otherwise falls back to the raw image,
+      // same as before this fix.
       const img = issue.element ? imageById.get(issue.element) : undefined;
-      const imgWithBase64 = img?.base64 ? img : await this.fallbackToPageRender(img, issue, parsed, pageRenderCache);
+      const preferCrop =
+        !!img?.base64 &&
+        !!issue.boundingBox &&
+        !!parsed.parsedPdf &&
+        figureHasOverlaidContent(parsed.parsedPdf.pdfLibDoc, issue.pageNumber!, issue.element!, issue.boundingBox);
+      const imgWithBase64 =
+        img?.base64 && !preferCrop ? img : await this.fallbackToPageRender(img, issue, parsed, pageRenderCache);
       if (!imgWithBase64) return null;
       return this.analyzeAltText(issue, imgWithBase64, config.altTextMode, jobId, tenantId);
     }

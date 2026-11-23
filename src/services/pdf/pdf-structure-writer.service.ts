@@ -2767,7 +2767,7 @@ export class PdfStructureWriterService {
    * data boundary -- every real leaf MCID seen so far sits at depth 2-3
    * (e.g. Table > TR > TD > 3). Mirrors pdfModifierService.collectLeafMcids.
    */
-  private collectLeafMcids(doc: PDFDocument, el: PDFDict, maxDepth = 8, out: number[] = []): number[] {
+  collectLeafMcids(doc: PDFDocument, el: PDFDict, maxDepth = 8, out: number[] = []): number[] {
     if (maxDepth <= 0) return out;
     const items: PDFObject[] = [];
     const k = el.get(PDFName.of('K'));
@@ -8600,6 +8600,48 @@ export class PdfStructureWriterService {
     // a genuine multi-character symbol) would have silently qualified.
     // Tightened to match the documented contract exactly.
     return trimmed.length === 1 ? trimmed : null;
+  }
+
+  /**
+   * QC brief Theme B1a (docs/qc/2026-11-23-ninja-qc-karsaklian-brief.md):
+   * does this specific marked-content span contain a real, readable
+   * Tj/TJ/'/" text-show op -- used by ai-analysis.service.ts's
+   * figureHasOverlaidContent to detect a Figure whose own span wraps BOTH
+   * an embedded raster (Do) AND literal text drawn directly over it (the
+   * confirmed BATNA-box shape, F-09: raster-only vision only ever sees the
+   * background, never the overlaid label). Deliberately does not try to
+   * decode or return the text itself (that's extractSingleGlyphAltText's
+   * and buildFormulaTranscript's own job, for a span with NO embedded
+   * image) -- this is a plain boolean presence check, reusable regardless
+   * of whether the span also contains Do/sh/EI (those two methods refuse
+   * entirely the moment they see one; this one does not, since detecting
+   * the overlap IS the point here).
+   */
+  hasReadableTextInSpan(content: string, mcid: number): boolean {
+    const span = this.findMarkedContentSpanForMcid(content, mcid);
+    if (!span) return false;
+
+    const tokens = tokenize(content);
+    let pendingStrings: Array<{ t: string; v: string }> = [];
+
+    for (const tk of tokens) {
+      if (tk.start < span.start || tk.start >= span.end) continue;
+      if (tk.t === 's' || tk.t === 'h') {
+        pendingStrings.push({ t: tk.t, v: content.slice(tk.start, tk.end) });
+        continue;
+      }
+      if (tk.t !== 'op') continue;
+      if (tk.v === 'Tj' || tk.v === 'TJ' || tk.v === "'" || tk.v === '"') {
+        const hasReadable = pendingStrings.some(
+          s => s.t === 's' && this.decodePrintableAsciiOnly(s.v).trim().length > 0
+        );
+        if (hasReadable) return true;
+        pendingStrings = [];
+        continue;
+      }
+      pendingStrings = [];
+    }
+    return false;
   }
 
   /**
