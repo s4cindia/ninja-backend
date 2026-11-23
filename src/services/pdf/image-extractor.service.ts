@@ -308,7 +308,12 @@ export function convertSamplesToRgb(
       // black is the correct mapping, not an arbitrary guess -- this is
       // the standard prepress convention for simulating plain black text/
       // line art through a spot channel instead of DeviceGray.
-      if (samples.length < pixelCount) return null;
+      // Exact-length check, not just a minimum (real bug, Karsaklian QC
+      // brief Theme B regression, 2026-11-24): a samples buffer LONGER
+      // than pixelCount (e.g. a mis-decoded 3-channel buffer passed in by
+      // a caller that expected 1) would silently pass the old `< pixelCount`
+      // guard and get read at the wrong stride instead of being declined.
+      if (samples.length !== pixelCount) return null;
       const rgb = new Uint8Array(pixelCount * 3);
       for (let i = 0; i < pixelCount; i++) {
         const gray = invertSeparationTint ? 255 - samples[i] : samples[i];
@@ -1059,7 +1064,18 @@ class ImageExtractorService {
           // image is still better than none at all.
           if (colorSpaceInfo?.kind === 'separation') {
             try {
-              const { data: raw, info } = await sharp(Buffer.from(data)).raw().toBuffer({ resolveWithObject: true });
+              // Real bug, found live on Karsaklian (QC brief Theme B
+              // regression report, 2026-11-24): sharp's own raw() channel
+              // count is NOT governed by the PDF's /ColorSpace -- a JPEG
+              // codestream this producer emitted for a declared single-
+              // colorant /DeviceN [/Black] image actually decoded as 3
+              // channels, not 1, so convertSamplesToRgb's 1-byte-per-pixel
+              // 'separation' read walked the buffer at the wrong stride and
+              // produced a smeared/scanlined image. Forcing greyscale()
+              // before raw() makes sharp itself collapse to a true single
+              // intensity channel regardless of how the JPEG was actually
+              // encoded, instead of trusting the PDF's own claim.
+              const { data: raw, info } = await sharp(Buffer.from(data)).greyscale().raw().toBuffer({ resolveWithObject: true });
               const rgbSamples = convertSamplesToRgb(raw, colorSpaceInfo, info.width * info.height, invertSeparationTint);
               if (rgbSamples) {
                 const converted = await sharp(Buffer.from(rgbSamples), {
