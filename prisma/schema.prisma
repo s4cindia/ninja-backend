@@ -2392,6 +2392,34 @@ model AiAnalysis {
   /// re-analysis (identical to the prior unconditional-reset behavior -- not
   /// a regression), then self-heal once repopulated.
   issueFingerprint     String?
+  /// Set only at the exact moment `status` transitions to 'applied' (the two
+  /// write sites: the single-apply controller and applyApprovedSuggestions'
+  /// own bulk/auto-loop path) -- never touched by the dispatch loop's own
+  /// preserve-on-unchanged upsert, so it reliably marks "when did this row's
+  /// CURRENT applied claim actually happen", unlike `updatedAt` (which every
+  /// re-analysis bumps regardless of whether status changed). Nulled back out
+  /// by revertUnpersistedApplies when a re-audit fails to persist the apply
+  /// (status reverts to 'approved'), and overwritten fresh on every re-apply.
+  /// Compared against the current audit report's own `auditedAt` to decide
+  /// `appliedButUnresolved` below -- see resolveSuggestionStatus's own doc
+  /// comment for the exact rule.
+  appliedAt            DateTime?
+  /// True when a FRESH audit report (its own `auditedAt` later than this
+  /// row's `appliedAt`) still detects the identical finding (same
+  /// issueFingerprint/suggestionType/value) this row was already marked
+  /// 'applied' for -- i.e. the fix didn't take effect, or didn't persist.
+  /// Set instead of preserving 'applied' (status resets to the normal
+  /// pending/approved default so existing status-based counts/filters
+  /// everywhere else need no changes); IssueCard renders this as "Applied --
+  /// still detected" rather than a plain fresh suggestion. Excluded from
+  /// auto-remediation-loop's own automatic apply/actionable-count (human
+  /// Apply only, to avoid an infinite re-apply loop on something already
+  /// proven not to work) and surfaced in the Apply Failure Report. Cleared
+  /// only by a later audit confirming resolution (the row itself stops
+  /// matching/gets pruned) or a human explicitly dismissing/rejecting the
+  /// suggestion -- a bare re-apply alone does NOT clear it; only the next
+  /// audit's own comparison can.
+  appliedButUnresolved Boolean  @default(false)
   createdAt            DateTime @default(now())
   updatedAt            DateTime @updatedAt
 

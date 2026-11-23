@@ -246,6 +246,11 @@ export class PdfAiAnalysisController {
           status: parsed.data.status,
           approvedBy: parsed.data.status === 'approved' ? 'operator' : existing.approvedBy,
           ...(parsed.data.value !== undefined && { value: parsed.data.value }),
+          // An explicit human dismiss/reject is one of only two things that
+          // clear appliedButUnresolved (the other being a later audit no
+          // longer detecting the finding at all) -- "Dismiss" in the UI maps
+          // to this same 'rejected' status, there's no separate action.
+          ...(parsed.data.status === 'rejected' && { appliedButUnresolved: false }),
           updatedAt: new Date(),
         },
       });
@@ -811,10 +816,14 @@ export class PdfAiAnalysisController {
         data: { output: { ...currentOutput, remediatedFileUrl: savedPath } as Prisma.InputJsonObject },
       });
 
-      // Update status to applied
+      // Update status to applied. appliedAt is set fresh on every apply
+      // (resolveSuggestionStatus's own appliedButUnresolved check compares
+      // against it); appliedButUnresolved itself is deliberately NOT reset
+      // here -- a bare re-apply must not clear it, only the next audit's own
+      // comparison or an explicit human reject does.
       const updatedAnalysis = await prisma.aiAnalysis.update({
         where: { jobId_issueId: { jobId, issueId } },
-        data: { status: 'applied', updatedAt: new Date() },
+        data: { status: 'applied', appliedAt: new Date(), updatedAt: new Date() },
       });
 
       logger.info(`[AI Analysis] Applied ${suggestionType} for issue ${issueId} in job ${jobId}`);

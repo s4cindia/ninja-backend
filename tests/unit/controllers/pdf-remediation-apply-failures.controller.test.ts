@@ -41,10 +41,21 @@ function makeReq(overrides: Partial<AuthenticatedRequest> = {}): AuthenticatedRe
   } as unknown as AuthenticatedRequest;
 }
 
+// Distinguishes the two aiAnalysis.findMany calls getApplyFailureReport now
+// makes (appliedButUnresolved rows, then 'failed' rows) by their own where
+// clause shape -- a single shared mockResolvedValue would otherwise return
+// the SAME rows to both queries, since mockResolvedValue isn't call-specific.
+function mockFindManyByQuery(failedRows: unknown[], appliedButUnresolvedRows: unknown[] = []): void {
+  vi.mocked(prisma.aiAnalysis.findMany).mockImplementation(async ({ where }: any) => {
+    return where?.appliedButUnresolved === true ? appliedButUnresolvedRows : failedRows;
+  });
+}
+
 describe('PdfRemediationController.getApplyFailureReport', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(prisma.job.findFirst).mockResolvedValue({ id: 'job-1' } as any);
+    mockFindManyByQuery([]);
   });
 
   it('returns 401 when unauthenticated', async () => {
@@ -61,7 +72,7 @@ describe('PdfRemediationController.getApplyFailureReport', () => {
   });
 
   it('returns an empty report when nothing has permanently failed', async () => {
-    vi.mocked(prisma.aiAnalysis.findMany).mockResolvedValue([]);
+    mockFindManyByQuery([]);
     const res = makeRes();
 
     await pdfRemediationController.getApplyFailureReport(makeReq(), res);
@@ -72,16 +83,19 @@ describe('PdfRemediationController.getApplyFailureReport', () => {
     });
     expect(res.status).toHaveBeenCalledWith(200);
     expect(res.json).toHaveBeenCalledWith(
-      expect.objectContaining({ success: true, data: { totalFailed: 0, groups: [] } })
+      expect.objectContaining({
+        success: true,
+        data: { totalFailed: 0, groups: [], appliedButUnresolved: { count: 0, items: [] } },
+      })
     );
   });
 
   it('groups failures by (suggestionType, reason), with a count and the underlying issueIds per group', async () => {
-    vi.mocked(prisma.aiAnalysis.findMany).mockResolvedValue([
+    mockFindManyByQuery([
       { issueId: 'issue-1', suggestionType: 'table-row-reattach-fix', lastErrorReason: 'Row already has a /P, but it does not match this row\'s own natural reattachment point -- declining rather than guessing' },
       { issueId: 'issue-2', suggestionType: 'table-row-reattach-fix', lastErrorReason: 'Row already has a /P, but it does not match this row\'s own natural reattachment point -- declining rather than guessing' },
       { issueId: 'issue-3', suggestionType: 'color-contrast-fix', lastErrorReason: 'Fix did not verify even after escalating to #000000 (measured ratio 1.06:1, needs 4.5:1)' },
-    ] as any);
+    ]);
     const res = makeRes();
 
     await pdfRemediationController.getApplyFailureReport(makeReq(), res);
@@ -109,12 +123,12 @@ describe('PdfRemediationController.getApplyFailureReport', () => {
   });
 
   it('sorts needs_investigation groups before correctly_skipped ones, and by count descending within a category', async () => {
-    vi.mocked(prisma.aiAnalysis.findMany).mockResolvedValue([
+    mockFindManyByQuery([
       { issueId: 'issue-1', suggestionType: 'a', lastErrorReason: 'declining rather than guessing -- low count' },
       { issueId: 'issue-2', suggestionType: 'b', lastErrorReason: 'declining rather than guessing -- high count' },
       { issueId: 'issue-3', suggestionType: 'b', lastErrorReason: 'declining rather than guessing -- high count' },
       { issueId: 'issue-4', suggestionType: 'c', lastErrorReason: 'a totally unrecognized failure' },
-    ] as any);
+    ]);
     const res = makeRes();
 
     await pdfRemediationController.getApplyFailureReport(makeReq(), res);
@@ -130,10 +144,10 @@ describe('PdfRemediationController.getApplyFailureReport', () => {
   });
 
   it('groups rows with no recorded reason (failed before this column existed) together under a placeholder, instead of dropping them', async () => {
-    vi.mocked(prisma.aiAnalysis.findMany).mockResolvedValue([
+    mockFindManyByQuery([
       { issueId: 'issue-1', suggestionType: 'alt-text', lastErrorReason: null },
       { issueId: 'issue-2', suggestionType: 'alt-text', lastErrorReason: null },
-    ] as any);
+    ]);
     const res = makeRes();
 
     await pdfRemediationController.getApplyFailureReport(makeReq(), res);
@@ -152,5 +166,58 @@ describe('PdfRemediationController.getApplyFailureReport', () => {
     await pdfRemediationController.getApplyFailureReport(makeReq(), res);
 
     expect(res.status).toHaveBeenCalledWith(500);
+  });
+
+  // QC brief Theme B (docs/qc/2026-11-23-ninja-qc-karsaklian-brief.md): a
+  // suggestion marked 'applied' whose identical finding was re-detected on a
+  // later audit. Doesn't fail to apply (no lastErrorReason, not in the
+  // 'failed' groups above) -- its own separate bucket, enriched against the
+  // job's current audit report by fingerprint (issueId churns across
+  // re-audits, so AiAnalysis rows can't be matched to a current issue by id).
+  it('lists appliedButUnresolved rows in their own bucket, enriched with code/pageNumber/element from the current audit report', async () => {
+    vi.mocked(prisma.job.findFirst).mockResolvedValue({
+      id: 'job-1',
+      output: {
+        auditReport: {
+          issues: [
+            { id: 'bookmark-7', code: 'BOOKMARK-MISSING-FRONT-MATTER', element: undefined, pageNumber: 1, boundingBox: undefined },
+          ],
+        },
+      },
+    } as any);
+    const appliedAt = new Date('2026-11-20T10:00:00Z');
+    mockFindManyByQuery([], [
+      { issueId: 'bookmark-3', suggestionType: 'bookmark-generate', issueFingerprint: 'BOOKMARK-MISSING-FRONT-MATTER:1', appliedAt },
+    ]);
+    const res = makeRes();
+
+    await pdfRemediationController.getApplyFailureReport(makeReq(), res);
+
+    const payload = (res.json as any).mock.calls[0][0];
+    expect(payload.data.appliedButUnresolved).toEqual({
+      count: 1,
+      items: [{
+        issueId: 'bookmark-3',
+        suggestionType: 'bookmark-generate',
+        issueFingerprint: 'BOOKMARK-MISSING-FRONT-MATTER:1',
+        appliedAt,
+        code: 'BOOKMARK-MISSING-FRONT-MATTER',
+        pageNumber: 1,
+        element: null,
+      }],
+    });
+  });
+
+  it('falls back to null code/pageNumber/element when the row\'s fingerprint no longer matches any current issue', async () => {
+    vi.mocked(prisma.job.findFirst).mockResolvedValue({ id: 'job-1', output: { auditReport: { issues: [] } } } as any);
+    mockFindManyByQuery([], [
+      { issueId: 'bookmark-3', suggestionType: 'bookmark-generate', issueFingerprint: 'BOOKMARK-MISSING-FRONT-MATTER:1', appliedAt: new Date() },
+    ]);
+    const res = makeRes();
+
+    await pdfRemediationController.getApplyFailureReport(makeReq(), res);
+
+    const payload = (res.json as any).mock.calls[0][0];
+    expect(payload.data.appliedButUnresolved.items[0]).toMatchObject({ code: null, pageNumber: null, element: null });
   });
 });

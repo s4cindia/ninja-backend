@@ -1580,12 +1580,20 @@ class AutoRemediationLoopService {
     // didn't) stays sitting at 'approved' with nothing forcing it back to
     // 'pending'. Counting updateMany's return value alone would miss it and
     // wrongly report convergence with real unapplied work still pending.
+    // appliedButUnresolved rows (QC brief Theme B) are excluded here the
+    // same way ALWAYS_MANUAL_SUGGESTION_TYPE already is -- a prior apply
+    // already proved itself insufficient for this exact finding, so letting
+    // Auto Mode keep re-applying it every round would spin forever on
+    // something already known not to work. Human Apply (applyApprovedSuggestions
+    // with source 'apply_all') is deliberately NOT filtered this way -- see
+    // that method's own conditional exclusion, gated on source === 'auto_loop'.
     const actionableFound = await prisma.aiAnalysis.count({
       where: {
         jobId,
         applyMode: 'apply-to-pdf',
         status: { in: ['pending', 'approved'] },
         suggestionType: { not: ALWAYS_MANUAL_SUGGESTION_TYPE },
+        appliedButUnresolved: { not: true },
       },
     });
     if (actionableFound === 0) {
@@ -1601,6 +1609,7 @@ class AutoRemediationLoopService {
         applyMode: 'apply-to-pdf',
         status: 'pending',
         suggestionType: { not: ALWAYS_MANUAL_SUGGESTION_TYPE },
+        appliedButUnresolved: { not: true },
       },
       data: { status: 'approved', approvedBy: AUTO_MODE_ACTOR },
     });

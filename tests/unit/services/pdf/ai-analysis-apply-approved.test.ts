@@ -74,7 +74,7 @@ describe('aiAnalysisService.applyApprovedSuggestions', () => {
     expect(result.fileName).toBe('doc.pdf');
     expect(prisma.aiAnalysis.update).toHaveBeenCalledWith({
       where: { jobId_issueId: { jobId: 'job-1', issueId: 'issue-1' } },
-      data: { status: 'applied', updatedAt: expect.any(Date) },
+      data: { status: 'applied', appliedAt: expect.any(Date), updatedAt: expect.any(Date) },
     });
     expect(remediationCycleHistoryService.logEvent).toHaveBeenCalledWith(
       expect.objectContaining({ jobId: 'job-1', cycleNumber: 5, action: 'apply_fixes', source: 'apply_all', status: 'completed', appliedCount: 1, failedCount: 0 })
@@ -1062,6 +1062,48 @@ describe('aiAnalysisService.applyApprovedSuggestions', () => {
           status: 'failed',
           updatedAt: expect.any(Date),
         },
+      });
+    });
+  });
+
+  // QC brief Theme B (docs/qc/2026-11-23-ninja-qc-karsaklian-brief.md): a
+  // row already proven not to have resolved its own finding must not be
+  // auto-re-applied forever by Auto Mode -- but a human explicitly clicking
+  // Apply must still be able to.
+  describe('appliedButUnresolved exclusion', () => {
+    it('(e) excludes appliedButUnresolved rows from the query when source is auto_loop', async () => {
+      vi.mocked(prisma.aiAnalysis.findMany).mockResolvedValue([] as any);
+
+      await aiAnalysisService.applyApprovedSuggestions('job-1', 1, 'user-1', 'auto_loop');
+
+      expect(prisma.aiAnalysis.findMany).toHaveBeenCalledWith({
+        where: { jobId: 'job-1', status: 'approved', applyMode: 'apply-to-pdf', appliedButUnresolved: { not: true } },
+        orderBy: { createdAt: 'asc' },
+      });
+    });
+
+    it('(e) still applies an appliedButUnresolved row when source is apply_all (manual Apply)', async () => {
+      vi.mocked(prisma.aiAnalysis.findMany).mockResolvedValue([
+        { issueId: 'issue-1', suggestionType: 'alt-text', value: 'A red apple', appliedButUnresolved: true },
+      ] as any);
+      vi.mocked(fileStorageService.getRemediatedFile).mockResolvedValue(Buffer.from('pdf'));
+      vi.mocked(pdfModifierService.loadPDF).mockResolvedValue({} as any);
+      vi.mocked(pdfModifierService.resolveFigureForImage).mockReturnValue({} as any);
+      vi.mocked(pdfModifierService.setAltText).mockResolvedValue({ success: true, description: 'set' } as any);
+      vi.mocked(pdfModifierService.savePDF).mockResolvedValue(Buffer.from('modified-pdf'));
+      vi.mocked(fileStorageService.saveRemediatedFile).mockResolvedValue('s3://remediated/doc.pdf');
+
+      // No appliedButUnresolved filter for the manual path.
+      const result = await aiAnalysisService.applyApprovedSuggestions('job-1', 1, 'user-1', 'apply_all');
+
+      expect(prisma.aiAnalysis.findMany).toHaveBeenCalledWith({
+        where: { jobId: 'job-1', status: 'approved', applyMode: 'apply-to-pdf' },
+        orderBy: { createdAt: 'asc' },
+      });
+      expect(result.applied).toBe(1);
+      expect(prisma.aiAnalysis.update).toHaveBeenCalledWith({
+        where: { jobId_issueId: { jobId: 'job-1', issueId: 'issue-1' } },
+        data: { status: 'applied', appliedAt: expect.any(Date), updatedAt: expect.any(Date) },
       });
     });
   });

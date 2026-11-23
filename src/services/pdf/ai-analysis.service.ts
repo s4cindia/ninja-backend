@@ -640,15 +640,62 @@ export function buildIssueFingerprint(
  * 'applied' would otherwise fall straight through to defaultStatus below),
  * completely undoing the retry cap and reproducing the exact bug it exists
  * to prevent.
+ *
+ * `appliedButUnresolved` (QC brief Theme B, docs/qc/2026-11-23-ninja-qc-
+ * karsaklian-brief.md): a row marked 'applied' whose underlying finding is
+ * UNCHANGED (same fingerprint/type/value) would normally just preserve
+ * 'applied' above -- but if the CURRENT audit report being analyzed
+ * (`reportAuditedAt`) was generated AFTER this row's own `appliedAt`, that
+ * means a genuinely fresh, post-apply audit still found the identical
+ * problem: the fix didn't take effect, or didn't persist. Resets `status`
+ * to the normal default (so every existing status-based count/filter
+ * elsewhere needs no changes) and flags `appliedButUnresolved: true`
+ * instead of silently keeping the false 'applied' claim.
+ *
+ * Deliberately gated on `reportAuditedAt > existing.appliedAt`, not just
+ * "the row says applied and the finding is unchanged" -- a bare "Re-run AI
+ * Analysis" (which never re-runs validators, only re-generates suggestions
+ * against the SAME stored, possibly pre-apply audit report -- confirmed via
+ * direct pipeline trace, 2026-11-23) would otherwise false-flag every
+ * genuinely-fixed row it touches, since nothing has actually been
+ * re-verified since the apply. A null `existing.appliedAt` (a pre-migration
+ * row, or one whose apply predates this column) or a missing
+ * `reportAuditedAt` never trips the flag -- same self-healing "decline
+ * rather than guess" convention as a null issueFingerprint above.
+ *
+ * Once flagged, `appliedButUnresolved` must survive every later analysis
+ * pass on its own, independent of the applied/failed-only branch below --
+ * flagging a row resets its own `status` to `defaultStatus`, which is
+ * neither 'applied' nor 'failed', so without this it would fall straight
+ * into the first branch below and silently lose the flag (and appliedAt)
+ * on the very next re-analysis. In Auto Mode, which re-analyzes every
+ * round, that re-enables the exact re-apply loop this flag exists to stop,
+ * just on alternate rounds (real bug, caught in review, 2026-11-23). Carries
+ * forward on fingerprint match alone -- not the full suggestionType+value
+ * `unchanged` check below -- so the AI regenerating slightly different
+ * suggestion wording for the SAME underlying finding never spuriously
+ * clears it; only a genuinely different finding at this id (a new
+ * fingerprint) or a human reject does.
  */
 export function resolveSuggestionStatus(
-  existing: { status: string; suggestionType: string; value: string | null; issueFingerprint: string | null } | null,
+  existing: { status: string; suggestionType: string; value: string | null; issueFingerprint: string | null; appliedAt?: Date | null; appliedButUnresolved?: boolean } | null,
   suggestion: Pick<AiSuggestionResult, 'suggestionType' | 'value'>,
   issueFingerprint: string,
-  effectiveApplyMode: AiSuggestionResult['applyMode']
-): string {
+  effectiveApplyMode: AiSuggestionResult['applyMode'],
+  reportAuditedAt?: Date | null
+): { status: string; appliedButUnresolved: boolean; findingUnchanged: boolean } {
   const defaultStatus = effectiveApplyMode === 'auto-resolve' ? 'approved' : 'pending';
-  if (!existing || (existing.status !== 'applied' && existing.status !== 'failed')) return defaultStatus;
+
+  if (existing?.appliedButUnresolved === true) {
+    const sameFingerprint = existing.issueFingerprint === issueFingerprint;
+    return sameFingerprint
+      ? { status: existing.status, appliedButUnresolved: true, findingUnchanged: true }
+      : { status: defaultStatus, appliedButUnresolved: false, findingUnchanged: false };
+  }
+
+  if (!existing || (existing.status !== 'applied' && existing.status !== 'failed')) {
+    return { status: defaultStatus, appliedButUnresolved: false, findingUnchanged: false };
+  }
 
   const unchanged =
     existing.issueFingerprint === issueFingerprint &&
@@ -656,7 +703,18 @@ export function resolveSuggestionStatus(
     existing.value != null &&
     existing.value === suggestion.value;
 
-  return unchanged ? existing.status : defaultStatus;
+  if (!unchanged) return { status: defaultStatus, appliedButUnresolved: false, findingUnchanged: false };
+
+  if (
+    existing.status === 'applied' &&
+    existing.appliedAt &&
+    reportAuditedAt &&
+    reportAuditedAt > existing.appliedAt
+  ) {
+    return { status: defaultStatus, appliedButUnresolved: true, findingUnchanged: true };
+  }
+
+  return { status: existing.status, appliedButUnresolved: false, findingUnchanged: true };
 }
 
 /**
@@ -705,6 +763,66 @@ export function resolveCarriedLastErrorReason(
   resetFailedAttempts: boolean
 ): string | null {
   return resetFailedAttempts ? null : (existing?.lastErrorReason ?? null);
+}
+
+/**
+ * Carry-forward for `appliedAt`, same shape as resolveCarriedFailedAttempts/
+ * resolveCarriedLastErrorReason above, but keyed on `findingUnchanged`
+ * (resolveSuggestionStatus's own third return field) rather than
+ * `resetFailedAttempts` -- a DIFFERENT condition on purpose:
+ * `appliedButUnresolved` rows must keep their own `appliedAt` (the Apply
+ * Failure Report shows it, and the flag's own "only trust a FRESH re-audit"
+ * rule above needs it to survive into the NEXT analysis pass too), so
+ * carrying forward whenever the finding is still the same one -- whether
+ * that resolved to 'applied', 'failed', or the new appliedButUnresolved
+ * reset -- is correct; only a genuinely DIFFERENT finding (new fingerprint/
+ * type/value) should drop the old apply timestamp, since it no longer
+ * describes anything real about the new finding.
+ */
+export function resolveCarriedAppliedAt(
+  existing: { appliedAt: Date | null } | null,
+  findingUnchanged: boolean
+): Date | null {
+  return findingUnchanged ? (existing?.appliedAt ?? null) : null;
+}
+
+/**
+ * QC brief Theme A (docs/qc/2026-11-23-ninja-qc-karsaklian-brief.md):
+ * clears any AiAnalysis row sitting at `issue.id` whose own issueFingerprint
+ * doesn't match this issue's CURRENT fingerprint (or is null -- a
+ * pre-migration row, which never matches any freshly computed one, same
+ * self-healing convention as resolveSuggestionStatus above). Called
+ * specifically from the dispatchIssue `!suggestion` branch, the one place
+ * in analyzeJob's own dispatch loop that never re-derives this issue's row
+ * via fingerprint before moving on -- every other branch does, via
+ * resolveSuggestionStatus's own fallback lookup.
+ *
+ * issue.id is a per-run sequential counter (see buildIssueFingerprint's own
+ * doc comment), so a DIFFERENT finding can reuse the SAME id this round
+ * that an earlier round's finding -- one that DID get a real suggestion --
+ * already occupies. Without this, that finding's stale row (e.g. a real
+ * "Applied") sits under this reused id forever; the frontend pairs purely
+ * by issueId (PdfAuditResultsPage.tsx), so it renders as if THIS issue were
+ * already fixed, even though it's unrelated to what was actually applied.
+ *
+ * Exported standalone (not inlined in the dispatch loop) so this specific
+ * fix is directly unit-testable without exercising analyzeJob's own much
+ * heavier pipeline (PDF parsing, image extraction, AI dispatch) -- same
+ * "impractical to test analyzeJob in-place" rationale as
+ * resolveSuggestionStatus's own doc comment. Never throws -- a failure here
+ * is logged and swallowed by the caller, matching this file's own
+ * established non-fatal-prune convention (the stale-row prune after the
+ * dispatch loop, and the zero-issues early return, both do the same).
+ */
+export async function clearStaleRowForReusedId(jobId: string, issue: Pick<AuditIssue, 'id' | 'code' | 'element' | 'pageNumber' | 'boundingBox'>): Promise<void> {
+  const issueFingerprint = buildIssueFingerprint(issue);
+  await prisma.aiAnalysis.deleteMany({
+    where: {
+      jobId,
+      issueId: issue.id,
+      OR: [{ issueFingerprint: { not: issueFingerprint } }, { issueFingerprint: null }],
+    },
+  });
 }
 // TABLE_LIKELY_FORMULA_CODE is a heuristic redirect (see its own doc comment
 // in pdf-table.validator.ts) — routed through the same AI-drafting path as
@@ -1233,6 +1351,14 @@ class AiAnalysisService {
     const auditReport = output?.auditReport as Record<string, unknown> | undefined;
     const issues = (auditReport?.issues as AuditIssue[] | undefined) ?? [];
     const fileName = (output?.fileName as string | undefined) ?? 'document.pdf';
+    // This report's own generation time, for resolveSuggestionStatus's
+    // appliedButUnresolved check -- stored as an ISO string once persisted
+    // into job.output (a JSON column), not a live Date, so it must be
+    // re-parsed here. Null when the field is missing (an old report
+    // predating this field, or no report at all), which correctly makes
+    // that check a no-op rather than throw.
+    const reportAuditedAtRaw = auditReport?.auditedAt as string | undefined;
+    const reportAuditedAt = reportAuditedAtRaw ? new Date(reportAuditedAtRaw) : null;
 
     // currentIssueIds backs the stale-row pruning done after the dispatch
     // loop below (see the comment there for the full rationale) -- computed
@@ -1370,6 +1496,10 @@ class AiAnalysisService {
           // longer used to decide whether a result gets stored.
           if (!suggestion) {
             skipped++;
+            // QC brief Theme A -- see clearStaleRowForReusedId's own doc comment.
+            await clearStaleRowForReusedId(jobId, issue).catch((err) => {
+              logger.warn(`[AiAnalysis] Failed to clear a stale row for reused issue id ${issue.id} (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
+            });
             return;
           }
 
@@ -1409,7 +1539,7 @@ class AiAnalysisService {
           const issueFingerprint = buildIssueFingerprint(issue);
           let existing = await prisma.aiAnalysis.findUnique({
             where: { jobId_issueId: { jobId, issueId: issue.id } },
-            select: { status: true, suggestionType: true, value: true, issueFingerprint: true, failedAttempts: true, lastErrorReason: true },
+            select: { status: true, suggestionType: true, value: true, issueFingerprint: true, failedAttempts: true, lastErrorReason: true, appliedAt: true, appliedButUnresolved: true },
           });
           // Fallback: issue.id can be stale even for THIS issue. An intervening
           // re-audit (e.g. applyAll's internal reauditAndCompare) regenerates every
@@ -1424,7 +1554,7 @@ class AiAnalysisService {
           if (!existing || existing.issueFingerprint !== issueFingerprint) {
             const byFingerprint = await prisma.aiAnalysis.findFirst({
               where: { jobId, issueFingerprint },
-              select: { status: true, suggestionType: true, value: true, issueFingerprint: true, failedAttempts: true, lastErrorReason: true },
+              select: { status: true, suggestionType: true, value: true, issueFingerprint: true, failedAttempts: true, lastErrorReason: true, appliedAt: true, appliedButUnresolved: true },
               // Stale rows can accumulate under successive old ids sharing this
               // fingerprint across repeated re-audits — take the most recently
               // written one, not an arbitrary one.
@@ -1432,7 +1562,9 @@ class AiAnalysisService {
             });
             if (byFingerprint) existing = byFingerprint;
           }
-          const status = resolveSuggestionStatus(existing, suggestion, issueFingerprint, effectiveApplyMode);
+          const { status, appliedButUnresolved, findingUnchanged } = resolveSuggestionStatus(
+            existing, suggestion, issueFingerprint, effectiveApplyMode, reportAuditedAt
+          );
           // The finding genuinely changed out from under a previously 'failed'
           // row (resolveSuggestionStatus returned something other than
           // 'failed') -- give it a clean slate of attempts rather than
@@ -1440,6 +1572,7 @@ class AiAnalysisService {
           const resetFailedAttempts = existing?.status === 'failed' && status !== 'failed';
           const carriedFailedAttempts = resolveCarriedFailedAttempts(existing, resetFailedAttempts);
           const carriedLastErrorReason = resolveCarriedLastErrorReason(existing, resetFailedAttempts);
+          const carriedAppliedAt = resolveCarriedAppliedAt(existing, findingUnchanged);
 
           await prisma.aiAnalysis.upsert({
             where: { jobId_issueId: { jobId, issueId: issue.id } },
@@ -1459,6 +1592,8 @@ class AiAnalysisService {
               issueFingerprint,
               failedAttempts: carriedFailedAttempts,
               lastErrorReason: carriedLastErrorReason,
+              appliedAt: carriedAppliedAt,
+              appliedButUnresolved,
               updatedAt: new Date(),
             },
             update: {
@@ -1475,6 +1610,8 @@ class AiAnalysisService {
               issueFingerprint,
               failedAttempts: carriedFailedAttempts,
               lastErrorReason: carriedLastErrorReason,
+              appliedAt: carriedAppliedAt,
+              appliedButUnresolved,
               updatedAt: new Date(),
             },
           });
@@ -4499,8 +4636,21 @@ class AiAnalysisService {
       ? { in: ['approved', 'pending'] as string[] }
       : ('approved' as const);
 
+    // appliedButUnresolved rows (QC brief Theme B) are excluded ONLY for the
+    // auto-loop source -- a prior apply already proved itself insufficient
+    // for this exact finding, so letting Auto Mode keep re-applying it every
+    // round would spin forever on something already known not to work.
+    // Human-triggered Apply (source 'apply_all', including an individual
+    // card's own Apply button via a dedicated single-issue call elsewhere)
+    // must still be able to apply these rows -- the whole point of the flag
+    // is "needs a human look", not "permanently blocked".
     const approved = await prisma.aiAnalysis.findMany({
-      where: { jobId, status: statusFilter, applyMode: 'apply-to-pdf' },
+      where: {
+        jobId,
+        status: statusFilter,
+        applyMode: 'apply-to-pdf',
+        ...(source === 'auto_loop' ? { appliedButUnresolved: { not: true } } : {}),
+      },
       orderBy: { createdAt: 'asc' },
     });
 
@@ -5212,7 +5362,11 @@ class AiAnalysisService {
           applied++;
           await prisma.aiAnalysis.update({
             where: { jobId_issueId: { jobId, issueId } },
-            data: { status: 'applied', updatedAt: new Date() },
+            // appliedButUnresolved is deliberately NOT reset here -- a bare
+            // re-apply must not clear it; only the next audit's own
+            // comparison (resolveSuggestionStatus above) or an explicit
+            // human reject does.
+            data: { status: 'applied', appliedAt: new Date(), updatedAt: new Date() },
           });
         } else {
           failed++;
