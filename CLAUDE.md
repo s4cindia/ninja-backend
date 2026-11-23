@@ -61,6 +61,10 @@ This project runs on **Windows with MSYS bash**. Always account for Windows-spec
 - **Shell Scripts:** When writing shell scripts or hooks, account for MSYS path translation quirks
 - **Line Endings:** Windows uses CRLF (`\r\n`), Linux uses LF (`\n`) - git typically handles this automatically
 
+### Real PDF Test Files
+
+Never commit a real/client PDF, or any extracted content from one, to either repo — both are public. Real documents used for QC/regression work (manual investigation, or the `scripts/qc-regression/` corpus) live in a local directory **outside both repo clones** (`QC_CORPUS_DIR`, see `scripts/qc-regression/README.md`), referred to only by anonymous id in anything committed. Unit tests use synthetic fixtures only — built in-test (e.g. via pdf-lib) or tiny generated files under `tests/fixtures/pdf/`, never bytes extracted from a real title.
+
 ---
 
 ## Project Structure

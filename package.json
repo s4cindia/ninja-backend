@@ -14,7 +14,8 @@
     "test:coverage": "vitest run --coverage",
     "lint": "eslint src/ tests/ --max-warnings 0",
     "status": "bash .claude/bin/ninja-status.sh",
-    "script:migrate-citation-links": "npx tsx scripts/migrate-citation-links.ts"
+    "script:migrate-citation-links": "npx tsx scripts/migrate-citation-links.ts",
+    "qc:regression": "npx tsx scripts/qc-regression/run-corpus.ts"
   },
   "keywords": [
     "ninja",
