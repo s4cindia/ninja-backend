@@ -108,7 +108,7 @@ describe('dispatchIssue: formula-transcript size/shape gate (Theme B2)', () => {
 
   it('refuses a large bbox even with a small-looking yRange -- falls through, not the formula-transcript path', async () => {
     vi.mocked(decodePageContent).mockReturnValue(INLINE_FORMULA_CONTENT);
-    const issue = figureIssue({ boundingBox: { x: 0, y: 0, width: 300, height: 15, pageWidth: 600, pageHeight: 800 } });
+    const issue = figureIssue({ boundingBox: { x: 0, y: 0, width: 400, height: 15, pageWidth: 600, pageHeight: 800 } });
 
     const res = await svc.dispatchIssue(issue, buildParsed(), CONFIG, new Map(), new Map(), new Map());
 

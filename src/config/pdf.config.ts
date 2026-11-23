@@ -131,16 +131,25 @@ export const pdfConfig = {
   // labels) sails through it and gets misread as inline math notation (real
   // incident: Fig 7.1's axis labels "5"/"10" became "subscript"/
   // "superscript"). ai-analysis.service.ts's dispatch gates on these before
-  // accepting a transcript -- a genuine small inline expression's own bbox
-  // (Karsaklian_189165_9781606497623.pdf) stays within these; starting
-  // points, tune against a real maths-heavy title (Math_Weir_PDF.pdf) before
-  // relying on them broadly.
-  formulaTranscriptMaxHeightPt: parseInt(process.env.PDF_FORMULA_TRANSCRIPT_MAX_HEIGHT_PT || '24', 10),
-  formulaTranscriptMaxWidthPt: parseInt(process.env.PDF_FORMULA_TRANSCRIPT_MAX_WIDTH_PT || '200', 10),
+  // accepting a transcript. Calibrated against BOTH real titles, not
+  // guessed: Karsaklian_189165_9781606497623.pdf's 7 real vector diagrams
+  // (the ones this gate must refuse) have bbox widths 240-295pt; Math_Weir_
+  // PDF.pdf's 221 genuine inline-formula candidates (the ones this gate
+  // must NOT refuse) have heights p50=32/p90=46/p99=66/max=74pt and widths
+  // p50=110/p90=190/p99=256/max=373pt. The first version of this gate
+  // (24pt/200pt) was verified live to wrongly refuse 87.3% of Math_Weir's
+  // genuine formulas -- height is the clean discriminator (diagrams start
+  // at 96pt, formulas max at 74pt); width is weaker (the two populations'
+  // tails overlap around 240-260pt) and kept only as a secondary guard.
+  formulaTranscriptMaxHeightPt: parseInt(process.env.PDF_FORMULA_TRANSCRIPT_MAX_HEIGHT_PT || '80', 10),
+  formulaTranscriptMaxWidthPt: parseInt(process.env.PDF_FORMULA_TRANSCRIPT_MAX_WIDTH_PT || '320', 10),
   // Second signal alongside the bbox-size check above: how far apart (in PDF
   // points) the transcript's own text fragments sit vertically
   // (getFormulaTranscriptShapeSignals' own yRange) -- one inline expression's
   // sub/superscripts stay within a small band of the main baseline; a
   // diagram's axis/quadrant labels, laid out across a real page area, do not.
+  // Confirmed against Math_Weir_PDF.pdf's real yRange distribution
+  // (p50=1.42, p90=2.95, max=7.96pt) -- 20pt has wide headroom and needed
+  // no adjustment.
   formulaTranscriptMaxYRangePt: parseInt(process.env.PDF_FORMULA_TRANSCRIPT_MAX_Y_RANGE_PT || '20', 10),
 };
