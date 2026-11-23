@@ -8609,20 +8609,35 @@ export class PdfStructureWriterService {
    * figureHasOverlaidContent to detect a Figure whose own span wraps BOTH
    * an embedded raster (Do) AND literal text drawn directly over it (the
    * confirmed BATNA-box shape, F-09: raster-only vision only ever sees the
-   * background, never the overlaid label). Deliberately does not try to
-   * decode or return the text itself (that's extractSingleGlyphAltText's
-   * and buildFormulaTranscript's own job, for a span with NO embedded
-   * image) -- this is a plain boolean presence check, reusable regardless
-   * of whether the span also contains Do/sh/EI (those two methods refuse
-   * entirely the moment they see one; this one does not, since detecting
-   * the overlap IS the point here).
+   * background, never the overlaid label). Thin wrapper over
+   * extractReadableTextInSpan -- shares its walk rather than re-deriving
+   * presence separately from text.
    */
   hasReadableTextInSpan(content: string, mcid: number): boolean {
+    return this.extractReadableTextInSpan(content, mcid).length > 0;
+  }
+
+  /**
+   * All readable text-show content in this specific marked-content span,
+   * concatenated with a space between fragments -- used by
+   * hasReadableTextInSpan above (B1a) and by ai-analysis.service.ts's
+   * Theme B3 generic-text/Caption-echo rejection filter (reading a Caption
+   * sibling's own text to compare a drafted short alt against). Returns
+   * '' (never null) when the span can't be found or has no readable
+   * text-show output -- deliberately does not try to decode or return a
+   * hex/symbol marker the way buildFormulaTranscript does (callers here
+   * only need plain comparable text, not a faithful transcript), and does
+   * NOT refuse on Do/sh/EI (unlike buildFormulaTranscript/
+   * extractSingleGlyphAltText) since detecting text alongside other
+   * content is the point for both current callers.
+   */
+  extractReadableTextInSpan(content: string, mcid: number): string {
     const span = this.findMarkedContentSpanForMcid(content, mcid);
-    if (!span) return false;
+    if (!span) return '';
 
     const tokens = tokenize(content);
     let pendingStrings: Array<{ t: string; v: string }> = [];
+    const parts: string[] = [];
 
     for (const tk of tokens) {
       if (tk.start < span.start || tk.start >= span.end) continue;
@@ -8632,16 +8647,17 @@ export class PdfStructureWriterService {
       }
       if (tk.t !== 'op') continue;
       if (tk.v === 'Tj' || tk.v === 'TJ' || tk.v === "'" || tk.v === '"') {
-        const hasReadable = pendingStrings.some(
-          s => s.t === 's' && this.decodePrintableAsciiOnly(s.v).trim().length > 0
-        );
-        if (hasReadable) return true;
+        for (const s of pendingStrings) {
+          if (s.t !== 's') continue;
+          const decoded = this.decodePrintableAsciiOnly(s.v).trim();
+          if (decoded.length > 0) parts.push(decoded);
+        }
         pendingStrings = [];
         continue;
       }
       pendingStrings = [];
     }
-    return false;
+    return parts.join(' ');
   }
 
   /**

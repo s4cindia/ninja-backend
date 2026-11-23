@@ -28,3 +28,20 @@ describe('hasReadableTextInSpan', () => {
     expect(pdfStructureWriterService.hasReadableTextInSpan(content, 999)).toBe(false);
   });
 });
+
+describe('extractReadableTextInSpan', () => {
+  it('concatenates multiple text-show fragments with a space between them', () => {
+    const content = `/Caption <</MCID 2 >>BDC\nBT\n(Figure 5.2:)Tj\n2 0 Td\n(The BATNA box)Tj\nET\nEMC\n`;
+    expect(pdfStructureWriterService.extractReadableTextInSpan(content, 2)).toBe('Figure 5.2: The BATNA box');
+  });
+
+  it('returns an empty string (never null) when there is no readable text', () => {
+    const content = `/Figure <</MCID 0 >>BDC\nq\n/Im0 Do\nQ\nEMC\n`;
+    expect(pdfStructureWriterService.extractReadableTextInSpan(content, 0)).toBe('');
+  });
+
+  it('returns an empty string when the MCID cannot be found on this page', () => {
+    const content = `/Figure <</MCID 0 >>BDC\nBT\n(X)Tj\nET\nEMC\n`;
+    expect(pdfStructureWriterService.extractReadableTextInSpan(content, 999)).toBe('');
+  });
+});

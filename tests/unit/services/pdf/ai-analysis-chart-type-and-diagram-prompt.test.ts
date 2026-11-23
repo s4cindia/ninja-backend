@@ -52,6 +52,14 @@ describe('MANUAL_IF_COMPLEX_IMAGE_TYPES chart matching', () => {
     'routes a complex %s to manual review (the real bug: this never happened before this fix)',
     async (type) => {
       vi.spyOn(svc, 'classifyImageType').mockResolvedValue({ type, complexity: 'complex' });
+      // QC brief Theme B3's short-alt baseline (draftComplexImageBaseline)
+      // tries a real vision call before this guidance-only fallback -- a
+      // generic-sounding draft here declines, so the test still exercises
+      // the fallback path this assertion cares about.
+      vi.spyOn(geminiService, 'generateWithSchema').mockResolvedValue({
+        data: { shortAlt: 'a chart', confidence: 0.4, rationale: 'r' },
+        usage: { promptTokens: 1, completionTokens: 1 },
+      } as never);
       vi.spyOn(aiAnalysisService as never, 'tryGenerateFallbackAltText' as never).mockResolvedValue(null as never);
 
       const res = await svc.analyzeAltText(ISSUE, IMAGE, 'apply-to-pdf', 'job-1', 'tenant-1');

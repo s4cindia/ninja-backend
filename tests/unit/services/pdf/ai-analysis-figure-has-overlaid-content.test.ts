@@ -15,7 +15,7 @@ vi.mock('../../../../src/services/pdf/pdf-content-stream-io', () => ({
   decodePageContent: vi.fn(),
 }));
 
-import { figureHasOverlaidContent } from '../../../../src/services/pdf/ai-analysis.service';
+import { figureHasOverlaidContent, boundingBoxOverlapFraction } from '../../../../src/services/pdf/ai-analysis.service';
 import { pdfModifierService } from '../../../../src/services/pdf/pdf-modifier.service';
 import { pdfStructureWriterService } from '../../../../src/services/pdf/pdf-structure-writer.service';
 import { extractStructureTagsForPage } from '../../../../src/services/pdf/structure-tag-inventory.service';
@@ -92,5 +92,24 @@ describe('figureHasOverlaidContent', () => {
     vi.mocked(extractStructureTagsForPage).mockReturnValue([]);
 
     expect(figureHasOverlaidContent({} as PDFDocument, 1, 'img_p1_0_Im0', BBOX)).toBe(false);
+  });
+});
+
+describe('boundingBoxOverlapFraction', () => {
+  it('treats a zero-area single-point anchor box (the normal shape for ordinary single-line text) sitting inside the other box as full containment (1), not an undefined/forced-zero ratio over zero area', () => {
+    const point = { x: 150, y: 520, width: 0, height: 0 };
+    expect(boundingBoxOverlapFraction(point, BBOX)).toBe(1);
+    expect(boundingBoxOverlapFraction(BBOX, point)).toBe(1);
+  });
+
+  it('returns 0 for a zero-area point OUTSIDE the other box', () => {
+    const point = { x: 900, y: 900, width: 0, height: 0 };
+    expect(boundingBoxOverlapFraction(point, BBOX)).toBe(0);
+  });
+
+  it('still computes a genuine fraction for two real (non-zero-area) boxes', () => {
+    const a = { x: 0, y: 0, width: 10, height: 10 };
+    const b = { x: 5, y: 0, width: 10, height: 10 }; // half of a's area overlaps
+    expect(boundingBoxOverlapFraction(a, b)).toBeCloseTo(0.5);
   });
 });

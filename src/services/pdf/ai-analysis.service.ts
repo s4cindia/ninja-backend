@@ -21,9 +21,9 @@ import { getModelPricing } from '../../config/pricing.config';
 import { aiConfig } from '../../config/ai.config';
 import { pdfConfig } from '../../config/pdf.config';
 import { fileStorageService } from '../storage/file-storage.service';
-import type { PDFDocument } from 'pdf-lib';
+import { PDFDict, type PDFDocument } from 'pdf-lib';
 import { pdfModifierService } from './pdf-modifier.service';
-import { extractStructureTagsForPage } from './structure-tag-inventory.service';
+import { extractStructureTagsForPage, resolveElementRef } from './structure-tag-inventory.service';
 import { pdfStructureWriterService, type FixResult } from './pdf-structure-writer.service';
 import {
   collectHeadingStyleData,
@@ -853,11 +853,24 @@ export function boundingBoxOverlapFraction(
   a: { x: number; y: number; width: number; height: number },
   b: { x: number; y: number; width: number; height: number }
 ): number {
+  // `< 0` (not `<= 0`) -- a struct element's bbox is very often a
+  // single-point anchor (zero width/height: the allowSinglePointBoxes
+  // convention extractStructureTagsForPage's own doc comment documents as
+  // the NORMAL shape for ordinary single-line text, e.g. an InDesign
+  // export's own one-MCID-per-line /P/Span convention), so an exact-zero
+  // overlap extent is this point sitting exactly on the other box's edge,
+  // not "no overlap at all".
   const overlapX = Math.min(a.x + a.width, b.x + b.width) - Math.max(a.x, b.x);
   const overlapY = Math.min(a.y + a.height, b.y + b.height) - Math.max(a.y, b.y);
-  if (overlapX <= 0 || overlapY <= 0) return 0;
+  if (overlapX < 0 || overlapY < 0) return 0;
   const smallerArea = Math.min(a.width * a.height, b.width * b.height);
-  return smallerArea > 0 ? (overlapX * overlapY) / smallerArea : 0;
+  // One of the two boxes has zero area (a single-point anchor) AND its
+  // point lies within the other box's bounds (confirmed by the overlapX/
+  // overlapY check above) -- treat that as full containment (fraction 1)
+  // rather than an undefined/forced-zero ratio over zero area, which would
+  // otherwise make this function silently never fire for the single most
+  // common real bbox shape in this codebase.
+  return smallerArea > 0 ? (overlapX * overlapY) / smallerArea : 1;
 }
 
 /**
@@ -907,6 +920,58 @@ export function figureHasOverlaidContent(
       boundingBoxOverlapFraction(figureBbox, sibling.bbox) >= OVERLAP_MIN_FRACTION
   );
 }
+
+/**
+ * QC brief Theme B3 (docs/qc/2026-11-23-ninja-qc-karsaklian-brief.md):
+ * the text of a 'Caption'-tagged sibling near this Figure's own bbox, if
+ * one exists -- used by the short-alt-baseline rejection filter to decline
+ * auto-applying a drafted alt text that just echoes the Figure's own
+ * printed caption verbatim (not a real description, just a parrot). Best-
+ * effort: returns null on anything short of a confident match (no Caption
+ * found, or one that's far from the Figure) rather than guessing -- a
+ * missed Caption only means this ONE filter signal doesn't fire, not that
+ * the whole auto-apply decision is wrong.
+ */
+export function findNearbyCaptionText(
+  doc: PDFDocument,
+  pageNumber: number,
+  figureBbox: { x: number; y: number; width: number; height: number } | undefined
+): string | null {
+  if (!figureBbox) return null;
+
+  // A caption typically sits directly below/above a figure (not
+  // necessarily overlapping it at all, unlike figureHasOverlaidContent's
+  // own signal 2) -- horizontal X-ranges overlap, and the vertical gap
+  // between the two boxes' nearest edges is small.
+  const MAX_VERTICAL_GAP_PT = 40;
+  const captions = extractStructureTagsForPage(doc, pageNumber).filter((el) => el.tag === 'Caption');
+  const nearby = captions.find((c) => {
+    // `< 0` (not `<= 0`) -- a Caption's bbox is very often a single-point
+    // anchor (zero width/height, same allowSinglePointBoxes convention
+    // structure-tag-inventory.service.ts's own extractStructureTagsForPage
+    // already relies on for ordinary single-line text), so an exact-zero
+    // overlap/gap is the NORMAL case of "this point sits inside/beside the
+    // figure's range", not a real edge case to reject.
+    const horizontalOverlap = Math.min(figureBbox.x + figureBbox.width, c.bbox.x + c.bbox.width) - Math.max(figureBbox.x, c.bbox.x);
+    if (horizontalOverlap < 0) return false;
+    const verticalGap = Math.max(figureBbox.y, c.bbox.y) - Math.min(figureBbox.y + figureBbox.height, c.bbox.y + c.bbox.height);
+    return verticalGap <= MAX_VERTICAL_GAP_PT;
+  });
+  if (!nearby) return null;
+
+  const ref = resolveElementRef(doc, nearby.elementId);
+  const dict = ref ? doc.context.lookup(ref) : null;
+  if (!(dict instanceof PDFDict)) return null;
+
+  const mcids = pdfStructureWriterService.collectLeafMcids(doc, dict);
+  if (mcids.length === 0) return null;
+  const content = decodePageContent(doc, pageNumber);
+  if (!content) return null;
+
+  const text = mcids.map((mcid) => pdfStructureWriterService.extractReadableTextInSpan(content, mcid)).join(' ').trim();
+  return text.length > 0 ? text : null;
+}
+
 // TABLE_LIKELY_FORMULA_CODE is a heuristic redirect (see its own doc comment
 // in pdf-table.validator.ts) — routed through the same AI-drafting path as
 // a genuine formula finding, but analyzeFormulaActualText forces it to stay
@@ -1067,6 +1132,44 @@ const DiagramChartAltTextResult = z.object({
 }).refine(data => data.isDecorative || !!data.altText, {
   message: 'altText is required when isDecorative is false',
 });
+
+// QC brief Theme B3 (docs/qc/2026-11-23-ninja-qc-karsaklian-brief.md):
+// a fresh, vision-grounded call for the auto-applied short-alt baseline on
+// a MANUAL_IF_COMPLEX_IMAGE_TYPES image (never tryGenerateFallbackAltText/
+// photoAltGenerator -- a general-purpose photo describer, not grounded
+// against this specific classification context, per explicit decision).
+// shortAlt is the auto-applied baseline (≤125 chars, same cap as the
+// generic path); longDescription (diagram/chart only) is the fuller
+// structural draft a human reviews and, once approved, becomes the real
+// /Alt (see the "Approve & apply long description" action) -- soft-capped
+// at 1000 chars server-side (the frontend shows its own warning closer to
+// that number; /Alt itself has no real PDF-spec length limit).
+const COMPLEX_IMAGE_BASELINE_SCHEMA: Schema = {
+  type: SchemaType.OBJECT,
+  properties: {
+    shortAlt: { type: SchemaType.STRING },
+    longDescription: { type: SchemaType.STRING },
+    confidence: { type: SchemaType.NUMBER },
+    rationale: { type: SchemaType.STRING },
+  },
+  required: ['confidence', 'rationale'],
+};
+const ComplexImageBaselineResult = z.object({
+  shortAlt: z.string().trim().max(125).optional(),
+  longDescription: z.string().trim().max(1000).optional(),
+  confidence: z.number().min(0).max(1),
+  rationale: z.string(),
+});
+// Bare generic placeholder terms -- whole-word match (not substring), so a
+// genuinely descriptive phrase that happens to contain one of these words
+// ("a flowchart diagram of the approval process") is never falsely
+// rejected; only a shortAlt that amounts to essentially nothing but the
+// bare term qualifies as "too generic to auto-apply".
+const GENERIC_ALT_TEXT_TERMS = ['diagram', 'image', 'figure', 'chart', 'graphic', 'picture'];
+function isGenericAltText(text: string): boolean {
+  const normalized = text.trim().toLowerCase().replace(/^(a|an|the)\s+/, '').replace(/[.!]+$/, '');
+  return GENERIC_ALT_TEXT_TERMS.includes(normalized);
+}
 
 // For the ~50% of struct-tree-only missing-alt Figures that AREN'T
 // extractSingleGlyphAltText's single-glyph shape -- a genuine multi-
@@ -1927,7 +2030,7 @@ class AiAnalysisService {
       const imgWithBase64 =
         img?.base64 && !preferCrop ? img : await this.fallbackToPageRender(img, issue, parsed, pageRenderCache);
       if (!imgWithBase64) return null;
-      return this.analyzeAltText(issue, imgWithBase64, config.altTextMode, jobId, tenantId);
+      return this.analyzeAltText(issue, imgWithBase64, config.altTextMode, jobId, tenantId, parsed.parsedPdf?.pdfLibDoc);
     }
 
     if (ALT_TEXT_IMPROVE_CODES.has(code)) {
@@ -2836,20 +2939,102 @@ class AiAnalysisService {
     }
   }
 
+  /**
+   * QC brief Theme B3 (docs/qc/2026-11-23-ninja-qc-karsaklian-brief.md):
+   * a fresh, vision-grounded draft for a MANUAL_IF_COMPLEX_IMAGE_TYPES
+   * image's auto-applied short-alt baseline (and, for a diagram/chart, a
+   * fuller structural long description for human review) -- deliberately
+   * NOT tryGenerateFallbackAltText/photoAltGenerator (a general-purpose
+   * photo describer, not grounded against THIS specific classification
+   * context; the real F-10/F-12/F-30 failures are exactly this kind of
+   * ungrounded guess). Returns null (never a partial/low-confidence
+   * baseline) when: the vision call fails outright, the drafted shortAlt
+   * is empty or a bare generic placeholder (GENERIC_ALT_TEXT_TERMS), or it
+   * merely echoes a nearby Caption's own printed text -- the caller falls
+   * back to the existing, unchanged guidance-only path in every one of
+   * these cases, exactly as before this fix (never worse, only better).
+   */
+  private async draftComplexImageBaseline(
+    image: ImageInfo,
+    classification: { type: string; complexity: 'simple' | 'complex'; usage?: { promptTokens: number; completionTokens: number } },
+    doc: PDFDocument | undefined,
+    pageNumber: number | undefined,
+    figureBbox: AuditIssue['boundingBox']
+  ): Promise<{ shortAlt: string; longDescription?: string; confidence: number; rationale: string } | null> {
+    const wantsLongDescription = DIAGRAM_OR_CHART_TYPES.has(classification.type);
+    const prompt =
+      `You are an accessibility expert. This ${classification.type} was flagged for expert review, ` +
+      'but a short placeholder description is still needed in the meantime. Respond with:\n' +
+      '"shortAlt": concise alt text (max 125 characters) describing what this actually shows.\n' +
+      (wantsLongDescription
+        ? '"longDescription": a fuller structural description (max 1000 characters) -- axes and what ' +
+          'is at each end, quadrant contents, flow/sequence order, grid rows/columns as applicable.\n'
+        : '') +
+      'Do not use a bare generic placeholder ("a diagram", "an image", "a figure", "a chart") as the ' +
+      'whole of shortAlt -- describe what it actually shows. If you cannot confidently describe it ' +
+      'beyond a generic placeholder, leave "shortAlt" empty.';
+
+    try {
+      const { data } = await geminiService.generateWithSchema(prompt, ComplexImageBaselineResult, {
+        model: 'flash',
+        maxOutputTokens: 2048,
+        responseSchema: COMPLEX_IMAGE_BASELINE_SCHEMA,
+      });
+
+      const shortAlt = data.shortAlt?.trim();
+      if (!shortAlt || isGenericAltText(shortAlt)) return null;
+
+      const captionText = doc && pageNumber ? findNearbyCaptionText(doc, pageNumber, figureBbox) : null;
+      if (captionText && shortAlt.trim().toLowerCase() === captionText.trim().toLowerCase()) return null;
+
+      return { shortAlt, longDescription: data.longDescription?.trim() || undefined, confidence: data.confidence, rationale: data.rationale };
+    } catch (err) {
+      logger.warn(`[AiAnalysis] draftComplexImageBaseline failed: ${err instanceof Error ? err.message : String(err)}`);
+      return null;
+    }
+  }
+
   private async analyzeAltText(
     issue: AuditIssue,
     image: ImageInfo,
     mode: 'apply-to-pdf' | 'guidance-only',
     jobId: string,
-    tenantId: string
+    tenantId: string,
+    doc?: PDFDocument
   ): Promise<AiSuggestionResult | null> {
     // Check if this image type requires a subject matter expert before attempting AI alt text
     const classification = await this.classifyImageType(image.base64!, image.mimeType);
     if (classification) {
-      const needsManual =
-        ALWAYS_MANUAL_IMAGE_TYPES.has(classification.type) ||
-        (MANUAL_IF_COMPLEX_IMAGE_TYPES.has(classification.type) && classification.complexity === 'complex');
-      if (needsManual) {
+      const alwaysManual = ALWAYS_MANUAL_IMAGE_TYPES.has(classification.type);
+      const manualIfComplex = MANUAL_IF_COMPLEX_IMAGE_TYPES.has(classification.type) && classification.complexity === 'complex';
+      if (alwaysManual || manualIfComplex) {
+        // QC brief Theme B3: for MANUAL_IF_COMPLEX_IMAGE_TYPES (never
+        // ALWAYS_MANUAL_IMAGE_TYPES -- equation/circuit genuinely need an
+        // expert for even a short description), try a real, vision-grounded
+        // short-alt baseline first, so a complex diagram/chart doesn't ship
+        // with NO alt at all (F-08) while its long description still
+        // correctly waits for human review.
+        if (manualIfComplex) {
+          const baseline = await this.draftComplexImageBaseline(image, classification, doc, issue.pageNumber, issue.boundingBox);
+          if (baseline) {
+            return {
+              suggestionType: 'alt-text',
+              value: baseline.shortAlt,
+              extendedAlt: baseline.longDescription,
+              guidance: `This ${classification.type} requires a subject matter expert to write an accurate description. A short AI-drafted alt text has been applied as a baseline${baseline.longDescription ? '; a fuller draft description is also available for review' : ''}.`,
+              confidence: baseline.confidence,
+              rationale: baseline.rationale,
+              model: 'gemini-flash',
+              applyMode: 'apply-to-pdf',
+              requiresManualReview: true,
+              usage: classification.usage,
+            };
+          }
+        }
+        // Either ALWAYS_MANUAL_IMAGE_TYPES, or a MANUAL_IF_COMPLEX_IMAGE_TYPES
+        // instance whose baseline draft didn't qualify (generic, a Caption
+        // echo, or the vision call itself failed) -- same guidance-only
+        // fallback this branch has always had, no regression.
         const fallback = await this.tryGenerateFallbackAltText(jobId, tenantId, image);
         return {
           suggestionType: 'alt-text',
