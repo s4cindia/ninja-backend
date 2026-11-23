@@ -8,10 +8,10 @@ Ninja is an EPUB/PDF Accessibility Platform that provides accessibility auditing
 
 ### Repositories
 
-| Repository | Purpose | Replit Workspace |
-|------------|---------|------------------|
-| `ninja-backend` | Express.js REST API | Backend Replit |
-| `ninja-frontend` | React + Vite SPA | Frontend Replit |
+| Repository | Purpose | Local Path |
+|------------|---------|------------|
+| `ninja-backend` | Express.js REST API | `C:\Users\avrve\projects\ninja-workspace\ninja-backend` |
+| `ninja-frontend` | React + Vite SPA | `C:\Users\avrve\projects\ninja-frontend` |
 
 ### Tech Stack
 
@@ -42,27 +42,13 @@ Ninja is an EPUB/PDF Accessibility Platform that provides accessibility auditing
 
 ### Development Environment
 
-**Primary Environment:** Replit
+**Primary Environment:** Claude Code, running directly against each repo's local clone on Windows.
 
-- **Workflow:** All development is done in Replit workspaces
-- **Implementation Style:** Provide **Replit prompts** instead of direct file edits
-- **Repositories:**
-  - **Frontend:** `ninja-frontend` → Replit workspace at `C:\Users\avrve\projects\ninja-frontend`
-  - **Backend:** `ninja-backend` → Replit workspace at `C:\Users\avrve\projects\ninja-backend`
-- **Testing:** Changes are tested in Replit before committing
-- **Version Control:** Changes committed from Replit workspaces to GitHub
-
-**Why Replit Prompts?**
-- Allows developer to review and test changes incrementally
-- Provides clear step-by-step implementation instructions
-- Easier to track what's being changed and why
-- Developer maintains full control over when code is executed
-
-**Prompt Format:**
-- Separate prompts for frontend and backend changes
-- Include file paths, line numbers, and exact code snippets
-- Provide testing instructions after each change
-- Group related changes logically
+- **Workflow:** Claude Code edits files directly in the local clone (no Replit, no intermediate "Replit prompt" step) — `ninja-backend` and `ninja-frontend` are separate local git clones (see the Repositories table above), each with its own branches and PRs.
+- **Implementation Style:** Direct file edits via Claude Code's own tools (Read/Edit/Write), not hand-off prompts for the user to run elsewhere.
+- **Testing:** Run the relevant unit tests, `tsc --noEmit`, and lint locally in the affected repo before committing (see Testing & Validation below).
+- **Version Control:** Claude Code commits and pushes directly from the local clone, then opens a PR with `gh pr create`. PRs are never merged without the user's explicit go-ahead.
+- **Cross-repo changes:** A fix that touches both repos (e.g. a backend API change plus the frontend code that consumes it) gets a separate branch, commit, and PR in each repo — never a change in one repo's working tree bleeding into the other's.
 
 ---
 
@@ -368,7 +354,7 @@ src/
    git checkout main && git pull && git checkout -b feature/feature-name
    ```
 
-2. **Develop in Replit** using prompts provided by Claude
+2. **Implement the change directly** — Claude Code edits files in the local repo clone
 
 3. **Commit and push:**
    ```bash
@@ -394,7 +380,7 @@ Commit Message Convention
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)
 
-Co-Authored-By: Claude Sonnet 4.5 <noreply@anthropic.com>
+Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>
 
 Types: feat, fix, chore, ci, refactor, docs, test
 
@@ -740,9 +726,10 @@ Related Documentation
 - ./WORKFLOW_LINEAGE_DESIGN.md - Workflow tracking
 - ./FEEDBACK_ENHANCEMENT_DESIGN.md - Feedback features
 - ./EPUB_AUDIT_REMEDIATION_USER_GUIDE.md - User documentation
+- ./PDF_AI_REMEDIATION_OPERATOR_GUIDE.md - PDF AI remediation operator procedure (Path A/B, tenant settings, alt-text handling, known fix categories)
 
 ---
-Last updated: February 19, 2026
+Last updated: November 23, 2026
 
 ---
 
