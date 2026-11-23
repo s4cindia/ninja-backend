@@ -929,15 +929,30 @@ export function boundingBoxOverlapFraction(
  * embedded XObject raster alone would never show vision? Two independent
  * signals, confirmed against the real failures:
  *   1. The Figure's own subtree directly owns a readable text-show MCID --
- *      the BATNA-box shape (F-09): one marked-content span wraps BOTH the
- *      image's own Do call and literal text drawn directly over it, so the
- *      raw XObject raster alone ("light grey cabinet door...") is all
- *      analyzeAltText's raster-only path ever sees.
+ *      the BATNA-box shape (F-09, Fig 5.2): one marked-content span wraps
+ *      BOTH the image's own Do call and literal text drawn directly over
+ *      it, so the raw XObject raster alone ("light grey cabinet door...")
+ *      is all analyzeAltText's raster-only path ever sees.
  *   2. A DIFFERENT (non-Figure, non-Caption) struct element on the page
  *      substantially overlaps this Figure's own bbox -- a real overlaid
  *      label, not a Caption (expected sibling, not "overlaid content") or
  *      body text merely abutting the Figure's edge (boundingBoxOverlapFraction's
  *      own small-fraction floor excludes that).
+ *
+ * Finds the Figure struct element by matching ITS OWN bbox against the
+ * page's struct-tag inventory (extractStructureTagsForPage), NOT via
+ * pdfModifierService.resolveFigureForImage -- confirmed via direct
+ * pre-merge verification against the real Karsaklian file that
+ * resolveFigureForImage's own findFigureByImageMcid/findFigureByObjr
+ * matching returns null for Fig 5.2 itself, the brief's own named
+ * motivating example: its single bare MCID wraps the image's Do call AND
+ * unrelated text together, a shape that resolver doesn't handle (it
+ * expects a cleaner one-MCID-per-invocation mapping). The bbox match
+ * below needs nothing from that resolver and correctly finds this exact
+ * shape -- verified live: Fig 5.2's own span decodes to "BATNA Best
+ * Alternative to a Negotiated Agreement RESERVATION PRICE...", the real
+ * lost-definitions text (F-30).
+ *
  * A missing boundingBox declines outright (never guesses from no geometry
  * at all) -- same "decline rather than guess" convention as the rest of
  * this fix.
@@ -945,25 +960,32 @@ export function boundingBoxOverlapFraction(
 export function figureHasOverlaidContent(
   doc: PDFDocument,
   pageNumber: number,
-  figureElement: string,
   figureBbox: { x: number; y: number; width: number; height: number } | undefined
 ): boolean {
   if (!figureBbox) return false;
 
-  const figureDict = pdfModifierService.resolveFigureForImage(doc, figureElement);
-  if (figureDict) {
-    const mcids = pdfStructureWriterService.collectLeafMcids(doc, figureDict);
-    if (mcids.length > 0) {
-      const content = decodePageContent(doc, pageNumber);
-      if (content && mcids.some((mcid) => pdfStructureWriterService.hasReadableTextInSpan(content, mcid))) {
-        return true;
+  const OWN_FIGURE_MATCH_FRACTION = 0.9;
+  const OVERLAP_MIN_FRACTION = 0.3;
+  const pageElements = extractStructureTagsForPage(doc, pageNumber);
+
+  const ownFigure = pageElements.find(
+    (el) => el.tag === 'Figure' && boundingBoxOverlapFraction(figureBbox, el.bbox) >= OWN_FIGURE_MATCH_FRACTION
+  );
+  if (ownFigure) {
+    const ref = resolveElementRef(doc, ownFigure.elementId);
+    const dict = ref ? doc.context.lookup(ref) : null;
+    if (dict instanceof PDFDict) {
+      const mcids = pdfStructureWriterService.collectLeafMcids(doc, dict);
+      if (mcids.length > 0) {
+        const content = decodePageContent(doc, pageNumber);
+        if (content && mcids.some((mcid) => pdfStructureWriterService.hasReadableTextInSpan(content, mcid))) {
+          return true;
+        }
       }
     }
   }
 
-  const OVERLAP_MIN_FRACTION = 0.3;
-  const siblings = extractStructureTagsForPage(doc, pageNumber);
-  return siblings.some(
+  return pageElements.some(
     (sibling) =>
       sibling.tag !== 'Figure' &&
       sibling.tag !== 'Caption' &&
@@ -2089,7 +2111,7 @@ class AiAnalysisService {
         !!img?.base64 &&
         !!issue.boundingBox &&
         !!parsed.parsedPdf &&
-        figureHasOverlaidContent(parsed.parsedPdf.pdfLibDoc, issue.pageNumber!, issue.element!, issue.boundingBox);
+        figureHasOverlaidContent(parsed.parsedPdf.pdfLibDoc, issue.pageNumber!, issue.boundingBox);
       const imgWithBase64 =
         img?.base64 && !preferCrop ? img : await this.fallbackToPageRender(img, issue, parsed, pageRenderCache);
       if (!imgWithBase64) return null;
