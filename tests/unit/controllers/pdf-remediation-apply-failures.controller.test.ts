@@ -41,13 +41,20 @@ function makeReq(overrides: Partial<AuthenticatedRequest> = {}): AuthenticatedRe
   } as unknown as AuthenticatedRequest;
 }
 
-// Distinguishes the two aiAnalysis.findMany calls getApplyFailureReport now
-// makes (appliedButUnresolved rows, then 'failed' rows) by their own where
-// clause shape -- a single shared mockResolvedValue would otherwise return
-// the SAME rows to both queries, since mockResolvedValue isn't call-specific.
-function mockFindManyByQuery(failedRows: unknown[], appliedButUnresolvedRows: unknown[] = []): void {
+// Distinguishes the three aiAnalysis.findMany calls getApplyFailureReport
+// now makes (appliedButUnresolved rows, unresolved-manual-review rows, then
+// 'failed' rows) by their own where clause shape -- a single shared
+// mockResolvedValue would otherwise return the SAME rows to every query,
+// since mockResolvedValue isn't call-specific.
+function mockFindManyByQuery(
+  failedRows: unknown[],
+  appliedButUnresolvedRows: unknown[] = [],
+  unresolvedManualReviewRows: unknown[] = []
+): void {
   vi.mocked(prisma.aiAnalysis.findMany).mockImplementation(async ({ where }: any) => {
-    return where?.appliedButUnresolved === true ? appliedButUnresolvedRows : failedRows;
+    if (where?.appliedButUnresolved === true) return appliedButUnresolvedRows;
+    if (where?.requiresManualReview === true) return unresolvedManualReviewRows;
+    return failedRows;
   });
 }
 
@@ -85,7 +92,12 @@ describe('PdfRemediationController.getApplyFailureReport', () => {
     expect(res.json).toHaveBeenCalledWith(
       expect.objectContaining({
         success: true,
-        data: { totalFailed: 0, groups: [], appliedButUnresolved: { count: 0, items: [] } },
+        data: {
+          totalFailed: 0,
+          groups: [],
+          appliedButUnresolved: { count: 0, items: [] },
+          unresolvedManualReviewFigures: { count: 0, items: [] },
+        },
       })
     );
   });
@@ -219,5 +231,50 @@ describe('PdfRemediationController.getApplyFailureReport', () => {
 
     const payload = (res.json as any).mock.calls[0][0];
     expect(payload.data.appliedButUnresolved.items[0]).toMatchObject({ code: null, pageNumber: null, element: null });
+  });
+
+  // QC brief Theme B3 (docs/qc/2026-11-23-ninja-qc-karsaklian-brief.md):
+  // a requiresManualReview row whose short-alt baseline already applied
+  // but no human has reviewed the long description yet -- status alone
+  // can't identify this, so it's its own bucket, same enrichment pattern
+  // as appliedButUnresolved.
+  it('lists unresolvedManualReviewFigures in their own bucket, enriched with code/pageNumber/element from the current audit report', async () => {
+    vi.mocked(prisma.job.findFirst).mockResolvedValue({
+      id: 'job-1',
+      output: {
+        auditReport: {
+          issues: [
+            { id: 'fig-12', code: 'MATTERHORN-13-001', element: 'img_p10_0_Im0', pageNumber: 10, boundingBox: undefined },
+          ],
+        },
+      },
+    } as any);
+    mockFindManyByQuery([], [], [
+      {
+        issueId: 'fig-12',
+        suggestionType: 'alt-text',
+        issueFingerprint: 'MATTERHORN-13-001:img_p10_0_Im0',
+        value: 'Quadrant diagram comparing cost and value',
+        extendedAlt: 'X axis: cost. Y axis: value...',
+      },
+    ]);
+    const res = makeRes();
+
+    await pdfRemediationController.getApplyFailureReport(makeReq(), res);
+
+    const payload = (res.json as any).mock.calls[0][0];
+    expect(payload.data.unresolvedManualReviewFigures).toEqual({
+      count: 1,
+      items: [{
+        issueId: 'fig-12',
+        suggestionType: 'alt-text',
+        issueFingerprint: 'MATTERHORN-13-001:img_p10_0_Im0',
+        value: 'Quadrant diagram comparing cost and value',
+        extendedAlt: 'X axis: cost. Y axis: value...',
+        code: 'MATTERHORN-13-001',
+        pageNumber: 10,
+        element: 'img_p10_0_Im0',
+      }],
+    });
   });
 });

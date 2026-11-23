@@ -1964,6 +1964,30 @@ export class PdfRemediationController {
         };
       });
 
+      // QC brief Theme B3: a requiresManualReview row (a complex diagram/
+      // chart whose short-alt baseline already auto-applied) whose long
+      // description no human has reviewed yet -- status alone can't
+      // identify this (it's already 'applied' the instant the baseline
+      // auto-applies), so this is its own bucket, same enrichment pattern
+      // as appliedButUnresolved above.
+      const unresolvedManualReviewRows = await prisma.aiAnalysis.findMany({
+        where: { jobId, requiresManualReview: true, manualReviewCompletedAt: null },
+        select: { issueId: true, suggestionType: true, issueFingerprint: true, value: true, extendedAlt: true },
+      });
+      const unresolvedManualReviewItems = unresolvedManualReviewRows.map((row) => {
+        const matchedIssue = row.issueFingerprint ? issueByFingerprint.get(row.issueFingerprint) : undefined;
+        return {
+          issueId: row.issueId,
+          suggestionType: row.suggestionType,
+          issueFingerprint: row.issueFingerprint,
+          value: row.value,
+          extendedAlt: row.extendedAlt,
+          code: matchedIssue?.code ?? null,
+          pageNumber: matchedIssue?.pageNumber ?? null,
+          element: matchedIssue?.element ?? null,
+        };
+      });
+
       const failures = await prisma.aiAnalysis.findMany({
         where: { jobId, status: 'failed' },
         select: { issueId: true, suggestionType: true, lastErrorReason: true },
@@ -2024,6 +2048,7 @@ export class PdfRemediationController {
           // Listed ahead of `groups` in the operator-facing UI -- "we thought
           // this was fixed and it wasn't" is the most actionable thing here.
           appliedButUnresolved: { count: appliedButUnresolvedItems.length, items: appliedButUnresolvedItems },
+          unresolvedManualReviewFigures: { count: unresolvedManualReviewItems.length, items: unresolvedManualReviewItems },
         },
         error: { code: null, message: null, details: null },
       });

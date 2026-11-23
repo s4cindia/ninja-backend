@@ -98,3 +98,45 @@ describe('PdfAiAnalysisController.getAnalysis — hasRemediatedFile', () => {
     expect(fileStorageService.remediatedFileExists).toHaveBeenCalledWith('job-1', 'document.pdf');
   });
 });
+
+// QC brief Theme B3 (docs/qc/2026-11-23-ninja-qc-karsaklian-brief.md): a
+// requiresManualReview row's own status is already 'applied' the instant
+// its short-alt baseline auto-applies -- status alone can't identify it as
+// still needing review.
+describe('PdfAiAnalysisController.getAnalysis — unresolvedManualReviewFigures', () => {
+  let next: NextFunction;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    next = vi.fn();
+    vi.mocked(remediationCycleLockService.getLockStatus).mockResolvedValue({ inProgress: false } as any);
+    vi.mocked(fileStorageService.remediatedFileExists).mockResolvedValue(false);
+  });
+
+  it('counts only requiresManualReview rows whose manualReviewCompletedAt is still null', async () => {
+    vi.mocked(prisma.aiAnalysis.findMany).mockResolvedValue([
+      { issueId: 'fig-1', suggestionType: 'alt-text', issueFingerprint: 'FP1', requiresManualReview: true, manualReviewCompletedAt: null, status: 'applied' },
+      { issueId: 'fig-2', suggestionType: 'alt-text', issueFingerprint: 'FP2', requiresManualReview: true, manualReviewCompletedAt: new Date(), status: 'applied' },
+      { issueId: 'fig-3', suggestionType: 'alt-text', issueFingerprint: 'FP3', requiresManualReview: false, manualReviewCompletedAt: null, status: 'pending' },
+    ] as any);
+    const res = makeRes();
+
+    await pdfAiAnalysisController.getAnalysis(makeReq(), res, next);
+
+    const payload = (res.json as any).mock.calls[0][0];
+    expect(payload.data.unresolvedManualReviewFigures).toEqual({
+      count: 1,
+      items: [{ issueId: 'fig-1', suggestionType: 'alt-text', issueFingerprint: 'FP1' }],
+    });
+  });
+
+  it('reports count: 0 when there are no suggestions at all', async () => {
+    vi.mocked(prisma.aiAnalysis.findMany).mockResolvedValue([] as any);
+    const res = makeRes();
+
+    await pdfAiAnalysisController.getAnalysis(makeReq(), res, next);
+
+    const payload = (res.json as any).mock.calls[0][0];
+    expect(payload.data.unresolvedManualReviewFigures).toEqual({ count: 0, items: [] });
+  });
+});

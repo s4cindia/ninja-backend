@@ -122,8 +122,13 @@ describe('dispatchIssue: MATTERHORN-13-001 tries alt-text-glyph before the AI-vi
       usage: { promptTokens: 50, completionTokens: 20 },
       attempts: 1,
     } as never);
+    // QC brief Theme B2's size/shape gate (ai-analysis.service.ts) requires
+    // issue.boundingBox -- a small, qualifying one here, same as a real
+    // struct-tree-only Figure issue normally carries (pdf-figure-structtree.
+    // validator.ts's own geometry resolution).
+    const issue = { ...issueFor('figure_p1_mc0'), boundingBox: { x: 0, y: 0, width: 80, height: 15, pageWidth: 612, pageHeight: 792 } };
 
-    const res = await svc.dispatchIssue(issueFor('figure_p1_mc0'), parsed, CONFIG, new Map(), new Map(), new Map());
+    const res = await svc.dispatchIssue(issue, parsed, CONFIG, new Map(), new Map(), new Map());
 
     expect(spy).toHaveBeenCalledTimes(1);
     expect(res).not.toBeNull();
@@ -143,8 +148,9 @@ describe('dispatchIssue: MATTERHORN-13-001 tries alt-text-glyph before the AI-vi
       usage: { promptTokens: 50, completionTokens: 20 },
       attempts: 1,
     } as never);
+    const issue = { ...issueFor('figure_p1_mc0'), boundingBox: { x: 0, y: 0, width: 80, height: 15, pageWidth: 612, pageHeight: 792 } };
 
-    const res = await svc.dispatchIssue(issueFor('figure_p1_mc0'), parsed, guidanceOnlyConfig, new Map(), new Map(), new Map());
+    const res = await svc.dispatchIssue(issue, parsed, guidanceOnlyConfig, new Map(), new Map(), new Map());
 
     expect(res).not.toBeNull();
     expect(res.applyMode).toBe('guidance-only');

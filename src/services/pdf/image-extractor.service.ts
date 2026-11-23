@@ -260,7 +260,22 @@ function paethPredictor(a: number, b: number, c: number): number {
  * would otherwise need to interpret a 4-channel (CMYK vs RGBA?) or
  * 1-channel buffer itself.
  */
-export function convertSamplesToRgb(samples: Uint8Array, info: ColorSpaceInfo, pixelCount: number): Uint8Array | null {
+/**
+ * `invertSeparationTint` (default true, matching every pre-existing
+ * caller): whether to apply the 'separation' case's own "full ink == black"
+ * inversion at all. QC brief Theme B1b (docs/qc/2026-11-23-ninja-qc-
+ * karsaklian-brief.md): a producer can set the image dict's own /Decode to
+ * `[1 0]` for a single-component image, meaning it ALREADY encoded the
+ * reversed range -- applying our own inversion on top would double-invert
+ * and get it wrong the other way. Callers pass false when the source
+ * image's own /Decode is already `[1 0]`.
+ */
+export function convertSamplesToRgb(
+  samples: Uint8Array,
+  info: ColorSpaceInfo,
+  pixelCount: number,
+  invertSeparationTint = true
+): Uint8Array | null {
   switch (info.kind) {
     case 'gray': {
       if (samples.length < pixelCount) return null;
@@ -296,7 +311,7 @@ export function convertSamplesToRgb(samples: Uint8Array, info: ColorSpaceInfo, p
       if (samples.length < pixelCount) return null;
       const rgb = new Uint8Array(pixelCount * 3);
       for (let i = 0; i < pixelCount; i++) {
-        const gray = 255 - samples[i];
+        const gray = invertSeparationTint ? 255 - samples[i] : samples[i];
         rgb[i * 3] = gray; rgb[i * 3 + 1] = gray; rgb[i * 3 + 2] = gray;
       }
       return rgb;
@@ -311,7 +326,7 @@ export function convertSamplesToRgb(samples: Uint8Array, info: ColorSpaceInfo, p
           baseSamples[i * baseChannels + c] = info.lookup[off + c] ?? 0;
         }
       }
-      return convertSamplesToRgb(baseSamples, info.base, pixelCount);
+      return convertSamplesToRgb(baseSamples, info.base, pixelCount, invertSeparationTint);
     }
     default:
       return null;
@@ -971,13 +986,25 @@ class ImageExtractorService {
       if (options.includeBase64 && imageData && (format === 'jpeg' || format === 'png')) {
         try {
           // Real /ColorSpace + genuinely-decoded (not still-Filter-encoded)
-          // samples, only for the raw-samples case -- JPEG bytes are
+          // samples, for the raw-samples (PNG) case -- JPEG bytes are
           // self-contained and decoded by sharp/the JPEG-SOI branch below
-          // regardless of the PDF's own stated colorspace metadata.
-          const colorSpaceInfo = format === 'png'
-            ? resolveColorSpaceInfo(dict.context, dict.get(PDFName.of('ColorSpace')))
-            : null;
+          // regardless of the PDF's own stated colorspace metadata, EXCEPT
+          // for a DeviceN/Separation JPEG (QC brief Theme B1b,
+          // docs/qc/2026-11-23-ninja-qc-karsaklian-brief.md): its raw bytes
+          // are ink amounts, not light amounts, so convertToBase64 still
+          // needs colorSpaceInfo to know to invert them -- resolved for
+          // both formats now, used conditionally below.
+          const colorSpaceInfo = resolveColorSpaceInfo(dict.context, dict.get(PDFName.of('ColorSpace')));
           const decodedSamples = format === 'png' ? decodeStreamBytes(xObject) : null;
+          // /Decode [1 0] on a single-component image means the producer
+          // already encoded the reversed range -- our own inversion must
+          // not stack on top of that (see convertSamplesToRgb's own doc
+          // comment). No code anywhere previously read this array at all.
+          const decodeArr = dict.get(PDFName.of('Decode'));
+          const decodeNums = decodeArr instanceof PDFArray
+            ? decodeArr.asArray().map(n => (n instanceof PDFNumber ? n.asNumber() : null))
+            : null;
+          const decodeAlreadyReversed = !!decodeNums && decodeNums.length >= 2 && decodeNums[0] === 1 && decodeNums[1] === 0;
 
           const base64 = await this.convertToBase64(
             imageData as Uint8Array,
@@ -987,7 +1014,8 @@ class ImageExtractorService {
             options.maxImageSize,
             imageInfo.bitsPerComponent,
             colorSpaceInfo,
-            decodedSamples
+            decodedSamples,
+            !decodeAlreadyReversed
           );
 
           if (base64) {
@@ -1013,11 +1041,40 @@ class ImageExtractorService {
     maxSize: number,
     bitsPerComponent?: number,
     colorSpaceInfo?: ColorSpaceInfo | null,
-    decodedSamples?: Uint8Array | null
+    decodedSamples?: Uint8Array | null,
+    invertSeparationTint = true
   ): Promise<string | null> {
     try {
       if (format === 'jpeg') {
         if (data[0] === 0xFF && data[1] === 0xD8) {
+          // QC brief Theme B1b (docs/qc/2026-11-23-ninja-qc-karsaklian-
+          // brief.md, F-13): a one-channel DeviceN/Separation /Black JPEG's
+          // own samples are ink amounts, not light amounts -- the raw bytes
+          // show an inverted image to a vision model unless corrected.
+          // Decodes via sharp first (JPEG is its own codec --
+          // decodeStreamBytes/reversePredictor only handle Flate/LZW-style
+          // filters, not DCTDecode), then reuses the SAME single-colorant
+          // inversion the PNG path below already has. Falls through to the
+          // raw passthrough on any failure here -- a possibly-inverted
+          // image is still better than none at all.
+          if (colorSpaceInfo?.kind === 'separation') {
+            try {
+              const { data: raw, info } = await sharp(Buffer.from(data)).raw().toBuffer({ resolveWithObject: true });
+              const rgbSamples = convertSamplesToRgb(raw, colorSpaceInfo, info.width * info.height, invertSeparationTint);
+              if (rgbSamples) {
+                const converted = await sharp(Buffer.from(rgbSamples), {
+                  raw: { width: info.width, height: info.height, channels: 3 },
+                })
+                  .resize(maxSize, maxSize, { fit: 'inside' })
+                  .png()
+                  .toBuffer();
+                return converted.toString('base64');
+              }
+            } catch (err) {
+              console.warn('Failed to decode DeviceN/Separation JPEG, using raw bytes:', err);
+            }
+          }
+
           if (width > maxSize || height > maxSize) {
             const resized = await sharp(Buffer.from(data))
               .resize(maxSize, maxSize, { fit: 'inside' })
@@ -1043,7 +1100,7 @@ class ImageExtractorService {
       // one of the confirmed-real, handled shapes -- see
       // resolveColorSpaceInfo's and decodeStreamBytes's own doc comments.
       if (bitsPerComponent !== 8 || !colorSpaceInfo || !decodedSamples) return null;
-      const rgbSamples = convertSamplesToRgb(decodedSamples, colorSpaceInfo, width * height);
+      const rgbSamples = convertSamplesToRgb(decodedSamples, colorSpaceInfo, width * height, invertSeparationTint);
       if (!rgbSamples) return null;
 
       try {

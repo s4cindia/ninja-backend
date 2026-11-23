@@ -21,8 +21,9 @@ import { getModelPricing } from '../../config/pricing.config';
 import { aiConfig } from '../../config/ai.config';
 import { pdfConfig } from '../../config/pdf.config';
 import { fileStorageService } from '../storage/file-storage.service';
-import type { PDFDocument } from 'pdf-lib';
+import { PDFDict, type PDFDocument } from 'pdf-lib';
 import { pdfModifierService } from './pdf-modifier.service';
+import { extractStructureTagsForPage, resolveElementRef } from './structure-tag-inventory.service';
 import { pdfStructureWriterService, type FixResult } from './pdf-structure-writer.service';
 import {
   collectHeadingStyleData,
@@ -133,8 +134,25 @@ const SIMPLE_TABLE_MAX_COLUMNS = 6;
 
 // Image types that always require a subject matter expert regardless of complexity
 const ALWAYS_MANUAL_IMAGE_TYPES = new Set(['equation', 'circuit']);
+// QC brief Theme B3 (docs/qc/2026-11-23-ninja-qc-karsaklian-brief.md): real
+// bug found while reading this code, unrelated to Karsaklian specifically
+// -- classifyImageType's own schema (below) never returns the literal
+// string 'chart', only 'bar-chart'/'line-chart'/'pie-chart'. The set below
+// used to contain 'chart', so no chart has EVER triggered manual review on
+// ANY document regardless of complexity -- every complex bar/line/pie
+// chart fell straight through to the generic vision prompt with zero
+// structural guidance. This is a real behavior change: complex charts now
+// go through the manual-review path (DIAGRAM_CHART_TYPES below also gets
+// the structural vision prompt for the ones that stay auto-handled).
 // Image types that require manual review only when complex
-const MANUAL_IF_COMPLEX_IMAGE_TYPES = new Set(['chart', 'diagram']);
+// The real values classifyImageType's own schema actually returns for a
+// chart -- 'chart' itself is never one of them (see the doc comment above).
+const CHART_TYPES = new Set(['bar-chart', 'line-chart', 'pie-chart']);
+const MANUAL_IF_COMPLEX_IMAGE_TYPES = new Set(['diagram', ...CHART_TYPES]);
+// Shared with the structural vision prompt below (axes/quadrants/flow/grid)
+// -- any diagram or chart benefits from that guidance, whether or not this
+// particular instance ends up routed to manual review.
+const DIAGRAM_OR_CHART_TYPES = new Set(['diagram', ...CHART_TYPES]);
 
 // ─── Issue Code Sets ──────────────────────────────────────────────────────────
 
@@ -676,25 +694,58 @@ export function buildIssueFingerprint(
  * suggestion wording for the SAME underlying finding never spuriously
  * clears it; only a genuinely different finding at this id (a new
  * fingerprint) or a human reject does.
+ *
+ * `reviewCompleted` (QC brief Theme B3): same class of bug as
+ * `appliedButUnresolved` above, just protecting MORE than status this
+ * time. A row whose `manualReviewCompletedAt` is set means a human
+ * already completed review (rejected, approved the long description as
+ * the real /Alt, or deliberately kept the short baseline) -- its own
+ * `status` is already back to a normal terminal value by then (not
+ * reliably 'applied'/'failed'), so without this it would fall into the
+ * SAME `!existing || status not in (applied,failed)` branch below and get
+ * silently reset. Worse than appliedButUnresolved's own case: the caller
+ * must ALSO preserve `value`/`extendedAlt`/`requiresManualReview` as-is
+ * (not just `status`) -- draftComplexImageBaseline runs again on every
+ * later analysis pass and will compute a FRESH short-alt guess, which
+ * must never silently replace a human-reviewed value. Clears only on a
+ * fingerprint change (a genuinely different finding landed at this id) --
+ * fingerprint-only, same reasoning as appliedButUnresolved's own rule.
  */
 export function resolveSuggestionStatus(
-  existing: { status: string; suggestionType: string; value: string | null; issueFingerprint: string | null; appliedAt?: Date | null; appliedButUnresolved?: boolean } | null,
+  existing: {
+    status: string;
+    suggestionType: string;
+    value: string | null;
+    issueFingerprint: string | null;
+    appliedAt?: Date | null;
+    appliedButUnresolved?: boolean;
+    manualReviewCompletedAt?: Date | null;
+    extendedAlt?: string | null;
+    requiresManualReview?: boolean | null;
+  } | null,
   suggestion: Pick<AiSuggestionResult, 'suggestionType' | 'value'>,
   issueFingerprint: string,
   effectiveApplyMode: AiSuggestionResult['applyMode'],
   reportAuditedAt?: Date | null
-): { status: string; appliedButUnresolved: boolean; findingUnchanged: boolean } {
+): { status: string; appliedButUnresolved: boolean; findingUnchanged: boolean; reviewCompleted: boolean } {
   const defaultStatus = effectiveApplyMode === 'auto-resolve' ? 'approved' : 'pending';
+
+  if (existing?.manualReviewCompletedAt) {
+    const sameFingerprint = existing.issueFingerprint === issueFingerprint;
+    return sameFingerprint
+      ? { status: existing.status, appliedButUnresolved: existing.appliedButUnresolved ?? false, findingUnchanged: true, reviewCompleted: true }
+      : { status: defaultStatus, appliedButUnresolved: false, findingUnchanged: false, reviewCompleted: false };
+  }
 
   if (existing?.appliedButUnresolved === true) {
     const sameFingerprint = existing.issueFingerprint === issueFingerprint;
     return sameFingerprint
-      ? { status: existing.status, appliedButUnresolved: true, findingUnchanged: true }
-      : { status: defaultStatus, appliedButUnresolved: false, findingUnchanged: false };
+      ? { status: existing.status, appliedButUnresolved: true, findingUnchanged: true, reviewCompleted: false }
+      : { status: defaultStatus, appliedButUnresolved: false, findingUnchanged: false, reviewCompleted: false };
   }
 
   if (!existing || (existing.status !== 'applied' && existing.status !== 'failed')) {
-    return { status: defaultStatus, appliedButUnresolved: false, findingUnchanged: false };
+    return { status: defaultStatus, appliedButUnresolved: false, findingUnchanged: false, reviewCompleted: false };
   }
 
   const unchanged =
@@ -703,7 +754,7 @@ export function resolveSuggestionStatus(
     existing.value != null &&
     existing.value === suggestion.value;
 
-  if (!unchanged) return { status: defaultStatus, appliedButUnresolved: false, findingUnchanged: false };
+  if (!unchanged) return { status: defaultStatus, appliedButUnresolved: false, findingUnchanged: false, reviewCompleted: false };
 
   if (
     existing.status === 'applied' &&
@@ -711,10 +762,10 @@ export function resolveSuggestionStatus(
     reportAuditedAt &&
     reportAuditedAt > existing.appliedAt
   ) {
-    return { status: defaultStatus, appliedButUnresolved: true, findingUnchanged: true };
+    return { status: defaultStatus, appliedButUnresolved: true, findingUnchanged: true, reviewCompleted: false };
   }
 
-  return { status: existing.status, appliedButUnresolved: false, findingUnchanged: true };
+  return { status: existing.status, appliedButUnresolved: false, findingUnchanged: true, reviewCompleted: false };
 }
 
 /**
@@ -787,6 +838,23 @@ export function resolveCarriedAppliedAt(
 }
 
 /**
+ * QC brief Theme B3 (docs/qc/2026-11-23-ninja-qc-karsaklian-brief.md): the
+ * exact same carry-forward shape as resolveCarriedAppliedAt above, for
+ * manualReviewCompletedAt -- gated on resolveSuggestionStatus's own
+ * `reviewCompleted` flag (fingerprint-only match), not `findingUnchanged`
+ * (the broader suggestionType+value check), for the same reason
+ * appliedButUnresolved's own carry-forward uses fingerprint alone: a fresh
+ * AI-regenerated short-alt guess differing in wording from what's stored
+ * must never look like "a different finding" and clear a completed review.
+ */
+export function resolveCarriedManualReviewCompletedAt(
+  existing: { manualReviewCompletedAt: Date | null } | null,
+  reviewCompleted: boolean
+): Date | null {
+  return reviewCompleted ? (existing?.manualReviewCompletedAt ?? null) : null;
+}
+
+/**
  * QC brief Theme A (docs/qc/2026-11-23-ninja-qc-karsaklian-brief.md):
  * clears any AiAnalysis row sitting at `issue.id` whose own issueFingerprint
  * doesn't match this issue's CURRENT fingerprint (or is null -- a
@@ -824,6 +892,158 @@ export async function clearStaleRowForReusedId(jobId: string, issue: Pick<AuditI
     },
   });
 }
+
+/** Overlap area divided by the SMALLER of the two boxes' own area -- a
+ * fraction close to 1 means one box is nearly entirely inside the other
+ * (a real overlaid label/caption); a small fraction means the two boxes
+ * merely abut or clip at an edge (adjacent body text), which must not count
+ * as "overlaid content". Top-left-origin convention, same as every other
+ * bbox in this codebase (structure-tag-inventory.service.ts's own). */
+export function boundingBoxOverlapFraction(
+  a: { x: number; y: number; width: number; height: number },
+  b: { x: number; y: number; width: number; height: number }
+): number {
+  // `< 0` (not `<= 0`) -- a struct element's bbox is very often a
+  // single-point anchor (zero width/height: the allowSinglePointBoxes
+  // convention extractStructureTagsForPage's own doc comment documents as
+  // the NORMAL shape for ordinary single-line text, e.g. an InDesign
+  // export's own one-MCID-per-line /P/Span convention), so an exact-zero
+  // overlap extent is this point sitting exactly on the other box's edge,
+  // not "no overlap at all".
+  const overlapX = Math.min(a.x + a.width, b.x + b.width) - Math.max(a.x, b.x);
+  const overlapY = Math.min(a.y + a.height, b.y + b.height) - Math.max(a.y, b.y);
+  if (overlapX < 0 || overlapY < 0) return 0;
+  const smallerArea = Math.min(a.width * a.height, b.width * b.height);
+  // One of the two boxes has zero area (a single-point anchor) AND its
+  // point lies within the other box's bounds (confirmed by the overlapX/
+  // overlapY check above) -- treat that as full containment (fraction 1)
+  // rather than an undefined/forced-zero ratio over zero area, which would
+  // otherwise make this function silently never fire for the single most
+  // common real bbox shape in this codebase.
+  return smallerArea > 0 ? (overlapX * overlapY) / smallerArea : 1;
+}
+
+/**
+ * QC brief Theme B1a (docs/qc/2026-11-23-ninja-qc-karsaklian-brief.md): does
+ * this Figure have real text/vector content overlaid on it that its own
+ * embedded XObject raster alone would never show vision? Two independent
+ * signals, confirmed against the real failures:
+ *   1. The Figure's own subtree directly owns a readable text-show MCID --
+ *      the BATNA-box shape (F-09, Fig 5.2): one marked-content span wraps
+ *      BOTH the image's own Do call and literal text drawn directly over
+ *      it, so the raw XObject raster alone ("light grey cabinet door...")
+ *      is all analyzeAltText's raster-only path ever sees.
+ *   2. A DIFFERENT (non-Figure, non-Caption) struct element on the page
+ *      substantially overlaps this Figure's own bbox -- a real overlaid
+ *      label, not a Caption (expected sibling, not "overlaid content") or
+ *      body text merely abutting the Figure's edge (boundingBoxOverlapFraction's
+ *      own small-fraction floor excludes that).
+ *
+ * Finds the Figure struct element by matching ITS OWN bbox against the
+ * page's struct-tag inventory (extractStructureTagsForPage), NOT via
+ * pdfModifierService.resolveFigureForImage -- confirmed via direct
+ * pre-merge verification against the real Karsaklian file that
+ * resolveFigureForImage's own findFigureByImageMcid/findFigureByObjr
+ * matching returns null for Fig 5.2 itself, the brief's own named
+ * motivating example: its single bare MCID wraps the image's Do call AND
+ * unrelated text together, a shape that resolver doesn't handle (it
+ * expects a cleaner one-MCID-per-invocation mapping). The bbox match
+ * below needs nothing from that resolver and correctly finds this exact
+ * shape -- verified live: Fig 5.2's own span decodes to "BATNA Best
+ * Alternative to a Negotiated Agreement RESERVATION PRICE...", the real
+ * lost-definitions text (F-30).
+ *
+ * A missing boundingBox declines outright (never guesses from no geometry
+ * at all) -- same "decline rather than guess" convention as the rest of
+ * this fix.
+ */
+export function figureHasOverlaidContent(
+  doc: PDFDocument,
+  pageNumber: number,
+  figureBbox: { x: number; y: number; width: number; height: number } | undefined
+): boolean {
+  if (!figureBbox) return false;
+
+  const OWN_FIGURE_MATCH_FRACTION = 0.9;
+  const OVERLAP_MIN_FRACTION = 0.3;
+  const pageElements = extractStructureTagsForPage(doc, pageNumber);
+
+  const ownFigure = pageElements.find(
+    (el) => el.tag === 'Figure' && boundingBoxOverlapFraction(figureBbox, el.bbox) >= OWN_FIGURE_MATCH_FRACTION
+  );
+  if (ownFigure) {
+    const ref = resolveElementRef(doc, ownFigure.elementId);
+    const dict = ref ? doc.context.lookup(ref) : null;
+    if (dict instanceof PDFDict) {
+      const mcids = pdfStructureWriterService.collectLeafMcids(doc, dict);
+      if (mcids.length > 0) {
+        const content = decodePageContent(doc, pageNumber);
+        if (content && mcids.some((mcid) => pdfStructureWriterService.hasReadableTextInSpan(content, mcid))) {
+          return true;
+        }
+      }
+    }
+  }
+
+  return pageElements.some(
+    (sibling) =>
+      sibling.tag !== 'Figure' &&
+      sibling.tag !== 'Caption' &&
+      boundingBoxOverlapFraction(figureBbox, sibling.bbox) >= OVERLAP_MIN_FRACTION
+  );
+}
+
+/**
+ * QC brief Theme B3 (docs/qc/2026-11-23-ninja-qc-karsaklian-brief.md):
+ * the text of a 'Caption'-tagged sibling near this Figure's own bbox, if
+ * one exists -- used by the short-alt-baseline rejection filter to decline
+ * auto-applying a drafted alt text that just echoes the Figure's own
+ * printed caption verbatim (not a real description, just a parrot). Best-
+ * effort: returns null on anything short of a confident match (no Caption
+ * found, or one that's far from the Figure) rather than guessing -- a
+ * missed Caption only means this ONE filter signal doesn't fire, not that
+ * the whole auto-apply decision is wrong.
+ */
+export function findNearbyCaptionText(
+  doc: PDFDocument,
+  pageNumber: number,
+  figureBbox: { x: number; y: number; width: number; height: number } | undefined
+): string | null {
+  if (!figureBbox) return null;
+
+  // A caption typically sits directly below/above a figure (not
+  // necessarily overlapping it at all, unlike figureHasOverlaidContent's
+  // own signal 2) -- horizontal X-ranges overlap, and the vertical gap
+  // between the two boxes' nearest edges is small.
+  const MAX_VERTICAL_GAP_PT = 40;
+  const captions = extractStructureTagsForPage(doc, pageNumber).filter((el) => el.tag === 'Caption');
+  const nearby = captions.find((c) => {
+    // `< 0` (not `<= 0`) -- a Caption's bbox is very often a single-point
+    // anchor (zero width/height, same allowSinglePointBoxes convention
+    // structure-tag-inventory.service.ts's own extractStructureTagsForPage
+    // already relies on for ordinary single-line text), so an exact-zero
+    // overlap/gap is the NORMAL case of "this point sits inside/beside the
+    // figure's range", not a real edge case to reject.
+    const horizontalOverlap = Math.min(figureBbox.x + figureBbox.width, c.bbox.x + c.bbox.width) - Math.max(figureBbox.x, c.bbox.x);
+    if (horizontalOverlap < 0) return false;
+    const verticalGap = Math.max(figureBbox.y, c.bbox.y) - Math.min(figureBbox.y + figureBbox.height, c.bbox.y + c.bbox.height);
+    return verticalGap <= MAX_VERTICAL_GAP_PT;
+  });
+  if (!nearby) return null;
+
+  const ref = resolveElementRef(doc, nearby.elementId);
+  const dict = ref ? doc.context.lookup(ref) : null;
+  if (!(dict instanceof PDFDict)) return null;
+
+  const mcids = pdfStructureWriterService.collectLeafMcids(doc, dict);
+  if (mcids.length === 0) return null;
+  const content = decodePageContent(doc, pageNumber);
+  if (!content) return null;
+
+  const text = mcids.map((mcid) => pdfStructureWriterService.extractReadableTextInSpan(content, mcid)).join(' ').trim();
+  return text.length > 0 ? text : null;
+}
+
 // TABLE_LIKELY_FORMULA_CODE is a heuristic redirect (see its own doc comment
 // in pdf-table.validator.ts) — routed through the same AI-drafting path as
 // a genuine formula finding, but analyzeFormulaActualText forces it to stay
@@ -970,6 +1190,58 @@ const AltTextResult = z.object({
 }).refine(data => data.isDecorative || !!data.altText, {
   message: 'altText is required when isDecorative is false',
 });
+// QC brief Theme B3 (docs/qc/2026-11-23-ninja-qc-karsaklian-brief.md):
+// same shape as AltTextResult, just a higher cap -- a diagram/chart's
+// structural description (axes, quadrants, flow order, grid rows/columns)
+// genuinely needs more room than a generic photo description. Shares
+// ALT_TEXT_SCHEMA at the Gemini-API level (no length constraint there);
+// only the post-validation Zod cap differs.
+const DiagramChartAltTextResult = z.object({
+  isDecorative: z.boolean(),
+  altText: z.string().trim().max(300).optional(),
+  confidence: z.number().min(0).max(1),
+  rationale: z.string(),
+}).refine(data => data.isDecorative || !!data.altText, {
+  message: 'altText is required when isDecorative is false',
+});
+
+// QC brief Theme B3 (docs/qc/2026-11-23-ninja-qc-karsaklian-brief.md):
+// a fresh, vision-grounded call for the auto-applied short-alt baseline on
+// a MANUAL_IF_COMPLEX_IMAGE_TYPES image (never tryGenerateFallbackAltText/
+// photoAltGenerator -- a general-purpose photo describer, not grounded
+// against this specific classification context, per explicit decision).
+// shortAlt is the auto-applied baseline (≤125 chars, same cap as the
+// generic path); longDescription (diagram/chart only) is the fuller
+// structural draft a human reviews and, once approved, becomes the real
+// /Alt (see the "Approve & apply long description" action) -- soft-capped
+// at 1000 chars server-side (the frontend shows its own warning closer to
+// that number; /Alt itself has no real PDF-spec length limit).
+const COMPLEX_IMAGE_BASELINE_SCHEMA: Schema = {
+  type: SchemaType.OBJECT,
+  properties: {
+    shortAlt: { type: SchemaType.STRING },
+    longDescription: { type: SchemaType.STRING },
+    confidence: { type: SchemaType.NUMBER },
+    rationale: { type: SchemaType.STRING },
+  },
+  required: ['confidence', 'rationale'],
+};
+const ComplexImageBaselineResult = z.object({
+  shortAlt: z.string().trim().max(125).optional(),
+  longDescription: z.string().trim().max(1000).optional(),
+  confidence: z.number().min(0).max(1),
+  rationale: z.string(),
+});
+// Bare generic placeholder terms -- whole-word match (not substring), so a
+// genuinely descriptive phrase that happens to contain one of these words
+// ("a flowchart diagram of the approval process") is never falsely
+// rejected; only a shortAlt that amounts to essentially nothing but the
+// bare term qualifies as "too generic to auto-apply".
+const GENERIC_ALT_TEXT_TERMS = ['diagram', 'image', 'figure', 'chart', 'graphic', 'picture'];
+function isGenericAltText(text: string): boolean {
+  const normalized = text.trim().toLowerCase().replace(/^(a|an|the)\s+/, '').replace(/[.!]+$/, '');
+  return GENERIC_ALT_TEXT_TERMS.includes(normalized);
+}
 
 // For the ~50% of struct-tree-only missing-alt Figures that AREN'T
 // extractSingleGlyphAltText's single-glyph shape -- a genuine multi-
@@ -1539,7 +1811,7 @@ class AiAnalysisService {
           const issueFingerprint = buildIssueFingerprint(issue);
           let existing = await prisma.aiAnalysis.findUnique({
             where: { jobId_issueId: { jobId, issueId: issue.id } },
-            select: { status: true, suggestionType: true, value: true, issueFingerprint: true, failedAttempts: true, lastErrorReason: true, appliedAt: true, appliedButUnresolved: true },
+            select: { status: true, suggestionType: true, value: true, issueFingerprint: true, failedAttempts: true, lastErrorReason: true, appliedAt: true, appliedButUnresolved: true, manualReviewCompletedAt: true, extendedAlt: true, requiresManualReview: true },
           });
           // Fallback: issue.id can be stale even for THIS issue. An intervening
           // re-audit (e.g. applyAll's internal reauditAndCompare) regenerates every
@@ -1554,7 +1826,7 @@ class AiAnalysisService {
           if (!existing || existing.issueFingerprint !== issueFingerprint) {
             const byFingerprint = await prisma.aiAnalysis.findFirst({
               where: { jobId, issueFingerprint },
-              select: { status: true, suggestionType: true, value: true, issueFingerprint: true, failedAttempts: true, lastErrorReason: true, appliedAt: true, appliedButUnresolved: true },
+              select: { status: true, suggestionType: true, value: true, issueFingerprint: true, failedAttempts: true, lastErrorReason: true, appliedAt: true, appliedButUnresolved: true, manualReviewCompletedAt: true, extendedAlt: true, requiresManualReview: true },
               // Stale rows can accumulate under successive old ids sharing this
               // fingerprint across repeated re-audits — take the most recently
               // written one, not an arbitrary one.
@@ -1562,7 +1834,7 @@ class AiAnalysisService {
             });
             if (byFingerprint) existing = byFingerprint;
           }
-          const { status, appliedButUnresolved, findingUnchanged } = resolveSuggestionStatus(
+          const { status, appliedButUnresolved, findingUnchanged, reviewCompleted } = resolveSuggestionStatus(
             existing, suggestion, issueFingerprint, effectiveApplyMode, reportAuditedAt
           );
           // The finding genuinely changed out from under a previously 'failed'
@@ -1573,6 +1845,17 @@ class AiAnalysisService {
           const carriedFailedAttempts = resolveCarriedFailedAttempts(existing, resetFailedAttempts);
           const carriedLastErrorReason = resolveCarriedLastErrorReason(existing, resetFailedAttempts);
           const carriedAppliedAt = resolveCarriedAppliedAt(existing, findingUnchanged);
+          const carriedManualReviewCompletedAt = resolveCarriedManualReviewCompletedAt(existing, reviewCompleted);
+          // QC brief Theme B3: once a human has completed review
+          // (reviewCompleted), a FRESH analysis pass's own re-derived
+          // suggestion -- draftComplexImageBaseline runs again every time --
+          // must never silently replace what the human actually reviewed/
+          // approved. Carry the existing row's own value/extendedAlt/
+          // requiresManualReview forward instead of the freshly computed
+          // suggestion's, same spirit as appliedAt's own carry-forward.
+          const effectiveValue = reviewCompleted ? existing!.value : suggestion.value;
+          const effectiveExtendedAlt = reviewCompleted ? existing!.extendedAlt : suggestion.extendedAlt;
+          const effectiveRequiresManualReview = reviewCompleted ? (existing!.requiresManualReview ?? false) : (suggestion.requiresManualReview ?? false);
 
           await prisma.aiAnalysis.upsert({
             where: { jobId_issueId: { jobId, issueId: issue.id } },
@@ -1580,38 +1863,40 @@ class AiAnalysisService {
               jobId,
               issueId: issue.id,
               suggestionType: suggestion.suggestionType,
-              value: suggestion.value,
-              extendedAlt: suggestion.extendedAlt,
+              value: effectiveValue,
+              extendedAlt: effectiveExtendedAlt,
               guidance: suggestion.guidance,
               confidence: suggestion.confidence,
               rationale: suggestion.rationale,
               model: suggestion.model,
               applyMode: effectiveApplyMode,
               status,
-              requiresManualReview: suggestion.requiresManualReview ?? false,
+              requiresManualReview: effectiveRequiresManualReview,
               issueFingerprint,
               failedAttempts: carriedFailedAttempts,
               lastErrorReason: carriedLastErrorReason,
               appliedAt: carriedAppliedAt,
               appliedButUnresolved,
+              manualReviewCompletedAt: carriedManualReviewCompletedAt,
               updatedAt: new Date(),
             },
             update: {
               suggestionType: suggestion.suggestionType,
-              value: suggestion.value,
-              extendedAlt: suggestion.extendedAlt,
+              value: effectiveValue,
+              extendedAlt: effectiveExtendedAlt,
               guidance: suggestion.guidance,
               confidence: suggestion.confidence,
               rationale: suggestion.rationale,
               model: suggestion.model,
               applyMode: effectiveApplyMode,
               status,
-              requiresManualReview: suggestion.requiresManualReview ?? false,
+              requiresManualReview: effectiveRequiresManualReview,
               issueFingerprint,
               failedAttempts: carriedFailedAttempts,
               lastErrorReason: carriedLastErrorReason,
               appliedAt: carriedAppliedAt,
               appliedButUnresolved,
+              manualReviewCompletedAt: carriedManualReviewCompletedAt,
               updatedAt: new Date(),
             },
           });
@@ -1781,20 +2066,56 @@ class AiAnalysisService {
         // before falling through to the image-vision path below, which has
         // nothing useful to work with on these (see
         // analyzeFormulaTranscriptAltText's own doc comment).
-        const transcript = content ? pdfStructureWriterService.buildFormulaTranscript(content, mcid) : null;
-        if (transcript !== null) {
-          const suggestion = await this.analyzeFormulaTranscriptAltText(
-            transcript,
-            config.altTextMode === 'guidance-only' ? 'guidance-only' : 'apply-to-pdf'
-          );
-          if (suggestion) return suggestion;
+        //
+        // QC brief Theme B2: gate on size (issue.boundingBox, already
+        // resolved by the struct-tree validator that emitted this issue)
+        // AND shape (getFormulaTranscriptShapeSignals) before accepting a
+        // transcript at all -- buildFormulaTranscript's own only refusal is
+        // a Do/sh/EI operator in the span, so a vector-drawn diagram (axis
+        // labels, quadrant text) with no embedded image sails through it
+        // untouched and gets misread as inline math notation (real
+        // incident: Fig 7.1's "5"/"10" axis labels became "subscript"/
+        // "superscript"). A missing boundingBox, or a shape signal this gate
+        // doesn't understand, declines rather than guesses -- falls through
+        // to the image/page-render path below, same as a refused transcript
+        // always has.
+        const bbox = issue.boundingBox;
+        const withinFormulaSize =
+          !!bbox && bbox.height <= pdfConfig.formulaTranscriptMaxHeightPt && bbox.width <= pdfConfig.formulaTranscriptMaxWidthPt;
+        if (withinFormulaSize && content) {
+          const shapeSignals = pdfStructureWriterService.getFormulaTranscriptShapeSignals(content, mcid);
+          const looksLikeDiagram = shapeSignals ? shapeSignals.yRange > pdfConfig.formulaTranscriptMaxYRangePt : false;
+          if (shapeSignals && !looksLikeDiagram) {
+            const transcript = pdfStructureWriterService.buildFormulaTranscript(content, mcid);
+            if (transcript !== null) {
+              const suggestion = await this.analyzeFormulaTranscriptAltText(
+                transcript,
+                config.altTextMode === 'guidance-only' ? 'guidance-only' : 'apply-to-pdf'
+              );
+              if (suggestion) return suggestion;
+            }
+          }
         }
       }
 
+      // QC brief Theme B1a: a Figure CAN have a real XObject raster
+      // (img?.base64 truthy) and STILL need the page-render crop instead --
+      // when its own span or the page around it also carries real text/
+      // vector content the raster alone never shows (the BATNA-box shape,
+      // F-09: raster-only vision only ever saw "light grey cabinet door...",
+      // never the overlaid label). Only overrides when there's a bbox to
+      // crop to in the first place; otherwise falls back to the raw image,
+      // same as before this fix.
       const img = issue.element ? imageById.get(issue.element) : undefined;
-      const imgWithBase64 = img?.base64 ? img : await this.fallbackToPageRender(img, issue, parsed, pageRenderCache);
+      const preferCrop =
+        !!img?.base64 &&
+        !!issue.boundingBox &&
+        !!parsed.parsedPdf &&
+        figureHasOverlaidContent(parsed.parsedPdf.pdfLibDoc, issue.pageNumber!, issue.boundingBox);
+      const imgWithBase64 =
+        img?.base64 && !preferCrop ? img : await this.fallbackToPageRender(img, issue, parsed, pageRenderCache);
       if (!imgWithBase64) return null;
-      return this.analyzeAltText(issue, imgWithBase64, config.altTextMode, jobId, tenantId);
+      return this.analyzeAltText(issue, imgWithBase64, config.altTextMode, jobId, tenantId, parsed.parsedPdf?.pdfLibDoc);
     }
 
     if (ALT_TEXT_IMPROVE_CODES.has(code)) {
@@ -2703,20 +3024,102 @@ class AiAnalysisService {
     }
   }
 
+  /**
+   * QC brief Theme B3 (docs/qc/2026-11-23-ninja-qc-karsaklian-brief.md):
+   * a fresh, vision-grounded draft for a MANUAL_IF_COMPLEX_IMAGE_TYPES
+   * image's auto-applied short-alt baseline (and, for a diagram/chart, a
+   * fuller structural long description for human review) -- deliberately
+   * NOT tryGenerateFallbackAltText/photoAltGenerator (a general-purpose
+   * photo describer, not grounded against THIS specific classification
+   * context; the real F-10/F-12/F-30 failures are exactly this kind of
+   * ungrounded guess). Returns null (never a partial/low-confidence
+   * baseline) when: the vision call fails outright, the drafted shortAlt
+   * is empty or a bare generic placeholder (GENERIC_ALT_TEXT_TERMS), or it
+   * merely echoes a nearby Caption's own printed text -- the caller falls
+   * back to the existing, unchanged guidance-only path in every one of
+   * these cases, exactly as before this fix (never worse, only better).
+   */
+  private async draftComplexImageBaseline(
+    image: ImageInfo,
+    classification: { type: string; complexity: 'simple' | 'complex'; usage?: { promptTokens: number; completionTokens: number } },
+    doc: PDFDocument | undefined,
+    pageNumber: number | undefined,
+    figureBbox: AuditIssue['boundingBox']
+  ): Promise<{ shortAlt: string; longDescription?: string; confidence: number; rationale: string } | null> {
+    const wantsLongDescription = DIAGRAM_OR_CHART_TYPES.has(classification.type);
+    const prompt =
+      `You are an accessibility expert. This ${classification.type} was flagged for expert review, ` +
+      'but a short placeholder description is still needed in the meantime. Respond with:\n' +
+      '"shortAlt": concise alt text (max 125 characters) describing what this actually shows.\n' +
+      (wantsLongDescription
+        ? '"longDescription": a fuller structural description (max 1000 characters) -- axes and what ' +
+          'is at each end, quadrant contents, flow/sequence order, grid rows/columns as applicable.\n'
+        : '') +
+      'Do not use a bare generic placeholder ("a diagram", "an image", "a figure", "a chart") as the ' +
+      'whole of shortAlt -- describe what it actually shows. If you cannot confidently describe it ' +
+      'beyond a generic placeholder, leave "shortAlt" empty.';
+
+    try {
+      const { data } = await geminiService.generateWithSchema(prompt, ComplexImageBaselineResult, {
+        model: 'flash',
+        maxOutputTokens: 2048,
+        responseSchema: COMPLEX_IMAGE_BASELINE_SCHEMA,
+      });
+
+      const shortAlt = data.shortAlt?.trim();
+      if (!shortAlt || isGenericAltText(shortAlt)) return null;
+
+      const captionText = doc && pageNumber ? findNearbyCaptionText(doc, pageNumber, figureBbox) : null;
+      if (captionText && shortAlt.trim().toLowerCase() === captionText.trim().toLowerCase()) return null;
+
+      return { shortAlt, longDescription: data.longDescription?.trim() || undefined, confidence: data.confidence, rationale: data.rationale };
+    } catch (err) {
+      logger.warn(`[AiAnalysis] draftComplexImageBaseline failed: ${err instanceof Error ? err.message : String(err)}`);
+      return null;
+    }
+  }
+
   private async analyzeAltText(
     issue: AuditIssue,
     image: ImageInfo,
     mode: 'apply-to-pdf' | 'guidance-only',
     jobId: string,
-    tenantId: string
+    tenantId: string,
+    doc?: PDFDocument
   ): Promise<AiSuggestionResult | null> {
     // Check if this image type requires a subject matter expert before attempting AI alt text
     const classification = await this.classifyImageType(image.base64!, image.mimeType);
     if (classification) {
-      const needsManual =
-        ALWAYS_MANUAL_IMAGE_TYPES.has(classification.type) ||
-        (MANUAL_IF_COMPLEX_IMAGE_TYPES.has(classification.type) && classification.complexity === 'complex');
-      if (needsManual) {
+      const alwaysManual = ALWAYS_MANUAL_IMAGE_TYPES.has(classification.type);
+      const manualIfComplex = MANUAL_IF_COMPLEX_IMAGE_TYPES.has(classification.type) && classification.complexity === 'complex';
+      if (alwaysManual || manualIfComplex) {
+        // QC brief Theme B3: for MANUAL_IF_COMPLEX_IMAGE_TYPES (never
+        // ALWAYS_MANUAL_IMAGE_TYPES -- equation/circuit genuinely need an
+        // expert for even a short description), try a real, vision-grounded
+        // short-alt baseline first, so a complex diagram/chart doesn't ship
+        // with NO alt at all (F-08) while its long description still
+        // correctly waits for human review.
+        if (manualIfComplex) {
+          const baseline = await this.draftComplexImageBaseline(image, classification, doc, issue.pageNumber, issue.boundingBox);
+          if (baseline) {
+            return {
+              suggestionType: 'alt-text',
+              value: baseline.shortAlt,
+              extendedAlt: baseline.longDescription,
+              guidance: `This ${classification.type} requires a subject matter expert to write an accurate description. A short AI-drafted alt text has been applied as a baseline${baseline.longDescription ? '; a fuller draft description is also available for review' : ''}.`,
+              confidence: baseline.confidence,
+              rationale: baseline.rationale,
+              model: 'gemini-flash',
+              applyMode: 'apply-to-pdf',
+              requiresManualReview: true,
+              usage: classification.usage,
+            };
+          }
+        }
+        // Either ALWAYS_MANUAL_IMAGE_TYPES, or a MANUAL_IF_COMPLEX_IMAGE_TYPES
+        // instance whose baseline draft didn't qualify (generic, a Caption
+        // echo, or the vision call itself failed) -- same guidance-only
+        // fallback this branch has always had, no regression.
         const fallback = await this.tryGenerateFallbackAltText(jobId, tenantId, image);
         return {
           suggestionType: 'alt-text',
@@ -2735,17 +3138,31 @@ class AiAnalysisService {
       }
     }
 
-    const prompt =
-      'You are an accessibility expert. Analyze this image and determine if it is decorative ' +
-      '(purely visual, no informational content) or meaningful. If meaningful, write concise ' +
-      'alt text (max 125 characters).';
+    // QC brief Theme B3: a diagram/chart (simple enough to NOT have been
+    // routed to manual review above) still deserves structural description
+    // -- axes, quadrants, flow order, grid structure -- not a flat label
+    // list (the confirmed F-12/F-30/F-31 symptom). Shares DIAGRAM_OR_CHART_TYPES
+    // with the manual-review gate above so both paths agree on what counts
+    // as a diagram/chart.
+    const isDiagramOrChart = !!classification && DIAGRAM_OR_CHART_TYPES.has(classification.type);
+    const prompt = isDiagramOrChart
+      ? 'You are an accessibility expert. Analyze this diagram or chart and determine if it is ' +
+        'decorative (purely visual, no informational content) or meaningful. If meaningful, ' +
+        'write alt text (max 300 characters) describing its STRUCTURE, not just a list of ' +
+        'visible labels: name the axes and what is at each end, the contents of each quadrant ' +
+        'or region, the flow/sequence order if one is shown, and the rows/columns if it is ' +
+        'organized as a grid.'
+      : 'You are an accessibility expert. Analyze this image and determine if it is decorative ' +
+        '(purely visual, no informational content) or meaningful. If meaningful, write concise ' +
+        'alt text (max 125 characters).';
+    const resultSchema = isDiagramOrChart ? DiagramChartAltTextResult : AltTextResult;
 
     try {
       const { data, usage: responseUsage } = await geminiService.analyzeImageWithSchema(
         image.base64!,
         image.mimeType,
         prompt,
-        AltTextResult,
+        resultSchema,
         { model: 'flash', maxOutputTokens: 2048, responseSchema: ALT_TEXT_SCHEMA }
       );
 

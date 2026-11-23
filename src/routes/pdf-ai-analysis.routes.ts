@@ -143,4 +143,17 @@ router.post(
   pdfAiAnalysisController.applySuggestion.bind(pdfAiAnalysisController)
 );
 
+/**
+ * POST /pdf/:jobId/ai-analysis/:issueId/keep-short-alt
+ * QC brief Theme B3 (docs/qc/2026-11-23-ninja-qc-karsaklian-brief.md):
+ * mark a requiresManualReview row's review complete without re-applying --
+ * the already-applied short-alt baseline is good enough as-is.
+ */
+router.post(
+  '/:jobId/ai-analysis/:issueId/keep-short-alt',
+  authenticate,
+  authorizeJob,
+  pdfAiAnalysisController.keepShortAlt.bind(pdfAiAnalysisController)
+);
+
 export default router;

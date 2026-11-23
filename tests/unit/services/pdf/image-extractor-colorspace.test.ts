@@ -61,6 +61,24 @@ describe('convertSamplesToRgb', () => {
     expect(Array.from(rgb!)).toEqual([255, 255, 255, 127, 127, 127, 0, 0, 0]);
   });
 
+  // QC brief Theme B1b (docs/qc/2026-11-23-ninja-qc-karsaklian-brief.md,
+  // F-13): a producer can set /Decode [1 0] on a single-component image,
+  // meaning it already encoded the reversed range -- stacking our own
+  // inversion on top would get it wrong the other way.
+  it('skips the separation inversion when invertSeparationTint is false (the source image\'s own /Decode [1 0] already reversed it)', () => {
+    const samples = Uint8Array.from([0, 128, 255]);
+    const rgb = convertSamplesToRgb(samples, { kind: 'separation' }, 3, false);
+    expect(Array.from(rgb!)).toEqual([0, 0, 0, 128, 128, 128, 255, 255, 255]);
+  });
+
+  it('threads invertSeparationTint through an Indexed image whose base is separation', () => {
+    const lookup = Uint8Array.from([0, 128]); // 2-entry separation palette
+    const info: ColorSpaceInfo = { kind: 'indexed', base: { kind: 'separation' }, lookup };
+    const indices = Uint8Array.from([0, 1]);
+    const rgb = convertSamplesToRgb(indices, info, 2, false);
+    expect(Array.from(rgb!)).toEqual([0, 0, 0, 128, 128, 128]);
+  });
+
   it('expands an Indexed image via its lookup table into the base colorspace, then converts that to RGB', () => {
     // 2-entry CMYK palette: index 0 = pure cyan, index 1 = pure black.
     const lookup = Uint8Array.from([255, 0, 0, 0, /* cyan */ 0, 0, 0, 255 /* black */]);

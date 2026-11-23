@@ -230,16 +230,31 @@ export function describeAutoLoopStop(
    *  e.g. "color-contrast-fix (142)" -- from getStuckCategorySummary.
    *  Undefined when nothing stuck was found (or the lookup itself failed). */
   stuckCategorySummary?: string,
+  /** 'converged' only: how many requiresManualReview rows still have no
+   *  manualReviewCompletedAt (QC brief Theme B3, docs/qc/2026-11-23-ninja-
+   *  qc-karsaklian-brief.md) -- a complex diagram/chart whose short-alt
+   *  baseline auto-applied, but whose long description (or a deliberate
+   *  "keep the short alt" decision) no human has reviewed yet. These rows
+   *  were never counted as actionable/stuck work by the loop itself (see
+   *  the auto-loop's own appliedButUnresolved-mirroring exclusion), so
+   *  "converged" is still the right word -- this just tells the operator
+   *  there's still a manual step waiting. undefined/0 keeps the plain
+   *  message. */
+  unresolvedManualReviewCount?: number,
 ): { type: NotificationType; title: string; message: string } {
   const spent = `$${costSpentUsd.toFixed(2)}`;
   const rounds = `${roundsCompleted} round${roundsCompleted === 1 ? '' : 's'}`;
   switch (stopReason) {
-    case 'converged':
+    case 'converged': {
+      const manualReviewClause = unresolvedManualReviewCount
+        ? ` -- ${unresolvedManualReviewCount} figure${unresolvedManualReviewCount === 1 ? '' : 's'} need manual alt text`
+        : ' -- nothing left to fix automatically';
       return {
         type: 'JOB_COMPLETED',
         title: 'Auto Mode finished',
-        message: `${docLabel} converged after ${rounds} (${spent} spent) -- nothing left to fix automatically. Ready for your review.`,
+        message: `${docLabel} converged after ${rounds} (${spent} spent)${manualReviewClause}. Ready for your review.`,
       };
+    }
     case 'round_limit':
       return {
         type: 'SYSTEM_ALERT',
@@ -1332,12 +1347,19 @@ class AutoRemediationLoopService {
           // Only worth the extra query for a genuine stall -- every other
           // stop reason's message is already specific enough without it.
           notifiableStopReason === 'stalled' ? this.getStuckCategorySummary(jobId) : Promise.resolve(undefined),
+          // QC brief Theme B3 (docs/qc/2026-11-23-ninja-qc-karsaklian-brief.md):
+          // only worth the query on a genuine convergence -- every other
+          // stop reason's message doesn't claim "nothing left to fix", so
+          // there's nothing to qualify.
+          notifiableStopReason === 'converged'
+            ? prisma.aiAnalysis.count({ where: { jobId, requiresManualReview: true, manualReviewCompletedAt: null } })
+            : Promise.resolve(undefined),
         ])
-          .then(([jobRow, stuckCategorySummary]) => {
+          .then(([jobRow, stuckCategorySummary, unresolvedManualReviewCount]) => {
             if (!jobRow) return;
             const fileName = (jobRow.input as Record<string, unknown> | null)?.fileName as string | undefined;
             const label = fileName ? `"${fileName}"` : 'Your document';
-            const { type, title, message } = describeAutoLoopStop(notifiableStopReason, label, roundsCompleted, costSpentUsd, stopErrorMessage, wasEscalated, stuckCategorySummary);
+            const { type, title, message } = describeAutoLoopStop(notifiableStopReason, label, roundsCompleted, costSpentUsd, stopErrorMessage, wasEscalated, stuckCategorySummary, unresolvedManualReviewCount);
             return notificationService.createNotification({
               userId: jobRow.userId,
               tenantId,

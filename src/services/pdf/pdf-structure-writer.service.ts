@@ -2767,7 +2767,7 @@ export class PdfStructureWriterService {
    * data boundary -- every real leaf MCID seen so far sits at depth 2-3
    * (e.g. Table > TR > TD > 3). Mirrors pdfModifierService.collectLeafMcids.
    */
-  private collectLeafMcids(doc: PDFDocument, el: PDFDict, maxDepth = 8, out: number[] = []): number[] {
+  collectLeafMcids(doc: PDFDocument, el: PDFDict, maxDepth = 8, out: number[] = []): number[] {
     if (maxDepth <= 0) return out;
     const items: PDFObject[] = [];
     const k = el.get(PDFName.of('K'));
@@ -8603,6 +8603,64 @@ export class PdfStructureWriterService {
   }
 
   /**
+   * QC brief Theme B1a (docs/qc/2026-11-23-ninja-qc-karsaklian-brief.md):
+   * does this specific marked-content span contain a real, readable
+   * Tj/TJ/'/" text-show op -- used by ai-analysis.service.ts's
+   * figureHasOverlaidContent to detect a Figure whose own span wraps BOTH
+   * an embedded raster (Do) AND literal text drawn directly over it (the
+   * confirmed BATNA-box shape, F-09: raster-only vision only ever sees the
+   * background, never the overlaid label). Thin wrapper over
+   * extractReadableTextInSpan -- shares its walk rather than re-deriving
+   * presence separately from text.
+   */
+  hasReadableTextInSpan(content: string, mcid: number): boolean {
+    return this.extractReadableTextInSpan(content, mcid).length > 0;
+  }
+
+  /**
+   * All readable text-show content in this specific marked-content span,
+   * concatenated with a space between fragments -- used by
+   * hasReadableTextInSpan above (B1a) and by ai-analysis.service.ts's
+   * Theme B3 generic-text/Caption-echo rejection filter (reading a Caption
+   * sibling's own text to compare a drafted short alt against). Returns
+   * '' (never null) when the span can't be found or has no readable
+   * text-show output -- deliberately does not try to decode or return a
+   * hex/symbol marker the way buildFormulaTranscript does (callers here
+   * only need plain comparable text, not a faithful transcript), and does
+   * NOT refuse on Do/sh/EI (unlike buildFormulaTranscript/
+   * extractSingleGlyphAltText) since detecting text alongside other
+   * content is the point for both current callers.
+   */
+  extractReadableTextInSpan(content: string, mcid: number): string {
+    const span = this.findMarkedContentSpanForMcid(content, mcid);
+    if (!span) return '';
+
+    const tokens = tokenize(content);
+    let pendingStrings: Array<{ t: string; v: string }> = [];
+    const parts: string[] = [];
+
+    for (const tk of tokens) {
+      if (tk.start < span.start || tk.start >= span.end) continue;
+      if (tk.t === 's' || tk.t === 'h') {
+        pendingStrings.push({ t: tk.t, v: content.slice(tk.start, tk.end) });
+        continue;
+      }
+      if (tk.t !== 'op') continue;
+      if (tk.v === 'Tj' || tk.v === 'TJ' || tk.v === "'" || tk.v === '"') {
+        for (const s of pendingStrings) {
+          if (s.t !== 's') continue;
+          const decoded = this.decodePrintableAsciiOnly(s.v).trim();
+          if (decoded.length > 0) parts.push(decoded);
+        }
+        pendingStrings = [];
+        continue;
+      }
+      pendingStrings = [];
+    }
+    return parts.join(' ');
+  }
+
+  /**
    * Builds a compact, position-annotated text transcript of a Figure's own
    * marked-content span, for the ~50% of real missing-alt-text Figures that
    * are NOT extractSingleGlyphAltText's single-glyph shape but a genuine
@@ -8646,6 +8704,42 @@ export class PdfStructureWriterService {
    * Figure's own).
    */
   buildFormulaTranscript(content: string, mcid: number): string | null {
+    const data = this.computeFormulaTranscriptData(content, mcid);
+    if (!data) return null;
+
+    const header = data.hasDrawnPath
+      ? 'Transcript of an inline mathematical expression (this figure also contains a drawn line or curve, possibly a radical, fraction bar, or overline):'
+      : 'Transcript of an inline mathematical expression:';
+    return `${header}\n${data.fragments.join('\n')}`;
+  }
+
+  /**
+   * Shape signals for the QC brief Theme B2 gate (ai-analysis.service.ts's
+   * dispatch, right before it accepts buildFormulaTranscript's own output):
+   * distinguishes a genuinely small inline expression from a vector-drawn
+   * diagram with several widely-spaced text labels, neither of which
+   * buildFormulaTranscript's own DRAWING_OPS refusal catches (a diagram
+   * built from fill/line ops only, no Do/sh/EI, sails through it). Shares
+   * computeFormulaTranscriptData's single walk rather than re-deriving these
+   * from the finished string, so the two can never drift apart on what
+   * counts as "this span."
+   *
+   * `yRange` is the spread between the lowest and highest accumulated Td
+   * y-offset across all fragments (each relative to its own nearest Tm) --
+   * one inline expression's sub/superscripts stay within a small band of
+   * the main baseline; a diagram's axis/quadrant labels, laid out across a
+   * real page area, do not.
+   */
+  getFormulaTranscriptShapeSignals(content: string, mcid: number): { hasDrawnPath: boolean; yRange: number } | null {
+    const data = this.computeFormulaTranscriptData(content, mcid);
+    if (!data) return null;
+    return { hasDrawnPath: data.hasDrawnPath, yRange: data.maxY - data.minY };
+  }
+
+  private computeFormulaTranscriptData(
+    content: string,
+    mcid: number
+  ): { fragments: string[]; hasDrawnPath: boolean; minY: number; maxY: number } | null {
     const span = this.findMarkedContentSpanForMcid(content, mcid);
     if (!span) return null;
 
@@ -8660,6 +8754,8 @@ export class PdfStructureWriterService {
     let baselineScale: number | null = null;
     let curScale: number | null = null;
     let curY = 0;
+    let minY = 0;
+    let maxY = 0;
     let numOperands: number[] = [];
     let pendingStrings: Array<{ t: string; v: string }> = [];
 
@@ -8693,6 +8789,8 @@ export class PdfStructureWriterService {
       if (op === 'Td' || op === 'TD') {
         const ty = numOperands[numOperands.length - 1];
         if (typeof ty === 'number' && !Number.isNaN(ty)) curY += ty;
+        if (curY < minY) minY = curY;
+        if (curY > maxY) maxY = curY;
         numOperands = [];
         continue;
       }
@@ -8733,11 +8831,7 @@ export class PdfStructureWriterService {
     }
 
     if (fragments.length === 0) return null;
-
-    const header = hasDrawnPath
-      ? 'Transcript of an inline mathematical expression (this figure also contains a drawn line or curve, possibly a radical, fraction bar, or overline):'
-      : 'Transcript of an inline mathematical expression:';
-    return `${header}\n${fragments.join('\n')}`;
+    return { fragments, hasDrawnPath, minY, maxY };
   }
 
   /**

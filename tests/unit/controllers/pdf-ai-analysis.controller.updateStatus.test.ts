@@ -122,4 +122,43 @@ describe('PdfAiAnalysisController.updateStatus', () => {
     const call = vi.mocked(prisma.aiAnalysis.update).mock.calls[0][0];
     expect(call.data).not.toHaveProperty('appliedButUnresolved');
   });
+
+  // QC brief Theme B3 (docs/qc/2026-11-23-ninja-qc-karsaklian-brief.md):
+  // rejecting a requiresManualReview row is one of the three ways a human
+  // completes that review (accepts the gap) -- the other two are their own
+  // dedicated actions ("Approve & apply long description",
+  // "Keep short alt").
+  it('sets manualReviewCompletedAt when a human rejects a row that requires manual review', async () => {
+    vi.mocked(prisma.aiAnalysis.findUnique).mockResolvedValue({
+      jobId: 'job-1',
+      issueId: 'issue-1',
+      status: 'applied',
+      value: 'Quadrant diagram comparing cost and value',
+      approvedBy: null,
+      requiresManualReview: true,
+    } as any);
+    const res = makeRes();
+
+    await pdfAiAnalysisController.updateStatus(makeReq({ status: 'rejected' }), res, next);
+
+    expect(prisma.aiAnalysis.update).toHaveBeenCalledWith({
+      where: { jobId_issueId: { jobId: 'job-1', issueId: 'issue-1' } },
+      data: {
+        status: 'rejected',
+        approvedBy: null,
+        appliedButUnresolved: false,
+        manualReviewCompletedAt: expect.any(Date),
+        updatedAt: expect.any(Date),
+      },
+    });
+  });
+
+  it('does not set manualReviewCompletedAt when rejecting a row that does NOT require manual review', async () => {
+    const res = makeRes();
+
+    await pdfAiAnalysisController.updateStatus(makeReq({ status: 'rejected' }), res, next);
+
+    const call = vi.mocked(prisma.aiAnalysis.update).mock.calls[0][0];
+    expect(call.data).not.toHaveProperty('manualReviewCompletedAt');
+  });
 });
