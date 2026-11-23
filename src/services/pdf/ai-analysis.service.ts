@@ -134,8 +134,25 @@ const SIMPLE_TABLE_MAX_COLUMNS = 6;
 
 // Image types that always require a subject matter expert regardless of complexity
 const ALWAYS_MANUAL_IMAGE_TYPES = new Set(['equation', 'circuit']);
+// QC brief Theme B3 (docs/qc/2026-11-23-ninja-qc-karsaklian-brief.md): real
+// bug found while reading this code, unrelated to Karsaklian specifically
+// -- classifyImageType's own schema (below) never returns the literal
+// string 'chart', only 'bar-chart'/'line-chart'/'pie-chart'. The set below
+// used to contain 'chart', so no chart has EVER triggered manual review on
+// ANY document regardless of complexity -- every complex bar/line/pie
+// chart fell straight through to the generic vision prompt with zero
+// structural guidance. This is a real behavior change: complex charts now
+// go through the manual-review path (DIAGRAM_CHART_TYPES below also gets
+// the structural vision prompt for the ones that stay auto-handled).
 // Image types that require manual review only when complex
-const MANUAL_IF_COMPLEX_IMAGE_TYPES = new Set(['chart', 'diagram']);
+// The real values classifyImageType's own schema actually returns for a
+// chart -- 'chart' itself is never one of them (see the doc comment above).
+const CHART_TYPES = new Set(['bar-chart', 'line-chart', 'pie-chart']);
+const MANUAL_IF_COMPLEX_IMAGE_TYPES = new Set(['diagram', ...CHART_TYPES]);
+// Shared with the structural vision prompt below (axes/quadrants/flow/grid)
+// -- any diagram or chart benefits from that guidance, whether or not this
+// particular instance ends up routed to manual review.
+const DIAGRAM_OR_CHART_TYPES = new Set(['diagram', ...CHART_TYPES]);
 
 // ─── Issue Code Sets ──────────────────────────────────────────────────────────
 
@@ -1031,6 +1048,20 @@ const ALT_TEXT_SCHEMA: Schema = {
 const AltTextResult = z.object({
   isDecorative: z.boolean(),
   altText: z.string().trim().max(125).optional(),
+  confidence: z.number().min(0).max(1),
+  rationale: z.string(),
+}).refine(data => data.isDecorative || !!data.altText, {
+  message: 'altText is required when isDecorative is false',
+});
+// QC brief Theme B3 (docs/qc/2026-11-23-ninja-qc-karsaklian-brief.md):
+// same shape as AltTextResult, just a higher cap -- a diagram/chart's
+// structural description (axes, quadrants, flow order, grid rows/columns)
+// genuinely needs more room than a generic photo description. Shares
+// ALT_TEXT_SCHEMA at the Gemini-API level (no length constraint there);
+// only the post-validation Zod cap differs.
+const DiagramChartAltTextResult = z.object({
+  isDecorative: z.boolean(),
+  altText: z.string().trim().max(300).optional(),
   confidence: z.number().min(0).max(1),
   rationale: z.string(),
 }).refine(data => data.isDecorative || !!data.altText, {
@@ -2837,17 +2868,31 @@ class AiAnalysisService {
       }
     }
 
-    const prompt =
-      'You are an accessibility expert. Analyze this image and determine if it is decorative ' +
-      '(purely visual, no informational content) or meaningful. If meaningful, write concise ' +
-      'alt text (max 125 characters).';
+    // QC brief Theme B3: a diagram/chart (simple enough to NOT have been
+    // routed to manual review above) still deserves structural description
+    // -- axes, quadrants, flow order, grid structure -- not a flat label
+    // list (the confirmed F-12/F-30/F-31 symptom). Shares DIAGRAM_OR_CHART_TYPES
+    // with the manual-review gate above so both paths agree on what counts
+    // as a diagram/chart.
+    const isDiagramOrChart = !!classification && DIAGRAM_OR_CHART_TYPES.has(classification.type);
+    const prompt = isDiagramOrChart
+      ? 'You are an accessibility expert. Analyze this diagram or chart and determine if it is ' +
+        'decorative (purely visual, no informational content) or meaningful. If meaningful, ' +
+        'write alt text (max 300 characters) describing its STRUCTURE, not just a list of ' +
+        'visible labels: name the axes and what is at each end, the contents of each quadrant ' +
+        'or region, the flow/sequence order if one is shown, and the rows/columns if it is ' +
+        'organized as a grid.'
+      : 'You are an accessibility expert. Analyze this image and determine if it is decorative ' +
+        '(purely visual, no informational content) or meaningful. If meaningful, write concise ' +
+        'alt text (max 125 characters).';
+    const resultSchema = isDiagramOrChart ? DiagramChartAltTextResult : AltTextResult;
 
     try {
       const { data, usage: responseUsage } = await geminiService.analyzeImageWithSchema(
         image.base64!,
         image.mimeType,
         prompt,
-        AltTextResult,
+        resultSchema,
         { model: 'flash', maxOutputTokens: 2048, responseSchema: ALT_TEXT_SCHEMA }
       );
 
