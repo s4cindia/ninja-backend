@@ -1781,13 +1781,35 @@ class AiAnalysisService {
         // before falling through to the image-vision path below, which has
         // nothing useful to work with on these (see
         // analyzeFormulaTranscriptAltText's own doc comment).
-        const transcript = content ? pdfStructureWriterService.buildFormulaTranscript(content, mcid) : null;
-        if (transcript !== null) {
-          const suggestion = await this.analyzeFormulaTranscriptAltText(
-            transcript,
-            config.altTextMode === 'guidance-only' ? 'guidance-only' : 'apply-to-pdf'
-          );
-          if (suggestion) return suggestion;
+        //
+        // QC brief Theme B2: gate on size (issue.boundingBox, already
+        // resolved by the struct-tree validator that emitted this issue)
+        // AND shape (getFormulaTranscriptShapeSignals) before accepting a
+        // transcript at all -- buildFormulaTranscript's own only refusal is
+        // a Do/sh/EI operator in the span, so a vector-drawn diagram (axis
+        // labels, quadrant text) with no embedded image sails through it
+        // untouched and gets misread as inline math notation (real
+        // incident: Fig 7.1's "5"/"10" axis labels became "subscript"/
+        // "superscript"). A missing boundingBox, or a shape signal this gate
+        // doesn't understand, declines rather than guesses -- falls through
+        // to the image/page-render path below, same as a refused transcript
+        // always has.
+        const bbox = issue.boundingBox;
+        const withinFormulaSize =
+          !!bbox && bbox.height <= pdfConfig.formulaTranscriptMaxHeightPt && bbox.width <= pdfConfig.formulaTranscriptMaxWidthPt;
+        if (withinFormulaSize && content) {
+          const shapeSignals = pdfStructureWriterService.getFormulaTranscriptShapeSignals(content, mcid);
+          const looksLikeDiagram = shapeSignals ? shapeSignals.yRange > pdfConfig.formulaTranscriptMaxYRangePt : false;
+          if (shapeSignals && !looksLikeDiagram) {
+            const transcript = pdfStructureWriterService.buildFormulaTranscript(content, mcid);
+            if (transcript !== null) {
+              const suggestion = await this.analyzeFormulaTranscriptAltText(
+                transcript,
+                config.altTextMode === 'guidance-only' ? 'guidance-only' : 'apply-to-pdf'
+              );
+              if (suggestion) return suggestion;
+            }
+          }
         }
       }
 

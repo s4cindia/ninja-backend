@@ -125,4 +125,22 @@ export const pdfConfig = {
   // peak RSS during a comprehensive re-audit on one of the documents above.
   auditLaneConcurrency: parseInt(process.env.PDF_AUDIT_LANE_CONCURRENCY || '4', 10),
   chunkSize: 10,
+  // QC brief Theme B2 (docs/qc/2026-11-23-ninja-qc-karsaklian-brief.md):
+  // buildFormulaTranscript's own only refusal is a Do/sh/EI operator in the
+  // span -- a vector-drawn diagram (fill/line ops only, several text-run
+  // labels) sails through it and gets misread as inline math notation (real
+  // incident: Fig 7.1's axis labels "5"/"10" became "subscript"/
+  // "superscript"). ai-analysis.service.ts's dispatch gates on these before
+  // accepting a transcript -- a genuine small inline expression's own bbox
+  // (Karsaklian_189165_9781606497623.pdf) stays within these; starting
+  // points, tune against a real maths-heavy title (Math_Weir_PDF.pdf) before
+  // relying on them broadly.
+  formulaTranscriptMaxHeightPt: parseInt(process.env.PDF_FORMULA_TRANSCRIPT_MAX_HEIGHT_PT || '24', 10),
+  formulaTranscriptMaxWidthPt: parseInt(process.env.PDF_FORMULA_TRANSCRIPT_MAX_WIDTH_PT || '200', 10),
+  // Second signal alongside the bbox-size check above: how far apart (in PDF
+  // points) the transcript's own text fragments sit vertically
+  // (getFormulaTranscriptShapeSignals' own yRange) -- one inline expression's
+  // sub/superscripts stay within a small band of the main baseline; a
+  // diagram's axis/quadrant labels, laid out across a real page area, do not.
+  formulaTranscriptMaxYRangePt: parseInt(process.env.PDF_FORMULA_TRANSCRIPT_MAX_Y_RANGE_PT || '20', 10),
 };
