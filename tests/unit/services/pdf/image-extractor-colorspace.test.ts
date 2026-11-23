@@ -97,6 +97,18 @@ describe('convertSamplesToRgb', () => {
     expect(convertSamplesToRgb(Uint8Array.from([1]), { kind: 'rgb' }, 1)).toBeNull();
   });
 
+  // Real bug, found live on Karsaklian (QC brief Theme B regression report,
+  // 2026-11-24): a caller can hand 'separation' a samples buffer LONGER
+  // than pixelCount (e.g. sharp decoding a declared-single-colorant JPEG as
+  // 3 actual channels) -- the old `< pixelCount` guard let that through and
+  // read every pixel at the wrong stride, producing a smeared/scanlined
+  // image. 'separation' now requires an EXACT length match, not just a
+  // minimum.
+  it('declines a separation samples buffer that is LONGER than pixelCount, not just shorter (real wrong-stride bug)', () => {
+    const tooLong = Uint8Array.from([10, 10, 10, 20, 20, 20, 30, 30, 30]); // 3x a 3-pixel buffer
+    expect(convertSamplesToRgb(tooLong, { kind: 'separation' }, 3)).toBeNull();
+  });
+
   it('declines an Indexed image whose base colorspace channelsFor cannot determine (defensive, unreachable via resolveColorSpaceInfo today)', () => {
     const bogusBase = { kind: 'unknown' } as unknown as ColorSpaceInfo;
     const info: ColorSpaceInfo = { kind: 'indexed', base: bogusBase, lookup: Uint8Array.from([0]) };

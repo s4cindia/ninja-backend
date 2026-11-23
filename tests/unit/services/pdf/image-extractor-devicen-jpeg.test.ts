@@ -32,6 +32,20 @@ async function decodedGrayValue(base64: string): Promise<number> {
   return data[0]; // RGB, equal channels for a converted grayscale/separation image
 }
 
+/** A real, genuinely 3-channel-encoded JPEG whose pixels happen to be
+ * grayscale (R=G=B) -- the real-world shape that broke live on Karsaklian
+ * (QC brief Theme B regression report, 2026-11-24): a producer emitted a
+ * declared single-colorant /DeviceN [/Black] image as a standard 3-
+ * component JPEG, not a true 1-component one. Built by encoding genuinely
+ * 3-channel raw data (never 1-channel raw reinterpreted), so sharp's own
+ * decoder really does report channels:3 for this fixture -- confirmed by
+ * the first assertion below, not assumed. Synthetic end-to-end: no bytes
+ * from the real Karsaklian file are used anywhere. */
+async function makeThreeChannelGrayscaleJpeg(tint: number): Promise<Buffer> {
+  const raw = Buffer.alloc(8 * 8 * 3, tint);
+  return sharp(raw, { raw: { width: 8, height: 8, channels: 3 } }).jpeg({ quality: 100 }).toBuffer();
+}
+
 describe('convertToBase64: DeviceN/Separation JPEG decode', () => {
   it('inverts a /Black separation JPEG (ink amount -> light amount) before returning it', async () => {
     const jpeg = await makeOneChannelJpeg(10); // near-full ink
@@ -55,6 +69,25 @@ describe('convertToBase64: DeviceN/Separation JPEG decode', () => {
     expect(base64).toBeTruthy();
     // No inversion -- raw sample ~10 stays near-black.
     expect(await decodedGrayValue(base64)).toBeLessThan(55);
+  });
+
+  it('correctly inverts a single-colorant image even when sharp decodes its JPEG as 3 channels, not 1 (real-world DeviceN encoding shape, not the synthetic 1-channel case above)', async () => {
+    const jpeg = await makeThreeChannelGrayscaleJpeg(10); // near-full ink
+
+    // Confirm the premise first: this fixture's own JPEG really does decode
+    // as 3 channels via sharp's raw(), not 1 -- otherwise this test
+    // wouldn't be exercising the real bug shape at all.
+    const { info } = await sharp(jpeg).raw().toBuffer({ resolveWithObject: true });
+    expect(info.channels).toBe(3);
+
+    const base64 = await svc.convertToBase64(
+      new Uint8Array(jpeg), 'jpeg', 8, 8, 1024, 8, { kind: 'separation' }, null, true
+    );
+
+    expect(base64).toBeTruthy();
+    // Same near-full-ink-inverts-to-near-white assertion as the 1-channel
+    // case -- must hold regardless of sharp's own decoded channel count.
+    expect(await decodedGrayValue(base64)).toBeGreaterThan(200);
   });
 
   it('returns the raw JPEG bytes unchanged when colorSpaceInfo is not separation (e.g. a normal RGB photo)', async () => {
