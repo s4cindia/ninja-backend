@@ -694,25 +694,58 @@ export function buildIssueFingerprint(
  * suggestion wording for the SAME underlying finding never spuriously
  * clears it; only a genuinely different finding at this id (a new
  * fingerprint) or a human reject does.
+ *
+ * `reviewCompleted` (QC brief Theme B3): same class of bug as
+ * `appliedButUnresolved` above, just protecting MORE than status this
+ * time. A row whose `manualReviewCompletedAt` is set means a human
+ * already completed review (rejected, approved the long description as
+ * the real /Alt, or deliberately kept the short baseline) -- its own
+ * `status` is already back to a normal terminal value by then (not
+ * reliably 'applied'/'failed'), so without this it would fall into the
+ * SAME `!existing || status not in (applied,failed)` branch below and get
+ * silently reset. Worse than appliedButUnresolved's own case: the caller
+ * must ALSO preserve `value`/`extendedAlt`/`requiresManualReview` as-is
+ * (not just `status`) -- draftComplexImageBaseline runs again on every
+ * later analysis pass and will compute a FRESH short-alt guess, which
+ * must never silently replace a human-reviewed value. Clears only on a
+ * fingerprint change (a genuinely different finding landed at this id) --
+ * fingerprint-only, same reasoning as appliedButUnresolved's own rule.
  */
 export function resolveSuggestionStatus(
-  existing: { status: string; suggestionType: string; value: string | null; issueFingerprint: string | null; appliedAt?: Date | null; appliedButUnresolved?: boolean } | null,
+  existing: {
+    status: string;
+    suggestionType: string;
+    value: string | null;
+    issueFingerprint: string | null;
+    appliedAt?: Date | null;
+    appliedButUnresolved?: boolean;
+    manualReviewCompletedAt?: Date | null;
+    extendedAlt?: string | null;
+    requiresManualReview?: boolean | null;
+  } | null,
   suggestion: Pick<AiSuggestionResult, 'suggestionType' | 'value'>,
   issueFingerprint: string,
   effectiveApplyMode: AiSuggestionResult['applyMode'],
   reportAuditedAt?: Date | null
-): { status: string; appliedButUnresolved: boolean; findingUnchanged: boolean } {
+): { status: string; appliedButUnresolved: boolean; findingUnchanged: boolean; reviewCompleted: boolean } {
   const defaultStatus = effectiveApplyMode === 'auto-resolve' ? 'approved' : 'pending';
+
+  if (existing?.manualReviewCompletedAt) {
+    const sameFingerprint = existing.issueFingerprint === issueFingerprint;
+    return sameFingerprint
+      ? { status: existing.status, appliedButUnresolved: existing.appliedButUnresolved ?? false, findingUnchanged: true, reviewCompleted: true }
+      : { status: defaultStatus, appliedButUnresolved: false, findingUnchanged: false, reviewCompleted: false };
+  }
 
   if (existing?.appliedButUnresolved === true) {
     const sameFingerprint = existing.issueFingerprint === issueFingerprint;
     return sameFingerprint
-      ? { status: existing.status, appliedButUnresolved: true, findingUnchanged: true }
-      : { status: defaultStatus, appliedButUnresolved: false, findingUnchanged: false };
+      ? { status: existing.status, appliedButUnresolved: true, findingUnchanged: true, reviewCompleted: false }
+      : { status: defaultStatus, appliedButUnresolved: false, findingUnchanged: false, reviewCompleted: false };
   }
 
   if (!existing || (existing.status !== 'applied' && existing.status !== 'failed')) {
-    return { status: defaultStatus, appliedButUnresolved: false, findingUnchanged: false };
+    return { status: defaultStatus, appliedButUnresolved: false, findingUnchanged: false, reviewCompleted: false };
   }
 
   const unchanged =
@@ -721,7 +754,7 @@ export function resolveSuggestionStatus(
     existing.value != null &&
     existing.value === suggestion.value;
 
-  if (!unchanged) return { status: defaultStatus, appliedButUnresolved: false, findingUnchanged: false };
+  if (!unchanged) return { status: defaultStatus, appliedButUnresolved: false, findingUnchanged: false, reviewCompleted: false };
 
   if (
     existing.status === 'applied' &&
@@ -729,10 +762,10 @@ export function resolveSuggestionStatus(
     reportAuditedAt &&
     reportAuditedAt > existing.appliedAt
   ) {
-    return { status: defaultStatus, appliedButUnresolved: true, findingUnchanged: true };
+    return { status: defaultStatus, appliedButUnresolved: true, findingUnchanged: true, reviewCompleted: false };
   }
 
-  return { status: existing.status, appliedButUnresolved: false, findingUnchanged: true };
+  return { status: existing.status, appliedButUnresolved: false, findingUnchanged: true, reviewCompleted: false };
 }
 
 /**
@@ -802,6 +835,23 @@ export function resolveCarriedAppliedAt(
   findingUnchanged: boolean
 ): Date | null {
   return findingUnchanged ? (existing?.appliedAt ?? null) : null;
+}
+
+/**
+ * QC brief Theme B3 (docs/qc/2026-11-23-ninja-qc-karsaklian-brief.md): the
+ * exact same carry-forward shape as resolveCarriedAppliedAt above, for
+ * manualReviewCompletedAt -- gated on resolveSuggestionStatus's own
+ * `reviewCompleted` flag (fingerprint-only match), not `findingUnchanged`
+ * (the broader suggestionType+value check), for the same reason
+ * appliedButUnresolved's own carry-forward uses fingerprint alone: a fresh
+ * AI-regenerated short-alt guess differing in wording from what's stored
+ * must never look like "a different finding" and clear a completed review.
+ */
+export function resolveCarriedManualReviewCompletedAt(
+  existing: { manualReviewCompletedAt: Date | null } | null,
+  reviewCompleted: boolean
+): Date | null {
+  return reviewCompleted ? (existing?.manualReviewCompletedAt ?? null) : null;
 }
 
 /**
@@ -1739,7 +1789,7 @@ class AiAnalysisService {
           const issueFingerprint = buildIssueFingerprint(issue);
           let existing = await prisma.aiAnalysis.findUnique({
             where: { jobId_issueId: { jobId, issueId: issue.id } },
-            select: { status: true, suggestionType: true, value: true, issueFingerprint: true, failedAttempts: true, lastErrorReason: true, appliedAt: true, appliedButUnresolved: true },
+            select: { status: true, suggestionType: true, value: true, issueFingerprint: true, failedAttempts: true, lastErrorReason: true, appliedAt: true, appliedButUnresolved: true, manualReviewCompletedAt: true, extendedAlt: true, requiresManualReview: true },
           });
           // Fallback: issue.id can be stale even for THIS issue. An intervening
           // re-audit (e.g. applyAll's internal reauditAndCompare) regenerates every
@@ -1754,7 +1804,7 @@ class AiAnalysisService {
           if (!existing || existing.issueFingerprint !== issueFingerprint) {
             const byFingerprint = await prisma.aiAnalysis.findFirst({
               where: { jobId, issueFingerprint },
-              select: { status: true, suggestionType: true, value: true, issueFingerprint: true, failedAttempts: true, lastErrorReason: true, appliedAt: true, appliedButUnresolved: true },
+              select: { status: true, suggestionType: true, value: true, issueFingerprint: true, failedAttempts: true, lastErrorReason: true, appliedAt: true, appliedButUnresolved: true, manualReviewCompletedAt: true, extendedAlt: true, requiresManualReview: true },
               // Stale rows can accumulate under successive old ids sharing this
               // fingerprint across repeated re-audits — take the most recently
               // written one, not an arbitrary one.
@@ -1762,7 +1812,7 @@ class AiAnalysisService {
             });
             if (byFingerprint) existing = byFingerprint;
           }
-          const { status, appliedButUnresolved, findingUnchanged } = resolveSuggestionStatus(
+          const { status, appliedButUnresolved, findingUnchanged, reviewCompleted } = resolveSuggestionStatus(
             existing, suggestion, issueFingerprint, effectiveApplyMode, reportAuditedAt
           );
           // The finding genuinely changed out from under a previously 'failed'
@@ -1773,6 +1823,17 @@ class AiAnalysisService {
           const carriedFailedAttempts = resolveCarriedFailedAttempts(existing, resetFailedAttempts);
           const carriedLastErrorReason = resolveCarriedLastErrorReason(existing, resetFailedAttempts);
           const carriedAppliedAt = resolveCarriedAppliedAt(existing, findingUnchanged);
+          const carriedManualReviewCompletedAt = resolveCarriedManualReviewCompletedAt(existing, reviewCompleted);
+          // QC brief Theme B3: once a human has completed review
+          // (reviewCompleted), a FRESH analysis pass's own re-derived
+          // suggestion -- draftComplexImageBaseline runs again every time --
+          // must never silently replace what the human actually reviewed/
+          // approved. Carry the existing row's own value/extendedAlt/
+          // requiresManualReview forward instead of the freshly computed
+          // suggestion's, same spirit as appliedAt's own carry-forward.
+          const effectiveValue = reviewCompleted ? existing!.value : suggestion.value;
+          const effectiveExtendedAlt = reviewCompleted ? existing!.extendedAlt : suggestion.extendedAlt;
+          const effectiveRequiresManualReview = reviewCompleted ? (existing!.requiresManualReview ?? false) : (suggestion.requiresManualReview ?? false);
 
           await prisma.aiAnalysis.upsert({
             where: { jobId_issueId: { jobId, issueId: issue.id } },
@@ -1780,38 +1841,40 @@ class AiAnalysisService {
               jobId,
               issueId: issue.id,
               suggestionType: suggestion.suggestionType,
-              value: suggestion.value,
-              extendedAlt: suggestion.extendedAlt,
+              value: effectiveValue,
+              extendedAlt: effectiveExtendedAlt,
               guidance: suggestion.guidance,
               confidence: suggestion.confidence,
               rationale: suggestion.rationale,
               model: suggestion.model,
               applyMode: effectiveApplyMode,
               status,
-              requiresManualReview: suggestion.requiresManualReview ?? false,
+              requiresManualReview: effectiveRequiresManualReview,
               issueFingerprint,
               failedAttempts: carriedFailedAttempts,
               lastErrorReason: carriedLastErrorReason,
               appliedAt: carriedAppliedAt,
               appliedButUnresolved,
+              manualReviewCompletedAt: carriedManualReviewCompletedAt,
               updatedAt: new Date(),
             },
             update: {
               suggestionType: suggestion.suggestionType,
-              value: suggestion.value,
-              extendedAlt: suggestion.extendedAlt,
+              value: effectiveValue,
+              extendedAlt: effectiveExtendedAlt,
               guidance: suggestion.guidance,
               confidence: suggestion.confidence,
               rationale: suggestion.rationale,
               model: suggestion.model,
               applyMode: effectiveApplyMode,
               status,
-              requiresManualReview: suggestion.requiresManualReview ?? false,
+              requiresManualReview: effectiveRequiresManualReview,
               issueFingerprint,
               failedAttempts: carriedFailedAttempts,
               lastErrorReason: carriedLastErrorReason,
               appliedAt: carriedAppliedAt,
               appliedButUnresolved,
+              manualReviewCompletedAt: carriedManualReviewCompletedAt,
               updatedAt: new Date(),
             },
           });

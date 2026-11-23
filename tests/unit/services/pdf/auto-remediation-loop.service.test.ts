@@ -184,6 +184,28 @@ describe('describeAutoLoopStop', () => {
     expect(result.message).toContain('$0.42');
   });
 
+  // QC brief Theme B3 (docs/qc/2026-11-23-ninja-qc-karsaklian-brief.md):
+  // these requiresManualReview rows were never counted as actionable/stuck
+  // work by the loop itself, so "converged" is still the right word -- the
+  // message just also flags the still-waiting manual step.
+  it('qualifies the converged message with unresolvedManualReviewCount when given', () => {
+    const result = describeAutoLoopStop('converged', '"doc.pdf"', 3, 0.42, undefined, false, undefined, 2);
+    expect(result.type).toBe('JOB_COMPLETED');
+    expect(result.message).toContain('2 figures need manual alt text');
+  });
+
+  it('uses singular "figure" for a count of exactly 1', () => {
+    const result = describeAutoLoopStop('converged', '"doc.pdf"', 3, 0.42, undefined, false, undefined, 1);
+    expect(result.message).toContain('1 figure need');
+  });
+
+  it('keeps the plain "nothing left to fix automatically" message when unresolvedManualReviewCount is 0 or undefined', () => {
+    const zero = describeAutoLoopStop('converged', '"doc.pdf"', 3, 0.42, undefined, false, undefined, 0);
+    expect(zero.message).toContain('nothing left to fix automatically');
+    const undef = describeAutoLoopStop('converged', '"doc.pdf"', 3, 0.42, undefined);
+    expect(undef.message).toContain('nothing left to fix automatically');
+  });
+
   it('maps round_limit and budget_limit to SYSTEM_ALERT, not a failure', () => {
     const roundLimit = describeAutoLoopStop('round_limit', '"doc.pdf"', 10, 2.0, undefined);
     expect(roundLimit.type).toBe('SYSTEM_ALERT');

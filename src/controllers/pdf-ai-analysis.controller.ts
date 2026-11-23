@@ -200,6 +200,13 @@ export class PdfAiAnalysisController {
       const fileName = (output.fileName as string | undefined) ?? 'document.pdf';
       const hasRemediatedFile = await fileStorageService.remediatedFileExists(jobId, fileName);
 
+      // QC brief Theme B3 (docs/qc/2026-11-23-ninja-qc-karsaklian-brief.md):
+      // a requiresManualReview row whose status is already 'applied' (its
+      // short-alt baseline auto-applied) but no human has completed review
+      // yet -- status alone can't identify "unresolved" here, see
+      // AiAnalysis.manualReviewCompletedAt's own doc comment.
+      const unresolvedManualReview = suggestions.filter((s) => s.requiresManualReview && !s.manualReviewCompletedAt);
+
       res.json({
         success: true,
         data: {
@@ -209,6 +216,14 @@ export class PdfAiAnalysisController {
           stats,
           hasRemediatedFile,
           guidanceAcknowledgment: (output.guidanceAcknowledgment as Record<string, unknown> | undefined) ?? null,
+          unresolvedManualReviewFigures: {
+            count: unresolvedManualReview.length,
+            items: unresolvedManualReview.map((s) => ({
+              issueId: s.issueId,
+              suggestionType: s.suggestionType,
+              issueFingerprint: s.issueFingerprint,
+            })),
+          },
         },
       });
     } catch (error) {
@@ -251,6 +266,11 @@ export class PdfAiAnalysisController {
           // longer detecting the finding at all) -- "Dismiss" in the UI maps
           // to this same 'rejected' status, there's no separate action.
           ...(parsed.data.status === 'rejected' && { appliedButUnresolved: false }),
+          // QC brief Theme B3: rejecting a requiresManualReview row is one
+          // of the three ways a human completes that review (accepts the
+          // gap) -- the other two ("Approve & apply long description",
+          // "Keep short alt") are their own dedicated actions.
+          ...(parsed.data.status === 'rejected' && existing.requiresManualReview && { manualReviewCompletedAt: new Date() }),
           updatedAt: new Date(),
         },
       });
@@ -816,6 +836,16 @@ export class PdfAiAnalysisController {
         data: { output: { ...currentOutput, remediatedFileUrl: savedPath } as Prisma.InputJsonObject },
       });
 
+      // QC brief Theme B3 (docs/qc/2026-11-23-ninja-qc-karsaklian-brief.md):
+      // "Approve & apply long description" is this SAME endpoint, called
+      // with { value: <the edited long description>, manualReviewCompleted:
+      // true } -- reuses this whole apply flow (load/modify/save PDF,
+      // remediatedFileUrl, status/appliedAt) rather than a parallel one.
+      // Only takes effect on a row that actually has requiresManualReview
+      // set, so an ordinary apply's own request body can't accidentally
+      // mark an unrelated row's review "completed".
+      const manualReviewCompleted = (req.body as { manualReviewCompleted?: boolean }).manualReviewCompleted === true && analysis.requiresManualReview;
+
       // Update status to applied. appliedAt is set fresh on every apply
       // (resolveSuggestionStatus's own appliedButUnresolved check compares
       // against it); appliedButUnresolved itself is deliberately NOT reset
@@ -823,7 +853,12 @@ export class PdfAiAnalysisController {
       // comparison or an explicit human reject does.
       const updatedAnalysis = await prisma.aiAnalysis.update({
         where: { jobId_issueId: { jobId, issueId } },
-        data: { status: 'applied', appliedAt: new Date(), updatedAt: new Date() },
+        data: {
+          status: 'applied',
+          appliedAt: new Date(),
+          ...(manualReviewCompleted && { manualReviewCompletedAt: new Date() }),
+          updatedAt: new Date(),
+        },
       });
 
       logger.info(`[AI Analysis] Applied ${suggestionType} for issue ${issueId} in job ${jobId}`);
@@ -838,6 +873,48 @@ export class PdfAiAnalysisController {
       if (lockAcquired && jobIdForFinally && cycleNumberForFinally !== undefined) {
         await remediationCycleLockService.releaseLock(jobIdForFinally, cycleNumberForFinally);
       }
+    }
+  }
+
+  /**
+   * POST /pdf/:jobId/ai-analysis/:issueId/keep-short-alt
+   *
+   * QC brief Theme B3 (docs/qc/2026-11-23-ninja-qc-karsaklian-brief.md):
+   * the third of three ways a human completes review of a
+   * requiresManualReview row whose short alt already auto-applied
+   * (draftComplexImageBaseline) -- a deliberate "this baseline is good
+   * enough, no better description needed" decision, distinct from reject
+   * (which means "no good description exists, accept the gap") and from
+   * "Approve & apply long description" (applySuggestion with
+   * manualReviewCompleted: true, which also re-writes the PDF). DB-only:
+   * the short alt is already correctly applied, nothing to re-apply.
+   */
+  async keepShortAlt(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      if (!req.user) throw AppError.unauthorized('Not authenticated');
+
+      const jobId = req.job!.id;
+      const { issueId } = req.params;
+
+      const existing = await prisma.aiAnalysis.findUnique({
+        where: { jobId_issueId: { jobId, issueId } },
+      });
+      if (!existing) throw AppError.notFound('AI analysis record not found');
+      if (!existing.requiresManualReview) {
+        throw AppError.badRequest('This suggestion does not require manual review');
+      }
+      if (existing.manualReviewCompletedAt) {
+        throw AppError.badRequest('This suggestion\'s manual review has already been completed');
+      }
+
+      const updated = await prisma.aiAnalysis.update({
+        where: { jobId_issueId: { jobId, issueId } },
+        data: { manualReviewCompletedAt: new Date(), updatedAt: new Date() },
+      });
+
+      res.json({ success: true, data: updated });
+    } catch (error) {
+      next(error);
     }
   }
 

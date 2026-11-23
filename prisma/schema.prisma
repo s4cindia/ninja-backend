@@ -2420,6 +2420,25 @@ model AiAnalysis {
   /// suggestion -- a bare re-apply alone does NOT clear it; only the next
   /// audit's own comparison can.
   appliedButUnresolved Boolean  @default(false)
+  /// QC brief Theme B3 (docs/qc/2026-11-23-ninja-qc-karsaklian-brief.md):
+  /// set the moment a human completes review of a `requiresManualReview`
+  /// row -- rejecting it (accepts the gap), "Approve & apply long
+  /// description" (writes the long description as the real /Alt), or
+  /// "Keep short alt" (a deliberate "the auto-applied short alt is good
+  /// enough" decision, distinct from both of those). NOT `status`: once
+  /// draftComplexImageBaseline's short-alt baseline auto-applies,
+  /// `status` becomes 'applied' immediately -- long before any human has
+  /// reviewed the long description -- so `status` alone can't tell
+  /// "resolved" apart from "just auto-applied a baseline". "Unresolved"
+  /// everywhere (the Apply Failure Report bucket, the AI-analysis status
+  /// endpoint's own count, Auto Mode's completion message) is
+  /// `requiresManualReview: true AND manualReviewCompletedAt IS NULL`.
+  /// Carried forward across re-analysis by resolveCarriedManualReviewCompletedAt,
+  /// the same class of bug appliedButUnresolved's own carry-forward fix
+  /// (PR #876) exists to prevent -- a fresh short-alt guess on a later
+  /// analysis pass must never silently un-mark a completed review or
+  /// overwrite a human-reviewed `value`.
+  manualReviewCompletedAt DateTime?
   createdAt            DateTime @default(now())
   updatedAt            DateTime @updatedAt
 

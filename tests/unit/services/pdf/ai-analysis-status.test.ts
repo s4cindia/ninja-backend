@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { resolveSuggestionStatus, buildIssueFingerprint, resolveCarriedFailedAttempts, resolveCarriedLastErrorReason, resolveCarriedAppliedAt } from '../../../../src/services/pdf/ai-analysis.service';
+import { resolveSuggestionStatus, buildIssueFingerprint, resolveCarriedFailedAttempts, resolveCarriedLastErrorReason, resolveCarriedAppliedAt, resolveCarriedManualReviewCompletedAt } from '../../../../src/services/pdf/ai-analysis.service';
 
 const FP = 'MATTERHORN-13-001:img_p150_0_Im0';
 
@@ -277,6 +277,105 @@ describe('resolveCarriedAppliedAt', () => {
 
   it('starts a genuinely new row (no existing match) at null', () => {
     expect(resolveCarriedAppliedAt(null, true)).toBeNull();
+  });
+});
+
+// QC brief Theme B3 (docs/qc/2026-11-23-ninja-qc-karsaklian-brief.md): same
+// bug class as PR #876's appliedButUnresolved carry-forward fix -- a
+// completed-review row's own status is already back to a normal terminal
+// value by the time a human finishes reviewing it, so without this it
+// would fall into resolveSuggestionStatus's first early-exit branch on the
+// very next analysis pass and silently lose the flag (and, worse, let a
+// fresh AI guess overwrite the human-reviewed value).
+describe('resolveSuggestionStatus: manualReviewCompletedAt (Theme B3)', () => {
+  const FP = 'MATTERHORN-13-001:img_p10_0_Im0';
+  const manualReviewCompletedAt = new Date('2026-11-20T10:00:00Z');
+
+  it('a completed-review row survives a second analysis pass with the same fingerprint, status AND reviewCompleted both preserved', () => {
+    const existing = {
+      status: 'applied',
+      suggestionType: 'alt-text',
+      value: 'Quadrant diagram comparing cost and value',
+      issueFingerprint: FP,
+      manualReviewCompletedAt,
+      extendedAlt: 'A fuller structural description...',
+      requiresManualReview: true,
+    };
+    // A fresh analysis pass computes a DIFFERENT-worded short alt --
+    // draftComplexImageBaseline runs again every time -- which must not
+    // be treated as "the finding changed".
+    const freshGuess = { suggestionType: 'alt-text', value: 'A diagram showing cost vs value' };
+
+    const result = resolveSuggestionStatus(existing, freshGuess, FP, 'apply-to-pdf', null);
+
+    expect(result.status).toBe('applied');
+    expect(result.reviewCompleted).toBe(true);
+    expect(result.findingUnchanged).toBe(true);
+  });
+
+  it('clears reviewCompleted when the fingerprint changes (a genuinely different finding landed at this id)', () => {
+    const existing = {
+      status: 'applied',
+      suggestionType: 'alt-text',
+      value: 'Quadrant diagram comparing cost and value',
+      issueFingerprint: FP,
+      manualReviewCompletedAt,
+    };
+    const differentFinding = { suggestionType: 'alt-text', value: 'A red apple' };
+
+    const result = resolveSuggestionStatus(existing, differentFinding, 'A-DIFFERENT-FINGERPRINT', 'apply-to-pdf', null);
+
+    expect(result.reviewCompleted).toBe(false);
+    expect(result.findingUnchanged).toBe(false);
+    expect(result.status).toBe('pending');
+  });
+
+  it('reviewCompleted survives even when the AI\'s own wording differs AND requiresManualReview differs from the fresh suggestion\'s own guess', () => {
+    const existing = {
+      status: 'applied',
+      suggestionType: 'alt-text',
+      value: 'The human-reviewed final description',
+      issueFingerprint: FP,
+      manualReviewCompletedAt,
+      requiresManualReview: true,
+    };
+    const freshGuess = { suggestionType: 'alt-text', value: 'A completely different-sounding guess', requiresManualReview: false } as never;
+
+    const result = resolveSuggestionStatus(existing, freshGuess, FP, 'apply-to-pdf', null);
+
+    expect(result.reviewCompleted).toBe(true);
+  });
+
+  it('a row with no manualReviewCompletedAt at all is unaffected (falls through to the existing applied/failed logic)', () => {
+    const existing = {
+      status: 'applied',
+      suggestionType: 'alt-text',
+      value: 'A red apple',
+      issueFingerprint: FP,
+      manualReviewCompletedAt: null,
+    };
+    const suggestion = { suggestionType: 'alt-text', value: 'A red apple' };
+
+    const result = resolveSuggestionStatus(existing, suggestion, FP, 'apply-to-pdf', null);
+
+    expect(result.reviewCompleted).toBe(false);
+    expect(result.status).toBe('applied');
+  });
+});
+
+describe('resolveCarriedManualReviewCompletedAt', () => {
+  it('carries the existing manualReviewCompletedAt forward when reviewCompleted is true', () => {
+    const manualReviewCompletedAt = new Date('2026-11-20T10:00:00Z');
+    expect(resolveCarriedManualReviewCompletedAt({ manualReviewCompletedAt }, true)).toBe(manualReviewCompletedAt);
+  });
+
+  it('resets to null when reviewCompleted is false (a genuinely new finding)', () => {
+    const manualReviewCompletedAt = new Date('2026-11-20T10:00:00Z');
+    expect(resolveCarriedManualReviewCompletedAt({ manualReviewCompletedAt }, false)).toBeNull();
+  });
+
+  it('starts a genuinely new row (no existing match) at null', () => {
+    expect(resolveCarriedManualReviewCompletedAt(null, true)).toBeNull();
   });
 });
 
