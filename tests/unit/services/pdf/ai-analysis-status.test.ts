@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { resolveSuggestionStatus, buildIssueFingerprint, resolveCarriedFailedAttempts, resolveCarriedLastErrorReason } from '../../../../src/services/pdf/ai-analysis.service';
+import { resolveSuggestionStatus, buildIssueFingerprint, resolveCarriedFailedAttempts, resolveCarriedLastErrorReason, resolveCarriedAppliedAt } from '../../../../src/services/pdf/ai-analysis.service';
 
 const FP = 'MATTERHORN-13-001:img_p150_0_Im0';
 
@@ -8,21 +8,26 @@ describe('resolveSuggestionStatus', () => {
     const existing = { status: 'applied', suggestionType: 'alt-text', value: 'A red apple', issueFingerprint: FP };
     const suggestion = { suggestionType: 'alt-text', value: 'A red apple' };
 
-    expect(resolveSuggestionStatus(existing, suggestion, FP, 'apply-to-pdf')).toBe('applied');
+    const result = resolveSuggestionStatus(existing, suggestion, FP, 'apply-to-pdf');
+    expect(result.status).toBe('applied');
+    expect(result.appliedButUnresolved).toBe(false);
+    expect(result.findingUnchanged).toBe(true);
   });
 
   it('resets to the default status when suggestionType changed', () => {
     const existing = { status: 'applied', suggestionType: 'alt-text', value: 'A red apple', issueFingerprint: FP };
     const suggestion = { suggestionType: 'alt-text-decorative', value: undefined };
 
-    expect(resolveSuggestionStatus(existing, suggestion, FP, 'apply-to-pdf')).toBe('pending');
+    const result = resolveSuggestionStatus(existing, suggestion, FP, 'apply-to-pdf');
+    expect(result.status).toBe('pending');
+    expect(result.findingUnchanged).toBe(false);
   });
 
   it('resets to the default status when value changed', () => {
     const existing = { status: 'applied', suggestionType: 'alt-text', value: 'A red apple', issueFingerprint: FP };
     const suggestion = { suggestionType: 'alt-text', value: 'A green pear' };
 
-    expect(resolveSuggestionStatus(existing, suggestion, FP, 'apply-to-pdf')).toBe('pending');
+    expect(resolveSuggestionStatus(existing, suggestion, FP, 'apply-to-pdf').status).toBe('pending');
   });
 
   it('resets to the default status when the issue fingerprint changed, even with the same type and value', () => {
@@ -33,7 +38,7 @@ describe('resolveSuggestionStatus', () => {
     const suggestion = { suggestionType: 'alt-text', value: 'A red apple' };
     const differentFingerprint = 'MATTERHORN-13-001:img_p151_0_Im0';
 
-    expect(resolveSuggestionStatus(existing, suggestion, differentFingerprint, 'apply-to-pdf')).toBe('pending');
+    expect(resolveSuggestionStatus(existing, suggestion, differentFingerprint, 'apply-to-pdf').status).toBe('pending');
   });
 
   it('resets to the default status when the existing row has no fingerprint (pre-migration row)', () => {
@@ -43,7 +48,7 @@ describe('resolveSuggestionStatus', () => {
     const existing = { status: 'applied', suggestionType: 'alt-text', value: 'A red apple', issueFingerprint: null };
     const suggestion = { suggestionType: 'alt-text', value: 'A red apple' };
 
-    expect(resolveSuggestionStatus(existing, suggestion, FP, 'apply-to-pdf')).toBe('pending');
+    expect(resolveSuggestionStatus(existing, suggestion, FP, 'apply-to-pdf').status).toBe('pending');
   });
 
   it.each(['pending', 'rejected', 'approved'])(
@@ -52,18 +57,18 @@ describe('resolveSuggestionStatus', () => {
       const existing = { status: existingStatus, suggestionType: 'alt-text', value: 'A red apple', issueFingerprint: FP };
       const suggestion = { suggestionType: 'alt-text', value: 'A red apple' };
 
-      expect(resolveSuggestionStatus(existing, suggestion, FP, 'apply-to-pdf')).toBe('pending');
+      expect(resolveSuggestionStatus(existing, suggestion, FP, 'apply-to-pdf').status).toBe('pending');
     }
   );
 
   it('uses the default status when there is no existing row (first analysis)', () => {
     const suggestion = { suggestionType: 'alt-text', value: 'A red apple' };
-    expect(resolveSuggestionStatus(null, suggestion, FP, 'apply-to-pdf')).toBe('pending');
+    expect(resolveSuggestionStatus(null, suggestion, FP, 'apply-to-pdf').status).toBe('pending');
   });
 
   it('defaults to "approved" (not "pending") for auto-resolve suggestions', () => {
     const suggestion = { suggestionType: 'pdfua-identifier', value: undefined };
-    expect(resolveSuggestionStatus(null, suggestion, 'PDFUA-IDENTIFIER-MISSING', 'auto-resolve')).toBe('approved');
+    expect(resolveSuggestionStatus(null, suggestion, 'PDFUA-IDENTIFIER-MISSING', 'auto-resolve').status).toBe('approved');
   });
 
   it('never preserves "applied" for a value-less suggestion, even when fingerprint and suggestionType match', () => {
@@ -74,7 +79,7 @@ describe('resolveSuggestionStatus', () => {
     const existing = { status: 'applied', suggestionType: 'heading-fix', value: null, issueFingerprint: 'HEADING-SKIP' };
     const suggestion = { suggestionType: 'heading-fix', value: undefined };
 
-    expect(resolveSuggestionStatus(existing, suggestion, 'HEADING-SKIP', 'apply-to-pdf')).toBe('pending');
+    expect(resolveSuggestionStatus(existing, suggestion, 'HEADING-SKIP', 'apply-to-pdf').status).toBe('pending');
   });
 
   it('preserves "applied" for a genuine, matching non-null value with a matching fingerprint', () => {
@@ -82,7 +87,7 @@ describe('resolveSuggestionStatus', () => {
     const existing = { status: 'applied', suggestionType: 'color-contrast-fix', value: '#1a1a1a', issueFingerprint: cfp };
     const suggestion = { suggestionType: 'color-contrast-fix', value: '#1a1a1a' };
 
-    expect(resolveSuggestionStatus(existing, suggestion, cfp, 'apply-to-pdf')).toBe('applied');
+    expect(resolveSuggestionStatus(existing, suggestion, cfp, 'apply-to-pdf').status).toBe('applied');
   });
 
   /**
@@ -98,14 +103,111 @@ describe('resolveSuggestionStatus', () => {
     const existing = { status: 'failed', suggestionType: 'alt-text', value: 'A red apple', issueFingerprint: FP };
     const suggestion = { suggestionType: 'alt-text', value: 'A red apple' };
 
-    expect(resolveSuggestionStatus(existing, suggestion, FP, 'apply-to-pdf')).toBe('failed');
+    expect(resolveSuggestionStatus(existing, suggestion, FP, 'apply-to-pdf').status).toBe('failed');
   });
 
   it('resets a "failed" suggestion to the default status when the underlying finding genuinely changed -- a different finding deserves a fresh attempt', () => {
     const existing = { status: 'failed', suggestionType: 'alt-text', value: 'A red apple', issueFingerprint: FP };
     const suggestion = { suggestionType: 'alt-text', value: 'A green pear' };
 
-    expect(resolveSuggestionStatus(existing, suggestion, FP, 'apply-to-pdf')).toBe('pending');
+    expect(resolveSuggestionStatus(existing, suggestion, FP, 'apply-to-pdf').status).toBe('pending');
+  });
+
+  // QC brief Theme B (docs/qc/2026-11-23-ninja-qc-karsaklian-brief.md):
+  // appliedButUnresolved -- a row marked 'applied' whose identical finding a
+  // genuinely FRESH, post-apply audit still detects.
+  describe('appliedButUnresolved', () => {
+    const appliedAt = new Date('2026-11-20T00:00:00Z');
+
+    it('(d) flags appliedButUnresolved and resets status when a fresh post-apply audit still finds the identical finding', () => {
+      const existing = { status: 'applied', suggestionType: 'alt-text', value: 'A red apple', issueFingerprint: FP, appliedAt };
+      const suggestion = { suggestionType: 'alt-text', value: 'A red apple' };
+      const reportAuditedAt = new Date('2026-11-21T00:00:00Z'); // after appliedAt
+
+      const result = resolveSuggestionStatus(existing, suggestion, FP, 'apply-to-pdf', reportAuditedAt);
+      expect(result.status).toBe('pending');
+      expect(result.appliedButUnresolved).toBe(true);
+      expect(result.findingUnchanged).toBe(true);
+    });
+
+    it('(f) does not flag when the audit report predates the apply (a bare Re-run AI Analysis re-processing a stale, pre-apply report)', () => {
+      const existing = { status: 'applied', suggestionType: 'alt-text', value: 'A red apple', issueFingerprint: FP, appliedAt };
+      const suggestion = { suggestionType: 'alt-text', value: 'A red apple' };
+      const reportAuditedAt = new Date('2026-11-19T00:00:00Z'); // before appliedAt
+
+      const result = resolveSuggestionStatus(existing, suggestion, FP, 'apply-to-pdf', reportAuditedAt);
+      expect(result.status).toBe('applied');
+      expect(result.appliedButUnresolved).toBe(false);
+    });
+
+    it('(h) a manual Apply, followed by a Re-audit, followed by Re-run AI Analysis, sets the flag when the finding persists', () => {
+      // Step 1 -- manual Apply: the single-apply controller sets
+      // status: 'applied' and stamps appliedAt at that exact moment.
+      const stepOneAppliedAt = new Date('2026-11-20T10:00:00Z');
+      const existingRowAfterApply = {
+        status: 'applied',
+        suggestionType: 'alt-text',
+        value: 'A red apple',
+        issueFingerprint: FP,
+        appliedAt: stepOneAppliedAt,
+      };
+
+      // Step 2 -- Re-audit: a genuinely fresh audit runs AFTER the apply and
+      // persists a new job.output.auditReport with its own, later auditedAt
+      // -- confirmed real (not assumed) by tracing both reauditAndCompare
+      // caller sites (auto-remediation-loop.service.ts and
+      // pdf-remediation.controller.ts's manual Re-audit endpoint), which
+      // both write `auditReport: comparisonResult.reauditReport` into
+      // job.output on success. The finding PERSISTS in that fresh report
+      // (same fingerprint, same suggestion), which is exactly what
+      // resolveSuggestionStatus's `suggestion` argument below represents.
+      const stepTwoReportAuditedAt = new Date('2026-11-20T11:00:00Z'); // after stepOneAppliedAt
+      const sameSuggestionStillFound = { suggestionType: 'alt-text', value: 'A red apple' };
+
+      // Step 3 -- Re-run AI Analysis: analyzeJob reads this now-fresh
+      // auditReport.auditedAt and passes it through to resolveSuggestionStatus.
+      const result = resolveSuggestionStatus(
+        existingRowAfterApply, sameSuggestionStillFound, FP, 'apply-to-pdf', stepTwoReportAuditedAt
+      );
+
+      expect(result.status).toBe('pending');
+      expect(result.appliedButUnresolved).toBe(true);
+    });
+
+    it('does not flag when reportAuditedAt is missing entirely', () => {
+      const existing = { status: 'applied', suggestionType: 'alt-text', value: 'A red apple', issueFingerprint: FP, appliedAt };
+      const suggestion = { suggestionType: 'alt-text', value: 'A red apple' };
+
+      const result = resolveSuggestionStatus(existing, suggestion, FP, 'apply-to-pdf', null);
+      expect(result.status).toBe('applied');
+      expect(result.appliedButUnresolved).toBe(false);
+    });
+
+    it('does not flag when the existing row has no appliedAt (pre-migration row) -- declines rather than guesses', () => {
+      const existing = { status: 'applied', suggestionType: 'alt-text', value: 'A red apple', issueFingerprint: FP, appliedAt: null };
+      const suggestion = { suggestionType: 'alt-text', value: 'A red apple' };
+      const reportAuditedAt = new Date('2026-11-21T00:00:00Z');
+
+      const result = resolveSuggestionStatus(existing, suggestion, FP, 'apply-to-pdf', reportAuditedAt);
+      expect(result.status).toBe('applied');
+      expect(result.appliedButUnresolved).toBe(false);
+    });
+  });
+});
+
+describe('resolveCarriedAppliedAt', () => {
+  it('(g) carries the existing appliedAt forward when the finding is unchanged -- a re-apply alone must not clear it, only the next audit can', () => {
+    const appliedAt = new Date('2026-11-20T00:00:00Z');
+    expect(resolveCarriedAppliedAt({ appliedAt }, true)).toBe(appliedAt);
+  });
+
+  it('resets to null when the finding genuinely changed', () => {
+    const appliedAt = new Date('2026-11-20T00:00:00Z');
+    expect(resolveCarriedAppliedAt({ appliedAt }, false)).toBeNull();
+  });
+
+  it('starts a genuinely new row (no existing match) at null', () => {
+    expect(resolveCarriedAppliedAt(null, true)).toBeNull();
   });
 });
 

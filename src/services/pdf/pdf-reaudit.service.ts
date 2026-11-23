@@ -357,7 +357,11 @@ class PdfReauditService {
     try {
       const result = await prisma.aiAnalysis.updateMany({
         where: { jobId, status: 'applied', updatedAt: { gte: applyStartedAt } },
-        data: { status: 'approved' },
+        // appliedAt is cleared alongside the status revert -- this apply
+        // never actually persisted, so there's nothing real for a later
+        // resolveSuggestionStatus appliedButUnresolved check to compare
+        // against; a genuinely successful future apply sets it fresh again.
+        data: { status: 'approved', appliedAt: null },
       });
       if (result.count > 0) {
         logger.warn(

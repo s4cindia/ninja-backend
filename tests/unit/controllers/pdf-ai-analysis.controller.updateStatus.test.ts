@@ -92,4 +92,34 @@ describe('PdfAiAnalysisController.updateStatus', () => {
     expect(prisma.aiAnalysis.update).not.toHaveBeenCalled();
     expect(next).toHaveBeenCalledWith(expect.objectContaining({ statusCode: 400 }));
   });
+
+  // QC brief Theme B (docs/qc/2026-11-23-ninja-qc-karsaklian-brief.md): an
+  // explicit human dismiss/reject ("Dismiss" in the UI maps to this same
+  // 'rejected' status -- there's no separate action) is one of only two
+  // things that clear appliedButUnresolved, the other being a later audit
+  // no longer detecting the finding.
+  it('clears appliedButUnresolved when a human dismisses/rejects the suggestion', async () => {
+    const res = makeRes();
+
+    await pdfAiAnalysisController.updateStatus(makeReq({ status: 'rejected' }), res, next);
+
+    expect(prisma.aiAnalysis.update).toHaveBeenCalledWith({
+      where: { jobId_issueId: { jobId: 'job-1', issueId: 'issue-1' } },
+      data: {
+        status: 'rejected',
+        approvedBy: null,
+        appliedButUnresolved: false,
+        updatedAt: expect.any(Date),
+      },
+    });
+  });
+
+  it('does not touch appliedButUnresolved on a plain approve (only reject/dismiss clears it, not re-apply or re-approve)', async () => {
+    const res = makeRes();
+
+    await pdfAiAnalysisController.updateStatus(makeReq({ status: 'approved' }), res, next);
+
+    const call = vi.mocked(prisma.aiAnalysis.update).mock.calls[0][0];
+    expect(call.data).not.toHaveProperty('appliedButUnresolved');
+  });
 });

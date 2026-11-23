@@ -10,6 +10,8 @@ import { textExtractorService } from '../services/pdf/text-extractor.service';
 import { imageExtractorService } from '../services/pdf/image-extractor.service';
 import { structureAnalyzerService } from '../services/pdf/structure-analyzer.service';
 import { pdfAuditService } from '../services/pdf/pdf-audit.service';
+import { buildIssueFingerprint } from '../services/pdf/ai-analysis.service';
+import type { AuditIssue } from '../services/audit/base-audit.service';
 import { fileStorageService } from '../services/storage/file-storage.service';
 import { s3Service } from '../services/s3.service';
 import prisma from '../lib/prisma';
@@ -930,6 +932,19 @@ export class PdfController {
           }
         }
 
+        // Theme A, QC brief (docs/qc/2026-11-23-ninja-qc-karsaklian-brief.md):
+        // the frontend pairs an AiAnalysis suggestion to its issue purely by
+        // issueId (PdfAuditResultsPage.tsx), which churns across re-audits --
+        // attaches each issue's own stable fingerprint here so the frontend
+        // can instead pair by fingerprint (matching s.issueFingerprint,
+        // already returned on every AiAnalysis row), a defense-in-depth
+        // layer on top of the backend's own stale-row clearing
+        // (clearStaleRowForReusedId).
+        const issuesWithFingerprint = issues?.map((issue) => ({
+          ...issue,
+          fingerprint: buildIssueFingerprint(issue as unknown as AuditIssue),
+        }));
+
         // isOwner/teamReviews let the frontend decide whether to show the
         // Team Review panel (TEAM_LEADER-only write, never the owning
         // Executive's own job) and its history -- this route is the only
@@ -974,6 +989,7 @@ export class PdfController {
             structureTreeCompleteness: output?.structureTreeCompleteness ?? null,
             retagOutcome: output?.retagOutcome ?? null,
             ...auditReport,
+            ...(issuesWithFingerprint ? { issues: issuesWithFingerprint } : {}),
             matterhornSummary,
             isOwner,
             teamReviews,

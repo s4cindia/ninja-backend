@@ -29,6 +29,8 @@ import { remediationCycleLockService } from '../services/pdf/remediation-cycle-l
 import { remediationCycleHistoryService } from '../services/pdf/remediation-cycle-history.service';
 import { getActiveReviewBlock } from '../services/team-review/review-gate.service';
 import { classifyApplyFailureReason } from '../services/pdf/apply-failure-classification';
+import { buildIssueFingerprint } from '../services/pdf/ai-analysis.service';
+import type { AuditIssue } from '../services/audit/base-audit.service';
 
 const comparisonService = new ComparisonService(prisma);
 
@@ -1932,6 +1934,36 @@ export class PdfRemediationController {
         });
       }
 
+      // QC brief Theme B (docs/qc/2026-11-23-ninja-qc-karsaklian-brief.md):
+      // a row previously marked 'applied' whose identical finding was
+      // re-detected on a later audit -- status has already been reset to
+      // pending/approved (see resolveSuggestionStatus), so it would never
+      // show up in the 'failed' query above; it didn't fail to apply, it
+      // succeeded and the problem persisted anyway. Doesn't fit the
+      // existing (suggestionType, lastErrorReason)-grouped shape below (no
+      // failure reason at all), so it's its own separate bucket, enriched
+      // against the job's CURRENT audit report (by fingerprint, since
+      // issueId churns across re-audits) for code/pageNumber/element --
+      // AiAnalysis rows don't store those directly.
+      const appliedButUnresolvedRows = await prisma.aiAnalysis.findMany({
+        where: { jobId, appliedButUnresolved: true },
+        select: { issueId: true, suggestionType: true, issueFingerprint: true, appliedAt: true },
+      });
+      const currentIssues = ((job.output as Record<string, unknown> | null)?.auditReport as { issues?: AuditIssue[] } | undefined)?.issues ?? [];
+      const issueByFingerprint = new Map(currentIssues.map((i) => [buildIssueFingerprint(i), i]));
+      const appliedButUnresolvedItems = appliedButUnresolvedRows.map((row) => {
+        const matchedIssue = row.issueFingerprint ? issueByFingerprint.get(row.issueFingerprint) : undefined;
+        return {
+          issueId: row.issueId,
+          suggestionType: row.suggestionType,
+          issueFingerprint: row.issueFingerprint,
+          appliedAt: row.appliedAt,
+          code: matchedIssue?.code ?? null,
+          pageNumber: matchedIssue?.pageNumber ?? null,
+          element: matchedIssue?.element ?? null,
+        };
+      });
+
       const failures = await prisma.aiAnalysis.findMany({
         where: { jobId, status: 'failed' },
         select: { issueId: true, suggestionType: true, lastErrorReason: true },
@@ -1986,7 +2018,13 @@ export class PdfRemediationController {
 
       return res.status(200).json({
         success: true,
-        data: { totalFailed: failures.length, groups },
+        data: {
+          totalFailed: failures.length,
+          groups,
+          // Listed ahead of `groups` in the operator-facing UI -- "we thought
+          // this was fixed and it wasn't" is the most actionable thing here.
+          appliedButUnresolved: { count: appliedButUnresolvedItems.length, items: appliedButUnresolvedItems },
+        },
         error: { code: null, message: null, details: null },
       });
     } catch (error) {

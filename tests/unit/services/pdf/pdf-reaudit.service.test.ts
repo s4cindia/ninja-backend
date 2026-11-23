@@ -724,7 +724,7 @@ describe('PdfReauditService', () => {
       expect(reverted).toBe(569);
       expect(prisma.aiAnalysis.updateMany).toHaveBeenCalledWith({
         where: { jobId: mockJobId, status: 'applied', updatedAt: { gte: applyStartedAt } },
-        data: { status: 'approved' },
+        data: { status: 'approved', appliedAt: null },
       });
     });
 

@@ -164,5 +164,36 @@ describe('PdfController.getAuditResult', () => {
       const data = (res.json as any).mock.calls[0][0].data;
       expect(data.reviewBlocked).toBe(false);
     });
+
+    // QC brief Theme A (docs/qc/2026-11-23-ninja-qc-karsaklian-brief.md):
+    // the frontend pairs an AiAnalysis suggestion to its issue purely by
+    // issueId, which churns across re-audits -- attaches each issue's own
+    // stable fingerprint here so the frontend can pair by fingerprint
+    // instead (defense-in-depth on top of the backend's own stale-row
+    // clearing).
+    it('attaches a stable fingerprint to each issue, matching buildIssueFingerprint\'s own algorithm', async () => {
+      vi.mocked(prisma.teamReview.findMany).mockResolvedValueOnce([]);
+      const jobWithIssues = {
+        ...baseJob,
+        output: {
+          auditReport: {
+            issues: [
+              { id: 'bookmark-1', code: 'BOOKMARK-MISSING-FRONT-MATTER', element: undefined, pageNumber: 1 },
+              { id: 'alt-7', code: 'MATTERHORN-13-001', element: 'img_p82_0_Im0', pageNumber: 82 },
+            ],
+          },
+        },
+      };
+      const req = makeReq(jobWithIssues, { id: 'owner-1' });
+      const res = makeRes();
+
+      await pdfController.getAuditResult(req, res);
+
+      const data = (res.json as any).mock.calls[0][0].data;
+      expect(data.issues).toEqual([
+        { id: 'bookmark-1', code: 'BOOKMARK-MISSING-FRONT-MATTER', element: undefined, pageNumber: 1, fingerprint: 'BOOKMARK-MISSING-FRONT-MATTER:1' },
+        { id: 'alt-7', code: 'MATTERHORN-13-001', element: 'img_p82_0_Im0', pageNumber: 82, fingerprint: 'MATTERHORN-13-001:img_p82_0_Im0' },
+      ]);
+    });
   });
 });
