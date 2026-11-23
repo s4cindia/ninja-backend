@@ -77,11 +77,17 @@ for file in prisma/migrations/*/migration.sql; do
         HAS_ISSUE=1
     fi
 
-    # Check for ALTER TYPE ADD VALUE - must be in DO block with pg_enum check
-    # The proper pattern has both "DO $$" AND "pg_enum" check
+    # Check for ALTER TYPE ADD VALUE - must be idempotent one of two ways:
+    # either a DO $$ block with its own pg_enum check, OR PostgreSQL's own
+    # native `ADD VALUE IF NOT EXISTS` clause (9.6+) -- genuinely idempotent
+    # on its own, re-running it is a no-op if the value already exists, no
+    # DO block needed. Real false positive fixed here (2026-11-23): this
+    # check previously required BOTH "DO $$" AND "pg_enum" unconditionally,
+    # flagging `ALTER TYPE "FeedbackType" ADD VALUE IF NOT EXISTS
+    # 'FULL_QC_REVIEW'` as non-idempotent when it already was.
     if grep -qE "ALTER TYPE.*ADD VALUE" "$file"; then
-        if ! grep -q 'DO \$\$' "$file" || ! grep -q "pg_enum" "$file"; then
-            echo -e "${RED}ERROR:${NC} $file has ALTER TYPE ADD VALUE without idempotent pg_enum check"
+        if ! grep -qE "ADD VALUE IF NOT EXISTS" "$file" && (! grep -q 'DO \$\$' "$file" || ! grep -q "pg_enum" "$file"); then
+            echo -e "${RED}ERROR:${NC} $file has ALTER TYPE ADD VALUE without idempotent pg_enum check or IF NOT EXISTS"
             HAS_ISSUE=1
         fi
     fi
