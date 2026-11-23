@@ -74,6 +74,8 @@
  */
 
 import { PDFDocument, PDFName, PDFDict, PDFArray, PDFRef, PDFNumber } from 'pdf-lib';
+import { decodePageContent } from './pdf-content-stream-io';
+import { locateMcidBoundingBoxes } from './mcid-bounding-box';
 
 export interface FloatInterruption {
   /** The misplaced struct element (currently a direct child of parentRef). */
@@ -132,6 +134,17 @@ export function findFloatInterruptions(doc: PDFDocument): FloatInterruption[] {
   // candidate "misplaced child" for different pairs.
   const rangeCache = new Map<string, SubtreeRange | null>();
   const visiting = new Set<string>(); // cycle guard
+
+  // Decoded on demand (only when tryGeometricAnchor below actually needs a
+  // specific page's content), and cached per page number since several
+  // declining candidates can land on the same page.
+  const pageContentCache = new Map<number, string | null>();
+  function getPageContent(pageNumber: number): string | null {
+    if (pageContentCache.has(pageNumber)) return pageContentCache.get(pageNumber) ?? null;
+    const content = decodePageContent(doc, pageNumber);
+    pageContentCache.set(pageNumber, content);
+    return content;
+  }
 
   function collectDirectMcids(kObj: ReturnType<PDFDict['get']>): number[] {
     const resolved = kObj instanceof PDFRef ? doc.context.lookup(kObj) : kObj;
@@ -299,6 +312,101 @@ export function findFloatInterruptions(doc: PDFDocument): FloatInterruption[] {
   }
 
   /**
+   * Last-resort fallback tried only at the exact point findAnchorRecursive
+   * is about to give up (neither an array-order "between two" split nor an
+   * unambiguous single containing child was found at this level -- see
+   * findAnchorRecursive's own doc comment for why this is the right, narrow
+   * place to try it, not a tree-wide scan).
+   *
+   * Real root cause confirmed on Karsaklian_189165_9781606497623.pdf (page
+   * 40, /H4 obj376 nested inside /LI > /Lbl): this producer's own siblings
+   * are NOT always listed in MCID order -- one /Lbl's own two children carry
+   * MCIDs 1263-1276 and 1216 respectively (array order does not match
+   * content order, apparently from an earlier remediation round's own
+   * structural edit), so target's true position (MCID 1223-1224, i.e.
+   * between them) can never satisfy findAnchor's array-order-based
+   * between-two check no matter how deep the recursion goes.
+   *
+   * Re-sorts `children` by their own minMcid and retries the same
+   * between-two test in THAT order instead of array order. This is
+   * deliberately NOT the same "my own maxMcid + 1 equals your minMcid"
+   * heuristic findAnchor's own doc comment documents as tried-and-reverted
+   * (69 false positives from a blind, containment-free, tree-wide scan) --
+   * this one only ever runs on a `children` set already proven, via
+   * findAnchorRecursive's own containment checks at every level above it, to
+   * be the exact host for THIS specific, already-confirmed-misplaced target;
+   * it is never used to decide whether something is misplaced, only where
+   * to put it once that's already settled.
+   *
+   * Because MCID order on this producer still doesn't reliably match real
+   * on-page order (confirmed on the SAME real example -- the higher-MCID
+   * child, 1263-1276, is actually drawn ABOVE the lower-MCID one on the
+   * page, not below), an MCID-sorted bracket is only trusted after a
+   * decisive geometric confirmation: `before`'s own trailing content must
+   * sit clearly above target, and `after`'s own leading content clearly
+   * below, on the actual page (same "require a real, non-marginal margin
+   * before trusting a close call" discipline as
+   * disambiguatePlacedPdfSpanByGeometry elsewhere in this codebase). On that
+   * same real example this correctly DECLINES (the MCID-sorted bracket's
+   * geometry contradicts the MCID inference), rather than splicing into a
+   * visually wrong position -- confirmed empirically, not merely designed
+   * for.
+   */
+  function tryGeometricAnchor(
+    containerRef: PDFRef,
+    children: Array<{ ref: PDFRef; range: SubtreeRange | null }>,
+    target: SubtreeRange,
+  ): { afterRef: PDFRef; spliceParent: PDFRef } | null {
+    if (target.minPage !== target.maxPage) return null; // keep to the simple, common shape only
+
+    const page = target.minPage;
+    const onPage = children.filter(
+      (c): c is { ref: PDFRef; range: SubtreeRange } =>
+        !!c.range && c.range.minPage === page && c.range.maxPage === page,
+    );
+    if (onPage.length < 2) return null;
+
+    const sorted = [...onPage].sort((a, b) => a.range.minMcid - b.range.minMcid);
+    let foundAt = -1;
+    for (let k = 0; k < sorted.length - 1; k++) {
+      const before = sorted[k].range;
+      const after = sorted[k + 1].range;
+      if (before.maxMcid < target.minMcid && after.minMcid > target.maxMcid) {
+        if (foundAt !== -1) return null; // ambiguous -- more than one gap fits
+        foundAt = k;
+      }
+    }
+    if (foundAt === -1) return null;
+    const before = sorted[foundAt];
+    const after = sorted[foundAt + 1];
+
+    const content = getPageContent(page);
+    if (!content) return null;
+
+    const boxes = locateMcidBoundingBoxes(
+      content,
+      new Set([before.range.maxMcid, after.range.minMcid, target.minMcid, target.maxMcid]),
+      { allowSinglePointBoxes: true },
+    );
+    const beforeBox = boxes.get(before.range.maxMcid);
+    const afterBox = boxes.get(after.range.minMcid);
+    const targetStartBox = boxes.get(target.minMcid);
+    const targetEndBox = boxes.get(target.maxMcid);
+    if (!beforeBox || !afterBox || !targetStartBox || !targetEndBox) return null;
+
+    const MARGIN = 2; // points -- excludes exact ties/overlap, not a close-call tiebreak
+    const targetTopY = Math.max(targetStartBox.maxY, targetEndBox.maxY);
+    const targetBottomY = Math.min(targetStartBox.minY, targetEndBox.minY);
+    // Device space is Y-up; reading order flows high Y (top of page) to low
+    // Y (bottom). `before` must sit decisively above target, and `after`
+    // decisively below, or this is declined rather than guessed at.
+    if (!(beforeBox.minY - targetTopY > MARGIN)) return null;
+    if (!(targetBottomY - afterBox.maxY > MARGIN)) return null;
+
+    return { afterRef: before.ref, spliceParent: containerRef };
+  }
+
+  /**
    * Recursive generalization of findAnchor: when `target` doesn't fall
    * cleanly between two of `containerRef`'s own direct children, but IS
    * fully nested inside exactly one of them, descends into that one
@@ -347,7 +455,9 @@ export function findFloatInterruptions(doc: PDFDocument): FloatInterruption[] {
       if (hostIndex !== -1) return null; // contained in more than one -- ambiguous, bail
       hostIndex = i;
     }
-    if (hostIndex === -1) return null;
+    if (hostIndex === -1) {
+      return tryGeometricAnchor(containerRef, children.map(c => ({ ref: c.ref, range: c.range })), target);
+    }
 
     return findAnchorRecursive(children[hostIndex].ref, children[hostIndex].dict, target, depth + 1);
   }
