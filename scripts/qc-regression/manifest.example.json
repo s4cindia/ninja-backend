@@ -1,0 +1,9 @@
+{
+  "T1": { "file": "t1.pdf", "axis": "chart/diagram-heavy" },
+  "T2": { "file": "t2.pdf", "axis": "maths/STEM" },
+  "T3": { "file": "t3.pdf", "axis": "photo-heavy" },
+  "T4": { "file": "t4.pdf", "axis": "complex layout" },
+  "T5": { "file": "t5.pdf", "axis": "table/list-heavy" },
+  "T6": { "file": "t6.pdf", "axis": "non-InDesign source (verify via /Producer or /Creator)" },
+  "T7": { "file": "t7.pdf", "axis": "localization/scale" }
+}
