@@ -172,6 +172,67 @@ describe('buildStructTreeFromZones (end-to-end)', () => {
     expect(topTags).toEqual(['H1']);
   });
 
+  it('demotes a Figure zone whose only content is an internal production stamp to Artifact, not a Figure', async () => {
+    // Real bug, 2026-11-25 (see git log): tagContentStream assigns an MCID
+    // to a zone whenever ANY marked content falls inside its bbox -- a
+    // lone production stamp (job/author/figure-code slug, no image or
+    // vector under it at all) satisfies that and used to survive as a
+    // real Figure struct element, which Auto Mode's own alt-text drafting
+    // then hallucinated page-irrelevant alt text for (confirmed live on a
+    // real title). This text is NOT an image/vector, and it's NOT a
+    // genuine diagram caption either (Karsaklian's own legitimate
+    // text-only diagrams must still survive -- see the next test) --
+    // it's a pure internal artifact a reader never needs announced.
+    const doc = await PDFDocument.create();
+    const page = doc.addPage([450, H]);
+    const font = await doc.embedFont(StandardFonts.Helvetica);
+    page.drawText('Chapter One', { x: 50, y: 560, size: 18, font });
+    page.drawText('E7808/McConnell/F09.02/678320/mh-R2', { x: 50, y: 520, size: 6, font });
+    const untagged = await doc.save();
+
+    const loaded = await PDFDocument.load(untagged);
+    const result = buildStructTreeFromZones(loaded, [
+      z('section-header', 30, 20),
+      z('figure', 70, 20),
+    ]);
+    // The heading's own MCID still counts; the stamp's MCID was retagged
+    // to /Artifact before the content stream was ever committed, so it
+    // never reaches zoneMcids/build() as a kept element either.
+    expect(result.mcids).toBe(1);
+
+    const tagged = await loaded.save();
+    const { tree } = await serializeStructTreeAsync(tagged as unknown as Parameters<typeof serializeStructTreeAsync>[0]);
+    const topTags = (tree[0].children || []).map((c) => c.tag);
+    expect(topTags).not.toContain('Figure');
+    expect(topTags).toEqual(['H1']);
+  });
+
+  it('keeps a genuine text-only Figure (a real diagram made of positioned text, not a production stamp)', async () => {
+    // Karsaklian pp72/74's own real shape: a text-only Figure that's a
+    // legitimate diagram, not a stamp -- must NOT be demoted just because
+    // it has no image/vector content. looksLikeProductionStamp's own
+    // pattern (3+ slash-delimited short tokens, no internal spaces) is
+    // deliberately narrow so ordinary prose like this survives untouched.
+    const doc = await PDFDocument.create();
+    const page = doc.addPage([450, H]);
+    const font = await doc.embedFont(StandardFonts.Helvetica);
+    page.drawText('Chapter One', { x: 50, y: 560, size: 18, font });
+    page.drawText('Low cost leadership vs differentiation strategy', { x: 50, y: 520, size: 10, font });
+    const untagged = await doc.save();
+
+    const loaded = await PDFDocument.load(untagged);
+    const result = buildStructTreeFromZones(loaded, [
+      z('section-header', 30, 20),
+      z('figure', 70, 20),
+    ]);
+    expect(result.mcids).toBe(2); // both the heading AND the diagram's own text survive
+
+    const tagged = await loaded.save();
+    const { tree } = await serializeStructTreeAsync(tagged as unknown as Parameters<typeof serializeStructTreeAsync>[0]);
+    const topTags = (tree[0].children || []).map((c) => c.tag);
+    expect(topTags).toContain('Figure');
+  });
+
   it('artifact-wraps a page with zero detected zones instead of skipping it entirely', async () => {
     // Real incident (Curiel, confirmed by an external PAC-tool report): pages
     // with only print-shop registration marks / production slug text and no

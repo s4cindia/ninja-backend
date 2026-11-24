@@ -68,6 +68,10 @@ const REGRESSION_METRICS = [
   'alt_duplicate',
   'figures_content_empty',
   'pages_more_figures_than_source',
+  // measure.py v0.3: a content ref no /Pg or the /ParentTree can resolve
+  // to a real page -- see MUST_BE_ZERO_METRICS' own comment for why this
+  // is additionally gated at an unconditional zero, not just tracked here.
+  'mcrs_page_unresolved',
   // measure.py v0.2: catches Ninja overwriting or losing good existing
   // alt text -- two corpus titles already carry publisher-written alt
   // (per the measurer author's own note), so this must be gated, not
@@ -99,6 +103,25 @@ const NOISE_TOLERANT_METRICS = ['alt_median_chars'] as const;
 // book's own top-level heading rank) is fixed, move these back to the
 // normal structural (exact-match) bucket, not into NOISE_TOLERANT_METRICS.
 const QUARANTINED_METRICS = ['h1', 'h2', 'h3', 'h4', 'h5', 'h6'] as const;
+
+// Must-be-zero (2026-11-25, see git log) -- a STRONGER bar than
+// REGRESSION_METRICS' own "don't exceed whatever the baseline measured":
+// these two must be exactly 0 on every capture, baseline or not, full
+// stop. figures_content_empty: a Figure with no image/vector/text/
+// annotation content at all is always a defect (either it shouldn't have
+// been tagged a Figure in the first place, or something dropped its real
+// content) -- confirmed live, T4's own page-90 divergence was exactly
+// this shape, and it got hallucinated, page-irrelevant alt text once
+// created. mcrs_page_unresolved: measure.py v0.3's own new metric -- a
+// content ref (/MCID) neither its own /Pg, an ancestor's /Pg, nor the
+// document's /ParentTree can resolve to a real page is content a screen
+// reader can never place at all, a real PDF/UA defect regardless of how
+// it happened. Both are ALSO in REGRESSION_METRICS/tracked as tolerant
+// (so finalize-baseline still records a tolerance for them, in case this
+// bar is ever relaxed) -- this list adds the additional, unconditional
+// zero requirement on top, checked separately in both finalize-baseline
+// and checkAgainstBaseline.
+const MUST_BE_ZERO_METRICS = ['figures_content_empty', 'mcrs_page_unresolved'] as const;
 
 interface ManifestEntry {
   file: string;
@@ -501,6 +524,17 @@ function finalizeBaseline(id: string) {
     throw new Error(`[${id}] refusing to finalize a baseline on nondeterministic structural metrics`);
   }
 
+  const mustBeZeroViolations = MUST_BE_ZERO_METRICS.flatMap((k) => {
+    const v1 = m1[k] ?? 0;
+    const v2 = m2[k] ?? 0;
+    return v1 !== 0 || v2 !== 0 ? [`${k}: ${v1} (run1) / ${v2} (run2), expected 0 on both`] : [];
+  });
+  if (mustBeZeroViolations.length > 0) {
+    console.error(`[${id}] MUST-BE-ZERO METRIC(S) NONZERO -- a real defect, not something to baseline around:`);
+    for (const v of mustBeZeroViolations) console.error(`  ${v}`);
+    throw new Error(`[${id}] refusing to finalize a baseline while a must-be-zero metric is nonzero`);
+  }
+
   const tolerant: Record<string, { value: number; tolerance: number }> = {};
   for (const k of [...REGRESSION_METRICS, ...NOISE_TOLERANT_METRICS]) {
     const v1 = m1[k] ?? 0;
@@ -573,6 +607,16 @@ function checkAgainstBaseline(id: string, metrics: Record<string, number>): { ok
   }
   if (baseline.quarantined && Object.keys(baseline.quarantined).length > 0) {
     lines.push(`  (quarantined, not checked: ${Object.keys(baseline.quarantined).join(', ')} -- known unstable, see Theme C investigation)`);
+  }
+  // Unconditional, independent of baseline/tolerance -- see
+  // MUST_BE_ZERO_METRICS' own comment for why these never get a pass just
+  // because the baseline itself happened to measure nonzero too.
+  for (const k of MUST_BE_ZERO_METRICS) {
+    const actual = metrics[k] ?? 0;
+    if (actual !== 0) {
+      ok = false;
+      lines.push(`  FAIL ${k}: must be 0, got ${actual}`);
+    }
   }
   return { ok, lines };
 }
