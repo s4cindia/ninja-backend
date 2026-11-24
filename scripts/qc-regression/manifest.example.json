@@ -1,9 +1,8 @@
 {
-  "T1": { "file": "t1.pdf", "axis": "chart/diagram-heavy" },
-  "T2": { "file": "t2.pdf", "axis": "maths/STEM" },
-  "T3": { "file": "t3.pdf", "axis": "photo-heavy" },
-  "T4": { "file": "t4.pdf", "axis": "complex layout" },
-  "T5": { "file": "t5.pdf", "axis": "table/list-heavy" },
-  "T6": { "file": "t6.pdf", "axis": "non-InDesign source (confirmed: an open-licence LaTeX/pdfTeX book, untagged)" },
-  "T7": { "file": "t7.pdf", "axis": "localization/scale" }
+  "T1": { "file": "t1.pdf", "axis": "tagged InDesign, diagrams/alt built from scratch" },
+  "T2": { "file": "t2.pdf", "axis": "maths graphs + tables, some publisher alt" },
+  "T3": { "file": "t3.pdf", "axis": "photos with publisher alt (preservation test)" },
+  "T4": { "file": "t4.pdf", "axis": "untagged InDesign, complex layout" },
+  "T5": { "file": "t5.pdf", "axis": "LaTeX/pdfTeX, untagged, maths/tables (also the non-InDesign axis)" },
+  "T6": { "file": "t6.pdf", "axis": "poorly tagged, German, 149 figures with no alt, no /Lang" }
 }

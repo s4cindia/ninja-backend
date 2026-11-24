@@ -24,7 +24,7 @@ for the full writeup (kept outside this repo -- see "Hygiene" below).
 ## Hygiene -- read before touching this directory
 
 **Nothing with a real title, ISBN, or filename is ever committed.** Every
-corpus title is referred to only by an anonymous id (`T1`-`T7`) in this
+corpus title is referred to only by an anonymous id (`T1`-`T6`) in this
 repo, in `manifest.example.json`, in this README, and in any CLAUDE.md
 note. The real id-to-filename mapping lives in `manifest.json` inside
 `QC_CORPUS_DIR` -- a local directory **outside both repo clones** -- and is
@@ -63,12 +63,12 @@ npx tsx scripts/qc-regression/run-corpus.ts run --titles T1,T2
 # must match exactly between the two captures -- if they don't, that's
 # nondeterminism in the pipeline or the runner itself, not noise, and
 # finalize-baseline will refuse to proceed until it's investigated.
-npx tsx scripts/qc-regression/run-corpus.ts capture --run 1 --titles T1,T2,T3,T4,T5,T6,T7
-npx tsx scripts/qc-regression/run-corpus.ts capture --run 2 --titles T1,T2,T3,T4,T5,T6,T7
-npx tsx scripts/qc-regression/run-corpus.ts finalize-baseline --titles T1,T2,T3,T4,T5,T6,T7
+npx tsx scripts/qc-regression/run-corpus.ts capture --run 1 --titles T1,T2,T3,T4,T5,T6
+npx tsx scripts/qc-regression/run-corpus.ts capture --run 2 --titles T1,T2,T3,T4,T5,T6
+npx tsx scripts/qc-regression/run-corpus.ts finalize-baseline --titles T1,T2,T3,T4,T5,T6
 
 # Before merging a theme PR: full set is the real gate.
-npx tsx scripts/qc-regression/run-corpus.ts check --titles T1,T2,T3,T4,T5,T6,T7
+npx tsx scripts/qc-regression/run-corpus.ts check --titles T1,T2,T3,T4,T5,T6
 ```
 
 `check` prints a clear PASS/FAIL per title and exits nonzero if anything
@@ -117,7 +117,7 @@ mismatch means investigate the runner/pipeline before baselining anything.
 
 ## Corpus size
 
-The full 7-title set is the real gate for a theme PR. A 2-3 title subset
+The full 6-title set is the real gate for a theme PR. A 2-3 title subset
 (`--titles T1,T2`) is fine while iterating on the runner or measurer
 themselves, but isn't a substitute for the full set before merging.
 
