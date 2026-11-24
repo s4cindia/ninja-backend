@@ -128,19 +128,49 @@ async function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+// Real bug, found live running this for real (2026-11-24): a bare "fetch
+// failed" (a network-level throw -- DNS/TCP, never reached the server, no
+// response at all) killed an entire title outright, twice in a row across
+// a long multi-title batch. Retrying is safe here specifically because the
+// request never reached the server in this failure mode -- nothing to
+// double-apply. Only retries a genuine network-level throw or a 5xx
+// response (both plausibly transient); a 4xx is a real, deterministic
+// rejection and fails immediately as before.
 async function api(method: string, urlPath: string, body?: unknown): Promise<any> {
-  const res = await fetch(`${API_BASE}${urlPath}`, {
-    method,
-    headers: {
-      Authorization: `Bearer ${AUTH_TOKEN}`,
-      ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}),
-    },
-    body: body !== undefined ? JSON.stringify(body) : undefined,
-  });
-  if (!res.ok) {
-    throw new Error(`${method} ${urlPath} -> HTTP ${res.status}: ${(await res.text()).slice(0, 500)}`);
+  const maxAttempts = 4;
+  let lastErr: unknown;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      const res = await fetch(`${API_BASE}${urlPath}`, {
+        method,
+        headers: {
+          Authorization: `Bearer ${AUTH_TOKEN}`,
+          ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}),
+        },
+        body: body !== undefined ? JSON.stringify(body) : undefined,
+      });
+      if (!res.ok) {
+        const text = (await res.text()).slice(0, 500);
+        if (res.status >= 500 && attempt < maxAttempts) {
+          console.error(`  [retry ${attempt}/${maxAttempts}] ${method} ${urlPath} -> HTTP ${res.status}, retrying in ${attempt * 3}s...`);
+          await sleep(attempt * 3000);
+          continue;
+        }
+        throw new Error(`${method} ${urlPath} -> HTTP ${res.status}: ${text}`);
+      }
+      return res.json();
+    } catch (err) {
+      lastErr = err;
+      const isNetworkError = err instanceof TypeError || (err instanceof Error && /fetch failed/i.test(err.message));
+      if (isNetworkError && attempt < maxAttempts) {
+        console.error(`  [retry ${attempt}/${maxAttempts}] ${method} ${urlPath} -> ${err instanceof Error ? err.message : err}, retrying in ${attempt * 3}s...`);
+        await sleep(attempt * 3000);
+        continue;
+      }
+      throw err;
+    }
   }
-  return res.json();
+  throw lastErr;
 }
 
 async function uploadAndStartJob(id: string, filePath: string): Promise<string> {
@@ -154,12 +184,24 @@ async function uploadAndStartJob(id: string, filePath: string): Promise<string> 
   });
 
   const buf = readFileSync(filePath);
-  const put = await fetch(presign.data.uploadUrl, {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/pdf' },
-    body: buf,
-  });
-  if (!put.ok) throw new Error(`[${id}] S3 PUT failed: HTTP ${put.status}`);
+  // S3 PUT is idempotent (same bytes, same key) -- safe to retry on a
+  // transient network-level failure, same reasoning as api()'s own retry.
+  let putOk = false;
+  for (let attempt = 1; attempt <= 4 && !putOk; attempt++) {
+    try {
+      const put = await fetch(presign.data.uploadUrl, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/pdf' },
+        body: buf,
+      });
+      if (!put.ok) throw new Error(`HTTP ${put.status}`);
+      putOk = true;
+    } catch (err) {
+      if (attempt >= 4) throw new Error(`[${id}] S3 PUT failed after ${attempt} attempts: ${err instanceof Error ? err.message : err}`);
+      console.error(`  [retry ${attempt}/4] [${id}] S3 PUT -> ${err instanceof Error ? err.message : err}, retrying in ${attempt * 3}s...`);
+      await sleep(attempt * 3000);
+    }
+  }
 
   await api('POST', `/uploads/${presign.data.fileId}/confirm`);
   const audit = await api('POST', '/pdf/audit-file', { fileId: presign.data.fileId });
@@ -211,11 +253,22 @@ async function runFullAutoMode(
 }
 
 async function downloadRemediated(jobId: string, outPath: string) {
-  const res = await fetch(`${API_BASE}/pdf/${jobId}/remediation/download`, {
-    headers: { Authorization: `Bearer ${AUTH_TOKEN}` },
-  });
-  if (!res.ok) throw new Error(`download failed: HTTP ${res.status}`);
-  writeFileSync(outPath, Buffer.from(await res.arrayBuffer()));
+  // Same retry reasoning as api()/the S3 PUT above -- a GET download is
+  // safe to retry on a transient network-level failure.
+  for (let attempt = 1; attempt <= 4; attempt++) {
+    try {
+      const res = await fetch(`${API_BASE}/pdf/${jobId}/remediation/download`, {
+        headers: { Authorization: `Bearer ${AUTH_TOKEN}` },
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      writeFileSync(outPath, Buffer.from(await res.arrayBuffer()));
+      return;
+    } catch (err) {
+      if (attempt >= 4) throw new Error(`download failed after ${attempt} attempts: ${err instanceof Error ? err.message : err}`);
+      console.error(`  [retry ${attempt}/4] download -> ${err instanceof Error ? err.message : err}, retrying in ${attempt * 3}s...`);
+      await sleep(attempt * 3000);
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -285,6 +338,16 @@ async function runOne(id: string, entry: ManifestEntry, outDir: string, withAxes
   console.log(`[${id}] starting Full Auto Mode (job ${jobId})...`);
   const { wallSeconds, aiCostUsd, rounds, stopReason } = await runFullAutoMode(id, jobId);
   console.log(`[${id}] settled: ${stopReason}, ${rounds} round(s), $${aiCostUsd.toFixed(2)}, ${wallSeconds.toFixed(0)}s wall time`);
+
+  // Real bug, found live (2026-11-24): a job whose Auto Mode genuinely
+  // errored (0 rounds, nothing applied) used to still get downloaded,
+  // measured, and written out as if it were a legitimate capture --
+  // silently baselining an unremediated/barely-touched file as "the"
+  // result for that title. Fail the whole title instead, so it's reported
+  // as a failure (and retried) rather than quietly corrupting a baseline.
+  if (stopReason === 'error') {
+    throw new Error(`[${id}] job ${jobId} Auto Mode errored (${rounds} round(s) completed) -- not a valid capture`);
+  }
 
   mkdirSync(outDir, { recursive: true });
   const outputPath = path.join(outDir, `${id}.output.pdf`);
