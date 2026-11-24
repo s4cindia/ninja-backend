@@ -541,6 +541,14 @@ function checkAgainstBaseline(id: string, metrics: Record<string, number>): { ok
   let ok = true;
 
   for (const [k, expected] of Object.entries(baseline.structural)) {
+    // Defensive, not redundant (CodeRabbit, PR #884): a baseline FILE
+    // written before QUARANTINED_METRICS existed can still have h1-h6
+    // baked into its own `structural` object -- splitStructuralVsTolerant
+    // excludes them on every NEW baseline, but an old baseline.json on
+    // disk doesn't retroactively get rewritten, so this loop would
+    // otherwise still gate `check` on a key that's since been declared
+    // known-unstable, with no way for a fresh baseline to override it.
+    if (isQuarantined(k)) continue;
     const actual = metrics[k];
     if (actual !== expected) {
       ok = false;
