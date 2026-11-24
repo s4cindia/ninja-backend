@@ -20,6 +20,7 @@
  * call or new PDF extraction work.
  */
 
+import * as pdfjsLib from 'pdfjs-dist/legacy/build/pdf.mjs';
 import { AuditIssue } from '../audit/base-audit.service';
 import { ParsedPDF } from './pdf-parser.service';
 import {
@@ -233,11 +234,73 @@ function collectContentIds(node: StructNode, fontMap: ContentIdFontMap, textMap:
   }
 }
 
-function median(values: number[]): number {
+export function median(values: number[]): number {
   if (values.length === 0) return 0;
   const sorted = [...values].sort((a, b) => a - b);
   const mid = Math.floor(sorted.length / 2);
   return sorted.length % 2 === 0 ? (sorted[mid - 1] + sorted[mid]) / 2 : sorted[mid];
+}
+
+// Pages processed in parallel batches of this size -- same convention as
+// text-extractor.service.ts's own font-size collection pass.
+const CONTENT_STREAM_PAGE_BATCH_SIZE = 10;
+
+/**
+ * Body-text median font size computed directly from the content stream
+ * (pdfjs getTextContent()'s own text items), not from tagged /P elements.
+ *
+ * Real bug, 2026-11-25 (see git log): collectHeadingStyleData()'s own
+ * bodyMedianFontSize is 0 for an UNTAGGED document -- it only walks the
+ * pdfjs STRUCT TREE, which an untagged PDF doesn't meaningfully have, so
+ * there's no /P population to take a median over at all. A caller that
+ * reads this from the job's ORIGINAL upload (immutable, to avoid the
+ * separate nondeterminism bug this module's own header comment already
+ * documents) would get 0 for every untagged-source title, permanently --
+ * not just the original instability, but every heading-promote decision
+ * on that title landing on the same wrong level every time. This function
+ * fixes that by working at the content-stream level, which needs no
+ * structure tree at all, so it gives a real body-text median for tagged
+ * and untagged sources alike. Deliberately the ONLY median this module's
+ * own job-level callers use now (not a fallback only for the untagged
+ * case) -- one method, one set of semantics, rather than two code paths
+ * that could silently disagree.
+ *
+ * Uses every text item's own font size (one entry per item, not one per
+ * paragraph) -- body text vastly outnumbers headings/captions by raw text
+ * volume in virtually any real document, so the median still lands on the
+ * body-text size even though it isn't /P-filtered the way
+ * collectHeadingStyleData's own candidate population is.
+ */
+export async function computeContentStreamBodyMedianFontSize(pdfjsDoc: pdfjsLib.PDFDocumentProxy): Promise<number> {
+  const allFontSizes: number[] = [];
+  const numPages = pdfjsDoc.numPages;
+
+  for (let start = 1; start <= numPages; start += CONTENT_STREAM_PAGE_BATCH_SIZE) {
+    const end = Math.min(start + CONTENT_STREAM_PAGE_BATCH_SIZE - 1, numPages);
+    const pageNums = Array.from({ length: end - start + 1 }, (_, k) => start + k);
+    const textContents = await Promise.all(
+      pageNums.map(async (pageNum) => {
+        try {
+          const page = await pdfjsDoc.getPage(pageNum);
+          return await page.getTextContent();
+        } catch (err) {
+          logger.debug(`[HeadingStyleClassifier] computeContentStreamBodyMedianFontSize: could not read page ${pageNum}: ${err instanceof Error ? err.message : String(err)}`);
+          return null;
+        }
+      })
+    );
+    for (const textContent of textContents) {
+      if (!textContent) continue;
+      for (const item of textContent.items) {
+        if ('transform' in item && item.transform) {
+          const fontSize = Math.abs(item.transform[0]);
+          if (fontSize > 0) allFontSizes.push(fontSize);
+        }
+      }
+    }
+  }
+
+  return median(allFontSizes);
 }
 
 /** How many OTHER candidates (document-wide, flagged or not) share this

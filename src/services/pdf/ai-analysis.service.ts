@@ -9,6 +9,7 @@
  */
 
 import pLimit from 'p-limit';
+import { createHash } from 'crypto';
 import { z } from 'zod';
 import { SchemaType, Schema } from '@google/generative-ai';
 import { createCanvas, loadImage } from '@napi-rs/canvas';
@@ -27,6 +28,7 @@ import { extractStructureTagsForPage, resolveElementRef } from './structure-tag-
 import { pdfStructureWriterService, type FixResult } from './pdf-structure-writer.service';
 import {
   collectHeadingStyleData,
+  computeContentStreamBodyMedianFontSize,
   findCandidateForIssue,
   computeClusterSize,
   hasConfirmedHeadingAtSameSize,
@@ -1577,6 +1579,102 @@ const BookmarkSuggestionsResult = z
 
 class AiAnalysisService {
   /**
+   * bodyMedianFontSize, computed from the job's ORIGINAL uploaded file,
+   * cached by content sha256 (2026-11-25, see git log).
+   *
+   * Real bug, proven on a live corpus run: collectHeadingStyleData()
+   * recomputes this median fresh on every call, document-wide, from
+   * whatever /P population still remains unpromoted in the CURRENT
+   * (already-remediated-so-far) file. analyzeJob re-parses that current
+   * state once per Auto Mode round, so round 2+ sees a smaller /P
+   * population than round 1 did, shifting the median a candidate
+   * elsewhere gets measured against -- purely because OTHER candidates'
+   * own promote/decline decisions (each a real temperature>0 Gemini call)
+   * already landed differently. Confirmed on a real title: two
+   * back-to-back runs of the identical job produced the identical set of
+   * struct elements right up to one heading ("List of Figures and
+   * Tables") whose own H2-vs-H3 promotion sits near the 1.8x ratio
+   * boundary -- a few-percent median wobble flipped it, and
+   * fixHeadingHierarchy's sequential gap-closing walk then shifted every
+   * later heading's level by the same +1, uniformly (95 of 99 headings
+   * affected in that run).
+   *
+   * An earlier version of this fix froze the median in a per-job
+   * in-memory Map the first time it was computed each run. Rejected: (1)
+   * a worker restart, or a later round picked up by a different worker,
+   * loses the frozen value and the bug returns; (2) analysis triggered
+   * outside Auto Mode (a manual single-issue re-analysis after an edit)
+   * never reaches auto-remediation-loop.service.ts's terminal cleanup, so
+   * the entry leaks AND goes stale; (3) "first call this run" isn't
+   * actually "pre-promotion" if the user applied heading fixes manually
+   * before starting Auto Mode.
+   *
+   * This version instead reads the job's ORIGINAL uploaded file
+   * (fileStorageService.getFile, never getRemediatedFile) -- genuinely
+   * immutable for the life of the job, so there is no "first seen"
+   * ordering to get wrong and nothing to freeze or clear. Cached by the
+   * original file's own sha256 (not jobId), so identical uploads across
+   * different jobs -- including this exact corpus's own double-capture
+   * methodology, which re-uploads the same source PDF twice on purpose --
+   * share one computation instead of repeating it. No per-job or per-run
+   * state at all. Size-capped purely as a memory safety backstop (not a
+   * staleness mechanism -- a given file's content never goes stale),
+   * evicting the oldest entry past the cap.
+   *
+   * Uses computeContentStreamBodyMedianFontSize (heading-style-
+   * classifier.ts), NOT collectHeadingStyleData's own /P-tagged-element
+   * median. Real bug caught on review, 2026-11-25 (see git log):
+   * collectHeadingStyleData returns bodyMedianFontSize=0 for an UNTAGGED
+   * document -- it only walks the pdfjs STRUCT TREE, which an untagged
+   * source doesn't meaningfully have. T4 and T5's own ORIGINAL uploads
+   * are untagged (the whole document gets tagged for the first time
+   * during Auto Mode) -- reading their median from collectHeadingStyleData
+   * on the original file would have returned 0 permanently for every
+   * untagged-source title, making every promoted heading land on H3
+   * unconditionally regardless of its real size. computeContentStreamBody-
+   * MedianFontSize instead reads font sizes directly from pdfjs
+   * getTextContent(), which needs no structure tree at all, so it gives a
+   * real body-text median whether or not the source happens to be tagged.
+   */
+  private readonly bodyMedianFontSizeByFileSha256 = new Map<string, number>();
+  private static readonly BODY_MEDIAN_CACHE_MAX_ENTRIES = 200;
+
+  private async getOriginalFileBodyMedianFontSize(jobId: string, fileName: string): Promise<number> {
+    const originalBuffer = await fileStorageService.getFile(jobId, fileName);
+    if (!originalBuffer) {
+      // Original upload no longer in storage (e.g. retention cleanup on an
+      // old job) -- fall back to 0; analyzeHeadingStyleMismatch already
+      // treats ratio 0 as "decline to promote at H1/H2", never throws.
+      logger.warn(`[AiAnalysis] getOriginalFileBodyMedianFontSize: original file not found for job ${jobId} -- using 0`);
+      return 0;
+    }
+
+    const sha256 = createHash('sha256').update(originalBuffer).digest('hex');
+    const cached = this.bodyMedianFontSizeByFileSha256.get(sha256);
+    if (cached !== undefined) return cached;
+
+    // The lightweight base parser, not pdfComprehensiveParserService --
+    // all this needs is pdfjsDoc for getTextContent(); the comprehensive
+    // parse's extra work (images, form fields, full structure analysis)
+    // is unused here.
+    const originalParsed = await pdfParserService.parseBuffer(originalBuffer, fileName);
+    try {
+      const bodyMedianFontSize = await computeContentStreamBodyMedianFontSize(originalParsed.pdfjsDoc);
+
+      if (this.bodyMedianFontSizeByFileSha256.size >= AiAnalysisService.BODY_MEDIAN_CACHE_MAX_ENTRIES) {
+        const oldestKey = this.bodyMedianFontSizeByFileSha256.keys().next().value;
+        if (oldestKey !== undefined) this.bodyMedianFontSizeByFileSha256.delete(oldestKey);
+      }
+      this.bodyMedianFontSizeByFileSha256.set(sha256, bodyMedianFontSize);
+      return bodyMedianFontSize;
+    } finally {
+      await pdfParserService.close(originalParsed).catch((err) => {
+        logger.warn(`[AiAnalysis] Failed to close original-file PDF handle: ${err instanceof Error ? err.message : String(err)}`);
+      });
+    }
+  }
+
+  /**
    * Analyze all eligible issues for a completed audit job and store AI suggestions.
    */
   async analyzeJob(
@@ -1740,7 +1838,8 @@ class AiAnalysisService {
               pageRenderCache,
               contrastMatchByIssueId,
               jobId,
-              tenantId
+              tenantId,
+              fileName
             );
             suggestionCache.set(cacheKey, suggestionPromise);
           }
@@ -2019,7 +2118,8 @@ class AiAnalysisService {
     pageRenderCache: Map<number, Promise<string | null>>,
     contrastMatchByIssueId: Map<string, TextRunMatch | null>,
     jobId: string,
-    tenantId: string
+    tenantId: string,
+    fileName: string
   ): Promise<AiSuggestionResult | null> {
     const code = issue.code;
     const page = issue.pageNumber ? parsed.pages[issue.pageNumber - 1] : undefined;
@@ -2598,7 +2698,7 @@ class AiAnalysisService {
 
     if (HEADING_STYLE_MISMATCH_CODES.has(code)) {
       if (!parsed.parsedPdf) return null;
-      return this.analyzeHeadingStyleMismatch(issue, parsed.parsedPdf);
+      return this.analyzeHeadingStyleMismatch(issue, parsed.parsedPdf, jobId, fileName);
     }
 
     if (DISPLAY_DOC_TITLE_CODES.has(code)) {
@@ -4252,7 +4352,7 @@ class AiAnalysisService {
    * it back from there, the same convention every other suggestion type
    * storing a non-text payload in `value` already uses.
    */
-  private async analyzeHeadingStyleMismatch(issue: AuditIssue, parsedPdf: ParsedPDF): Promise<AiSuggestionResult | null> {
+  private async analyzeHeadingStyleMismatch(issue: AuditIssue, parsedPdf: ParsedPDF, jobId: string, fileName: string): Promise<AiSuggestionResult | null> {
     const HEADING_PROMOTE_MIN_CONFIDENCE = 0.3;
     // Confirmed decision (design doc): folded into the confidence score,
     // not a separate hard gate -- a real heading already at this exact
@@ -4264,7 +4364,13 @@ class AiAnalysisService {
     // moved from a hard pre-call decline to a confidence penalty.
     const LARGE_CLUSTER_PENALTY = 0.15;
 
-    const { allCandidates, existingHeadingFontSizes, bodyMedianFontSize } = await collectHeadingStyleData(parsedPdf);
+    // allCandidates/existingHeadingFontSizes still need the CURRENT struct
+    // tree (to re-locate this issue's own candidate and judge same-size/
+    // cluster signals against what's really there right now). Only the
+    // level-decision denominator comes from the ORIGINAL file -- see
+    // getOriginalFileBodyMedianFontSize's own doc comment for why.
+    const { allCandidates, existingHeadingFontSizes } = await collectHeadingStyleData(parsedPdf);
+    const bodyMedianFontSize = await this.getOriginalFileBodyMedianFontSize(jobId, fileName);
     const candidate = findCandidateForIssue(allCandidates, issue);
     if (!candidate) {
       logger.info(`[AiAnalysis] analyzeHeadingStyleMismatch: could not re-locate the candidate for ${issue.element} -- declining`);
@@ -4296,6 +4402,13 @@ class AiAnalysisService {
         model: 'flash',
         maxOutputTokens: 1024,
         responseSchema: HEADING_PROMOTE_SCHEMA,
+        // Binary isHeading classification -- no sampling diversity needed,
+        // and the default (aiConfig.defaults.temperature, 0.2) was
+        // confirmed live as one real contributor to run-to-run heading-
+        // level instability (2026-11-25, see git log). Reduces but doesn't
+        // guarantee bit-identical output across runs -- paired with
+        // freezeBodyMedianFontSize above for the actual determinism fix.
+        temperature: 0,
       });
 
       if (!data.isHeading) {
