@@ -68,6 +68,11 @@ const REGRESSION_METRICS = [
   'alt_duplicate',
   'figures_content_empty',
   'pages_more_figures_than_source',
+  // measure.py v0.2: catches Ninja overwriting or losing good existing
+  // alt text -- two corpus titles already carry publisher-written alt
+  // (per the measurer author's own note), so this must be gated, not
+  // just reported.
+  'source_alt_lost',
 ] as const;
 
 // Every other metric in measure.py's output is informational (reported in
@@ -156,7 +161,22 @@ async function uploadAndStartJob(id: string, filePath: string): Promise<string> 
 
   await api('POST', `/uploads/${presign.data.fileId}/confirm`);
   const audit = await api('POST', '/pdf/audit-file', { fileId: presign.data.fileId });
-  return audit.data.jobId;
+  const jobId = audit.data.jobId;
+
+  // Real bug, found live (2026-11-24): /pdf/audit-file only STARTS the
+  // initial audit asynchronously -- calling /auto-mode/start immediately
+  // afterward races it, since Auto Mode needs a completed audit report to
+  // work from. Poll the plain job-status endpoint (not auto-mode/status)
+  // until the initial audit itself has actually finished.
+  // eslint-disable-next-line no-constant-condition
+  while (true) {
+    const jobStatus = await api('GET', `/pdf/job/${jobId}/status`);
+    const s = jobStatus.data.status;
+    if (s === 'COMPLETED') break;
+    if (s === 'FAILED') throw new Error(`[${id}] initial audit failed: ${jobStatus.data.error}`);
+    await sleep(5000);
+  }
+  return jobId;
 }
 
 async function runFullAutoMode(
@@ -169,8 +189,14 @@ async function runFullAutoMode(
   // eslint-disable-next-line no-constant-condition
   while (true) {
     status = await api('GET', `/pdf/${jobId}/auto-mode/status`);
-    if (status.data.autoStatus !== 'running') break;
-    console.log(`  [${id}] round ${status.data.autoRoundsCompleted} running, $${status.data.autoCostSpentUsd.toFixed(2)} spent so far...`);
+    // Real bug, found live (2026-11-24): the very first poll right after
+    // starting can race the state write and see a transient pre-start
+    // value (autoStatus not yet 'running', autoStopReason still null) --
+    // only 'stopped' is a confirmed terminal value (seen consistently all
+    // session); anything else, including an unrecognized transient state,
+    // means keep polling rather than treating it as already settled.
+    if (status.data.autoStatus === 'stopped') break;
+    console.log(`  [${id}] status=${status.data.autoStatus} round ${status.data.autoRoundsCompleted} $${status.data.autoCostSpentUsd.toFixed(2)} spent so far...`);
     await sleep(15000);
   }
   return {
