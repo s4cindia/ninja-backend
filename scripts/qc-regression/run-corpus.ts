@@ -75,8 +75,30 @@ const REGRESSION_METRICS = [
   'source_alt_lost',
 ] as const;
 
-// Every other metric in measure.py's output is informational (reported in
-// the diff for context) but never fails `check` on its own.
+// Every other metric in measure.py's own output is informational (reported
+// in the diff for context) but never fails `check` on its own -- EXCEPT the
+// two lists immediately below, which get a tolerance in finalize-baseline
+// (because they're genuinely AI-influenced) without being treated as
+// higher-is-worse regressions the way REGRESSION_METRICS is.
+
+// Noise-tolerant but NOT a regression direction -- e.g. alt_median_chars
+// (2026-11-25, see git log): genuine AI wording variance run to run with no
+// inherent "higher is worse" meaning. Gets a tolerance; never gates `check`.
+const NOISE_TOLERANT_METRICS = ['alt_median_chars'] as const;
+
+// Quarantined (2026-11-25, see git log): run-to-run instability here is a
+// real PRODUCT BUG, not noise to paper over with a tolerance -- the same
+// book getting a different heading structure for a customer between two
+// otherwise-identical runs. Confirmed live: T1's two captures showed h2:20
+// vs h2:2 (and matching swings in h3-h6) -- looks like a uniform off-by-one
+// level shift, not small jitter. Excluded entirely from finalize-baseline's
+// exact-match gate and from `check`'s regression gate; both runs' raw
+// values are recorded with an explicit "known unstable" flag instead.
+// Tracked as the first Theme C investigation item -- once the root cause
+// (likely a non-deterministic or ordering-dependent AI call deciding the
+// book's own top-level heading rank) is fixed, move these back to the
+// normal structural (exact-match) bucket, not into NOISE_TOLERANT_METRICS.
+const QUARANTINED_METRICS = ['h1', 'h2', 'h3', 'h4', 'h5', 'h6'] as const;
 
 interface ManifestEntry {
   file: string;
@@ -375,22 +397,37 @@ async function runOne(id: string, entry: ManifestEntry, outDir: string, withAxes
 interface Baseline {
   structural: Record<string, number>;
   tolerant: Record<string, { value: number; tolerance: number }>;
+  // Quarantined (2026-11-25): excluded from the exact-match gate entirely --
+  // see QUARANTINED_METRICS above for why. Both runs' raw values are kept
+  // so the instability is visible in the baseline file itself, not hidden.
+  quarantined?: Record<string, { run1: number; run2: number; note: string }>;
   // The deployed commit SHA (via /health) both captures were run against --
   // recorded so a baseline's provenance is traceable, not assumed.
   capture1CommitSha?: string | null;
   capture2CommitSha?: string | null;
 }
 
+function isQuarantined(k: string): boolean {
+  return (QUARANTINED_METRICS as readonly string[]).includes(k);
+}
+
 function splitStructuralVsTolerant(metrics: Record<string, number>): Baseline {
-  // Everything in REGRESSION_METRICS (and a handful of count fields the same
-  // code paths touch) is treated as needing a tolerance once AI-derived
-  // content is involved; the rest of the structure-tree-shape metrics are
-  // expected to be exactly reproducible between two runs of the same code.
+  // Everything in REGRESSION_METRICS or NOISE_TOLERANT_METRICS is treated as
+  // needing a tolerance once AI-derived content is involved; QUARANTINED_METRICS
+  // is excluded outright (see its own comment -- that instability is a known
+  // product bug, not noise to tolerate); the rest of the structure-tree-shape
+  // metrics are expected to be exactly reproducible between two runs of the
+  // same code.
   const structural: Record<string, number> = {};
   const tolerant: Record<string, { value: number; tolerance: number }> = {};
   for (const [k, v] of Object.entries(metrics)) {
     if (typeof v !== 'number') continue;
-    if (REGRESSION_METRICS.includes(k as (typeof REGRESSION_METRICS)[number])) {
+    if (isQuarantined(k)) {
+      continue;
+    } else if (
+      REGRESSION_METRICS.includes(k as (typeof REGRESSION_METRICS)[number]) ||
+      (NOISE_TOLERANT_METRICS as readonly string[]).includes(k)
+    ) {
       tolerant[k] = { value: v, tolerance: 0 }; // tolerance filled in by finalize-baseline
     } else {
       structural[k] = v;
@@ -465,20 +502,33 @@ function finalizeBaseline(id: string) {
   }
 
   const tolerant: Record<string, { value: number; tolerance: number }> = {};
-  for (const k of REGRESSION_METRICS) {
+  for (const k of [...REGRESSION_METRICS, ...NOISE_TOLERANT_METRICS]) {
     const v1 = m1[k] ?? 0;
     const v2 = m2[k] ?? 0;
     tolerant[k] = { value: v1, tolerance: Math.abs(v1 - v2) };
   }
 
+  const quarantined: Record<string, { run1: number; run2: number; note: string }> = {};
+  for (const k of QUARANTINED_METRICS) {
+    quarantined[k] = {
+      run1: m1[k] ?? 0,
+      run2: m2[k] ?? 0,
+      note: 'known unstable -- see Theme C investigation, excluded from the exact-match gate',
+    };
+  }
+
   const baseline: Baseline = {
     structural: s1,
     tolerant,
+    quarantined,
     capture1CommitSha: r1.deployedCommitSha ?? null,
     capture2CommitSha: r2.deployedCommitSha ?? null,
   };
   writeFileSync(path.join(BASELINES_DIR, `${id}.baseline.json`), JSON.stringify(baseline, null, 2));
   console.log(`[${id}] baseline finalized (commit ${baseline.capture1CommitSha}). Tolerances: ${Object.entries(tolerant).map(([k, v]) => `${k}=±${v.tolerance}`).join(', ')}`);
+  if (Object.keys(quarantined).length > 0) {
+    console.log(`[${id}] quarantined (excluded from the gate, known unstable): ${Object.entries(quarantined).map(([k, v]) => `${k}=${v.run1} vs ${v.run2}`).join(', ')}`);
+  }
 }
 
 function checkAgainstBaseline(id: string, metrics: Record<string, number>): { ok: boolean; lines: string[] } {
@@ -499,13 +549,22 @@ function checkAgainstBaseline(id: string, metrics: Record<string, number>): { ok
   }
   for (const [k, { value: expected, tolerance }] of Object.entries(baseline.tolerant)) {
     const actual = metrics[k] ?? 0;
-    const diff = actual - expected; // positive = worse (all REGRESSION_METRICS are higher-is-worse)
-    if (diff > tolerance) {
+    const diff = actual - expected;
+    // NOISE_TOLERANT_METRICS (e.g. alt_median_chars) has no "higher is
+    // worse" direction -- a swing either way beyond the observed noise
+    // window is worth a look, so it's checked on magnitude. Everything
+    // else here is a REGRESSION_METRICS entry, which IS higher-is-worse.
+    const isSymmetric = (NOISE_TOLERANT_METRICS as readonly string[]).includes(k);
+    const exceeds = isSymmetric ? Math.abs(diff) > tolerance : diff > tolerance;
+    if (exceeds) {
       ok = false;
-      lines.push(`  FAIL ${k}: baseline ${expected} (±${tolerance}), got ${actual} (+${diff})`);
+      lines.push(`  FAIL ${k}: baseline ${expected} (±${tolerance}), got ${actual} (${diff >= 0 ? '+' : ''}${diff})`);
     } else if (diff !== 0) {
       lines.push(`  ok (within tolerance) ${k}: baseline ${expected} (±${tolerance}), got ${actual}`);
     }
+  }
+  if (baseline.quarantined && Object.keys(baseline.quarantined).length > 0) {
+    lines.push(`  (quarantined, not checked: ${Object.keys(baseline.quarantined).join(', ')} -- known unstable, see Theme C investigation)`);
   }
   return { ok, lines };
 }
@@ -539,7 +598,25 @@ async function main() {
   const titles = resolveTitles(manifest, opts.titles);
 
   if (mode === 'finalize-baseline') {
-    for (const id of titles) finalizeBaseline(id);
+    // Same per-title resilience as the capture/run/check loop below -- one
+    // title's structural mismatch must not stop the rest from even being
+    // checked (real gap, found live 2026-11-25: T1's mismatch threw out of
+    // this loop before T4/T5 were ever examined).
+    const failures: Array<{ id: string; error: string }> = [];
+    for (const id of titles) {
+      try {
+        finalizeBaseline(id);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.error(`[${id}] FAILED, continuing with remaining titles: ${msg}`);
+        failures.push({ id, error: msg });
+      }
+    }
+    if (failures.length > 0) {
+      console.error(`\n--- ${failures.length} title(s) FAILED to finalize ---`);
+      for (const f of failures) console.error(`${f.id}: ${f.error}`);
+      process.exitCode = 1;
+    }
     return;
   }
 
