@@ -58,10 +58,20 @@ WORKDIR /app
 # with "wget: not found" on every single check, so ECS never saw a healthy
 # new task and kept killing and replacing it in an endless ~11-minute
 # cycle. Do not purge it again.
+# fonts-liberation: this base image previously shipped with NO fonts at
+# all. Real, latent production bug (found 2026-11-24, see git log): any
+# PDF page render via @napi-rs/canvas (contrast detection/verification,
+# alt-text page-render-crop) for text using a non-embedded standard font
+# (Helvetica/Arial/Times/Courier -- extremely common) rendered a
+# completely blank canvas with no font installed to resolve to, not a
+# fallback glyph. src/lib/canvas-font-aliases.ts aliases those standard
+# names to this package's metric-compatible Liberation family at app
+# startup -- the alias is useless without the font actually installed.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     curl \
     default-jre-headless \
+    fonts-liberation \
     ghostscript \
     imagemagick \
     openssl \

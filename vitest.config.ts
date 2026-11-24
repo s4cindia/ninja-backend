@@ -19,7 +19,16 @@ export default defineConfig({
       ]
     },
     testTimeout: 10000,
-    hookTimeout: 10000
+    hookTimeout: 10000,
+    // Real CI-only bug (2026-11-24, see git log): @napi-rs/canvas's
+    // font-name resolution doesn't fall back for a generic alias
+    // ("sans-serif") or an uninstalled standard name ("Helvetica",
+    // "Arial") on Linux -- it draws nothing, not even a fallback glyph.
+    // canvas-fonts.ts registers the same alias mapping
+    // src/lib/canvas-font-aliases.ts's ensureCanvasFontAliases() sets up
+    // for the real app, so any test that renders a PDF page (contrast
+    // detection/verification) gets the same working fonts.
+    setupFiles: ['./tests/setup/canvas-fonts.ts'],
   },
   resolve: {
     alias: {

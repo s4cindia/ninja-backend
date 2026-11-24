@@ -81,7 +81,17 @@ export async function verifyContrastInRegion(
 ): Promise<ContrastVerificationResult | null> {
   let pdfjsDoc: pdfjsLib.PDFDocumentProxy | null = null;
   try {
-    pdfjsDoc = await pdfjsLib.getDocument({ data: new Uint8Array(buffer) }).promise;
+    // useSystemFonts: real bug (found 2026-11-24, see git log), not just
+    // CI-only -- also affects production on Linux. Asks pdfjs-dist to use
+    // the OS's own font resolution rather than its internal substitution;
+    // on its own this is NOT sufficient (root-caused separately: it's
+    // @napi-rs/canvas's own font-name-to-family resolution that needs
+    // src/lib/canvas-font-aliases.ts's alias registration, see that file's
+    // doc comment), but this still matches the established pattern
+    // pdf-parser.service.ts's loadWithPdfjs and tagged-pdf-extractor.ts
+    // already use elsewhere in this codebase. All 3 getDocument calls in
+    // this file need it, not just this one.
+    pdfjsDoc = await pdfjsLib.getDocument({ data: new Uint8Array(buffer), useSystemFonts: true }).promise;
     const page = await pdfjsDoc.getPage(pageNumber);
     const viewport = page.getViewport({ scale: RENDER_SCALE });
 
@@ -204,7 +214,7 @@ export async function verifyStillNoDetectableInk(
 ): Promise<boolean | null> {
   let pdfjsDoc: pdfjsLib.PDFDocumentProxy | null = null;
   try {
-    pdfjsDoc = await pdfjsLib.getDocument({ data: new Uint8Array(buffer) }).promise;
+    pdfjsDoc = await pdfjsLib.getDocument({ data: new Uint8Array(buffer), useSystemFonts: true }).promise;
     const page = await pdfjsDoc.getPage(pageNumber);
     const viewport = page.getViewport({ scale: RENDER_SCALE });
 
@@ -269,7 +279,7 @@ export async function verifyBackplateContrast(
 ): Promise<ContrastVerificationResult | null> {
   let pdfjsDoc: pdfjsLib.PDFDocumentProxy | null = null;
   try {
-    pdfjsDoc = await pdfjsLib.getDocument({ data: new Uint8Array(buffer) }).promise;
+    pdfjsDoc = await pdfjsLib.getDocument({ data: new Uint8Array(buffer), useSystemFonts: true }).promise;
     const page = await pdfjsDoc.getPage(pageNumber);
     const viewport = page.getViewport({ scale: RENDER_SCALE });
 
