@@ -68,6 +68,11 @@ const REGRESSION_METRICS = [
   'alt_duplicate',
   'figures_content_empty',
   'pages_more_figures_than_source',
+  // measure.py v0.2: catches Ninja overwriting or losing good existing
+  // alt text -- two corpus titles already carry publisher-written alt
+  // (per the measurer author's own note), so this must be gated, not
+  // just reported.
+  'source_alt_lost',
 ] as const;
 
 // Every other metric in measure.py's output is informational (reported in

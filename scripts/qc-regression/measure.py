@@ -30,7 +30,7 @@ from collections import Counter, defaultdict
 
 import pikepdf
 
-VERSION = "0.1.0"
+VERSION = "0.2.0"
 
 STANDARD_TYPES = {
     "Document", "Part", "Art", "Sect", "Div", "BlockQuote", "Caption", "TOC", "TOCI",
@@ -571,16 +571,30 @@ def measure(path, source_doc=None):
             if p and n > max(ref, 1 if not src_tagged and src_imgs.get(p, 0) else ref):
                 extra.append({"page": p, "output_figures": n, "source_reference": ref})
         m["pages_more_figures_than_source"] = len(extra)
+        # Existing (e.g. publisher-written) alt text: did the output keep it?
+        def nz(t):
+            return re.sub(r"\W+", " ", t.lower()).strip()
+        src_alts = source_doc["_alts"]
+        out_alts = {nz(r["alt"]) for r in with_alt}
+        lost = [a for a in src_alts if a not in out_alts]
+        m["source_alt_texts"] = len(src_alts)
+        m["source_alt_lost"] = len(lost)
+        det["source_alt_lost"] = [a[:200] for a in lost[:100]]
+        # Noise words only in alt text the source did not already have
+        new_noise = [r for r in noise if nz(r["alt"]) not in src_alts]
+        m["alt_noise_words_new"] = len(new_noise)
+        det["alt_noise_words_new"] = [{"page": r["page"], "alt": r["alt"][:200]} for r in new_noise]
         det["pages_more_figures_than_source"] = sorted(extra, key=lambda x: x["page"])
 
     internal = {"_figs_per_page": dict(figs_per_page), "_imgs_per_page": imgs_per_page,
-                "_has_tree": d.str_root is not None}
+                "_has_tree": d.str_root is not None,
+                "_alts": {re.sub(r"\W+", " ", r["alt"].lower()).strip() for r in with_alt}}
     return m, det, internal
 
 
 DELTA_KEYS = ["figures", "figures_with_alt", "figures_without_alt", "tables_without_th", "li_not_in_l",
               "top_level_floats", "reading_order_backward_jumps", "pages_running_head_tagged_as_content",
-              "text_ops_untagged", "bookmarks", "heading_level_skips"]
+              "text_ops_untagged", "bookmarks", "heading_level_skips", "alt_noise_words"]
 
 
 def main():

@@ -89,11 +89,21 @@ they depend on fresh AI output (`figures_without_alt`, `tables_without_th`,
 `li_not_in_l`, `top_level_floats`, `reading_order_backward_jumps`,
 `pages_running_head_tagged_as_content`, `text_ops_untagged`,
 `heading_level_skips`, `alt_noise_words`, `alt_generic`, `alt_duplicate`,
-`figures_content_empty`, `pages_more_figures_than_source` -- see
-`REGRESSION_METRICS` in `run-corpus.ts`) gets a tolerance derived from the
-*observed* spread between the two baseline captures, never a guessed
-number. All of these are higher-is-worse counts, so `check` only flags a
-regression when a title's number goes up beyond its own tolerance.
+`figures_content_empty`, `pages_more_figures_than_source`,
+`source_alt_lost` -- see `REGRESSION_METRICS` in `run-corpus.ts`) gets a
+tolerance derived from the *observed* spread between the two baseline
+captures, never a guessed number. All of these are higher-is-worse
+counts, so `check` only flags a regression when a title's number goes up
+beyond its own tolerance.
+
+`source_alt_lost` (measure.py v0.2+) matters specifically because at
+least two corpus titles already carry publisher-written alt text before
+Ninja ever touches them -- this is the metric that catches Ninja
+overwriting or losing good existing alt text, which none of the other
+metrics would see (they only look at the output in isolation).
+`alt_noise_words_new` and `source_alt_texts` are also available (same
+v0.2+, only computed when `--source` is given) but are informational
+only for now, not gated.
 
 ## Acceptance test for this tooling itself
 

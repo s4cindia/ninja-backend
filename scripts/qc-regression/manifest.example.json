@@ -4,6 +4,6 @@
   "T3": { "file": "t3.pdf", "axis": "photo-heavy" },
   "T4": { "file": "t4.pdf", "axis": "complex layout" },
   "T5": { "file": "t5.pdf", "axis": "table/list-heavy" },
-  "T6": { "file": "t6.pdf", "axis": "non-InDesign source (verify via /Producer or /Creator)" },
+  "T6": { "file": "t6.pdf", "axis": "non-InDesign source (confirmed: an open-licence LaTeX/pdfTeX book, untagged)" },
   "T7": { "file": "t7.pdf", "axis": "localization/scale" }
 }
