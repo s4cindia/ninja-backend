@@ -92,6 +92,8 @@ interface RunnerResult {
   rounds: number;
   stopReason: string;
   measured: Record<string, unknown>; // measure.py's own top-level JSON, unmodified
+  axes4?: unknown; // only present when --axes4 was passed for this run
+  deployedCommitSha?: string | null; // via /health, fetched once per capture invocation
 }
 
 // ---------------------------------------------------------------------------
@@ -162,6 +164,7 @@ async function uploadAndStartJob(id: string, filePath: string): Promise<string> 
   await api('POST', `/uploads/${presign.data.fileId}/confirm`);
   const audit = await api('POST', '/pdf/audit-file', { fileId: presign.data.fileId });
   const jobId = audit.data.jobId;
+  console.log(`[${id}] job ${jobId} created, waiting for initial audit...`);
 
   // Real bug, found live (2026-11-24): /pdf/audit-file only STARTS the
   // initial audit asynchronously -- calling /auto-mode/start immediately
@@ -173,7 +176,7 @@ async function uploadAndStartJob(id: string, filePath: string): Promise<string> 
     const jobStatus = await api('GET', `/pdf/job/${jobId}/status`);
     const s = jobStatus.data.status;
     if (s === 'COMPLETED') break;
-    if (s === 'FAILED') throw new Error(`[${id}] initial audit failed: ${jobStatus.data.error}`);
+    if (s === 'FAILED') throw new Error(`[${id}] job ${jobId} initial audit failed: ${jobStatus.data.error}`);
     await sleep(5000);
   }
   return jobId;
@@ -216,6 +219,44 @@ async function downloadRemediated(jobId: string, outPath: string) {
 }
 
 // ---------------------------------------------------------------------------
+// axes4 PAC (opt-in; a single shared, GLOBAL quota -- never called by
+// default, only when --axes4 is passed to `capture --run 1`)
+// ---------------------------------------------------------------------------
+
+interface Axes4Quota {
+  configured: boolean;
+  pagesUsedThisPeriod: number;
+  pagesLimitThisPeriod: number;
+  periodResetAt: string | null;
+}
+
+async function getAxes4Quota(): Promise<Axes4Quota> {
+  const res = await api('GET', '/pdf/axes4/quota');
+  return res.data;
+}
+
+async function runAxes4Pac(jobId: string): Promise<unknown> {
+  const res = await api('POST', `/pdf/${jobId}/pac-report/live`);
+  return res.data;
+}
+
+// ---------------------------------------------------------------------------
+// Deployed commit SHA (unauthenticated, not under /api/v1)
+// ---------------------------------------------------------------------------
+
+async function getDeployedCommitSha(): Promise<string | null> {
+  try {
+    const base = API_BASE.replace(/\/api\/v1\/?$/, '');
+    const res = await fetch(`${base}/health`);
+    if (!res.ok) return null;
+    const body = await res.json();
+    return body.commitSha ?? null;
+  } catch {
+    return null;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // measure.py
 // ---------------------------------------------------------------------------
 
@@ -232,7 +273,7 @@ function runMeasure(sourcePath: string, outputPath: string, jsonPath: string) {
 // Core: run one title end to end
 // ---------------------------------------------------------------------------
 
-async function runOne(id: string, entry: ManifestEntry, outDir: string): Promise<RunnerResult> {
+async function runOne(id: string, entry: ManifestEntry, outDir: string, withAxes4 = false): Promise<RunnerResult> {
   const sourcePath = path.join(QC_CORPUS_DIR, entry.file);
   if (!existsSync(sourcePath)) {
     throw new Error(`[${id}] source file not found in QC_CORPUS_DIR (see manifest.json)`);
@@ -254,7 +295,14 @@ async function runOne(id: string, entry: ManifestEntry, outDir: string): Promise
   runMeasure(sourcePath, outputPath, jsonPath);
   const measured = JSON.parse(readFileSync(jsonPath, 'utf-8'));
 
-  return { id, axis: entry.axis, jobId, wallSeconds, aiCostUsd, rounds, stopReason, measured };
+  let axes4: unknown;
+  if (withAxes4) {
+    console.log(`[${id}] running axes4 PAC...`);
+    axes4 = await runAxes4Pac(jobId);
+    writeFileSync(path.join(outDir, `${id}.axes4.json`), JSON.stringify(axes4, null, 2));
+  }
+
+  return { id, axis: entry.axis, jobId, wallSeconds, aiCostUsd, rounds, stopReason, measured, ...(axes4 ? { axes4 } : {}) };
 }
 
 // ---------------------------------------------------------------------------
@@ -264,6 +312,10 @@ async function runOne(id: string, entry: ManifestEntry, outDir: string): Promise
 interface Baseline {
   structural: Record<string, number>;
   tolerant: Record<string, { value: number; tolerance: number }>;
+  // The deployed commit SHA (via /health) both captures were run against --
+  // recorded so a baseline's provenance is traceable, not assumed.
+  capture1CommitSha?: string | null;
+  capture2CommitSha?: string | null;
 }
 
 function splitStructuralVsTolerant(metrics: Record<string, number>): Baseline {
@@ -284,6 +336,35 @@ function splitStructuralVsTolerant(metrics: Record<string, number>): Baseline {
   return { structural, tolerant };
 }
 
+// Extracts a comparable SET of page numbers from one of measure.py's
+// `details` entries, regardless of whether that entry is a plain list of
+// page numbers (tables_without_th, li_not_in_l_pages,
+// pages_running_head_tagged_as_content) or a list of objects carrying a
+// `page` field (top_level_floats, pages_more_figures_than_source).
+function pageSetFromDetail(detail: unknown): Set<number> {
+  if (!Array.isArray(detail)) return new Set();
+  const pages = detail.map((item) => (typeof item === 'number' ? item : (item as { page?: number })?.page));
+  return new Set(pages.filter((p): p is number => typeof p === 'number'));
+}
+
+// Keys explicitly called out (2026-11-24, see git log): matching counts
+// with different underlying pages is nondeterminism, not noise -- a
+// baseline must refuse to form if the SAME pages weren't involved both
+// captures, even when the two captures' plain counts happen to agree.
+const DETAIL_PAGE_KEYS = [
+  'top_level_floats',
+  'pages_more_figures_than_source',
+  'pages_running_head_tagged_as_content',
+  'tables_without_th',
+  'li_not_in_l_pages',
+] as const;
+
+function setsEqual(a: Set<number>, b: Set<number>): boolean {
+  if (a.size !== b.size) return false;
+  for (const x of a) if (!b.has(x)) return false;
+  return true;
+}
+
 function finalizeBaseline(id: string) {
   const c1Path = path.join(BASELINES_DIR, `${id}.capture1.json`);
   const c2Path = path.join(BASELINES_DIR, `${id}.capture2.json`);
@@ -294,6 +375,8 @@ function finalizeBaseline(id: string) {
   const r2: RunnerResult = JSON.parse(readFileSync(c2Path, 'utf-8'));
   const m1 = r1.measured.metrics as Record<string, number>;
   const m2 = r2.measured.metrics as Record<string, number>;
+  const d1 = (r1.measured.details ?? {}) as Record<string, unknown>;
+  const d2 = (r2.measured.details ?? {}) as Record<string, unknown>;
 
   const { structural: s1 } = splitStructuralVsTolerant(m1);
   const { structural: s2 } = splitStructuralVsTolerant(m2);
@@ -301,6 +384,17 @@ function finalizeBaseline(id: string) {
   for (const k of Object.keys(s1)) {
     if (s1[k] !== s2[k]) mismatches.push(`${k}: ${s1[k]} vs ${s2[k]}`);
   }
+
+  for (const k of DETAIL_PAGE_KEYS) {
+    const p1 = pageSetFromDetail(d1[k]);
+    const p2 = pageSetFromDetail(d2[k]);
+    if (!setsEqual(p1, p2)) {
+      mismatches.push(
+        `${k} pages: [${[...p1].sort((a, b) => a - b).join(',')}] vs [${[...p2].sort((a, b) => a - b).join(',')}] -- counts may match, but the pages involved differ`
+      );
+    }
+  }
+
   if (mismatches.length > 0) {
     console.error(`[${id}] STRUCTURAL METRICS DID NOT MATCH between the two captures -- this means nondeterminism in the pipeline or the runner, not noise. Investigate before baselining:`);
     for (const m of mismatches) console.error(`  ${m}`);
@@ -314,9 +408,14 @@ function finalizeBaseline(id: string) {
     tolerant[k] = { value: v1, tolerance: Math.abs(v1 - v2) };
   }
 
-  const baseline: Baseline = { structural: s1, tolerant };
+  const baseline: Baseline = {
+    structural: s1,
+    tolerant,
+    capture1CommitSha: r1.deployedCommitSha ?? null,
+    capture2CommitSha: r2.deployedCommitSha ?? null,
+  };
   writeFileSync(path.join(BASELINES_DIR, `${id}.baseline.json`), JSON.stringify(baseline, null, 2));
-  console.log(`[${id}] baseline finalized. Tolerances: ${Object.entries(tolerant).map(([k, v]) => `${k}=±${v.tolerance}`).join(', ')}`);
+  console.log(`[${id}] baseline finalized (commit ${baseline.capture1CommitSha}). Tolerances: ${Object.entries(tolerant).map(([k, v]) => `${k}=±${v.tolerance}`).join(', ')}`);
 }
 
 function checkAgainstBaseline(id: string, metrics: Record<string, number>): { ok: boolean; lines: string[] } {
@@ -387,20 +486,65 @@ async function main() {
       ? BASELINES_DIR // capture writes directly into baselines/ with a .capture<N> suffix below
       : path.join(RUNS_DIR, timestamp);
 
-  const results: RunnerResult[] = [];
-  for (const id of titles) {
-    const result = await runOne(id, manifest[id], mode === 'capture' ? path.join(RUNS_DIR, `${timestamp}-capture${opts.run}`) : outDir);
-    results.push(result);
+  const deployedCommitSha = mode === 'capture' ? await getDeployedCommitSha() : null;
+  if (mode === 'capture') {
+    console.log(`Deployed commit SHA (via /health): ${deployedCommitSha}`);
+  }
 
-    if (mode === 'capture') {
-      const runNum = opts.run;
-      if (runNum !== '1' && runNum !== '2') {
-        console.error('capture requires --run 1 or --run 2');
-        process.exit(2);
+  // Only ever on capture --run 1, per explicit instruction -- axes4 is a
+  // single shared global quota, not something to spend on every run.
+  const runNum = mode === 'capture' ? opts.run : undefined;
+  if (mode === 'capture' && (runNum !== '1' && runNum !== '2')) {
+    console.error('capture requires --run 1 or --run 2');
+    process.exit(2);
+  }
+  const withAxes4 = opts.axes4 === 'true' && mode === 'capture' && runNum === '1';
+  if (opts.axes4 === 'true' && !(mode === 'capture' && runNum === '1')) {
+    console.error('--axes4 is only supported on "capture --run 1"');
+    process.exit(2);
+  }
+  if (withAxes4) {
+    const quota = await getAxes4Quota();
+    if (!quota.configured) {
+      console.error('axes4 PAC is not configured/enabled for this tenant -- cannot run --axes4');
+      process.exit(2);
+    }
+    const remaining = quota.pagesLimitThisPeriod - quota.pagesUsedThisPeriod;
+    console.log(`axes4 PAC quota: ${quota.pagesUsedThisPeriod}/${quota.pagesLimitThisPeriod} pages used this period, ${remaining} remaining (resets ${quota.periodResetAt})`);
+    if (remaining <= 0) {
+      console.error('axes4 PAC quota exhausted for this period -- refusing to run');
+      process.exit(2);
+    }
+  }
+
+  const results: RunnerResult[] = [];
+  const failures: Array<{ id: string; error: string }> = [];
+  for (const id of titles) {
+    // Real bug, found live (2026-11-24): one title's failure (upload/audit
+    // error, a transient pdfjs-dist hiccup, etc.) used to throw out of this
+    // loop entirely, silently costing every LATER title in the same
+    // invocation its own run. Catch per-title, continue, and report every
+    // failure together at the end -- a batch of 6 titles should never be
+    // held hostage by one flaky one.
+    try {
+      const result = await runOne(
+        id,
+        manifest[id],
+        mode === 'capture' ? path.join(RUNS_DIR, `${timestamp}-capture${opts.run}`) : outDir,
+        withAxes4
+      );
+      result.deployedCommitSha = deployedCommitSha;
+      results.push(result);
+
+      if (mode === 'capture') {
+        writeFileSync(path.join(BASELINES_DIR, `${id}.capture${runNum}.json`), JSON.stringify(result, null, 2));
+      } else {
+        writeFileSync(path.join(outDir, `${id}.result.json`), JSON.stringify(result, null, 2));
       }
-      writeFileSync(path.join(BASELINES_DIR, `${id}.capture${runNum}.json`), JSON.stringify(result, null, 2));
-    } else {
-      writeFileSync(path.join(outDir, `${id}.result.json`), JSON.stringify(result, null, 2));
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error(`[${id}] FAILED, continuing with remaining titles: ${msg}`);
+      failures.push({ id, error: msg });
     }
   }
 
@@ -420,6 +564,12 @@ async function main() {
     for (const r of results) {
       console.log(`${r.id} (${r.axis}): ${r.stopReason}, $${r.aiCostUsd.toFixed(2)}, ${r.wallSeconds.toFixed(0)}s, ${r.rounds} round(s)`);
     }
+  }
+
+  if (failures.length > 0) {
+    console.log(`\n--- ${failures.length} title(s) FAILED (not captured/measured this run) ---`);
+    for (const f of failures) console.log(`${f.id}: ${f.error}`);
+    process.exitCode = 1;
   }
 }
 
