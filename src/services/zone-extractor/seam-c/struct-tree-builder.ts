@@ -5,6 +5,7 @@ import {
 import { synthesizeReadingOrder, type OrderableZone } from './reading-order';
 import { tagOrderedZones, assembleHierarchy, type StructNode } from './hierarchy';
 import { tagContentStream, type ZoneBand } from './content-stream';
+import { mcidHasImageOrVectorContent, extractMcidText, looksLikeProductionStamp, retagMcidToArtifact } from '../../pdf/pdf-content-stream-io';
 
 // Seam C — Phase 2b/2c: build a /StructTreeRoot from detector zones.
 //
@@ -173,7 +174,47 @@ export function buildStructTreeFromZones(
       // zones-only loop already had for any page with no detected zones.
       continue;
     }
-    const { content: tagged2, assignments } = tagContentStream(content, bands, 0);
+    const { content: initiallyTagged, assignments } = tagContentStream(content, bands, 0);
+
+    // Real bug, 2026-11-25 (see git log): tagContentStream assigns an MCID
+    // to a zone whenever ANY marked content falls inside its bbox -- but
+    // "some marked content" can itself be content-free from a reader's
+    // point of view (a clip-rect no-op with nothing drawn, or a lone
+    // internal production stamp like "E7808/McConnell/F09.02/678320/mh-R2"
+    // with no image/vector at all). Confirmed live on a real title: a
+    // "figure" zone over blank page space got an MCID (so the OLD
+    // mcids.length > 0 check in build() below kept it) but wrapped no
+    // drawable content whatsoever, surviving into the struct tree as an
+    // empty Figure that Auto Mode's own alt-text drafting then
+    // hallucinated page-irrelevant alt text for. Group this page's
+    // assignments by zone and re-tag any zone whose MCID(s) don't survive
+    // real-content scrutiny to /Artifact right here, before the content
+    // stream is ever compressed/committed below -- droppedZoneIndexes
+    // tells build() (further down) not to create a struct element for it
+    // either, so no MCID is ever left dangling, claimed by neither a
+    // struct element nor a tagged BDC.
+    const zoneIndexToTag = new Map(bands.map((b) => [b.zoneIndex, b.tag]));
+    const mcidsByZoneIndex = new Map<number, number[]>();
+    for (const a of assignments) {
+      const list = mcidsByZoneIndex.get(a.zoneIndex);
+      if (list) list.push(a.mcid); else mcidsByZoneIndex.set(a.zoneIndex, [a.mcid]);
+    }
+    let tagged2 = initiallyTagged;
+    const droppedZoneIndexes = new Set<number>();
+    for (const [zoneIndex, mcids] of mcidsByZoneIndex) {
+      const hasImageOrVector = mcids.some((m) => mcidHasImageOrVectorContent(tagged2, m));
+      const combinedText = mcids.map((m) => extractMcidText(tagged2, m)).join(' ').trim();
+      const isFigureZone = zoneIndexToTag.get(zoneIndex) === 'Figure';
+      const shouldDemote =
+        (!hasImageOrVector && combinedText.length === 0) ||
+        (isFigureZone && !hasImageOrVector && looksLikeProductionStamp(combinedText));
+      if (!shouldDemote) continue;
+      droppedZoneIndexes.add(zoneIndex);
+      for (const m of mcids) {
+        const retag = retagMcidToArtifact(tagged2, m);
+        if (retag.retagged) tagged2 = retag.content;
+      }
+    }
 
     // swap the page's content stream
     const newStream = doc.context.flateStream(Buffer.from(tagged2, 'latin1'));
@@ -182,6 +223,7 @@ export function buildStructTreeFromZones(
     page.node.set(PDFName.of('StructParents'), PDFNumber.of(pageIdx));
 
     for (const a of assignments) {
+      if (droppedZoneIndexes.has(a.zoneIndex)) continue;
       const rec = zoneMcids.get(a.zoneIndex);
       if (rec) rec.mcids.push(a.mcid);
       else zoneMcids.set(a.zoneIndex, { pageIdx, mcids: [a.mcid] });

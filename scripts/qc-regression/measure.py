@@ -30,7 +30,7 @@ from collections import Counter, defaultdict
 
 import pikepdf
 
-VERSION = "0.2.0"
+VERSION = "0.3.0"
 
 STANDARD_TYPES = {
     "Document", "Part", "Art", "Sect", "Div", "BlockQuote", "Caption", "TOC", "TOCI",
@@ -250,6 +250,41 @@ class Doc:
         if self.str_root is not None:
             rm = self.str_root.get("/RoleMap", pikepdf.Dictionary())
             self.rolemap = {str(k)[1:]: str(v)[1:] for k, v in rm.items()}
+        self.mcid_page = self._parent_tree_pages()
+
+    def _parent_tree_pages(self):
+        """Map (element objgen, mcid) -> page number via the ParentTree, so content
+        under elements with no /Pg anywhere in their ancestry can still be found."""
+        res = {}
+        if self.str_root is None or "/ParentTree" not in self.str_root:
+            return res
+        nums = {}
+
+        def collect(node, depth=0):
+            if depth > 30 or not isinstance(node, pikepdf.Dictionary):
+                return
+            if "/Nums" in node:
+                arr = node.Nums
+                for i in range(0, len(arr) - 1, 2):
+                    try:
+                        nums[int(arr[i])] = arr[i + 1]
+                    except Exception:
+                        pass
+            for k in node.get("/Kids", []) or []:
+                collect(k, depth + 1)
+
+        collect(self.str_root.ParentTree)
+        for i, p in enumerate(self.pages):
+            sp = p.obj.get("/StructParents")
+            if sp is None:
+                continue
+            arr = nums.get(int(sp))
+            if not isinstance(arr, pikepdf.Array):
+                continue
+            for mcid, el in enumerate(arr):
+                if isinstance(el, pikepdf.Dictionary) and el.objgen != (0, 0):
+                    res[(el.objgen, mcid)] = i + 1
+        return res
 
     def scan(self, pageno):
         if pageno not in self._scans:
@@ -267,7 +302,10 @@ class Doc:
     def walk(self):
         """Yield element records in document (tree) order."""
         out = []
+        self.unresolved_pg = 0
+        self.pg_from_parent_tree = 0
         if self.str_root is None:
+            self.elements = out
             return out
         visited = set()
 
@@ -304,14 +342,26 @@ class Doc:
                             e["size"] += c["size"]
                     elif "/MCID" in k:
                         kp = k.get("/Pg")
-                        e["mcrs"].append((self.pg.get(kp.objgen) if kp is not None else pg, int(k.MCID)))
+                        kpg = self.pg.get(kp.objgen) if kp is not None else pg
+                        mc = int(k.MCID)
+                        if kpg is None:
+                            kpg = self.mcid_page.get((og, mc))
+                            self.unresolved_pg += kpg is None
+                            self.pg_from_parent_tree += kpg is not None
+                        e["mcrs"].append((kpg, mc))
                     elif str(k.get("/Type", "")) == "/OBJR":
                         e["objr"] += 1
                 else:
                     try:
-                        e["mcrs"].append((pg, int(k)))
+                        mc = int(k)
                     except Exception:
-                        pass
+                        continue
+                    kpg = pg
+                    if kpg is None:
+                        kpg = self.mcid_page.get((og, mc))
+                        self.unresolved_pg += kpg is None
+                        self.pg_from_parent_tree += kpg is not None
+                    e["mcrs"].append((kpg, mc))
             return e
 
         for k in kids_of(self.str_root):
@@ -343,6 +393,8 @@ def measure(path, source_doc=None):
     m["pages"] = len(d.pages)
     m["has_struct_tree"] = int(d.str_root is not None)
     m["struct_elements"] = len(els)
+    m["mcrs_page_from_parent_tree_only"] = d.pg_from_parent_tree
+    m["mcrs_page_unresolved"] = d.unresolved_pg
     m["nonstandard_roles_unmapped"] = sum(1 for e in els if e["role"] not in STANDARD_TYPES)
     info_title = ""
     try:

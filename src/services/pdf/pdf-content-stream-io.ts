@@ -201,3 +201,172 @@ export function findBdcTagSpanForMcid(content: string, mcid: number): { start: n
   }
   return null;
 }
+
+const MARKED_CONTENT_OPEN_CLOSE_RE = /\b(BDC|BMC|EMC)\b/g;
+
+/**
+ * The full content between a specific MCID's own `BDC` and its MATCHING
+ * `EMC` (depth-tracked -- a nested BDC/BMC inside this span increments
+ * depth, so an inner EMC doesn't prematurely close the outer one). Unlike
+ * findBdcTagSpanForMcid (which only locates the opening tag itself, for
+ * retagging callers that never need the body), this is for callers that
+ * need to inspect what's actually DRAWN inside this MCID's own marked
+ * content -- see figureHasDrawableContent below, its only caller today.
+ * Returns null if the MCID has no opening BDC, or its EMC is missing
+ * (malformed/truncated content stream -- never guesses a close point).
+ */
+export function findMcidContentSpan(content: string, mcid: number): { start: number; end: number } | null {
+  const tag = findBdcTagSpanForMcid(content, mcid);
+  if (!tag) return null;
+
+  const re = new RegExp(MARKED_CONTENT_OPEN_CLOSE_RE.source, 'g');
+  re.lastIndex = tag.end;
+  let depth = 0;
+  let match: RegExpExecArray | null;
+  while ((match = re.exec(content)) !== null) {
+    if (match[1] === 'EMC') {
+      if (depth === 0) return { start: tag.end, end: match.index };
+      depth--;
+    } else {
+      depth++;
+    }
+  }
+  return null; // no matching EMC found -- malformed/truncated stream
+}
+
+// Same operator set measure.py's own PageScan._scan uses to classify a
+// Figure's content (scripts/qc-regression/measure.py) -- kept in sync
+// deliberately, so the production invariant below and the corpus's own
+// figures_content_empty metric agree on what "has content" means.
+const IMAGE_OR_VECTOR_OPERATOR_RE = /\b(Do|BI|f\*?|F|B\*?|b\*?|S|s)\b/;
+// A single string-show operand, either form PDF32000 §7.3.4/7.3.4.3 allows:
+// a literal string "(...)" or a hex string "<...>" -- pdf-lib (confirmed
+// live, 2026-11-25) emits the hex form for ordinary Latin text, not just
+// for genuinely binary/non-Latin1 content, so both forms are load-bearing
+// here, not just a defensive extra case.
+const STRING_OPERAND_RE = /\(((?:\\.|[^()\\])*)\)|<([0-9A-Fa-f\s]*)>/g;
+// Tj/'/" each take exactly one string operand; TJ takes a bracketed array
+// mixing string operands with plain numbers (kerning adjustments) -- only
+// the strings carry text, so this only needs to find the array body, not
+// parse the numbers out of it.
+const TEXT_SHOW_RE = /\(((?:\\.|[^()\\])*)\)\s*(?:Tj|')|<([0-9A-Fa-f\s]*)>\s*(?:Tj|')|\[((?:\\.|[^[\]\\])*)\]\s*TJ/g;
+
+/** Decodes a PDF literal string's own backslash escapes just enough to
+ *  tell whether it's whitespace-only -- \\n/\\t/\\r/\\( etc. all collapse
+ *  to a single non-informative char here, which is all isWhitespaceOnly
+ *  below needs; this is NOT a general PDF string→Unicode decoder. */
+function collapseEscapes(s: string): string {
+  return s.replace(/\\(.)/g, ' ');
+}
+
+/** Hex string "<41 42>" -> "AB" (strips whitespace the spec allows between
+ *  digit pairs, then one fromCharCode per byte -- Latin1 code-point-per-
+ *  byte, matching decodePageContent's own latin1 round-trip, not a real
+ *  PDFDocEncoding/UTF-16BE decoder; good enough for a whitespace/pattern
+ *  check on the result, which is this module's only use for it). An odd
+ *  number of hex digits (a malformed string) drops the final unpaired one
+ *  rather than throwing. */
+function decodeHexString(hex: string): string {
+  const digits = hex.replace(/\s+/g, '');
+  let out = '';
+  for (let i = 0; i + 1 < digits.length; i += 2) {
+    out += String.fromCharCode(parseInt(digits.slice(i, i + 2), 16));
+  }
+  return out;
+}
+
+/** Every string operand (literal or hex) inside a TJ array body, decoded
+ *  and concatenated -- the array's own interleaved numbers are ignored. */
+function decodeTJArrayBody(body: string): string {
+  let out = '';
+  let m: RegExpExecArray | null;
+  STRING_OPERAND_RE.lastIndex = 0;
+  while ((m = STRING_OPERAND_RE.exec(body)) !== null) {
+    out += m[1] !== undefined ? collapseEscapes(m[1]) : decodeHexString(m[2] ?? '');
+  }
+  return out;
+}
+
+/** True if `mcid`'s own span contains an image/form XObject invocation
+ *  (`Do`), inline image (`BI`), or a vector path-paint operator (fill,
+ *  fill-even-odd, stroke, close-and-stroke, or the B/b variants that both
+ *  fill and stroke) -- i.e. it actually draws something, text aside.
+ *  Doesn't distinguish image-Do from form-Do (measure.py's "image" vs
+ *  "form" kinds) -- a caller needing that distinction inspects the
+ *  XObject's own /Subtype directly, the way pdf-modifier.service.ts and
+ *  image-extractor.service.ts already do for other purposes. */
+export function mcidHasImageOrVectorContent(content: string, mcid: number): boolean {
+  const span = findMcidContentSpan(content, mcid);
+  if (!span) return false;
+  return IMAGE_OR_VECTOR_OPERATOR_RE.test(content.slice(span.start, span.end));
+}
+
+/** Every Tj/TJ/'/" text-show operand under `mcid`'s own span, concatenated
+ *  in source order (escapes collapsed to a space, not fully decoded --
+ *  callers doing more than a whitespace/pattern check on the result
+ *  should extract their own copy with a real PDF string decoder). Empty
+ *  string if the MCID has no span or no text-show operator at all. */
+export function extractMcidText(content: string, mcid: number): string {
+  const span = findMcidContentSpan(content, mcid);
+  if (!span) return '';
+  const body = content.slice(span.start, span.end);
+  let out = '';
+  let m: RegExpExecArray | null;
+  TEXT_SHOW_RE.lastIndex = 0;
+  while ((m = TEXT_SHOW_RE.exec(body)) !== null) {
+    if (m[1] !== undefined) out += collapseEscapes(m[1]);
+    else if (m[2] !== undefined) out += decodeHexString(m[2]);
+    else out += decodeTJArrayBody(m[3] ?? '');
+  }
+  return out;
+}
+
+/**
+ * True if `mcid`'s own marked-content span (BDC..EMC, nested spans
+ * included) draws or says ANYTHING -- image/vector/form content
+ * (mcidHasImageOrVectorContent) or non-whitespace text
+ * (extractMcidText) -- as opposed to being a placeholder with nothing
+ * under it at all. The ONLY caller-visible "has content" question;
+ * distinguishing text-only from image/vector (needed e.g. to decide
+ * whether vision or grounded-text alt-drafting applies) is the
+ * caller's own job via the two functions above, not this one.
+ */
+export function mcidHasDrawableContent(content: string, mcid: number): boolean {
+  if (mcidHasImageOrVectorContent(content, mcid)) return true;
+  return extractMcidText(content, mcid).trim().length > 0;
+}
+
+// A job/author/figure-code production slug -- 3+ slash-delimited tokens,
+// each a short run of letters/digits/dots/hyphens with no internal space
+// (a real sentence or label always has at least one space-separated
+// multi-word segment; a production stamp like
+// "E7808/McConnell/F09.02/678320/mh-R2" never does). Deliberately
+// conservative (3+ segments, not 2+) to avoid matching a genuine two-part
+// reference like "Figure/3.2" or a URL-shaped caption.
+const PRODUCTION_STAMP_RE = /^[A-Za-z0-9.-]+(?:\/[A-Za-z0-9.-]+){2,}$/;
+
+/** True if `text` (already collapsed/trimmed by the caller, e.g. via
+ *  extractMcidText) looks like an InDesign-style internal production
+ *  stamp (job/author/figure-code slug) rather than reader-facing content
+ *  -- see PRODUCTION_STAMP_RE's own comment for the exact shape and why
+ *  it's safe against real captions/references. */
+export function looksLikeProductionStamp(text: string): boolean {
+  return PRODUCTION_STAMP_RE.test(text.trim());
+}
+
+/**
+ * Rewrites `mcid`'s own opening `/TagName [<<props>>] BDC` to a bare
+ * `/Artifact BMC` -- same retag findBdcTagSpanForMcid's own doc comment
+ * already anticipated (no properties dict, no MCID, so the matching EMC
+ * still closes it correctly with no further change needed there). Used
+ * to demote a zone struct-tree-builder.ts decides NOT to keep as a
+ * struct element (no real content, or a production-stamp-only text run)
+ * from tagged content to artifact, so its MCID doesn't dangle unclaimed
+ * in the content stream once no struct element references it. Returns
+ * the unmodified content, and false, if no BDC opens exactly this MCID.
+ */
+export function retagMcidToArtifact(content: string, mcid: number): { content: string; retagged: boolean } {
+  const tag = findBdcTagSpanForMcid(content, mcid);
+  if (!tag) return { content, retagged: false };
+  return { content: content.slice(0, tag.start) + '/Artifact BMC' + content.slice(tag.end), retagged: true };
+}
