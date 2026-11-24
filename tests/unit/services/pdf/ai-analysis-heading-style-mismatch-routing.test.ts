@@ -10,12 +10,17 @@
  * pdf-structure-writer-heading-promote.test.ts) rather than a lightweight
  * mock -- this method re-parses real pdfjs structure data
  * (collectHeadingStyleData), which a stub parsed object can't stand in for.
- * Only geminiService.generateWithSchema is mocked.
+ * geminiService.generateWithSchema and fileStorageService.getFile (the
+ * ORIGINAL-upload read getOriginalFileBodyMedianFontSize does for its
+ * bodyMedianFontSize denominator, see ai-analysis.service.ts) are mocked;
+ * everything else, including the comprehensive re-parse of that "original"
+ * buffer, runs for real.
  */
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { PDFDocument, StandardFonts, rgb } from 'pdf-lib';
 import { aiAnalysisService } from '../../../../src/services/pdf/ai-analysis.service';
 import { geminiService } from '../../../../src/services/ai/gemini.service';
+import { fileStorageService } from '../../../../src/services/storage/file-storage.service';
 import { pdfParserService } from '../../../../src/services/pdf/pdf-parser.service';
 import type { ParsedPDF } from '../../../../src/services/pdf/pdf-parser.service';
 import { pdfHeadingStyleMismatchValidator } from '../../../../src/services/pdf/validators/pdf-heading-style-mismatch.validator';
@@ -60,7 +65,9 @@ function zoneForLine(line: Line): OrderableZone {
   };
 }
 
-async function buildTaggedDoc(lines: Line[]): Promise<ParsedPDF> {
+const FIXTURE_FILE_NAME = 'heading-style-mismatch-routing-fixture.pdf';
+
+async function buildTaggedDoc(lines: Line[]): Promise<{ parsedPdf: ParsedPDF; buffer: Buffer }> {
   const src = await PDFDocument.create();
   const page = src.addPage([PAGE_WIDTH, PAGE_HEIGHT]);
   const font = await src.embedFont(StandardFonts.Helvetica);
@@ -71,7 +78,32 @@ async function buildTaggedDoc(lines: Line[]): Promise<ParsedPDF> {
   const zones: OrderableZone[] = lines.map(zoneForLine);
   buildStructTreeFromZones(doc, zones);
   const buffer = Buffer.from(await doc.save());
-  return pdfParserService.parseBuffer(buffer, 'heading-style-mismatch-routing-fixture.pdf');
+  const parsedPdf = await pdfParserService.parseBuffer(buffer, FIXTURE_FILE_NAME);
+  return { parsedPdf, buffer };
+}
+
+// No buildStructTreeFromZones call -- a plain, untagged PDF with drawn
+// text and no structure tree at all, same shape as a real original
+// upload before Auto Mode ever tags it (e.g. the corpus's own T4/T5
+// titles).
+async function buildUntaggedBuffer(lines: Line[]): Promise<Buffer> {
+  const src = await PDFDocument.create();
+  const page = src.addPage([PAGE_WIDTH, PAGE_HEIGHT]);
+  const font = await src.embedFont(StandardFonts.Helvetica);
+  for (const line of lines) {
+    page.drawText(line.text, { x: 60, y: line.y, size: line.size, font, color: rgb(0, 0, 0) });
+  }
+  return Buffer.from(await src.save());
+}
+
+// getOriginalFileBodyMedianFontSize reads the job's ORIGINAL upload via
+// fileStorageService.getFile -- these tests have no real job/S3/local
+// storage, so this mocks that one read to resolve to the SAME buffer the
+// test just built (there's no multi-round remediation here, so "original"
+// and "current" are the same document, matching the single-call shape
+// every other test in this file already exercises).
+function mockOriginalFile(buffer: Buffer) {
+  vi.spyOn(fileStorageService, 'getFile').mockResolvedValue(buffer);
 }
 
 const BODY_LINES: Line[] = [
@@ -83,12 +115,13 @@ const BODY_LINES: Line[] = [
   { text: 'Supply chain investments reduced lead times and improved on-time delivery performance.', y: 380, size: 11 },
 ];
 
-async function dispatchFirstIssue(parsedPdf: ParsedPDF) {
+async function dispatchFirstIssue(parsedPdf: ParsedPDF, buffer: Buffer) {
+  mockOriginalFile(buffer);
   const audit = await pdfHeadingStyleMismatchValidator.validate(parsedPdf);
   expect(audit.issues).toHaveLength(1);
   const issue = audit.issues[0];
   const parsed = { isTagged: true, pages: [], parsedPdf } as unknown as PdfParseResult;
-  const res = await svc.dispatchIssue(issue, parsed, CONFIG, new Map(), new Map(), new Map());
+  const res = await svc.dispatchIssue(issue, parsed, CONFIG, new Map(), new Map(), new Map(), new Map(), 'test-job', 'test-tenant', FIXTURE_FILE_NAME);
   return { issue, res };
 }
 
@@ -104,8 +137,8 @@ describe('dispatchIssue: HEADING-STYLE-MISMATCH routing', () => {
     } as any);
 
     const lines: Line[] = [{ text: 'Executive Summary', y: 740, size: 28 }, ...BODY_LINES];
-    const parsedPdf = await buildTaggedDoc(lines);
-    const { res } = await dispatchFirstIssue(parsedPdf);
+    const { parsedPdf, buffer } = await buildTaggedDoc(lines);
+    const { res } = await dispatchFirstIssue(parsedPdf, buffer);
 
     expect(res).not.toBeNull();
     expect(res.suggestionType).toBe('heading-promote-fix');
@@ -147,13 +180,14 @@ describe('dispatchIssue: HEADING-STYLE-MISMATCH routing', () => {
       size: 22,
     }));
     const manyLines: Line[] = [...manyBodyLines, ...pullQuoteLines];
-    const parsedPdf = await buildTaggedDoc(manyLines);
+    const { parsedPdf, buffer } = await buildTaggedDoc(manyLines);
+    mockOriginalFile(buffer);
     const audit = await pdfHeadingStyleMismatchValidator.validate(parsedPdf);
     expect(audit.issues.length).toBeGreaterThan(0);
 
     const issue = audit.issues[0];
     const parsed = { isTagged: true, pages: [], parsedPdf } as unknown as PdfParseResult;
-    const res = await svc.dispatchIssue(issue, parsed, CONFIG, new Map(), new Map(), new Map());
+    const res = await svc.dispatchIssue(issue, parsed, CONFIG, new Map(), new Map(), new Map(), new Map(), 'test-job', 'test-tenant', FIXTURE_FILE_NAME);
 
     expect(spy).toHaveBeenCalled();
     expect(res).toBeNull();
@@ -181,13 +215,14 @@ describe('dispatchIssue: HEADING-STYLE-MISMATCH routing', () => {
       size: 22,
     }));
     const manyLines: Line[] = [...manyBodyLines, ...sectionTitleLines];
-    const parsedPdf = await buildTaggedDoc(manyLines);
+    const { parsedPdf, buffer } = await buildTaggedDoc(manyLines);
+    mockOriginalFile(buffer);
     const audit = await pdfHeadingStyleMismatchValidator.validate(parsedPdf);
     expect(audit.issues.length).toBeGreaterThan(0);
 
     const issue = audit.issues[0];
     const parsed = { isTagged: true, pages: [], parsedPdf } as unknown as PdfParseResult;
-    const res = await svc.dispatchIssue(issue, parsed, CONFIG, new Map(), new Map(), new Map());
+    const res = await svc.dispatchIssue(issue, parsed, CONFIG, new Map(), new Map(), new Map(), new Map(), 'test-job', 'test-tenant', FIXTURE_FILE_NAME);
 
     expect(res).not.toBeNull();
     expect(res.suggestionType).toBe('heading-promote-fix');
@@ -204,8 +239,8 @@ describe('dispatchIssue: HEADING-STYLE-MISMATCH routing', () => {
     } as any);
 
     const lines: Line[] = [{ text: 'Executive Summary', y: 740, size: 28 }, ...BODY_LINES];
-    const parsedPdf = await buildTaggedDoc(lines);
-    const { res } = await dispatchFirstIssue(parsedPdf);
+    const { parsedPdf, buffer } = await buildTaggedDoc(lines);
+    const { res } = await dispatchFirstIssue(parsedPdf, buffer);
 
     expect(res).toBeNull();
   });
@@ -219,8 +254,8 @@ describe('dispatchIssue: HEADING-STYLE-MISMATCH routing', () => {
     } as any);
 
     const lines: Line[] = [{ text: 'Executive Summary', y: 740, size: 28 }, ...BODY_LINES];
-    const parsedPdf = await buildTaggedDoc(lines);
-    const { res } = await dispatchFirstIssue(parsedPdf);
+    const { parsedPdf, buffer } = await buildTaggedDoc(lines);
+    const { res } = await dispatchFirstIssue(parsedPdf, buffer);
 
     expect(res).toBeNull();
   });
@@ -241,11 +276,110 @@ describe('dispatchIssue: HEADING-STYLE-MISMATCH routing', () => {
       { text: 'Executive Summary', y: 320, size: 28 },
       ...BODY_LINES,
     ];
-    const parsedPdf = await buildTaggedDoc(lines);
-    const { res } = await dispatchFirstIssue(parsedPdf);
+    const { parsedPdf, buffer } = await buildTaggedDoc(lines);
+    const { res } = await dispatchFirstIssue(parsedPdf, buffer);
 
     expect(res).not.toBeNull();
     expect(res.confidence).toBeCloseTo(0.8, 5); // 0.9 raw - 0.1 penalty
     expect(res.rationale).toContain('confidence reduced');
+  });
+
+  it('gives the same boundary candidate the same level across two rounds, even though the WORKING file lost a /P (promoted away) between them -- real bug, 2026-11-25 (see git log): bodyMedianFontSize used to be recomputed from whatever /P population remained in the current doc, so a promotion elsewhere could shift the median enough to flip a boundary candidate H2 vs H3. Fixed by sourcing the median from the job\'s ORIGINAL upload instead, which this test mocks to the SAME buffer for both rounds.', async () => {
+    vi.spyOn(geminiService, 'generateWithSchema').mockResolvedValue({
+      data: { isHeading: true, confidence: 0.9, rationale: 'Reads as a genuine section title.' },
+      usage: { promptTokens: 20, completionTokens: 10 },
+      attempts: 1,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any);
+
+    // Original /P population (round 1, nothing promoted yet): body sizes
+    // 9, 11, 13, 15, 17 + a large OTHER paragraph at 50 + the BOUNDARY
+    // candidate at 26 -- ALL seven are part of collectHeadingStyleData's
+    // own median population (it doesn't exclude the candidate under test).
+    // Sorted: [9,11,13,15,17,26,50] -- median (7 values) = 15.
+    // Boundary ratio = 26/15 = 1.733 -- under the 1.8 H2 cutoff -> H3.
+    const originalLines: Line[] = [
+      { text: 'A paragraph at the smallest body size used in this fixture.', y: 700, size: 9 },
+      { text: 'A paragraph at a somewhat larger body size than the smallest one.', y: 660, size: 11 },
+      { text: 'A paragraph at a middling body size for this fixture.', y: 620, size: 13 },
+      { text: 'A paragraph at a somewhat larger body size than middling.', y: 580, size: 15 },
+      { text: 'A paragraph at the largest plain body size in this fixture.', y: 540, size: 17 },
+      { text: 'Some Other Paragraph That Will Be Promoted Away Later', y: 460, size: 50 },
+      { text: 'Possible Section Title', y: 380, size: 26 },
+    ];
+    const { buffer: originalBuffer } = await buildTaggedDoc(originalLines);
+
+    // "Round 1" current doc: identical to the original -- nothing
+    // promoted yet.
+    const { parsedPdf: round1Doc } = await buildTaggedDoc(originalLines);
+
+    // "Round 2" current doc: the SAME document, except "Some Other
+    // Paragraph..." is now tagged as a heading (zoneType: 'section-header')
+    // instead of a /P -- simulating it having already been promoted in an
+    // earlier round. Without the fix, collectHeadingStyleData's own median
+    // over the REMAINING /P population (sorted [9,11,13,15,17,26], 6
+    // values, median (13+15)/2=14) gives the SAME boundary candidate a
+    // ratio of 26/14 = 1.857 -- OVER the 1.8 cutoff, flipping it to H2.
+    // The fix must prevent this by always sourcing the median from the
+    // unchanged ORIGINAL file (median 15, ratio 1.733, H3) instead.
+    const round2Lines: Line[] = originalLines.map((line) =>
+      line.text.startsWith('Some Other Paragraph') ? { ...line, zoneType: 'section-header' as const } : line
+    );
+    const { parsedPdf: round2Doc } = await buildTaggedDoc(round2Lines);
+
+    const getLevelForBoundaryCandidate = async (parsedPdf: ParsedPDF) => {
+      const audit = await pdfHeadingStyleMismatchValidator.validate(parsedPdf);
+      // Round 1 also flags "Some Other Paragraph..." (size 30, well above
+      // the ratio threshold too) -- match on the boundary candidate's own
+      // text, which the validator quotes verbatim in its issue message.
+      const issue = audit.issues.find((i) => i.message.includes('Possible Section Title'));
+      expect(issue).toBeDefined();
+      const parsed = { isTagged: true, pages: [], parsedPdf } as unknown as PdfParseResult;
+      vi.spyOn(fileStorageService, 'getFile').mockResolvedValue(originalBuffer);
+      const res = await svc.dispatchIssue(issue, parsed, CONFIG, new Map(), new Map(), new Map(), new Map(), 'test-job', 'test-tenant', FIXTURE_FILE_NAME);
+      expect(res).not.toBeNull();
+      return res.value;
+    };
+
+    const round1Level = await getLevelForBoundaryCandidate(round1Doc);
+    const round2Level = await getLevelForBoundaryCandidate(round2Doc);
+
+    expect(round1Level).toBe('3');
+    expect(round2Level).toBe('3'); // same as round 1 -- NOT '2', which is what the pre-fix bug would have produced
+  });
+
+  it('computes a real, non-zero body median against an UNTAGGED original upload -- real gap caught on review, 2026-11-25 (see git log): collectHeadingStyleData only walks the pdfjs STRUCT TREE, so it returns bodyMedianFontSize=0 for a source with no structure tree at all. T4 and T5 in the real corpus are both untagged originals (the whole document gets tagged for the first time during Auto Mode) -- reading the original-file median via collectHeadingStyleData would have returned 0 permanently for every untagged-source title, forcing every promoted heading to H3 regardless of its real size. Fixed by computeContentStreamBodyMedianFontSize, which reads font sizes from pdfjs getTextContent() directly and needs no structure tree.', async () => {
+    vi.spyOn(geminiService, 'generateWithSchema').mockResolvedValue({
+      data: { isHeading: true, confidence: 0.9, rationale: 'Reads as a genuine section title.' },
+      usage: { promptTokens: 20, completionTokens: 10 },
+      attempts: 1,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any);
+
+    // The "original upload": same text/sizes as the CURRENT doc below, but
+    // with no structure tree at all -- collectHeadingStyleData(original)
+    // would see zero /P elements and return bodyMedianFontSize=0.
+    const lines: Line[] = [{ text: 'Executive Summary', y: 740, size: 28 }, ...BODY_LINES];
+    const untaggedOriginal = await buildUntaggedBuffer(lines);
+    vi.spyOn(fileStorageService, 'getFile').mockResolvedValue(untaggedOriginal);
+
+    // The "current" doc: already auto-tagged by the time Auto Mode's
+    // analysis pass runs (as it would be, in reality, for an
+    // originally-untagged title) -- same content, now with real /P
+    // candidates to flag and promote.
+    const { parsedPdf } = await buildTaggedDoc(lines);
+    const audit = await pdfHeadingStyleMismatchValidator.validate(parsedPdf);
+    expect(audit.issues).toHaveLength(1);
+    const issue = audit.issues[0];
+    const parsed = { isTagged: true, pages: [], parsedPdf } as unknown as PdfParseResult;
+    const res = await svc.dispatchIssue(issue, parsed, CONFIG, new Map(), new Map(), new Map(), new Map(), 'test-job', 'test-tenant', FIXTURE_FILE_NAME);
+
+    expect(res).not.toBeNull();
+    // Content-stream median of the original is ~11pt (dominated by the 6
+    // BODY_LINES, all size 11; the one size-28 line is a minor outlier).
+    // Ratio 28/11 ~= 2.5 -- well over the 2.2 H1 cutoff. Without the fix
+    // (median=0 from an untagged original), this would be forced to '3'
+    // regardless of the candidate's real size.
+    expect(res.value).toBe('1');
   });
 });
