@@ -1639,14 +1639,26 @@ class AiAnalysisService {
   private readonly bodyMedianFontSizeByFileSha256 = new Map<string, number>();
   private static readonly BODY_MEDIAN_CACHE_MAX_ENTRIES = 200;
 
-  private async getOriginalFileBodyMedianFontSize(jobId: string, fileName: string): Promise<number> {
+  private async getOriginalFileBodyMedianFontSize(jobId: string, fileName: string, fallbackPdfjsDoc: ParsedPDF['pdfjsDoc']): Promise<number> {
     const originalBuffer = await fileStorageService.getFile(jobId, fileName);
     if (!originalBuffer) {
       // Original upload no longer in storage (e.g. retention cleanup on an
-      // old job) -- fall back to 0; analyzeHeadingStyleMismatch already
-      // treats ratio 0 as "decline to promote at H1/H2", never throws.
-      logger.warn(`[AiAnalysis] getOriginalFileBodyMedianFontSize: original file not found for job ${jobId} -- using 0`);
-      return 0;
+      // old job). Real bug, caught on review, 2026-11-25 (see git log):
+      // this used to fall back to a hardcoded 0 here, which isn't "decline
+      // to promote" the way the old comment claimed -- ratio 0 satisfies
+      // neither the >=2.2 nor the >=1.8 cutoff in analyzeHeadingStyleMismatch,
+      // so it silently forced EVERY promotion on this job to H3,
+      // regardless of the candidate's real size. Falls back to the
+      // WORKING file's own content-stream median instead -- less accurate
+      // than the true original (it reflects whatever's already been
+      // remediated so far, the same staleness this whole mechanism exists
+      // to avoid), but a real, size-sensitive number instead of a value
+      // that mechanically breaks the ratio cutoffs. Logged as an error
+      // (not a warning) since it means this job's original upload is
+      // gone, which callers investigating a heading-level question later
+      // need to know, not just quietly tolerate.
+      logger.error(`[AiAnalysis] getOriginalFileBodyMedianFontSize: original file not found for job ${jobId} -- falling back to the working file's own content-stream median`);
+      return computeContentStreamBodyMedianFontSize(fallbackPdfjsDoc);
     }
 
     const sha256 = createHash('sha256').update(originalBuffer).digest('hex');
@@ -4370,7 +4382,7 @@ class AiAnalysisService {
     // level-decision denominator comes from the ORIGINAL file -- see
     // getOriginalFileBodyMedianFontSize's own doc comment for why.
     const { allCandidates, existingHeadingFontSizes } = await collectHeadingStyleData(parsedPdf);
-    const bodyMedianFontSize = await this.getOriginalFileBodyMedianFontSize(jobId, fileName);
+    const bodyMedianFontSize = await this.getOriginalFileBodyMedianFontSize(jobId, fileName, parsedPdf.pdfjsDoc);
     const candidate = findCandidateForIssue(allCandidates, issue);
     if (!candidate) {
       logger.info(`[AiAnalysis] analyzeHeadingStyleMismatch: could not re-locate the candidate for ${issue.element} -- declining`);
