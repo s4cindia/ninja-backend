@@ -630,6 +630,33 @@ export function buildIssueFingerprint(
 }
 
 /**
+ * Deterministic apply-order sort key for a buildIssueFingerprint string --
+ * see applyApprovedSuggestions's own call site for why this exists (a real
+ * run-to-run nondeterminism bug, not a style preference). Reading-order-
+ * like: page, then top-to-bottom (y), then left-to-right (x) for the
+ * `CODE:page:x:y` contrast/cross-reference/citation shape; page alone
+ * (any `_p<N>` found in the fingerprint, else +Infinity) for the
+ * `CODE:element` shape, where 0/0 fill the unused y/x slots so both
+ * shapes compare on the same tuple width. The full fingerprint string is
+ * always the final slot, guaranteeing a total order even when every
+ * numeric field ties (e.g. two DOC_LEVEL_CODES rows, or two element-shape
+ * rows on the same page).
+ */
+function approvedSortKey(fingerprint: string | null | undefined): [number, number, number, string] {
+  if (!fingerprint) return [Number.MAX_SAFE_INTEGER, 0, 0, ''];
+  const parts = fingerprint.split(':');
+  if (parts.length === 4) {
+    const page = parseInt(parts[1], 10);
+    const x = parseInt(parts[2], 10);
+    const y = parseInt(parts[3], 10);
+    if (!isNaN(page) && !isNaN(x) && !isNaN(y)) return [page, y, x, fingerprint];
+  }
+  const pageMatch = /_p(\d+)/.exec(fingerprint);
+  const page = pageMatch ? parseInt(pageMatch[1], 10) : Number.MAX_SAFE_INTEGER;
+  return [page, 0, 0, fingerprint];
+}
+
+/**
  * Decides the status to persist for a re-analyzed suggestion. A row already
  * marked 'applied' means a fix was actually written into the PDF — re-running
  * AI analysis must not silently revert that to pending/approved just because
@@ -5174,19 +5201,54 @@ class AiAnalysisService {
     // card's own Apply button via a dedicated single-issue call elsewhere)
     // must still be able to apply these rows -- the whole point of the flag
     // is "needs a human look", not "permanently blocked".
-    const approved = await prisma.aiAnalysis.findMany({
+    const approvedUnordered = await prisma.aiAnalysis.findMany({
       where: {
         jobId,
         status: statusFilter,
         applyMode: 'apply-to-pdf',
         ...(source === 'auto_loop' ? { appliedButUnresolved: { not: true } } : {}),
       },
-      orderBy: { createdAt: 'asc' },
     });
 
-    if (approved.length === 0) {
+    if (approvedUnordered.length === 0) {
       return { applied: 0, failed: 0, errors: [] };
     }
+
+    // Real bug, 2026-11-25 (see git log): apply order used to be `createdAt
+    // asc`, but these rows are CREATED concurrently (suggestion generation
+    // dispatches up to pLimit's own concurrency via Promise.all, each doing
+    // a real AI-call network round-trip before its own upsert) -- so
+    // `createdAt`'s relative ordering among rows from the same generation
+    // batch is really "which network call happened to come back first,"
+    // not anything about the document. Confirmed live on a real title: two
+    // back-to-back runs of the IDENTICAL job applied their first fix to two
+    // DIFFERENT findings, diverged on every single subsequent apply, and
+    // one run ended up finding/applying roughly twice as many distinct
+    // fixes as the other (page-118's own several adjacent contrast issues
+    // being the clearest case -- fixing one can incidentally affect
+    // whether an adjacent one still needs its own fix, so apply ORDER
+    // genuinely changes how much work there is, not just which fix
+    // "technically" ran first). Sorted here by each row's own
+    // issueFingerprint (buildIssueFingerprint's output, already a stable,
+    // content-derived identity -- see its own doc comment) via
+    // approvedSortKey below: page, then y, then x for the contrast/cross-
+    // reference/citation shape (CODE:page:x:y) that drove this bug, page
+    // alone for the element shape (CODE:element, element often embedding
+    // p{page}), and the full fingerprint string as the final tie-break so
+    // the order is total and deterministic even when nothing else
+    // distinguishes two rows.
+    const approved = [...approvedUnordered].sort((a, b) => {
+      // issueFingerprint is nullable only for rows predating this column
+      // (a real but rare case) -- approvedSortKey sorts a missing one last
+      // rather than throwing on old data.
+      const ka = approvedSortKey(a.issueFingerprint);
+      const kb = approvedSortKey(b.issueFingerprint);
+      for (let i = 0; i < ka.length - 1; i++) {
+        const diff = (ka[i] as number) - (kb[i] as number);
+        if (diff !== 0) return diff;
+      }
+      return (ka[ka.length - 1] as string).localeCompare(kb[kb.length - 1] as string);
+    });
 
     const output = (job.output ?? {}) as Record<string, unknown>;
     const fileName = (output.fileName as string | undefined) ?? 'document.pdf';
