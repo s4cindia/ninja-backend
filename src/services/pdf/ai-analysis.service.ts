@@ -631,6 +631,33 @@ export function buildIssueFingerprint(
 }
 
 /**
+ * Deterministic apply-order sort key for a buildIssueFingerprint string --
+ * see applyApprovedSuggestions's own call site for why this exists (a real
+ * run-to-run nondeterminism bug, not a style preference). Reading-order-
+ * like: page, then top-to-bottom (y), then left-to-right (x) for the
+ * `CODE:page:x:y` contrast/cross-reference/citation shape; page alone
+ * (any `_p<N>` found in the fingerprint, else +Infinity) for the
+ * `CODE:element` shape, where 0/0 fill the unused y/x slots so both
+ * shapes compare on the same tuple width. The full fingerprint string is
+ * always the final slot, guaranteeing a total order even when every
+ * numeric field ties (e.g. two DOC_LEVEL_CODES rows, or two element-shape
+ * rows on the same page).
+ */
+function approvedSortKey(fingerprint: string | null | undefined): [number, number, number, string] {
+  if (!fingerprint) return [Number.MAX_SAFE_INTEGER, 0, 0, ''];
+  const parts = fingerprint.split(':');
+  if (parts.length === 4) {
+    const page = parseInt(parts[1], 10);
+    const x = parseInt(parts[2], 10);
+    const y = parseInt(parts[3], 10);
+    if (!isNaN(page) && !isNaN(x) && !isNaN(y)) return [page, y, x, fingerprint];
+  }
+  const pageMatch = /_p(\d+)/.exec(fingerprint);
+  const page = pageMatch ? parseInt(pageMatch[1], 10) : Number.MAX_SAFE_INTEGER;
+  return [page, 0, 0, fingerprint];
+}
+
+/**
  * Decides the status to persist for a re-analyzed suggestion. A row already
  * marked 'applied' means a fix was actually written into the PDF — re-running
  * AI analysis must not silently revert that to pending/approved just because
@@ -1640,14 +1667,26 @@ class AiAnalysisService {
   private readonly bodyMedianFontSizeByFileSha256 = new Map<string, number>();
   private static readonly BODY_MEDIAN_CACHE_MAX_ENTRIES = 200;
 
-  private async getOriginalFileBodyMedianFontSize(jobId: string, fileName: string): Promise<number> {
+  private async getOriginalFileBodyMedianFontSize(jobId: string, fileName: string, fallbackPdfjsDoc: ParsedPDF['pdfjsDoc']): Promise<number> {
     const originalBuffer = await fileStorageService.getFile(jobId, fileName);
     if (!originalBuffer) {
       // Original upload no longer in storage (e.g. retention cleanup on an
-      // old job) -- fall back to 0; analyzeHeadingStyleMismatch already
-      // treats ratio 0 as "decline to promote at H1/H2", never throws.
-      logger.warn(`[AiAnalysis] getOriginalFileBodyMedianFontSize: original file not found for job ${jobId} -- using 0`);
-      return 0;
+      // old job). Real bug, caught on review, 2026-11-25 (see git log):
+      // this used to fall back to a hardcoded 0 here, which isn't "decline
+      // to promote" the way the old comment claimed -- ratio 0 satisfies
+      // neither the >=2.2 nor the >=1.8 cutoff in analyzeHeadingStyleMismatch,
+      // so it silently forced EVERY promotion on this job to H3,
+      // regardless of the candidate's real size. Falls back to the
+      // WORKING file's own content-stream median instead -- less accurate
+      // than the true original (it reflects whatever's already been
+      // remediated so far, the same staleness this whole mechanism exists
+      // to avoid), but a real, size-sensitive number instead of a value
+      // that mechanically breaks the ratio cutoffs. Logged as an error
+      // (not a warning) since it means this job's original upload is
+      // gone, which callers investigating a heading-level question later
+      // need to know, not just quietly tolerate.
+      logger.error(`[AiAnalysis] getOriginalFileBodyMedianFontSize: original file not found for job ${jobId} -- falling back to the working file's own content-stream median`);
+      return computeContentStreamBodyMedianFontSize(fallbackPdfjsDoc);
     }
 
     const sha256 = createHash('sha256').update(originalBuffer).digest('hex');
@@ -4371,7 +4410,7 @@ class AiAnalysisService {
     // level-decision denominator comes from the ORIGINAL file -- see
     // getOriginalFileBodyMedianFontSize's own doc comment for why.
     const { allCandidates, existingHeadingFontSizes, existingHeadings } = await collectHeadingStyleData(parsedPdf);
-    const bodyMedianFontSize = await this.getOriginalFileBodyMedianFontSize(jobId, fileName);
+    const bodyMedianFontSize = await this.getOriginalFileBodyMedianFontSize(jobId, fileName, parsedPdf.pdfjsDoc);
     const candidate = findCandidateForIssue(allCandidates, issue);
     if (!candidate) {
       logger.info(`[AiAnalysis] analyzeHeadingStyleMismatch: could not re-locate the candidate for ${issue.element} -- declining`);
@@ -5193,19 +5232,68 @@ class AiAnalysisService {
     // card's own Apply button via a dedicated single-issue call elsewhere)
     // must still be able to apply these rows -- the whole point of the flag
     // is "needs a human look", not "permanently blocked".
-    const approved = await prisma.aiAnalysis.findMany({
+    const approvedUnordered = await prisma.aiAnalysis.findMany({
       where: {
         jobId,
         status: statusFilter,
         applyMode: 'apply-to-pdf',
         ...(source === 'auto_loop' ? { appliedButUnresolved: { not: true } } : {}),
       },
-      orderBy: { createdAt: 'asc' },
     });
 
-    if (approved.length === 0) {
+    if (approvedUnordered.length === 0) {
       return { applied: 0, failed: 0, errors: [] };
     }
+
+    // Real bug, 2026-11-25 (see git log): apply order used to be `createdAt
+    // asc`, but these rows are CREATED concurrently (suggestion generation
+    // dispatches up to pLimit's own concurrency via Promise.all, each doing
+    // a real AI-call network round-trip before its own upsert) -- so
+    // `createdAt`'s relative ordering among rows from the same generation
+    // batch is really "which network call happened to come back first,"
+    // not anything about the document. Confirmed live on a real title: two
+    // back-to-back runs of the IDENTICAL job applied their first fix to two
+    // DIFFERENT findings, diverged on every single subsequent apply, and
+    // one run ended up finding/applying roughly twice as many distinct
+    // fixes as the other (page-118's own several adjacent contrast issues
+    // being the clearest case -- fixing one can incidentally affect
+    // whether an adjacent one still needs its own fix, so apply ORDER
+    // genuinely changes how much work there is, not just which fix
+    // "technically" ran first). Sorted here by each row's own
+    // issueFingerprint (buildIssueFingerprint's output, already a stable,
+    // content-derived identity -- see its own doc comment) via
+    // approvedSortKey below: page, then y, then x for the contrast/cross-
+    // reference/citation shape (CODE:page:x:y) that drove this bug, page
+    // alone for the element shape (CODE:element, element often embedding
+    // p{page}), and the full fingerprint string as the final tie-break so
+    // the order is total and deterministic even when nothing else
+    // distinguishes two rows.
+    const approved = [...approvedUnordered].sort((a, b) => {
+      // issueFingerprint is nullable only for rows predating this column
+      // (a real but rare case) -- approvedSortKey sorts a missing one last
+      // rather than throwing on old data.
+      const ka = approvedSortKey(a.issueFingerprint);
+      const kb = approvedSortKey(b.issueFingerprint);
+      for (let i = 0; i < ka.length - 1; i++) {
+        const diff = (ka[i] as number) - (kb[i] as number);
+        if (diff !== 0) return diff;
+      }
+      const fingerprintCmp = (ka[ka.length - 1] as string).localeCompare(kb[kb.length - 1] as string);
+      if (fingerprintCmp !== 0) return fingerprintCmp;
+      // Real gap, 2026-11-25: the query above has no `orderBy`, so Postgres
+      // hands back rows in an arbitrary order that can differ run to run.
+      // When two rows' fingerprints are ALSO identical (a real, if rare,
+      // case -- e.g. two rows for the same element from different dispatch
+      // paths), the tie-break above ties too, and JS's stable sort then
+      // only preserves whatever arbitrary order Postgres happened to
+      // return THIS time -- reintroducing exactly the nondeterminism this
+      // sort exists to remove. issueId, then id, are per-row database
+      // identities with no reason to coincide across two different rows --
+      // a genuine final, total tie-break.
+      const issueIdCmp = a.issueId.localeCompare(b.issueId);
+      if (issueIdCmp !== 0) return issueIdCmp;
+      return a.id.localeCompare(b.id);
+    });
 
     const output = (job.output ?? {}) as Record<string, unknown>;
     const fileName = (output.fileName as string | undefined) ?? 'document.pdf';
