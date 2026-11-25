@@ -21,6 +21,7 @@ import { PDFDocument, StandardFonts, rgb } from 'pdf-lib';
 import { aiAnalysisService } from '../../../../src/services/pdf/ai-analysis.service';
 import { geminiService } from '../../../../src/services/ai/gemini.service';
 import { fileStorageService } from '../../../../src/services/storage/file-storage.service';
+import { logger } from '../../../../src/lib/logger';
 import { pdfParserService } from '../../../../src/services/pdf/pdf-parser.service';
 import type { ParsedPDF } from '../../../../src/services/pdf/pdf-parser.service';
 import { pdfHeadingStyleMismatchValidator } from '../../../../src/services/pdf/validators/pdf-heading-style-mismatch.validator';
@@ -381,5 +382,38 @@ describe('dispatchIssue: HEADING-STYLE-MISMATCH routing', () => {
     // (median=0 from an untagged original), this would be forced to '3'
     // regardless of the candidate's real size.
     expect(res.value).toBe('1');
+  });
+
+  it('falls back to the WORKING file\'s own content-stream median (not a forced H3) when the original upload is gone, and logs an error', async () => {
+    // Real bug, caught on review, 2026-11-25 (see git log): a missing
+    // original (e.g. retention cleanup on an old job) used to fall back
+    // to a hardcoded bodyMedianFontSize of 0 -- ratio 0 satisfies neither
+    // the >=2.2 nor the >=1.8 cutoff in analyzeHeadingStyleMismatch, so
+    // every promotion on that job silently landed on H3 regardless of
+    // the candidate's real size. Must now fall back to the CURRENT doc's
+    // own content-stream median instead, and log at error (not warn).
+    vi.spyOn(geminiService, 'generateWithSchema').mockResolvedValue({
+      data: { isHeading: true, confidence: 0.9, rationale: 'Reads as a genuine section title.' },
+      usage: { promptTokens: 20, completionTokens: 10 },
+      attempts: 1,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any);
+    vi.spyOn(fileStorageService, 'getFile').mockResolvedValue(null);
+    const errorSpy = vi.spyOn(logger, 'error');
+
+    const lines: Line[] = [{ text: 'Executive Summary', y: 740, size: 28 }, ...BODY_LINES];
+    const { parsedPdf } = await buildTaggedDoc(lines);
+    const audit = await pdfHeadingStyleMismatchValidator.validate(parsedPdf);
+    expect(audit.issues).toHaveLength(1);
+    const issue = audit.issues[0];
+    const parsed = { isTagged: true, pages: [], parsedPdf } as unknown as PdfParseResult;
+    const res = await svc.dispatchIssue(issue, parsed, CONFIG, new Map(), new Map(), new Map(), new Map(), 'test-job', 'test-tenant', FIXTURE_FILE_NAME);
+
+    expect(res).not.toBeNull();
+    // Same shape/expectation as the untagged-original test above (ratio
+    // ~2.5, well over the 2.2 H1 cutoff) -- confirms the fallback used a
+    // real, size-sensitive median rather than silently forcing H3.
+    expect(res.value).toBe('1');
+    expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('original file not found'));
   });
 });
