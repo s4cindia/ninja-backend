@@ -110,27 +110,75 @@ def _resolve_weights_uri() -> str:
     return val
 
 
+def _weights_sha256(path: str) -> str:
+    import hashlib
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
 def _load_model():
-    """Download the .pt and load it with Ultralytics. Runs once at startup."""
+    """Download the .pt and load it with Ultralytics. Runs once at startup.
+
+    Real source of run-to-run zone-detection drift on the identical PDF
+    (2026-11-26, see git log): cuDNN picks its own convolution algorithm
+    per-call unless told not to, and that choice (along with TF32's reduced
+    mantissa) is a well-documented source of non-bit-identical output on
+    otherwise-identical GPU inputs. Forcing deterministic algorithms here
+    trades a little throughput for byte-identical output on the same
+    (weights, input, device) triple -- required for the detection cache
+    (its own cache key assumes "same inputs -> same zones" is actually
+    true on a cache miss, not just usually true).
+    """
     import torch
     from ultralytics import YOLO
 
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+    torch.backends.cuda.matmul.allow_tf32 = False
+    torch.backends.cudnn.allow_tf32 = False
+
     uri = _resolve_weights_uri()
     local = download_from_s3(uri) if S3_URI_PATTERN.match(uri) else uri
+    weights_hash = _weights_sha256(local)
     model = YOLO(local)
-    dev = 0 if torch.cuda.is_available() else "cpu"
+    cuda_available = torch.cuda.is_available()
+    dev = 0 if cuda_available else "cpu"
+    if not cuda_available:
+        # Not just a different speed -- CPU and GPU execution paths through
+        # the same model can produce different floating-point results for
+        # the same input, which would otherwise silently poison the
+        # detection cache (a result cached from a GPU run would never be
+        # reproduced by a CPU-fallback run, and vice versa, for reasons
+        # that have nothing to do with the cache key itself).
+        logger.warning(
+            f"CUDA not available -- falling back to CPU inference. Detection "
+            f"results from this instance may differ from a GPU instance's "
+            f"for the identical input; check the detection cache's own "
+            f"model_version/device key component before trusting a match "
+            f"across instances."
+        )
     logger.info(
-        f"Model loaded from {uri} on device={dev} "
-        f"(cuda={torch.cuda.is_available()}); classes={model.names}"
+        f"Model loaded from {uri} (sha256={weights_hash}) on device={dev} "
+        f"(cuda={cuda_available}); classes={model.names}; "
+        f"torch={torch.__version__}"
     )
-    return model, dev
+    return model, dev, weights_hash
 
 
 try:
-    MODEL, DEVICE = _load_model()
+    import importlib.metadata as _importlib_metadata
+    ULTRALYTICS_VERSION = _importlib_metadata.version("ultralytics")
+except Exception:
+    ULTRALYTICS_VERSION = "unknown"
+
+try:
+    MODEL, DEVICE, WEIGHTS_SHA256 = _load_model()
 except Exception as e:  # keep the container up so /health can report the failure
     logger.error(f"Model load failed at startup: {e}")
-    MODEL, DEVICE = None, "cpu"
+    MODEL, DEVICE, WEIGHTS_SHA256 = None, "cpu", None
 
 # GPU inference is serialized: one PDF at a time avoids VRAM contention.
 _infer_semaphore = threading.Semaphore(1)
@@ -201,7 +249,24 @@ def detect_pdf(pdf_path: str, job_id: str) -> dict:
 
     processing_time_ms = int((time.time() - start) * 1000)
     logger.info(f"Job {job_id}: {len(zones)} zones over {len(page_sizes)} pages in {processing_time_ms}ms")
-    return {"jobId": job_id, "zones": zones, "processingTimeMs": processing_time_ms}
+    return {
+        "jobId": job_id,
+        "zones": zones,
+        "processingTimeMs": processing_time_ms,
+        # Self-describes what produced this exact result -- the caller's
+        # own detection cache needs this (weights/device/params/library
+        # versions) as cache-key input, not just a /health snapshot taken
+        # at a possibly-different moment.
+        "modelInfo": {
+            "device": "cuda" if DEVICE != "cpu" else "cpu",
+            "weightsSha256": WEIGHTS_SHA256,
+            "ultralyticsVersion": ULTRALYTICS_VERSION,
+            "renderDpi": RENDER_DPI,
+            "maxEdge": MAX_EDGE,
+            "imgsz": IMGSZ,
+            "conf": CONF,
+        },
+    }
 
 
 def _run_detection(pdf_path: str, job_id: str) -> dict:
@@ -236,7 +301,20 @@ def health():
     # container health check reflects actual readiness instead of just "process up".
     if MODEL is None:
         raise HTTPException(status_code=503, detail="model not loaded")
-    return {"status": "ok", "model": "loaded"}
+    return {
+        "status": "ok",
+        "model": "loaded",
+        # Exposed so a caller (or the detection cache's own key) can tell
+        # exactly which (weights, device, library version) triple produced
+        # a given result, rather than assuming it never changes.
+        "device": "cuda" if DEVICE != "cpu" else "cpu",
+        "weightsSha256": WEIGHTS_SHA256,
+        "ultralyticsVersion": ULTRALYTICS_VERSION,
+        "renderDpi": RENDER_DPI,
+        "maxEdge": MAX_EDGE,
+        "imgsz": IMGSZ,
+        "conf": CONF,
+    }
 
 
 @app.post("/detect")
