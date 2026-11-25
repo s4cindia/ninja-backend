@@ -33,7 +33,10 @@ import {
 import { AuditIssue } from '../audit/base-audit.service';
 import { logger } from '../../lib/logger';
 import { pdfModifierService } from './pdf-modifier.service';
-import { pageContentMcids, orderedPageContentMcids, findBdcTagSpanForMcid, decodePageContent, writePageContent } from './pdf-content-stream-io';
+import {
+  pageContentMcids, orderedPageContentMcids, findBdcTagSpanForMcid, decodePageContent, writePageContent,
+  mcidHasImageOrVectorContent, extractMcidText, retagMcidToArtifact,
+} from './pdf-content-stream-io';
 import { locateMcidBoundingBoxes, locateByteRangeBoundingBox, type DeviceBoundingBox } from './mcid-bounding-box';
 import { findMcidPageMismatches } from './mcid-page-mismatch';
 import { findFloatInterruptions } from './reading-order-float';
@@ -3842,6 +3845,140 @@ export class PdfStructureWriterService {
       before: 'Figure with an empty /Alt (decorative, PAC flags empty as missing)',
       after: `Retagged as /Artifact (MCID ${mcid} removed from the structure tree and /ParentTree)`,
     };
+  }
+
+  /**
+   * Resolves a struct element's own effective page -- its own /Pg if
+   * present, else the nearest ancestor's /Pg, walking up /P. Returns the
+   * 1-based page number (decodePageContent/writePageContent's own
+   * convention), or null if neither the element nor any ancestor carries
+   * one. dropEmptyFigures' only caller -- a Figure's own /Pg is normally
+   * set directly on itself (PDF32000-1:2008 §14.7.4.2's "DIRECTLY or
+   * INDIRECTLY" wording), but this walks up defensively rather than
+   * assuming the direct case always holds.
+   */
+  private resolveElementPageNumber(doc: PDFDocument, elementDict: PDFDict, pageRefToNumber: Map<number, number>): number | null {
+    let current: PDFDict | null = elementDict;
+    let depth = 0;
+    while (current && depth < 20) {
+      const pg = current.get(PDFName.of('Pg'));
+      if (pg instanceof PDFRef) {
+        const num = pageRefToNumber.get(pg.objectNumber);
+        if (num !== undefined) return num;
+      }
+      const parentRaw = current.get(PDFName.of('P'));
+      current = parentRaw instanceof PDFRef ? (doc.context.lookup(parentRaw) as PDFDict | undefined) ?? null : null;
+      depth++;
+    }
+    return null;
+  }
+
+  /**
+   * Drops every Figure struct element with no real content at all --
+   * retags each of its MCIDs to /Artifact and removes the now-empty
+   * Figure from its parent's /K array, rather than leaving a Figure with
+   * nothing exposed to a screen reader (no image, no vector drawing, no
+   * text -- not even something to usefully describe).
+   *
+   * Real bug, 2026-11-26 (QC regression corpus, real title): confirmed
+   * dozens of such Figures survive a full Auto Mode run, unchanged by
+   * both existing related fixes:
+   * - #886 only demotes an empty ZONE at struct-tree-builder.ts's
+   *   INITIAL per-page auto-tagging pass -- before any Figure struct
+   *   element exists at all. It has no way to catch one that becomes
+   *   (or already was) empty by the time this runs, regardless of path.
+   * - #890 fixed mcidHasImageOrVectorContent/extractMcidText to
+   *   correctly exclude content nested inside a child struct element or
+   *   /Artifact (the exact real shape found live: an InDesign-native
+   *   background/decorative form wrapped in its own nested /Artifact
+   *   BMC whose closing EMC doesn't appear until after ALL the region's
+   *   real drawing, swallowing every bit of it), and gated alt-text
+   *   DISPATCH on that corrected check -- but it never acts on the
+   *   Figure struct element itself, which still sits in the tree with
+   *   no content and no alt text.
+   *
+   * This is a FINAL pass, not tied to WHEN or HOW a given Figure was
+   * created (initial tagging, a later remediation-round creator like
+   * buildFigureFromImage, or anything else) -- safe to call once per
+   * round, including repeatedly on an already-clean document (nothing
+   * left to find). A Figure this can't cleanly resolve (no parent, no
+   * page, an undecodable content stream) is left alone rather than
+   * guessed at.
+   */
+  dropEmptyFigures(doc: PDFDocument): Array<FixResult & { elementId: string }> {
+    const structRoot = this.getStructTreeRoot(doc);
+    if (!structRoot) return [];
+
+    const pageRefToNumber = new Map<number, number>();
+    doc.getPages().forEach((p, idx) => pageRefToNumber.set(p.ref.objectNumber, idx + 1));
+
+    const toDrop: Array<{ figureRef: PDFRef; figureDict: PDFDict; parentRef: PDFRef; pageNumber: number; mcids: number[] }> = [];
+
+    // Pass 1 (read-only): find every empty Figure. Mutating the content
+    // stream/struct tree mid-traversal would invalidate traverseStructTree's
+    // own stack-based walk, so nothing is written here.
+    this.traverseStructTree(doc, structRoot, (node, ref) => {
+      const s = node.get(PDFName.of('S'));
+      if (!(s instanceof PDFName) || s.decodeText() !== 'Figure') return;
+      if (!(ref instanceof PDFRef)) return;
+
+      const parentRaw = node.get(PDFName.of('P'));
+      if (!(parentRaw instanceof PDFRef)) return; // no parent -- nothing to remove it from
+
+      const pageNumber = this.resolveElementPageNumber(doc, node, pageRefToNumber);
+      if (pageNumber === null) return; // can't resolve a page to check content against -- decline
+
+      const mcids: number[] = [];
+      this.collectMcidsUnderNode(doc, node.get(PDFName.of('K')), mcids, 0);
+      if (mcids.length === 0) return;
+
+      const content = decodePageContent(doc, pageNumber);
+      if (content === null) return; // can't verify -- don't guess it's empty
+
+      const hasContent = mcids.some(
+        (mcid) => mcidHasImageOrVectorContent(content, mcid) || extractMcidText(content, mcid).trim().length > 0
+      );
+      if (!hasContent) {
+        toDrop.push({ figureRef: ref, figureDict: node, parentRef: parentRaw, pageNumber, mcids });
+      }
+    });
+
+    // Pass 2: mutate -- retag each empty Figure's own MCIDs to /Artifact
+    // in its page's content stream, then remove the Figure itself from
+    // its parent's /K array.
+    const results: Array<FixResult & { elementId: string }> = [];
+    for (const { figureRef, figureDict, parentRef, pageNumber, mcids } of toDrop) {
+      let content = decodePageContent(doc, pageNumber);
+      if (content === null) continue;
+      let anyRetagged = false;
+      for (const mcid of mcids) {
+        const retag = retagMcidToArtifact(content, mcid);
+        if (retag.retagged) {
+          content = retag.content;
+          anyRetagged = true;
+        }
+      }
+      if (anyRetagged) writePageContent(doc, pageNumber, content);
+
+      this.removeFromKids(doc, parentRef, figureRef);
+      figureDict.delete(PDFName.of('K'));
+      figureDict.delete(PDFName.of('P'));
+
+      // Same "figure_p{page}_mc{mcid}" element-id convention
+      // pdf-figure-structtree.validator.ts's own issue detection uses (one
+      // representative MCID, the first) -- lets the caller match this
+      // result back to whichever AuditIssue/suggestion targeted this
+      // Figure, without this method needing to know about issues at all.
+      results.push({
+        issueId: `drop-empty-figure-${figureRef.objectNumber}`,
+        elementId: `figure_p${pageNumber}_mc${mcids[0]}`,
+        success: true,
+        before: `Figure with no image/vector/text content across ${mcids.length} MCID(s) on page ${pageNumber}`,
+        after: 'Retagged to /Artifact and removed from the structure tree',
+      });
+    }
+
+    return results;
   }
 
   /**

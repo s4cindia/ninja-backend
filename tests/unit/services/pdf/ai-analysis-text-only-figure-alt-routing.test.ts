@@ -158,12 +158,25 @@ describe('dispatchIssue: text-only Figure grounded alt text (Rule 2)', () => {
     expect(res!.value).toContain('fetal development');
   });
 
-  it('declines entirely (returns null) when the region has neither image/vector content nor any text', async () => {
+  /**
+   * Rule 3 (drop empty Figures, 2026-11-26): a Figure with neither
+   * image/vector content nor any text has nothing for alt text to
+   * describe and nothing for a screen reader to do anything useful with
+   * either -- rather than decline (leaving a contentless /Figure
+   * permanently in the tree with no alt text, confirmed live: dozens
+   * survive a full Auto Mode run this way on a real title), this now
+   * dispatches a deterministic drop-empty-figure-fix suggestion instead
+   * of returning null.
+   */
+  it('dispatches a drop-empty-figure-fix suggestion (not null) when the region has neither image/vector content nor any text', async () => {
     vi.mocked(decodePageContent).mockReturnValue(EMPTY_CONTENT);
 
     const res = await dispatch(figureIssue());
 
-    expect(res).toBeNull();
+    expect(res).not.toBeNull();
+    expect(res!.suggestionType).toBe('drop-empty-figure-fix');
+    expect(res!.applyMode).toBe('apply-to-pdf');
+    expect(res!.confidence).toBe(1.0);
     expect(geminiService.generateWithSchema).not.toHaveBeenCalled();
   });
 
@@ -175,14 +188,15 @@ describe('dispatchIssue: text-only Figure grounded alt text (Rule 2)', () => {
    * Do/S operators are textually present in the outer span), sending
    * this straight to the vision/page-render path below instead of this
    * gate. With the fix, nothing is exposed as this Figure's own, so this
-   * declines rather than guessing.
+   * dispatches drop-empty-figure-fix rather than guessing at alt text.
    */
-  it('declines for a Figure whose only real content is nested inside an Artifact span (the real T4 page-90 shape)', async () => {
+  it('dispatches drop-empty-figure-fix for a Figure whose only real content is nested inside an Artifact span (the real T4 page-90 shape)', async () => {
     vi.mocked(decodePageContent).mockReturnValue(NESTED_ARTIFACT_WRAPPING_REAL_CONTENT);
 
     const res = await dispatch(figureIssue());
 
-    expect(res).toBeNull();
+    expect(res).not.toBeNull();
+    expect(res!.suggestionType).toBe('drop-empty-figure-fix');
     expect(geminiService.generateWithSchema).not.toHaveBeenCalled();
   });
 });

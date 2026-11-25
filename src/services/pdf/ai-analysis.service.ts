@@ -2308,7 +2308,26 @@ class AiAnalysisService {
         // isn't that path) declines rather than guessing.
         if (content && !mcidHasImageOrVectorContent(content, mcid)) {
           const groundingText = extractMcidText(content, mcid).replace(/\s+/g, ' ').trim();
-          if (groundingText.length === 0) return null;
+          // Rule 3 (drop empty Figures, 2026-11-26): no image/vector AND no
+          // text at all -- nothing for alt text to describe, and nothing
+          // for a screen reader to do anything useful with either. Rather
+          // than decline (leaving a contentless /Figure permanently in the
+          // tree with no alt text, confirmed live: dozens survive a full
+          // Auto Mode run this way on a real title), drop it -- a
+          // deterministic, rule-based structural fix, same confidence/
+          // applyMode shape as every other non-AI structure-writer fix
+          // here (heading-fix, list-fix, etc.), never gated by altTextMode
+          // since this isn't an alt-text decision at all.
+          if (groundingText.length === 0) {
+            return {
+              suggestionType: 'drop-empty-figure-fix',
+              guidance: 'This Figure has no image, vector drawing, or text under it -- nothing to describe. Retags it as /Artifact and removes it from the structure tree.',
+              confidence: 1.0,
+              rationale: 'Deterministic fix -- same nesting-aware content check as #890 found nothing to ground alt text in, so there is nothing here for a screen reader either.',
+              model: 'rule-based',
+              applyMode: 'apply-to-pdf',
+            };
+          }
 
           const altMode: 'apply-to-pdf' | 'guidance-only' = config.altTextMode === 'guidance-only' ? 'guidance-only' : 'apply-to-pdf';
           const literalFallback = (): AiSuggestionResult => ({
@@ -5611,6 +5630,25 @@ class AiAnalysisService {
       }
     }
 
+    // Rule 3 (drop empty Figures, 2026-11-26): batch every
+    // drop-empty-figure-fix suggestion in THIS approval run into a SINGLE
+    // dropEmptyFigures sweep, before the main per-suggestion loop below --
+    // that method scans the WHOLE current struct tree and drops every
+    // empty Figure it finds in one pass, so calling it once per issue
+    // would just repeat the same full-document scan redundantly (each
+    // later call finding nothing left, since the first call already
+    // dropped everything). Matched back to each suggestion's own issueId
+    // by elementId (the "figure_p{page}_mc{mcid}" convention
+    // pdf-figure-structtree.validator.ts's own detection already uses),
+    // same shape as issueByFingerprint/issueById's own lookups below.
+    const dropEmptyFigureIssues = approved.filter(a => a.suggestionType === 'drop-empty-figure-fix');
+    let dropEmptyFigureResultByElementId = new Map<string, FixResult>();
+    if (dropEmptyFigureIssues.length > 0) {
+      dropEmptyFigureResultByElementId = new Map(
+        pdfStructureWriterService.dropEmptyFigures(doc).map(r => [r.elementId, r] as const)
+      );
+    }
+
     // Precomputed ONCE, upfront, across every color-contrast-fix suggestion
     // in THIS approval run -- see resolveColorContrastTargets/
     // locateTextRunsForPage's own doc comments for why: calling
@@ -5696,7 +5734,7 @@ class AiAnalysisService {
     // rule-based/no-value shape as every case above, but it was never added
     // to this Set -- meaning every real toc-structure-fix apply attempt has
     // been silently failing with this exact error since it shipped.
-    const STRUCTURE_WRITER_TYPES = new Set(['heading-fix', 'list-fix', 'table-header-fix', 'table-header-fix-column', 'table-header-scope-fix', 'table-artifact-fix', 'table-from-layout-fix', 'bookmark-generate', 'heading-multiple-h1-fix', 'pdfua-identifier', 'color-contrast-fix', 'alt-text-decorative', 'untagged-content-fix', 'invisible-text-artifact-fix', 'figure-caption-reattach-fix', 'inline-figure-reattach-fix', 'tagged-content-artifact-split-fix', 'table-cell-reattach-fix', 'table-row-reattach-fix', 'font-tounicode-synthesis-fix', 'font-tounicode-extend-fix', 'artifact-unwrap-complex-fix', 'placedpdf-retag-fix', 'link-missing-annotation-fix', 'artifact-actualtext-fix', 'actualtext-missing-mcid-fix', 'tab-order-fix', 'mcid-page-mismatch-fix', 'display-doc-title-fix', 'rolemap-target-fix', 'index-structure-fix', 'footnote-structure-fix', 'bookmark-title-regenerate', 'cross-reference-link-fix', 'reading-order-float-fix', 'toc-link-fix', 'citation-link-fix', 'structure-parent-mismatch-fix', 'heading-promote-fix', 'span-illegal-nesting-fix', 'duplicate-figure-tiles-fix', 'header-footer-varying-artifact-fix', 'toc-structure-fix']);
+    const STRUCTURE_WRITER_TYPES = new Set(['heading-fix', 'list-fix', 'table-header-fix', 'table-header-fix-column', 'table-header-scope-fix', 'table-artifact-fix', 'table-from-layout-fix', 'bookmark-generate', 'heading-multiple-h1-fix', 'pdfua-identifier', 'color-contrast-fix', 'alt-text-decorative', 'untagged-content-fix', 'invisible-text-artifact-fix', 'figure-caption-reattach-fix', 'inline-figure-reattach-fix', 'tagged-content-artifact-split-fix', 'table-cell-reattach-fix', 'table-row-reattach-fix', 'font-tounicode-synthesis-fix', 'font-tounicode-extend-fix', 'artifact-unwrap-complex-fix', 'placedpdf-retag-fix', 'link-missing-annotation-fix', 'artifact-actualtext-fix', 'actualtext-missing-mcid-fix', 'tab-order-fix', 'mcid-page-mismatch-fix', 'display-doc-title-fix', 'rolemap-target-fix', 'index-structure-fix', 'footnote-structure-fix', 'bookmark-title-regenerate', 'cross-reference-link-fix', 'reading-order-float-fix', 'toc-link-fix', 'citation-link-fix', 'structure-parent-mismatch-fix', 'heading-promote-fix', 'span-illegal-nesting-fix', 'duplicate-figure-tiles-fix', 'header-footer-varying-artifact-fix', 'toc-structure-fix', 'drop-empty-figure-fix']);
 
     let applied = 0;
     let failed = 0;
@@ -5767,6 +5805,17 @@ class AiAnalysisService {
           const results = pdfStructureWriterService.fixHeadingHierarchy(doc, [originalIssue]);
           const r = results[0];
           modification = { success: r.success, description: r.after, error: r.error };
+        } else if (suggestionType === 'drop-empty-figure-fix') {
+          // Already applied above, batched with every other
+          // drop-empty-figure-fix suggestion in this same approval run --
+          // see that batching's own comment for why (dropEmptyFigures
+          // sweeps the WHOLE struct tree in one call). Matched back by
+          // elementId, not issueId -- dropEmptyFigures has no notion of
+          // the original issue, only of which Figure it dropped.
+          const r = elementId ? dropEmptyFigureResultByElementId.get(elementId) : undefined;
+          modification = r
+            ? { success: r.success, description: r.after, error: r.error }
+            : { success: false, error: 'drop-empty-figure-fix result missing from batch -- Figure may already have real content, or already been dropped by an earlier suggestion in this batch' };
         } else if (suggestionType === 'list-fix') {
           const results = pdfStructureWriterService.rewrapListItems(doc, [originalIssue]);
           const r = results[0];
