@@ -14,6 +14,7 @@ import { describe, it, expect } from 'vitest';
 import {
   computeClusterSize,
   hasConfirmedHeadingAtSameSize,
+  findClusterMatchedLevel,
   buildIssueElement,
   parseIssueElement,
   findCandidateForIssue,
@@ -67,6 +68,44 @@ describe('hasConfirmedHeadingAtSameSize', () => {
 
   it('is false for an empty heading list (a document with no confirmed headings at all)', () => {
     expect(hasConfirmedHeadingAtSameSize([], 22)).toBe(false);
+  });
+});
+
+describe('findClusterMatchedLevel', () => {
+  /**
+   * Real bug, 2026-11-25 (see git log): the ratio cutoff alone is a sharp
+   * step function -- a candidate's font size landing at ratio 1.79 vs 1.81
+   * (noise-level differences between otherwise-identical runs) picks two
+   * DIFFERENT levels for the same logical heading, which fixHeadingHierarchy's
+   * own correct gap-closing cascade then amplifies through the rest of the
+   * document. Preferring an existing, already-settled heading's own level
+   * at the same font size is deterministic and usually more correct than a
+   * fixed global ratio band.
+   */
+  it('returns the level of an existing heading at (within tolerance of) the same font size', () => {
+    const existing = [{ fontSize: 14, level: 2 }, { fontSize: 22, level: 1 }];
+    expect(findClusterMatchedLevel(existing, 14.1)).toBe(2);
+  });
+
+  it('returns null when no existing heading is close enough in size -- the caller falls back to the ratio cutoff', () => {
+    const existing = [{ fontSize: 14, level: 2 }, { fontSize: 22, level: 1 }];
+    expect(findClusterMatchedLevel(existing, 18)).toBeNull();
+  });
+
+  it('returns null for an empty existing-headings list (first heading in the document)', () => {
+    expect(findClusterMatchedLevel([], 14)).toBeNull();
+  });
+
+  it('breaks a tie between two matching sizes by picking the closest font size first', () => {
+    const existing = [{ fontSize: 14.0, level: 3 }, { fontSize: 14.25, level: 2 }];
+    // Both are within the 0.3pt tolerance of 14.2 -- 14.25 is closer.
+    expect(findClusterMatchedLevel(existing, 14.2)).toBe(2);
+  });
+
+  it('breaks an exact-distance tie by picking the smallest level, deterministically', () => {
+    const existing = [{ fontSize: 14.1, level: 3 }, { fontSize: 13.9, level: 1 }];
+    // Both are exactly 0.1pt away from 14.0 -- level is the only tie-break left.
+    expect(findClusterMatchedLevel(existing, 14.0)).toBe(1);
   });
 });
 

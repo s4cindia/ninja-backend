@@ -93,6 +93,12 @@ export interface HeadingStyleCollectionResult {
    *  resolved, same as pdfjs already resolves for /P) -- used by
    *  hasConfirmedHeadingAtSameSize. */
   existingHeadingFontSizes: number[];
+  /** Same walk as existingHeadingFontSizes, but keeping each element's own
+   *  level (1-6) alongside its font size -- used by
+   *  findClusterMatchedLevel to assign a promoted /P the level an existing
+   *  heading already uses at that size, rather than only being able to
+   *  confirm "some heading exists at this size" with no level attached. */
+  existingHeadings: Array<{ fontSize: number; level: number }>;
   bodyMedianFontSize: number;
 }
 
@@ -138,14 +144,20 @@ function extractMcid(contentId: string | null): number | null {
  * separate passes -- both need the exact same page/fontMap/textMap setup.
  */
 export async function collectHeadingStyleData(parsedPdf: ParsedPDF): Promise<HeadingStyleCollectionResult> {
-  const empty: HeadingStyleCollectionResult = { allCandidates: [], totalCandidateCount: 0, existingHeadingFontSizes: [], bodyMedianFontSize: 0 };
+  const empty: HeadingStyleCollectionResult = {
+    allCandidates: [],
+    totalCandidateCount: 0,
+    existingHeadingFontSizes: [],
+    existingHeadings: [],
+    bodyMedianFontSize: 0,
+  };
 
   if (!parsedPdf.structure?.metadata?.isTagged) return empty;
   const pdfjsDoc = parsedPdf.pdfjsDoc;
   if (!pdfjsDoc) return empty;
 
   const rawCandidates: Array<{ pageNumber: number; fontSize: number; charCount: number; text: string; mcid: number | null }> = [];
-  const existingHeadingFontSizes: number[] = [];
+  const existingHeadings: Array<{ fontSize: number; level: number }> = [];
 
   for (let pageNum = 1; pageNum <= pdfjsDoc.numPages; pageNum++) {
     let structTree: StructNode | null = null;
@@ -165,12 +177,14 @@ export async function collectHeadingStyleData(parsedPdf: ParsedPDF): Promise<Hea
       continue;
     }
 
-    walkForCandidatesAndHeadings(structTree, fontMap, textMap, pageNum, rawCandidates, existingHeadingFontSizes);
+    walkForCandidatesAndHeadings(structTree, fontMap, textMap, pageNum, rawCandidates, existingHeadings);
   }
+
+  const existingHeadingFontSizes = existingHeadings.map((h) => h.fontSize);
 
   if (rawCandidates.length < MIN_SAMPLE_SIZE) {
     logger.info(`[HeadingStyleClassifier] Only ${rawCandidates.length} /P element(s) found -- too few for a reliable body-text median`);
-    return { allCandidates: [], totalCandidateCount: rawCandidates.length, existingHeadingFontSizes, bodyMedianFontSize: 0 };
+    return { allCandidates: [], totalCandidateCount: rawCandidates.length, existingHeadingFontSizes, existingHeadings, bodyMedianFontSize: 0 };
   }
 
   const bodyMedianFontSize = median(rawCandidates.map((c) => c.fontSize).filter((s) => s > 0));
@@ -185,7 +199,7 @@ export async function collectHeadingStyleData(parsedPdf: ParsedPDF): Promise<Hea
     followingText: i < rawCandidates.length - 1 ? rawCandidates[i + 1].text.slice(0, 200) : '',
   }));
 
-  return { allCandidates, totalCandidateCount: rawCandidates.length, existingHeadingFontSizes, bodyMedianFontSize };
+  return { allCandidates, totalCandidateCount: rawCandidates.length, existingHeadingFontSizes, existingHeadings, bodyMedianFontSize };
 }
 
 function walkForCandidatesAndHeadings(
@@ -194,7 +208,7 @@ function walkForCandidatesAndHeadings(
   textMap: ContentIdTextMap,
   pageNumber: number,
   outCandidates: Array<{ pageNumber: number; fontSize: number; charCount: number; text: string; mcid: number | null }>,
-  outHeadingSizes: number[],
+  outHeadings: Array<{ fontSize: number; level: number }>,
 ): void {
   for (const child of node.children ?? []) {
     if (isStructContent(child)) continue;
@@ -207,16 +221,17 @@ function walkForCandidatesAndHeadings(
       // §14.8.4.3) -- don't also recurse looking for a nested candidate.
       continue;
     }
-    if (/^H[1-6]$/.test(child.role)) {
+    const headingMatch = /^H([1-6])$/.exec(child.role);
+    if (headingMatch) {
       const agg: FontTextAggregate = { maxFont: 0, texts: [], firstContentId: null };
       collectContentIds(child, fontMap, textMap, agg);
-      if (agg.maxFont > 0) outHeadingSizes.push(agg.maxFont);
+      if (agg.maxFont > 0) outHeadings.push({ fontSize: agg.maxFont, level: parseInt(headingMatch[1], 10) });
       // A real heading CAN contain further structure in principle, but this
-      // collection only needs its font size -- same "don't recurse further"
-      // reasoning as the /P branch above.
+      // collection only needs its font size and level -- same "don't
+      // recurse further" reasoning as the /P branch above.
       continue;
     }
-    walkForCandidatesAndHeadings(child, fontMap, textMap, pageNumber, outCandidates, outHeadingSizes);
+    walkForCandidatesAndHeadings(child, fontMap, textMap, pageNumber, outCandidates, outHeadings);
   }
 }
 
@@ -320,6 +335,48 @@ export function computeClusterSize(allCandidates: HeadingStyleCandidate[], fontS
  *  at that size already exists. */
 export function hasConfirmedHeadingAtSameSize(existingHeadingFontSizes: number[], fontSize: number): boolean {
   return existingHeadingFontSizes.some((s) => Math.abs(s - fontSize) <= SAME_SIZE_TOLERANCE_PT);
+}
+
+/**
+ * The level a promoted /P should take based on which EXISTING heading's
+ * font size it matches, or null if none matches closely enough -- the
+ * deterministic alternative to the ratio-cutoff heuristic.
+ *
+ * Real bug, 2026-11-25 (see git log): the ratio cutoff
+ * (fontSize/bodyMedianFontSize, banded at 1.8/2.2) is the SOLE level
+ * decision once a /P is confirmed to be a real heading, and it's a sharp
+ * step function -- a candidate landing at ratio 1.79 vs 1.81 (noise-level
+ * differences in exactly which nearby text run `findCandidateForIssue`
+ * re-locates as "the" candidate between two otherwise-identical runs) gets
+ * two DIFFERENT levels, which fixHeadingHierarchy's own (correct) gap-
+ * closing cascade then amplifies through every heading after it, since
+ * closing a genuine skip must compare against the ACTUAL preceding level,
+ * not a frozen one (a local-only version of that cascade was tried and
+ * rejected: it lets real skips survive, e.g. H1,H4,H4,H4 -> H1,H2,H4,H4,
+ * where H2->H4 is itself a Matterhorn 14-003 violation).
+ *
+ * Preferring the level an existing, already-settled heading uses at this
+ * same font size is both more deterministic (an existing heading's level
+ * doesn't wobble the way a fresh ratio computation can) and usually more
+ * correct (the document's own established hierarchy is better evidence
+ * than a fixed global ratio band). Ties (more than one existing level
+ * within tolerance) resolve by closest font-size match first, then by
+ * smallest level -- both fully deterministic, never by map/array
+ * insertion order.
+ */
+export function findClusterMatchedLevel(
+  existingHeadings: Array<{ fontSize: number; level: number }>,
+  fontSize: number
+): number | null {
+  const matches = existingHeadings.filter((h) => Math.abs(h.fontSize - fontSize) <= SAME_SIZE_TOLERANCE_PT);
+  if (matches.length === 0) return null;
+
+  matches.sort((a, b) => {
+    const distDiff = Math.abs(a.fontSize - fontSize) - Math.abs(b.fontSize - fontSize);
+    if (distDiff !== 0) return distDiff;
+    return a.level - b.level;
+  });
+  return matches[0].level;
 }
 
 /** Re-locates the SAME candidate an issue's `element` id refers to, within

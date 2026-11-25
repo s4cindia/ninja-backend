@@ -224,6 +224,82 @@ describe('pdf-structure-writer.service — fixHeadingHierarchy honest success re
   });
 });
 
+describe('pdf-structure-writer.service — fixHeadingHierarchy never leaves a skip behind', () => {
+  /**
+   * 2026-11-25: a "local" version of fixHeadingHierarchy's gap-closing was
+   * tried (compare each heading against the PREVIOUS heading's own
+   * ORIGINAL, uncorrected level, instead of its corrected one) specifically
+   * to stop one upstream-ambiguous heading from relevelling everything
+   * after it. Caught in review before merging: it lets a real multi-level
+   * skip survive. H1,H4,H4,H4 under that version produces H1,H2,H4,H4 --
+   * H2->H4 is ITSELF a 2-level skip (a Matterhorn 14-003 violation), where
+   * the actual (unchanged) algorithm below correctly produces H1,H2,H3,H3.
+   * The cascade -- a correction changing the baseline every later heading
+   * is compared against -- is inherent to valid gap-closing, not a bug in
+   * itself; the real fix for the run-to-run instability belongs at the
+   * trigger (see findClusterMatchedLevel in heading-style-classifier.ts
+   * and analyzeHeadingStyleMismatch's own use of it), not here. These
+   * tests exist to guard that invariant against any future attempt at a
+   * "local" version of this algorithm.
+   */
+  async function buildChain(levels: number[]): Promise<{ doc: InstanceType<typeof PDFDocument>; refs: PDFRef[] }> {
+    const doc = await PDFDocument.create();
+    doc.addPage([400, 600]);
+    const refs = levels.map((lv, i) => doc.context.register(doc.context.obj({ S: PDFName.of(`H${lv}`), K: i })));
+    const documentRef = doc.context.register(
+      doc.context.obj({ S: PDFName.of('Document'), K: doc.context.obj(refs as unknown as PDFRef[]) })
+    );
+    const structTreeRootRef = doc.context.register(
+      doc.context.obj({ Type: PDFName.of('StructTreeRoot'), K: documentRef })
+    );
+    doc.catalog.set(PDFName.of('StructTreeRoot'), structTreeRootRef);
+    return { doc, refs };
+  }
+
+  function levelOf(doc: InstanceType<typeof PDFDocument>, ref: PDFRef): number {
+    const dict = doc.context.lookup(ref) as PDFDict;
+    return parseInt(dict.get(PDFName.of('S'))!.toString().slice(2), 10);
+  }
+
+  // Deterministic LCG, seeded -- reproducible across runs with no new
+  // dependency (not a cryptographic generator, just a repeatable sequence).
+  function makeRng(seed: number): () => number {
+    let s = seed;
+    return () => {
+      s = (s * 1103515245 + 12345) & 0x7fffffff;
+      return s / 0x7fffffff;
+    };
+  }
+
+  function assertNoSkip(levels: number[]): void {
+    expect(levels[0]).toBeLessThanOrEqual(1);
+    for (let i = 1; i < levels.length; i++) {
+      expect(levels[i] - levels[i - 1]).toBeLessThanOrEqual(1);
+    }
+  }
+
+  it('the concrete case that broke the rejected "compare against original level" fix: H1,H4,H4,H4 must not leave a 2-level skip', async () => {
+    const { doc, refs } = await buildChain([1, 4, 4, 4]);
+
+    pdfStructureWriterService.fixHeadingHierarchy(doc, [headingIssue('issue-1')]);
+
+    assertNoSkip(refs.map((r) => levelOf(doc, r)));
+  });
+
+  it('property check: 50 random heading-level sequences never leave a skip after fixHeadingHierarchy', async () => {
+    const rng = makeRng(42);
+    for (let trial = 0; trial < 50; trial++) {
+      const length = 1 + Math.floor(rng() * 15);
+      const levels = Array.from({ length }, () => 1 + Math.floor(rng() * 9));
+      const { doc, refs } = await buildChain(levels);
+
+      pdfStructureWriterService.fixHeadingHierarchy(doc, [headingIssue('issue-1')]);
+
+      assertNoSkip(refs.map((r) => levelOf(doc, r)));
+    }
+  });
+});
+
 /**
  * Live-confirmed bug (real Math_Weir_PDF.pdf, a 377-page textbook): its
  * headings are tagged with the publisher's own custom role names (/a, /b,
