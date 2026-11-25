@@ -21,6 +21,9 @@
  *   npx tsx scripts/qc-regression/run-corpus.ts capture --run 2  --titles T1,T2
  *   npx tsx scripts/qc-regression/run-corpus.ts finalize-baseline --titles T1,T2
  *   npx tsx scripts/qc-regression/run-corpus.ts check             --titles T1,T2
+ *   npx tsx scripts/qc-regression/run-corpus.ts compare           --titles T1,T2 [--from 1 --to 2]
+ *     -- diffs two already-captured runs directly (no pipeline run, no
+ *        network call) -- defaults to capture1 vs capture2.
  *
  * Required env vars: QC_CORPUS_DIR, QC_AUTH_TOKEN. Optional: QC_API_BASE
  * (defaults to the staging API), QC_PYTHON (defaults to "python").
@@ -565,6 +568,72 @@ function finalizeBaseline(id: string) {
   }
 }
 
+// Diffs two already-captured runs directly against each other -- no
+// pipeline run, no network call, just the two JSON files already on disk.
+// Distinct from `check` (which launches a FRESH pipeline run and compares
+// it to `finalize-baseline`'s saved baseline.json) and from
+// `finalize-baseline` (which refuses outright on any structural mismatch
+// rather than reporting one). Built for exactly the workaround this
+// session needed repeatedly by hand: "capture ran twice already, just
+// show me what differs between them" -- previously required a one-off
+// scratch script each time.
+function compareCaptures(id: string, nA: string, nB: string): string[] {
+  const pathA = path.join(BASELINES_DIR, `${id}.capture${nA}.json`);
+  const pathB = path.join(BASELINES_DIR, `${id}.capture${nB}.json`);
+  if (!existsSync(pathA) || !existsSync(pathB)) {
+    return [`[${id}] missing capture${nA} or capture${nB} -- run "capture --run ${nA}" and "capture --run ${nB}" first`];
+  }
+  const rA: RunnerResult = JSON.parse(readFileSync(pathA, 'utf-8'));
+  const rB: RunnerResult = JSON.parse(readFileSync(pathB, 'utf-8'));
+  const mA = rA.measured.metrics as Record<string, number>;
+  const mB = rB.measured.metrics as Record<string, number>;
+  const dA = (rA.measured.details ?? {}) as Record<string, unknown>;
+  const dB = (rB.measured.details ?? {}) as Record<string, unknown>;
+
+  const lines: string[] = [];
+  lines.push(`[${id}] (${rA.axis})`);
+  lines.push(`  capture${nA}: ${rA.stopReason}, ${rA.rounds} round(s), $${rA.aiCostUsd.toFixed(2)}, ${Math.round(rA.wallSeconds)}s (commit ${rA.deployedCommitSha ?? 'unknown'})`);
+  lines.push(`  capture${nB}: ${rB.stopReason}, ${rB.rounds} round(s), $${rB.aiCostUsd.toFixed(2)}, ${Math.round(rB.wallSeconds)}s (commit ${rB.deployedCommitSha ?? 'unknown'})`);
+
+  const mustBeZero = MUST_BE_ZERO_METRICS.flatMap((k) => {
+    const vA = mA[k] ?? 0;
+    const vB = mB[k] ?? 0;
+    return vA !== 0 || vB !== 0 ? [`    ${k}: capture${nA}=${vA} capture${nB}=${vB} (expected 0 on both)`] : [];
+  });
+  lines.push(mustBeZero.length > 0 ? '  MUST-BE-ZERO VIOLATIONS:' : '  must-be-zero metrics: ok (0 in both)');
+  lines.push(...mustBeZero);
+
+  const quarantinedDiffs = QUARANTINED_METRICS.flatMap((k) => (mA[k] !== mB[k] ? [`    ${k}: capture${nA}=${mA[k] ?? 0} capture${nB}=${mB[k] ?? 0}`] : []));
+  lines.push(quarantinedDiffs.length > 0 ? '  QUARANTINED (heading levels) DIFFS:' : '  quarantined heading-level metrics (h1-h6): identical');
+  lines.push(...quarantinedDiffs);
+
+  const { structural: sA } = splitStructuralVsTolerant(mA);
+  const { structural: sB } = splitStructuralVsTolerant(mB);
+  const structuralDiffs = Object.keys(sA).flatMap((k) => (sA[k] !== sB[k] ? [`    ${k}: capture${nA}=${sA[k]} capture${nB}=${sB[k]}`] : []));
+  lines.push(structuralDiffs.length > 0 ? '  STRUCTURAL DIFFS (expected exact-match -- any entry here is a concern):' : '  structural metrics: all identical');
+  lines.push(...structuralDiffs);
+
+  for (const k of DETAIL_PAGE_KEYS) {
+    const pA = pageSetFromDetail(dA[k]);
+    const pB = pageSetFromDetail(dB[k]);
+    if (!setsEqual(pA, pB)) {
+      lines.push(`    ${k} pages: [${[...pA].sort((a, b) => a - b).join(',')}] vs [${[...pB].sort((a, b) => a - b).join(',')}] -- counts may match, but the pages involved differ`);
+    }
+  }
+
+  const toleranceDiffs = [...REGRESSION_METRICS, ...NOISE_TOLERANT_METRICS].flatMap((k) => {
+    const vA = mA[k] ?? 0;
+    const vB = mB[k] ?? 0;
+    return vA !== vB ? [`    ${k}: capture${nA}=${vA} capture${nB}=${vB}`] : [];
+  });
+  if (toleranceDiffs.length > 0) {
+    lines.push('  noise-tolerant / AI-content diffs (expected to vary a little):');
+    lines.push(...toleranceDiffs);
+  }
+
+  return lines;
+}
+
 function checkAgainstBaseline(id: string, metrics: Record<string, number>): { ok: boolean; lines: string[] } {
   const bPath = path.join(BASELINES_DIR, `${id}.baseline.json`);
   if (!existsSync(bPath)) {
@@ -640,14 +709,24 @@ function parseArgs(argv: string[]) {
 
 async function main() {
   const { mode, opts } = parseArgs(process.argv);
-  if (!mode || !['run', 'capture', 'finalize-baseline', 'check'].includes(mode)) {
-    console.error('Usage: run-corpus.ts <run|capture|finalize-baseline|check> [--titles T1,T2] [--run 1|2]');
+  if (!mode || !['run', 'capture', 'finalize-baseline', 'check', 'compare'].includes(mode)) {
+    console.error('Usage: run-corpus.ts <run|capture|finalize-baseline|check|compare> [--titles T1,T2] [--run 1|2] [--from 1 --to 2]');
     process.exit(2);
   }
 
   mkdirSync(BASELINES_DIR, { recursive: true });
   const manifest = loadManifest();
   const titles = resolveTitles(manifest, opts.titles);
+
+  if (mode === 'compare') {
+    const nA = opts.from ?? '1';
+    const nB = opts.to ?? '2';
+    for (const id of titles) {
+      for (const line of compareCaptures(id, nA, nB)) console.log(line);
+      console.log('');
+    }
+    return;
+  }
 
   if (mode === 'finalize-baseline') {
     // Same per-title resilience as the capture/run/check loop below -- one
