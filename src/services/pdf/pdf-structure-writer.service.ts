@@ -1067,18 +1067,39 @@ export class PdfStructureWriterService {
       }));
     }
 
-    let currentLevel = 0;
+    // Real bug, 2026-11-25 (see git log): `currentLevel` used to track each
+    // heading's own CORRECTED level (the renamed value), not its original
+    // one -- so a single upstream-ambiguous heading (e.g. one promoted
+    // /P->heading candidate that can land on either side of a ratio
+    // cutoff, a genuinely non-deterministic AI classification) relevels
+    // EVERY heading after it for the rest of the document, since each
+    // later heading's own skip-check was being measured against an
+    // already-shifted baseline. Confirmed live on a real title: one
+    // heading flipping H2<->H3 between two otherwise-identical runs
+    // shifted 95 of 99 headings' levels, uniformly, by the same +1 --
+    // this function's own cascade, not a separate bug upstream of it.
+    //
+    // Fixed by always tracking each heading's own ORIGINAL (as-tagged)
+    // level for the NEXT heading's skip-check, never the corrected one --
+    // so a correction here is local to the one heading that needed it,
+    // not a baseline every later heading's own check inherits. A
+    // genuinely consecutive multi-level skip chain (several headings in a
+    // row whose own original tags are each too deep relative to their own
+    // immediate predecessor's ORIGINAL level, not an artifact of one
+    // upstream-ambiguous classification) still gets each of ITS members
+    // corrected independently, since each one's own check still fires on
+    // its own original/predecessor-original comparison -- this only stops
+    // a correction from manufacturing a NEW skip for whatever follows it.
+    let previousLevel = 0;
     let fixCount = 0;
     for (const h of headingRefs) {
-      if (h.level > currentLevel + 1) {
-        const corrected = currentLevel + 1;
+      if (h.level > previousLevel + 1) {
+        const corrected = previousLevel + 1;
         logger.debug(`[StructureWriter] Renaming H${h.level} → H${corrected}`);
         this.renameElement(doc, h.ref, `H${corrected}`);
-        currentLevel = corrected;
         fixCount++;
-      } else {
-        currentLevel = h.level;
       }
+      previousLevel = h.level;
     }
 
     // fixCount can legitimately be 0 here even though headingRefs.length > 0

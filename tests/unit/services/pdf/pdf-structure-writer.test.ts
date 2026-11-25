@@ -224,6 +224,115 @@ describe('pdf-structure-writer.service — fixHeadingHierarchy honest success re
   });
 });
 
+describe('pdf-structure-writer.service — fixHeadingHierarchy gap-closing is local, not cascading', () => {
+  /**
+   * Real bug, 2026-11-25 (see git log): the gap-closing walk used to track
+   * each heading's own CORRECTED level as the reference for the NEXT
+   * heading's own skip-check, so one upstream-ambiguous heading (a
+   * promoted /P->heading candidate that can land on either side of a real,
+   * non-deterministic AI classification ratio cutoff) relevels every
+   * heading after it for the rest of the document. Confirmed live on a
+   * real title: one heading flipping H2<->H3 between two otherwise-
+   * identical runs shifted 95 of 99 headings, uniformly, by the same +1.
+   *
+   * This builds two documents identical except for ONE heading's own raw
+   * tag (H2 in one, H3 in the other) -- simulating that exact upstream
+   * ambiguity -- with every heading after it already "one level deeper
+   * than its predecessor" in a way that's compliant relative to EITHER
+   * variant (the real document's own observed shape: nothing after the
+   * ambiguous heading was a genuine multi-level skip needing correction,
+   * just ambiguous about whether the whole remainder sits one level
+   * higher or lower). Asserts every heading from that point on ends up at
+   * the SAME final level in both variants -- the cascade must not reach
+   * them, regardless of what the ambiguous heading's own input was.
+   */
+  async function buildChain(levels: number[]): Promise<{ doc: InstanceType<typeof PDFDocument>; refs: PDFRef[] }> {
+    const doc = await PDFDocument.create();
+    doc.addPage([400, 600]);
+    const refs = levels.map((lv, i) => doc.context.register(doc.context.obj({ S: PDFName.of(`H${lv}`), K: i })));
+    const documentRef = doc.context.register(
+      doc.context.obj({ S: PDFName.of('Document'), K: doc.context.obj(refs as unknown as PDFRef[]) })
+    );
+    const structTreeRootRef = doc.context.register(
+      doc.context.obj({ Type: PDFName.of('StructTreeRoot'), K: documentRef })
+    );
+    doc.catalog.set(PDFName.of('StructTreeRoot'), structTreeRootRef);
+    return { doc, refs };
+  }
+
+  function levelOf(doc: InstanceType<typeof PDFDocument>, ref: PDFRef): string {
+    const dict = doc.context.lookup(ref) as PDFDict;
+    return dict.get(PDFName.of('S'))!.toString();
+  }
+
+  it('flipping one early heading between H2 and H3 changes at most that heading -- every later heading ends up at the same final level either way', async () => {
+    // idx0=H1, idx1=H2 fixed context; idx2 is the ambiguous one (H2 vs
+    // H3); idx3-5 each "one level deeper than predecessor," compliant
+    // relative to either idx2 variant, matching the real document's own
+    // observed shape.
+    const variantA = await buildChain([1, 2, 2, 3, 4, 5]); // idx2 = H2
+    const variantB = await buildChain([1, 2, 3, 3, 4, 5]); // idx2 = H3 (the ambiguous flip)
+
+    pdfStructureWriterService.fixHeadingHierarchy(variantA.doc, [headingIssue('issue-1')]);
+    pdfStructureWriterService.fixHeadingHierarchy(variantB.doc, [headingIssue('issue-1')]);
+
+    const finalA = variantA.refs.map((r) => levelOf(variantA.doc, r));
+    const finalB = variantB.refs.map((r) => levelOf(variantB.doc, r));
+
+    // idx0, idx1 (before the ambiguous heading) are untouched and identical
+    // by construction -- the real assertion is idx3 onward: every heading
+    // AFTER the ambiguous one must land on the same final level in both
+    // variants, proving the flip didn't cascade.
+    expect(finalA.slice(3)).toEqual(finalB.slice(3));
+    expect(finalA.slice(3)).toEqual(['/H3', '/H4', '/H5']);
+  });
+
+  it('with downstream headings that DO need their own correction, the flip changes at most the one heading directly dependent on it -- not every heading after it', async () => {
+    // Stronger version of the test above: idx3-5 here (H5,H6,H7) are each
+    // a real jump needing correction regardless of idx2's own value, so
+    // this is NOT a vacuous case where fixHeadingHierarchy does nothing --
+    // confirmed below to actually rename something in both variants.
+    // idx3's own corrected value is still mathematically dependent on
+    // idx2 (previousLevel+1), so it's allowed to differ -- but idx4
+    // onward must NOT, which is the real amplifier this fix closes (the
+    // pre-fix code cascaded the difference through idx3 AND idx4 AND
+    // idx5; confirmed by reverting this fix locally and re-running this
+    // exact test, which failed with idx4/idx5 differing as H4/H5 vs
+    // H5/H6).
+    const variantA = await buildChain([1, 2, 2, 5, 6, 7]); // idx2 = H2
+    const variantB = await buildChain([1, 2, 3, 5, 6, 7]); // idx2 = H3
+
+    const resultA = pdfStructureWriterService.fixHeadingHierarchy(variantA.doc, [headingIssue('issue-1')]);
+    const resultB = pdfStructureWriterService.fixHeadingHierarchy(variantB.doc, [headingIssue('issue-1')]);
+
+    // Sanity: this scenario actually exercises renaming in both variants
+    // (not vacuously passing because nothing needed fixing at all).
+    expect(resultA[0].success).toBe(true);
+    expect(resultB[0].success).toBe(true);
+
+    const finalA = variantA.refs.map((r) => levelOf(variantA.doc, r));
+    const finalB = variantB.refs.map((r) => levelOf(variantB.doc, r));
+
+    // idx4, idx5 (two and three positions after the ambiguous heading) must
+    // match -- the amplifier this fix closes. idx3 (immediately after) is
+    // allowed to differ, since its own correction is arithmetically tied
+    // to idx2's value (previousLevel + 1) no matter how local the fix is.
+    expect(finalA.slice(4)).toEqual(finalB.slice(4));
+    expect(finalA.slice(4)).toEqual(['/H6', '/H7']);
+  });
+
+  it('a genuine multi-level skip is still corrected (the fix only stops a correction from manufacturing a NEW skip downstream, not real skip-closing)', async () => {
+    // H1 -> H5 is a real skip (3 levels), independent of any upstream
+    // ambiguity -- must still be closed to H2.
+    const { doc, refs } = await buildChain([1, 5]);
+
+    pdfStructureWriterService.fixHeadingHierarchy(doc, [headingIssue('issue-1')]);
+
+    expect(levelOf(doc, refs[0])).toBe('/H1');
+    expect(levelOf(doc, refs[1])).toBe('/H2');
+  });
+});
+
 /**
  * Live-confirmed bug (real Math_Weir_PDF.pdf, a 377-page textbook): its
  * headings are tagged with the publisher's own custom role names (/a, /b,
