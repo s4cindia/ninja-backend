@@ -5247,7 +5247,21 @@ class AiAnalysisService {
         const diff = (ka[i] as number) - (kb[i] as number);
         if (diff !== 0) return diff;
       }
-      return (ka[ka.length - 1] as string).localeCompare(kb[kb.length - 1] as string);
+      const fingerprintCmp = (ka[ka.length - 1] as string).localeCompare(kb[kb.length - 1] as string);
+      if (fingerprintCmp !== 0) return fingerprintCmp;
+      // Real gap, 2026-11-25: the query above has no `orderBy`, so Postgres
+      // hands back rows in an arbitrary order that can differ run to run.
+      // When two rows' fingerprints are ALSO identical (a real, if rare,
+      // case -- e.g. two rows for the same element from different dispatch
+      // paths), the tie-break above ties too, and JS's stable sort then
+      // only preserves whatever arbitrary order Postgres happened to
+      // return THIS time -- reintroducing exactly the nondeterminism this
+      // sort exists to remove. issueId, then id, are per-row database
+      // identities with no reason to coincide across two different rows --
+      // a genuine final, total tie-break.
+      const issueIdCmp = a.issueId.localeCompare(b.issueId);
+      if (issueIdCmp !== 0) return issueIdCmp;
+      return a.id.localeCompare(b.id);
     });
 
     const output = (job.output ?? {}) as Record<string, unknown>;

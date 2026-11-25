@@ -111,6 +111,34 @@ describe('aiAnalysisService.applyApprovedSuggestions', () => {
     expect(elementIdsInCallOrder).toEqual(['alt-page2', 'alt-page5', 'alt-page10']);
   });
 
+  it('falls back to issueId then id as a final tie-break when two rows share the exact same issueFingerprint', async () => {
+    // Real gap, 2026-11-25: the findMany query has no `orderBy`, so
+    // Postgres can hand rows back in an arbitrary order that differs run
+    // to run. When two rows' fingerprints are ALSO identical (a real, if
+    // rare, case), the fingerprint-based tie-break ties too, and without a
+    // further tie-break the apply order would just mirror whatever
+    // arbitrary order this mock (standing in for Postgres) returned --
+    // reintroducing the nondeterminism this sort exists to remove. Fed in
+    // deliberately reversed issueId/id order to prove the sort imposes its
+    // own order rather than preserving input order.
+    vi.mocked(prisma.aiAnalysis.findMany).mockResolvedValue([
+      { id: 'row-b', issueId: 'issue-b', suggestionType: 'alt-text', value: 'b', issueFingerprint: 'ALT-TEXT-QUALITY:img_p1_0_Im1' },
+      { id: 'row-a', issueId: 'issue-a', suggestionType: 'alt-text', value: 'a', issueFingerprint: 'ALT-TEXT-QUALITY:img_p1_0_Im1' },
+    ] as any);
+    vi.mocked(fileStorageService.getRemediatedFile).mockResolvedValue(Buffer.from('pdf'));
+    vi.mocked(pdfModifierService.loadPDF).mockResolvedValue({} as any);
+    vi.mocked(pdfModifierService.resolveFigureForImage).mockReturnValue({} as any);
+    vi.mocked(pdfModifierService.setAltText).mockResolvedValue({ success: true, description: 'set' } as any);
+    vi.mocked(pdfModifierService.savePDF).mockResolvedValue(Buffer.from('modified-pdf'));
+    vi.mocked(fileStorageService.saveRemediatedFile).mockResolvedValue('s3://remediated/doc.pdf');
+
+    const result = await aiAnalysisService.applyApprovedSuggestions('job-1', 5, 'user-1', 'apply_all');
+
+    expect(result.applied).toBe(2);
+    const issueIdsInCallOrder = vi.mocked(pdfModifierService.setAltText).mock.calls.map((c) => c[1]);
+    expect(issueIdsInCallOrder).toEqual(['issue-a', 'issue-b']);
+  });
+
   it('queries only approved rows by default, and both approved+pending when includePending is set', async () => {
     vi.mocked(prisma.aiAnalysis.findMany).mockResolvedValue([] as any);
 
