@@ -32,6 +32,7 @@ import {
   findCandidateForIssue,
   computeClusterSize,
   hasConfirmedHeadingAtSameSize,
+  findClusterMatchedLevel,
   CLUSTER_SIZE_DECLINE_THRESHOLD,
 } from './heading-style-classifier';
 import { fontToUnicodeService } from './font-tounicode.service';
@@ -4369,7 +4370,7 @@ class AiAnalysisService {
     // cluster signals against what's really there right now). Only the
     // level-decision denominator comes from the ORIGINAL file -- see
     // getOriginalFileBodyMedianFontSize's own doc comment for why.
-    const { allCandidates, existingHeadingFontSizes } = await collectHeadingStyleData(parsedPdf);
+    const { allCandidates, existingHeadingFontSizes, existingHeadings } = await collectHeadingStyleData(parsedPdf);
     const bodyMedianFontSize = await this.getOriginalFileBodyMedianFontSize(jobId, fileName);
     const candidate = findCandidateForIssue(allCandidates, issue);
     if (!candidate) {
@@ -4424,13 +4425,31 @@ class AiAnalysisService {
         return null;
       }
 
+      // Real bug, 2026-11-25 (see git log): the ratio cutoff alone is a
+      // sharp step function that a noise-level difference in the
+      // re-located candidate's own font size can land on either side of,
+      // picking two different levels for the SAME logical heading between
+      // otherwise-identical runs -- confirmed live, and fixHeadingHierarchy's
+      // own (correct) gap-closing cascade then propagates that single
+      // difference through every heading after it. Preferring the level an
+      // EXISTING, already-settled heading uses at this same font size is
+      // deterministic (that heading's own level doesn't wobble the way a
+      // fresh ratio computation can) and usually more correct -- the
+      // document's own established hierarchy beats a fixed global ratio
+      // band. Only falls back to the ratio cutoff when no existing heading
+      // is close enough in size to judge from.
+      const clusterMatchedLevel = findClusterMatchedLevel(existingHeadings, candidate.fontSize);
       const ratio = bodyMedianFontSize > 0 ? candidate.fontSize / bodyMedianFontSize : 0;
-      const level = ratio >= 2.2 ? 1 : ratio >= 1.8 ? 2 : 3;
+      const level = clusterMatchedLevel ?? (ratio >= 2.2 ? 1 : ratio >= 1.8 ? 2 : 3);
 
       const penaltyNotes = [
         confirmedElsewhere ? 'this exact font size is already used elsewhere for a confirmed real heading' : null,
         isLargeCluster ? `${clusterSize} other /P elements document-wide share this exact font size` : null,
       ].filter((n): n is string => n !== null);
+
+      const levelSourceNote = clusterMatchedLevel !== null
+        ? `level matched to an existing H${clusterMatchedLevel} at the same font size`
+        : `level from font-size ratio (no existing heading at this size)`;
 
       return {
         suggestionType: 'heading-promote-fix',
@@ -4438,8 +4457,8 @@ class AiAnalysisService {
         guidance: `Promotes this /P to /H${level} ("${candidate.textSample}").`,
         confidence: adjustedConfidence,
         rationale: penaltyNotes.length > 0
-          ? `${data.rationale} (confidence reduced: ${penaltyNotes.join('; ')})`
-          : data.rationale,
+          ? `${data.rationale} (${levelSourceNote}; confidence reduced: ${penaltyNotes.join('; ')})`
+          : `${data.rationale} (${levelSourceNote})`,
         model: 'gemini-flash',
         applyMode: 'apply-to-pdf',
         usage: usage ? { promptTokens: usage.promptTokens, completionTokens: usage.completionTokens } : undefined,

@@ -382,4 +382,38 @@ describe('dispatchIssue: HEADING-STYLE-MISMATCH routing', () => {
     // regardless of the candidate's real size.
     expect(res.value).toBe('1');
   });
+
+  it('takes the level of an existing heading at the same font size instead of the ratio cutoff, even when the ratio would give a different answer', async () => {
+    // Real bug, 2026-11-25 (see git log): the ratio cutoff alone is a sharp
+    // step function that a noise-level font-size difference between
+    // otherwise-identical runs can land on either side of, flipping a
+    // promoted heading's level -- which fixHeadingHierarchy's own correct
+    // gap-closing cascade then amplifies through the rest of the document.
+    // An EXISTING, already-settled H1 at size 20 is real evidence this
+    // document's own H1 band IS size 20 -- deterministic, and usually more
+    // correct than a fixed global ratio band.
+    vi.spyOn(geminiService, 'generateWithSchema').mockResolvedValue({
+      data: { isHeading: true, confidence: 0.9, rationale: 'Reads as a genuine section title.' },
+      usage: { promptTokens: 20, completionTokens: 10 },
+      attempts: 1,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any);
+
+    // 6 body lines at size 11 dominate the median (~11); an existing H1 at
+    // size 20 and a candidate /P at the SAME size 20 give ratio 20/11 ~=
+    // 1.818 -- just OVER the 1.8 H2 cutoff, so the ratio path alone would
+    // give level 2. The existing H1 at the identical size is the
+    // cluster-match this test is checking overrides that to level 1.
+    const lines: Line[] = [
+      { text: 'Chapter One', y: 760, size: 20, zoneType: 'section-header' },
+      { text: 'Executive Summary', y: 320, size: 20 },
+      ...BODY_LINES,
+    ];
+    const { parsedPdf, buffer } = await buildTaggedDoc(lines);
+    const { res } = await dispatchFirstIssue(parsedPdf, buffer);
+
+    expect(res).not.toBeNull();
+    expect(res.value).toBe('1'); // NOT '2', which the ratio cutoff alone would give
+    expect(res.rationale).toContain('matched to an existing H1');
+  });
 });
