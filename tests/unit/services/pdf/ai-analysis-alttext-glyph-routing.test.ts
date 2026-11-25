@@ -157,7 +157,7 @@ describe('dispatchIssue: MATTERHORN-13-001 tries alt-text-glyph before the AI-vi
     expect(res.guidance).toContain('Negative likelihood ratio, C');
   });
 
-  it('falls through to the image-based path (returns null) when the transcript-based Gemini call fails', async () => {
+  it('falls through to Rule 2\'s grounded-text-only literal fallback (not all the way to null) when the transcript-based Gemini call fails', async () => {
     const content = `/Figure <</MCID 0 >>BDC\nBT\n(negative likelihood ratio)Tj\n0 Tc 1 0 Td\n(C)Tj\nET\nEMC\n`;
     const doc = await docWithPageContent(content);
     const parsed = { isTagged: true, pages: [], parsedPdf: { pdfLibDoc: doc } } as unknown as PdfParseResult;
@@ -165,10 +165,16 @@ describe('dispatchIssue: MATTERHORN-13-001 tries alt-text-glyph before the AI-vi
 
     const res = await svc.dispatchIssue(issueFor('figure_p1_mc0'), parsed, CONFIG, new Map(), new Map(), new Map());
 
-    // No image registered in imageById and no page to render from
-    // pageRenderCache -- same existing fallback-to-null contract as the
-    // other "nothing else can help" cases in this file.
-    expect(res).toBeNull();
+    // Rule 2 (Theme C p90 Figure, 2026-11-25): this Figure has no image or
+    // vector content at all (just the text), so even once the
+    // formula-transcript path's own AI call fails, Rule 2 still grounds
+    // the alt text in that text literally rather than falling all the way
+    // through to the image-based path's own null -- no image registered
+    // in imageById and no page to render from pageRenderCache either way,
+    // but there's no need to reach that path at all now.
+    expect(res).not.toBeNull();
+    expect(res.suggestionType).toBe('alt-text-grounded-text-only-literal');
+    expect(res.value).toBe('negative likelihood ratioC');
   });
 
   it('falls through to the image-based path when the element id is not the figure_p{page}_mc{mcid} struct-tree-walk format (the image-extraction path\'s own id shape)', async () => {

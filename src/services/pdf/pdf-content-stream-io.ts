@@ -287,29 +287,79 @@ function decodeTJArrayBody(body: string): string {
   return out;
 }
 
-/** True if `mcid`'s own span contains an image/form XObject invocation
- *  (`Do`), inline image (`BI`), or a vector path-paint operator (fill,
- *  fill-even-odd, stroke, close-and-stroke, or the B/b variants that both
- *  fill and stroke) -- i.e. it actually draws something, text aside.
- *  Doesn't distinguish image-Do from form-Do (measure.py's "image" vs
- *  "form" kinds) -- a caller needing that distinction inspects the
- *  XObject's own /Subtype directly, the way pdf-modifier.service.ts and
+/**
+ * Removes every NESTED marked-content region (any BDC or BMC, regardless
+ * of tag, depth-tracked so an inner span's own nested EMC never
+ * prematurely closes an outer one) from `body` -- leaving only the
+ * content directly inside the OUTER mcid's own span, not anything
+ * belonging to a nested child struct element or Artifact instead.
+ * Matches measure.py's own _state() semantics (the INNERMOST open
+ * marked-content region on the stack claims content, never an
+ * ancestor's).
+ *
+ * Real bug this closes, 2026-11-25: without this, a Figure whose own
+ * drawable content is ENTIRELY nested inside e.g. an /Artifact BMC reads
+ * as "has content" to the two functions below, when nothing is actually
+ * exposed as the Figure's own. Confirmed live: T4's own page-90 Figure
+ * (MCID 8) opens, then immediately opens a nested `/Artifact BMC` whose
+ * matching EMC doesn't appear until AFTER a real image Do and a page's
+ * worth of vector-art strokes -- every bit of that drawing is Artifact
+ * content, correctly excluded by measure.py's figures_content_empty
+ * metric (which is how this Figure was found to still be "empty" despite
+ * visibly containing an image and vector paint), but NOT excluded by
+ * mcidHasImageOrVectorContent/extractMcidText before this fix -- so alt
+ * text dispatch (ai-analysis.service.ts) saw "real content" and sent it
+ * to vision, which duly hallucinated a description for a region with
+ * nothing actually exposed to describe.
+ */
+function stripNestedMarkedContent(body: string): string {
+  const re = new RegExp(MARKED_CONTENT_OPEN_CLOSE_RE.source, 'g');
+  let out = '';
+  let copyFrom = 0;
+  let depth = 0;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(body)) !== null) {
+    if (m[1] === 'EMC') {
+      if (depth > 0) {
+        depth--;
+        if (depth === 0) copyFrom = m.index + m[0].length;
+      }
+    } else {
+      if (depth === 0) out += body.slice(copyFrom, m.index);
+      depth++;
+    }
+  }
+  if (depth === 0) out += body.slice(copyFrom);
+  return out;
+}
+
+/** True if `mcid`'s own span -- excluding anything nested inside a child
+ *  struct element or Artifact (see stripNestedMarkedContent) -- contains
+ *  an image/form XObject invocation (`Do`), inline image (`BI`), or a
+ *  vector path-paint operator (fill, fill-even-odd, stroke,
+ *  close-and-stroke, or the B/b variants that both fill and stroke) --
+ *  i.e. it actually draws something, text aside. Doesn't distinguish
+ *  image-Do from form-Do (measure.py's "image" vs "form" kinds) -- a
+ *  caller needing that distinction inspects the XObject's own /Subtype
+ *  directly, the way pdf-modifier.service.ts and
  *  image-extractor.service.ts already do for other purposes. */
 export function mcidHasImageOrVectorContent(content: string, mcid: number): boolean {
   const span = findMcidContentSpan(content, mcid);
   if (!span) return false;
-  return IMAGE_OR_VECTOR_OPERATOR_RE.test(content.slice(span.start, span.end));
+  return IMAGE_OR_VECTOR_OPERATOR_RE.test(stripNestedMarkedContent(content.slice(span.start, span.end)));
 }
 
-/** Every Tj/TJ/'/" text-show operand under `mcid`'s own span, concatenated
- *  in source order (escapes collapsed to a space, not fully decoded --
- *  callers doing more than a whitespace/pattern check on the result
- *  should extract their own copy with a real PDF string decoder). Empty
- *  string if the MCID has no span or no text-show operator at all. */
+/** Every Tj/TJ/'/" text-show operand directly under `mcid`'s own span --
+ *  excluding anything nested inside a child struct element or Artifact
+ *  (see stripNestedMarkedContent) -- concatenated in source order
+ *  (escapes collapsed to a space, not fully decoded -- callers doing
+ *  more than a whitespace/pattern check on the result should extract
+ *  their own copy with a real PDF string decoder). Empty string if the
+ *  MCID has no span or no direct text-show operator at all. */
 export function extractMcidText(content: string, mcid: number): string {
   const span = findMcidContentSpan(content, mcid);
   if (!span) return '';
-  const body = content.slice(span.start, span.end);
+  const body = stripNestedMarkedContent(content.slice(span.start, span.end));
   let out = '';
   let m: RegExpExecArray | null;
   TEXT_SHOW_RE.lastIndex = 0;

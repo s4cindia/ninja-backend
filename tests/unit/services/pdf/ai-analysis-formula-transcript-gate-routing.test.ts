@@ -21,9 +21,12 @@ import type { AiRemediationConfig } from '../../../../src/services/pdf/ai-analys
 import type { AuditIssue } from '../../../../src/services/audit/base-audit.service';
 import type { PdfParseResult } from '../../../../src/services/pdf/pdf-comprehensive-parser.service';
 
-vi.mock('../../../../src/services/pdf/pdf-content-stream-io', () => ({
-  decodePageContent: vi.fn(),
-}));
+vi.mock('../../../../src/services/pdf/pdf-content-stream-io', async () => {
+  const actual = await vi.importActual<typeof import('../../../../src/services/pdf/pdf-content-stream-io')>(
+    '../../../../src/services/pdf/pdf-content-stream-io'
+  );
+  return { ...actual, decodePageContent: vi.fn() };
+});
 vi.mock('../../../../src/services/ai/gemini.service', () => ({
   geminiService: { generateWithSchema: vi.fn() },
 }));
@@ -112,11 +115,14 @@ describe('dispatchIssue: formula-transcript size/shape gate (Theme B2)', () => {
 
     const res = await svc.dispatchIssue(issue, buildParsed(), CONFIG, new Map(), new Map(), new Map());
 
-    // Falls through to the image/page-render path, which returns null here
-    // (no image in imageById and fallbackToPageRender has nothing to render
-    // from a stubbed pdfLibDoc) -- the assertion that matters is that
-    // generateWithSchema (the formula-transcript AI call) was never reached.
-    expect(res).toBeNull();
+    // Falls through from the formula-transcript path (confirmed below: its
+    // own AI call never fires) to Rule 2's grounded-text-only gate --
+    // INLINE_FORMULA_CONTENT has no image/vector content, just the short
+    // text "PXL", so it's grounded literally rather than falling all the
+    // way through to a vision guess.
+    expect(res).not.toBeNull();
+    expect(res.suggestionType).toBe('alt-text-grounded-text-only-literal');
+    expect(res.value).toBe('PXL');
     expect(geminiService.generateWithSchema).not.toHaveBeenCalled();
   });
 
@@ -126,7 +132,10 @@ describe('dispatchIssue: formula-transcript size/shape gate (Theme B2)', () => {
 
     const res = await svc.dispatchIssue(issue, buildParsed(), CONFIG, new Map(), new Map(), new Map());
 
-    expect(res).toBeNull();
+    // Same fall-through as above -- grounded in the region's own (short)
+    // text via Rule 2, not the formula-transcript path.
+    expect(res).not.toBeNull();
+    expect(res.suggestionType).toBe('alt-text-grounded-text-only-literal');
     expect(geminiService.generateWithSchema).not.toHaveBeenCalled();
   });
 
@@ -136,7 +145,12 @@ describe('dispatchIssue: formula-transcript size/shape gate (Theme B2)', () => {
 
     const res = await svc.dispatchIssue(issue, buildParsed(), CONFIG, new Map(), new Map(), new Map());
 
-    expect(res).toBeNull();
+    // Same fall-through as the first test above (same content, no bbox at
+    // all this time) -- declines the formula-transcript path specifically,
+    // but Rule 2 still grounds it in the region's own text rather than
+    // falling all the way through to a vision guess.
+    expect(res).not.toBeNull();
+    expect(res.suggestionType).toBe('alt-text-grounded-text-only-literal');
     expect(geminiService.generateWithSchema).not.toHaveBeenCalled();
   });
 });

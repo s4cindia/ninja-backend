@@ -1,6 +1,13 @@
 import { describe, it, expect } from 'vitest';
 import { PDFDocument, PDFName, StandardFonts } from 'pdf-lib';
-import { decodePageContent, writePageContent, pageContentMcids, orderedPageContentMcids } from '../../../../src/services/pdf/pdf-content-stream-io';
+import {
+  decodePageContent,
+  writePageContent,
+  pageContentMcids,
+  orderedPageContentMcids,
+  mcidHasImageOrVectorContent,
+  extractMcidText,
+} from '../../../../src/services/pdf/pdf-content-stream-io';
 
 // Regression coverage for the exact decode/write logic previously inlined in
 // pdf-modifier.service.ts's private decodePageContent — that method now
@@ -168,6 +175,66 @@ describe('pageContentMcids', () => {
     writePageContent(doc, 1, `${original}\n/Span<</ActualText<FEFF0041> /MCID 9>> BDC\n(A)Tj\nEMC\n`);
 
     expect(pageContentMcids(doc, 1)).toEqual(new Set([9]));
+  });
+});
+
+describe('mcidHasImageOrVectorContent / extractMcidText -- nested marked content exclusion', () => {
+  it('detects direct image/vector/text content under an mcid with no nesting at all', async () => {
+    const doc = await realPdf();
+    const original = decodePageContent(doc, 1)!;
+    writePageContent(doc, 1, `${original}\n/Figure <</MCID 10>> BDC\nq 0 0 10 10 re f Q\n(hello)Tj\nEMC\n`);
+    const content = decodePageContent(doc, 1)!;
+
+    expect(mcidHasImageOrVectorContent(content, 10)).toBe(true);
+    expect(extractMcidText(content, 10)).toBe('hello');
+  });
+
+  /**
+   * Real bug, 2026-11-25 (T4's own page-90 Figure, MCID 8): the outer
+   * Figure opens, then immediately opens a nested `/Artifact BMC` whose
+   * matching EMC doesn't appear until AFTER a real image Do and a page's
+   * worth of vector-art strokes. measure.py's own _state() correctly
+   * attributes all of that to the nested Artifact, not the outer Figure
+   * (Artifact content is never part of the accessible structure) --
+   * which is how this Figure was confirmed "empty" despite visibly
+   * containing an image and vector paint. Before this fix,
+   * mcidHasImageOrVectorContent/extractMcidText scanned the WHOLE outer
+   * span including nested regions, reporting "has content" for a Figure
+   * with nothing actually exposed as its own -- which then got sent to
+   * vision for alt text and hallucinated a description for a region with
+   * nothing real to look at.
+   */
+  it('excludes drawing and text nested inside a child /Artifact span, even when that Artifact\'s own EMC is positioned late (after the real content)', async () => {
+    const doc = await realPdf();
+    const original = decodePageContent(doc, 1)!;
+    writePageContent(
+      doc,
+      1,
+      `${original}\n/Figure <</MCID 8>> BDC\nq 357 11 224 306 re W n\n/Artifact BMC\n(credit line)Tj\nq 1 0 0 1 0 0 cm 0 0 m 10 10 l S Q\n/Im0 Do\nEMC\nQ\nEMC\n`
+    );
+    const content = decodePageContent(doc, 1)!;
+
+    expect(mcidHasImageOrVectorContent(content, 8)).toBe(false);
+    expect(extractMcidText(content, 8)).toBe('');
+  });
+
+  it('excludes content nested inside a child struct element (another real MCID), attributing it only to the inner one', async () => {
+    const doc = await realPdf();
+    const original = decodePageContent(doc, 1)!;
+    writePageContent(doc, 1, `${original}\n/Figure <</MCID 6>> BDC\n/Figure <</MCID 4>> BDC\n/Im0 Do\nEMC\nEMC\n`);
+    const content = decodePageContent(doc, 1)!;
+
+    expect(mcidHasImageOrVectorContent(content, 6)).toBe(false);
+    expect(mcidHasImageOrVectorContent(content, 4)).toBe(true);
+  });
+
+  it('still finds direct content that comes AFTER a nested span closes, within the same outer mcid', async () => {
+    const doc = await realPdf();
+    const original = decodePageContent(doc, 1)!;
+    writePageContent(doc, 1, `${original}\n/Figure <</MCID 11>> BDC\n/Artifact BMC\n(stamp)Tj\nEMC\n(real caption)Tj\nEMC\n`);
+    const content = decodePageContent(doc, 1)!;
+
+    expect(extractMcidText(content, 11)).toBe('real caption');
   });
 });
 
