@@ -81,6 +81,64 @@ describe('aiAnalysisService.applyApprovedSuggestions', () => {
     );
   });
 
+  it('applies suggestions in deterministic page order (by issueFingerprint), regardless of the order the DB query returned them in', async () => {
+    // Real bug, 2026-11-25 (see git log): apply order used to be `createdAt
+    // asc`, but concurrent suggestion generation makes createdAt order
+    // effectively "whichever AI network call happened to finish first" --
+    // confirmed live, two runs of the identical job applied their first
+    // fix to two different findings and diverged from there. Fed here in
+    // deliberately scrambled page order (10, 2, 5) to prove the fix sorts
+    // by the fingerprint's own page number before applying, not DB order.
+    vi.mocked(prisma.aiAnalysis.findMany).mockResolvedValue([
+      { issueId: 'alt-page10', suggestionType: 'alt-text', value: 'ten', issueFingerprint: 'ALT-TEXT-QUALITY:img_p10_0_Im1' },
+      { issueId: 'alt-page2', suggestionType: 'alt-text', value: 'two', issueFingerprint: 'ALT-TEXT-QUALITY:img_p2_0_Im1' },
+      { issueId: 'alt-page5', suggestionType: 'alt-text', value: 'five', issueFingerprint: 'ALT-TEXT-QUALITY:img_p5_0_Im1' },
+    ] as any);
+    vi.mocked(fileStorageService.getRemediatedFile).mockResolvedValue(Buffer.from('pdf'));
+    vi.mocked(pdfModifierService.loadPDF).mockResolvedValue({} as any);
+    vi.mocked(pdfModifierService.resolveFigureForImage).mockReturnValue({} as any);
+    vi.mocked(pdfModifierService.setAltText).mockResolvedValue({ success: true, description: 'set' } as any);
+    vi.mocked(pdfModifierService.savePDF).mockResolvedValue(Buffer.from('modified-pdf'));
+    vi.mocked(fileStorageService.saveRemediatedFile).mockResolvedValue('s3://remediated/doc.pdf');
+
+    const result = await aiAnalysisService.applyApprovedSuggestions('job-1', 5, 'user-1', 'apply_all');
+
+    expect(result.applied).toBe(3);
+    // elementId falls back to issueId when no audit-report issue resolves
+    // one -- each call's own 2nd argument is this suggestion's issueId, so
+    // the ORDER of calls directly reveals apply order.
+    const elementIdsInCallOrder = vi.mocked(pdfModifierService.setAltText).mock.calls.map((c) => c[1]);
+    expect(elementIdsInCallOrder).toEqual(['alt-page2', 'alt-page5', 'alt-page10']);
+  });
+
+  it('falls back to issueId then id as a final tie-break when two rows share the exact same issueFingerprint', async () => {
+    // Real gap, 2026-11-25: the findMany query has no `orderBy`, so
+    // Postgres can hand rows back in an arbitrary order that differs run
+    // to run. When two rows' fingerprints are ALSO identical (a real, if
+    // rare, case), the fingerprint-based tie-break ties too, and without a
+    // further tie-break the apply order would just mirror whatever
+    // arbitrary order this mock (standing in for Postgres) returned --
+    // reintroducing the nondeterminism this sort exists to remove. Fed in
+    // deliberately reversed issueId/id order to prove the sort imposes its
+    // own order rather than preserving input order.
+    vi.mocked(prisma.aiAnalysis.findMany).mockResolvedValue([
+      { id: 'row-b', issueId: 'issue-b', suggestionType: 'alt-text', value: 'b', issueFingerprint: 'ALT-TEXT-QUALITY:img_p1_0_Im1' },
+      { id: 'row-a', issueId: 'issue-a', suggestionType: 'alt-text', value: 'a', issueFingerprint: 'ALT-TEXT-QUALITY:img_p1_0_Im1' },
+    ] as any);
+    vi.mocked(fileStorageService.getRemediatedFile).mockResolvedValue(Buffer.from('pdf'));
+    vi.mocked(pdfModifierService.loadPDF).mockResolvedValue({} as any);
+    vi.mocked(pdfModifierService.resolveFigureForImage).mockReturnValue({} as any);
+    vi.mocked(pdfModifierService.setAltText).mockResolvedValue({ success: true, description: 'set' } as any);
+    vi.mocked(pdfModifierService.savePDF).mockResolvedValue(Buffer.from('modified-pdf'));
+    vi.mocked(fileStorageService.saveRemediatedFile).mockResolvedValue('s3://remediated/doc.pdf');
+
+    const result = await aiAnalysisService.applyApprovedSuggestions('job-1', 5, 'user-1', 'apply_all');
+
+    expect(result.applied).toBe(2);
+    const issueIdsInCallOrder = vi.mocked(pdfModifierService.setAltText).mock.calls.map((c) => c[1]);
+    expect(issueIdsInCallOrder).toEqual(['issue-a', 'issue-b']);
+  });
+
   it('queries only approved rows by default, and both approved+pending when includePending is set', async () => {
     vi.mocked(prisma.aiAnalysis.findMany).mockResolvedValue([] as any);
 
@@ -1076,9 +1134,12 @@ describe('aiAnalysisService.applyApprovedSuggestions', () => {
 
       await aiAnalysisService.applyApprovedSuggestions('job-1', 1, 'user-1', 'auto_loop');
 
+      // No orderBy on the query itself any more -- applyApprovedSuggestions
+      // now sorts the fetched rows in JS by a deterministic, content-
+      // derived key (approvedSortKey), not createdAt (see that function's
+      // own doc comment for the real nondeterminism bug this replaced).
       expect(prisma.aiAnalysis.findMany).toHaveBeenCalledWith({
         where: { jobId: 'job-1', status: 'approved', applyMode: 'apply-to-pdf', appliedButUnresolved: { not: true } },
-        orderBy: { createdAt: 'asc' },
       });
     });
 
@@ -1098,7 +1159,6 @@ describe('aiAnalysisService.applyApprovedSuggestions', () => {
 
       expect(prisma.aiAnalysis.findMany).toHaveBeenCalledWith({
         where: { jobId: 'job-1', status: 'approved', applyMode: 'apply-to-pdf' },
-        orderBy: { createdAt: 'asc' },
       });
       expect(result.applied).toBe(1);
       expect(prisma.aiAnalysis.update).toHaveBeenCalledWith({
