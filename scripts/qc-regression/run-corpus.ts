@@ -158,6 +158,12 @@ interface RunnerResult {
   // {outcome: ...} shape by convention; whatever the real field ends up
   // being called, wire it here rather than silently trusting a hit).
   aiResponseCache?: { outcome?: string } | null;
+  // Per-job count of draftComplexImageBaseline's hasGroundedWordOverlap
+  // guard rejecting an otherwise-real drafted shortAlt (2026-11-26, see
+  // AiSuggestionResult.altTextGuardRejected in ai-analysis.service.ts) --
+  // fetched so the guard's real false-reject rate can be measured per
+  // title in this double capture, not assumed.
+  altTextGuardRejections?: number | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -316,16 +322,22 @@ async function runFullAutoMode(
   };
 }
 
-async function fetchZoneDetectionCacheOutcome(jobId: string): Promise<unknown> {
-  // Non-fatal by design -- same reasoning as the cache's own code (a
-  // caching optimization, and here an observability read of it, must
-  // never fail the capture itself).
+/**
+ * Both fields come from the SAME GET /pdf/job/:jobId/audit/result response
+ * -- one fetch, not two. Non-fatal by design (same reasoning as each
+ * field's own backend code): an observability read must never fail the
+ * capture itself.
+ */
+async function fetchAuditResultObservability(jobId: string): Promise<{ zoneDetectionCache: unknown; altTextGuardRejections: number | null }> {
   try {
     const res = await api('GET', `/pdf/job/${jobId}/audit/result`);
-    return res.data?.zoneDetectionCache ?? null;
+    return {
+      zoneDetectionCache: res.data?.zoneDetectionCache ?? null,
+      altTextGuardRejections: res.data?.altTextGuardRejections ?? null,
+    };
   } catch (err) {
-    console.error(`  [${jobId}] failed to fetch zoneDetectionCache outcome (non-fatal): ${err instanceof Error ? err.message : err}`);
-    return null;
+    console.error(`  [${jobId}] failed to fetch audit-result observability fields (non-fatal): ${err instanceof Error ? err.message : err}`);
+    return { zoneDetectionCache: null, altTextGuardRejections: null };
   }
 }
 
@@ -442,12 +454,25 @@ async function runOne(id: string, entry: ManifestEntry, outDir: string, withAxes
     writeFileSync(path.join(outDir, `${id}.axes4.json`), JSON.stringify(axes4, null, 2));
   }
 
-  const zoneDetectionCache = await fetchZoneDetectionCacheOutcome(jobId);
+  const { zoneDetectionCache, altTextGuardRejections } = await fetchAuditResultObservability(jobId);
   if (zoneDetectionCache) {
     console.log(`  [${id}] zoneDetectionCache: ${JSON.stringify(zoneDetectionCache)}`);
   }
+  if (altTextGuardRejections) {
+    // See AiSuggestionResult.altTextGuardRejected's own doc comment
+    // (ai-analysis.service.ts) -- a real, drafted shortAlt that
+    // hasGroundedWordOverlap rejected for sharing no word with the
+    // Figure's own overlaid labels. Some are expected to be false
+    // rejects (a real axis-tick label legitimately shares no vocabulary
+    // with an accurate description) -- this is a rate to watch, not an
+    // unconditional defect count.
+    console.log(`  [${id}] altTextGuardRejections: ${altTextGuardRejections}`);
+  }
 
-  return { id, axis: entry.axis, jobId, wallSeconds, aiCostUsd, rounds, stopReason, measured, zoneDetectionCache, ...(axes4 ? { axes4 } : {}) };
+  return {
+    id, axis: entry.axis, jobId, wallSeconds, aiCostUsd, rounds, stopReason, measured,
+    zoneDetectionCache, altTextGuardRejections, ...(axes4 ? { axes4 } : {}),
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -465,13 +490,14 @@ interface Baseline {
   // recorded so a baseline's provenance is traceable, not assumed.
   capture1CommitSha?: string | null;
   capture2CommitSha?: string | null;
-  // alt_cross_run_divergent (2026-11-26): count of same-page, content-
-  // matched Figure alt-text pairs whose content-word Jaccard similarity is
-  // below ALT_CROSS_RUN_JACCARD_THRESHOLD -- see computeAltCrossRunDivergence's
-  // own doc comment for the full design and validation data. Must-not-
-  // increase (not exact-match, unlike `structural`): a future re-baseline
-  // refuses outright if its own count exceeds whatever this one recorded.
-  altCrossRunDivergence?: { count: number; shortPairsCount: number };
+  // alt_cross_run_divergent / alt_missing_one_run (2026-11-26): two
+  // separately-gated counts from the SAME same-page, content-matched
+  // Figure alt-text pairing -- see computeAltCrossRunDivergence's own doc
+  // comment for the full design, the split, and the validation data. Both
+  // must-not-increase (not exact-match, unlike `structural`): a future
+  // re-baseline refuses outright if EITHER count exceeds what this one
+  // recorded, checked independently (they're unrelated root causes).
+  altCrossRunDivergence?: { count: number; missingOneRunCount: number; shortPairsCount: number };
 }
 
 function isQuarantined(k: string): boolean {
@@ -669,8 +695,24 @@ function matchFiguresGreedy(figsA: FigureRow[], figsB: FigureRow[]): AltCrossRun
 }
 
 interface AltCrossRunResult {
+  // Both sides non-empty, Jaccard < threshold -- the fabrication signal
+  // (confirmed real: T4's "AWS architecture diagram..." vs "Flowchart
+  // illustrating the decision process...", T1's Karsaklian p155, T5's
+  // SWOT/MLOps/Strategic-Planning fabrications). This is the metric the
+  // draftComplexImageBaseline vision fix targets -- expected to reach 0
+  // once that fix is live.
   divergentCount: number;
   divergentPairs: AltCrossRunPair[];
+  // Exactly one side empty, the other real -- a DIFFERENT defect (one run's
+  // drafting declined/failed/was rejected entirely for a Figure the other
+  // run drafted something real for), not ungrounded fabrication. Confirmed
+  // real on T1 (p82, a parked drafting-failure item, separate from the
+  // vision-call bug) and T4 (p50). Tracked and gated SEPARATELY -- counting
+  // it as "divergent" would conflate two unrelated root causes under one
+  // number, and the vision fix's own acceptance test (alt_cross_run_divergent
+  // == 0) should not have to wait on this unrelated, already-parked issue.
+  missingOneRunCount: number;
+  missingOneRunPairs: AltCrossRunPair[];
   shortPairsCount: number;
   shortPairs: AltCrossRunPair[];
 }
@@ -678,31 +720,46 @@ interface AltCrossRunResult {
 /**
  * Pairs where either side has a short-but-NONZERO content-word count (1-2
  * words, e.g. a single label like "Chemistry") are reported separately and
- * excluded from the gated count -- a short label's Jaccard score is
+ * excluded from both gated counts -- a short label's Jaccard score is
  * dominated by chance (one shared/unshared word swings it by 0.5+), not a
  * meaningful signal either way, so gating on it would be noise rather than
- * a real check. A side with ZERO content words (empty alt text) is
- * deliberately NOT treated as "short" here and stays in the gated metric:
- * that's not a noisy word-count coincidence, it's the unambiguous, fully
- * deterministic signal of one run drafting nothing against the same Figure
- * the other run drafted something real for -- confirmed real on both T1
- * (p82) and T4 (p50), and excluding it would hide exactly the kind of
- * cross-run inconsistency this check exists to catch.
+ * a real check.
  */
 function computeAltCrossRunDivergence(figsA: FigureRow[], figsB: FigureRow[]): AltCrossRunResult {
   const pairs = matchFiguresGreedy(figsA, figsB);
   const divergentPairs: AltCrossRunPair[] = [];
+  const missingOneRunPairs: AltCrossRunPair[] = [];
   const shortPairs: AltCrossRunPair[] = [];
   const isShortNonzero = (n: number) => n > 0 && n <= 2;
+
   for (const pair of pairs) {
-    const shortSide = isShortNonzero(contentWords(pair.altA).size) || isShortNonzero(contentWords(pair.altB).size);
+    const wordsA = contentWords(pair.altA);
+    const wordsB = contentWords(pair.altB);
+    const emptyA = wordsA.size === 0;
+    const emptyB = wordsB.size === 0;
+
+    if (emptyA && emptyB) continue; // both drafted nothing -- not interesting either way
+    if (emptyA !== emptyB) {
+      missingOneRunPairs.push(pair); // exactly one side empty -- drafting failure, not fabrication
+      continue;
+    }
+    // Both sides non-empty from here.
+    const shortSide = isShortNonzero(wordsA.size) || isShortNonzero(wordsB.size);
     if (shortSide) {
       shortPairs.push(pair);
     } else if (pair.jaccard < ALT_CROSS_RUN_JACCARD_THRESHOLD) {
       divergentPairs.push(pair);
     }
   }
-  return { divergentCount: divergentPairs.length, divergentPairs, shortPairsCount: shortPairs.length, shortPairs };
+
+  return {
+    divergentCount: divergentPairs.length,
+    divergentPairs,
+    missingOneRunCount: missingOneRunPairs.length,
+    missingOneRunPairs,
+    shortPairsCount: shortPairs.length,
+    shortPairs,
+  };
 }
 
 /**
@@ -798,20 +855,39 @@ function finalizeBaseline(id: string) {
   // ceiling for this one, same spirit as REGRESSION_METRICS but computed
   // from a genuinely different shape of data (a cross-run comparison, not
   // a single capture's own metric), so it can't just reuse that mechanism.
+  // Checked independently -- divergentCount (fabrication) and
+  // missingOneRunCount (drafting failure, e.g. T1's parked p82 item) are
+  // unrelated root causes; one regressing must never be masked by the
+  // other improving.
   const existingBaselinePath = path.join(BASELINES_DIR, `${id}.baseline.json`);
   if (existsSync(existingBaselinePath)) {
     const prior: Baseline = JSON.parse(readFileSync(existingBaselinePath, 'utf-8'));
-    const priorCount = prior.altCrossRunDivergence?.count ?? 0;
-    if (crossRun.divergentCount > priorCount) {
-      console.error(`[${id}] alt_cross_run_divergent INCREASED: baseline had ${priorCount}, this capture pair has ${crossRun.divergentCount}:`);
+    const priorDivergent = prior.altCrossRunDivergence?.count ?? 0;
+    const priorMissingOneRun = prior.altCrossRunDivergence?.missingOneRunCount ?? 0;
+    const violations: string[] = [];
+    if (crossRun.divergentCount > priorDivergent) {
+      violations.push(`alt_cross_run_divergent INCREASED: baseline had ${priorDivergent}, this capture pair has ${crossRun.divergentCount}`);
       for (const p of crossRun.divergentPairs) {
-        console.error(`  p${p.page} (jaccard ${p.jaccard.toFixed(2)}): "${p.altA.slice(0, 80)}" vs "${p.altB.slice(0, 80)}"`);
+        violations.push(`  p${p.page} (jaccard ${p.jaccard.toFixed(2)}): "${p.altA.slice(0, 80)}" vs "${p.altB.slice(0, 80)}"`);
       }
-      throw new Error(`[${id}] refusing to finalize a baseline with MORE cross-run-divergent alt text than the existing baseline recorded`);
+    }
+    if (crossRun.missingOneRunCount > priorMissingOneRun) {
+      violations.push(`alt_missing_one_run INCREASED: baseline had ${priorMissingOneRun}, this capture pair has ${crossRun.missingOneRunCount}`);
+      for (const p of crossRun.missingOneRunPairs) {
+        violations.push(`  p${p.page}: "${p.altA.slice(0, 80)}" vs "${p.altB.slice(0, 80)}"`);
+      }
+    }
+    if (violations.length > 0) {
+      console.error(`[${id}] cross-run alt-text metric(s) increased:`);
+      for (const v of violations) console.error(`  ${v}`);
+      throw new Error(`[${id}] refusing to finalize a baseline with more cross-run-divergent or missing-one-run alt text than the existing baseline recorded`);
     }
   }
   if (crossRun.divergentCount > 0) {
     console.log(`[${id}] alt_cross_run_divergent: ${crossRun.divergentCount} (see baseline.json for the pairs)`);
+  }
+  if (crossRun.missingOneRunCount > 0) {
+    console.log(`[${id}] alt_missing_one_run: ${crossRun.missingOneRunCount} (see baseline.json for the pairs)`);
   }
 
   const baseline: Baseline = {
@@ -820,7 +896,11 @@ function finalizeBaseline(id: string) {
     quarantined,
     capture1CommitSha: r1.deployedCommitSha ?? null,
     capture2CommitSha: r2.deployedCommitSha ?? null,
-    altCrossRunDivergence: { count: crossRun.divergentCount, shortPairsCount: crossRun.shortPairsCount },
+    altCrossRunDivergence: {
+      count: crossRun.divergentCount,
+      missingOneRunCount: crossRun.missingOneRunCount,
+      shortPairsCount: crossRun.shortPairsCount,
+    },
   };
   writeFileSync(path.join(BASELINES_DIR, `${id}.baseline.json`), JSON.stringify(baseline, null, 2));
   // Pairs/short-pairs are detail-shaped (contain real alt text, same hygiene
@@ -829,7 +909,11 @@ function finalizeBaseline(id: string) {
   // into baseline.json's own metrics-only shape.
   writeFileSync(
     path.join(BASELINES_DIR, `${id}.alt-cross-run.details.json`),
-    JSON.stringify({ divergentPairs: crossRun.divergentPairs, shortPairs: crossRun.shortPairs }, null, 2)
+    JSON.stringify(
+      { divergentPairs: crossRun.divergentPairs, missingOneRunPairs: crossRun.missingOneRunPairs, shortPairs: crossRun.shortPairs },
+      null,
+      2
+    )
   );
   console.log(`[${id}] baseline finalized (commit ${baseline.capture1CommitSha}). Tolerances: ${Object.entries(tolerant).map(([k, v]) => `${k}=±${v.tolerance}`).join(', ')}`);
   if (Object.keys(quarantined).length > 0) {
@@ -911,21 +995,23 @@ function compareCaptures(id: string, nA: string, nB: string): string[] {
     const figsB = (dB.figures ?? []) as FigureRow[];
     const crossRun = computeAltCrossRunDivergence(figsA, figsB);
     lines.push(
-      crossRun.divergentCount > 0
-        ? `  alt_cross_run_divergent: ${crossRun.divergentCount} (jaccard < ${ALT_CROSS_RUN_JACCARD_THRESHOLD}; ${crossRun.shortPairsCount} short-label pair(s) excluded, see alt_cross_run_short_pairs)`
-        : `  alt_cross_run_divergent: 0 (${crossRun.shortPairsCount} short-label pair(s) excluded, see alt_cross_run_short_pairs)`
+      `  alt_cross_run_divergent: ${crossRun.divergentCount} (fabrication: both sides real, jaccard < ${ALT_CROSS_RUN_JACCARD_THRESHOLD})`
     );
     for (const p of crossRun.divergentPairs) {
       lines.push(`    p${p.page} (jaccard ${p.jaccard.toFixed(2)}): "${p.altA.slice(0, 80)}" vs "${p.altB.slice(0, 80)}"`);
     }
+    lines.push(`  alt_missing_one_run: ${crossRun.missingOneRunCount} (drafting failure: one side empty, the other real)`);
+    for (const p of crossRun.missingOneRunPairs) {
+      lines.push(`    p${p.page}: "${p.altA.slice(0, 80)}" vs "${p.altB.slice(0, 80)}"`);
+    }
     if (crossRun.shortPairsCount > 0) {
-      lines.push(`  alt_cross_run_short_pairs (not gated, <=2 content words on one side):`);
+      lines.push(`  alt_cross_run_short_pairs: ${crossRun.shortPairsCount} (not gated, 1-2 content words on one side):`);
       for (const p of crossRun.shortPairs) {
         lines.push(`    p${p.page} (jaccard ${p.jaccard.toFixed(2)}): "${p.altA.slice(0, 50)}" vs "${p.altB.slice(0, 50)}"`);
       }
     }
   } catch (err) {
-    lines.push(`  alt_cross_run_divergent: REFUSED -- ${err instanceof Error ? err.message : String(err)}`);
+    lines.push(`  alt_cross_run_divergent / alt_missing_one_run: REFUSED -- ${err instanceof Error ? err.message : String(err)}`);
   }
 
   return lines;

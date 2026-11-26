@@ -105,7 +105,7 @@ metrics would see (they only look at the output in isolation).
 v0.2+, only computed when `--source` is given) but are informational
 only for now, not gated.
 
-## `alt_cross_run_divergent` -- catching ungrounded fabrication
+## `alt_cross_run_divergent` / `alt_missing_one_run` -- catching ungrounded fabrication
 
 Real bug, 2026-11-26: `draftComplexImageBaseline` (`ai-analysis.service.ts`)
 called Gemini's text-only generation method for a "describe this image"
@@ -133,24 +133,38 @@ content-word Jaccard similarity; the lowest score among legitimate
 (reworded-but-accurate) pairs was 0.04 across all three documents --
 `ALT_CROSS_RUN_JACCARD_THRESHOLD` (0.02) sits well inside that gap.
 
+**Two counts, split by root cause, not one** -- a pair where BOTH sides are
+real (non-empty) but disagree is `alt_cross_run_divergent` (the
+fabrication signal above). A pair where exactly ONE side is empty and the
+other real is a DIFFERENT defect -- `alt_missing_one_run` -- one run's
+drafting declined, failed, or was rejected entirely for a Figure the other
+run drafted something real for. Confirmed real and genuinely distinct: T1
+has a `alt_missing_one_run` case (p82, a parked drafting-failure item,
+unrelated to the vision-call bug) alongside its own `alt_cross_run_divergent`
+case (p155); T4 has one of each too (p50 missing, p62/p85/p89 divergent).
+Counting both under one number would conflate two unrelated root causes,
+and `draftComplexImageBaseline`'s vision fix should only be judged against
+the one it actually targets -- its acceptance test is
+`alt_cross_run_divergent == 0`, while `alt_missing_one_run` is tracked
+separately and not expected to reach 0 from that fix alone (T1's p82 stays
+open as its own parked item). Pairs where BOTH sides are empty are
+dropped entirely (both runs agreeing they drafted nothing isn't
+interesting either way).
+
 Pairs where either side has a short but NONZERO content-word count (1-2
 words, e.g. a single label like "Chemistry") are reported separately as
-`alt_cross_run_short_pairs` and excluded from the gated count -- a short
-label's Jaccard score is dominated by chance, not a meaningful signal. A
-side with ZERO content words (empty alt) is deliberately NOT treated as
-"short" and stays in the gated metric -- that's the unambiguous, fully
-deterministic signal of one run drafting nothing where the other drafted
-something real (confirmed real on T1 p82 and T4 p50).
+`alt_cross_run_short_pairs` and excluded from BOTH gated counts -- a short
+label's Jaccard score is dominated by chance, not a meaningful signal.
 
 Must-not-increase, like `REGRESSION_METRICS`, but computed differently:
 there's no single-capture value to diff, since the check is inherently a
-comparison between two runs. `finalize-baseline` records the count in
-`<id>.baseline.json`'s own `altCrossRunDivergence` field and refuses to
-finalize a NEW baseline whose count exceeds whatever the EXISTING baseline
-recorded (the pairs themselves are written to
-`<id>.alt-cross-run.details.json`, same outside-git hygiene as everything
-else here). `compare` only reports it (that command never gates on
-anything).
+comparison between two runs. `finalize-baseline` records both counts in
+`<id>.baseline.json`'s own `altCrossRunDivergence` field (`count` and
+`missingOneRunCount`) and refuses to finalize a NEW baseline if EITHER
+count exceeds what the EXISTING baseline recorded, checked independently
+(the pairs themselves are written to `<id>.alt-cross-run.details.json`,
+same outside-git hygiene as everything else here). `compare` only reports
+both (that command never gates on anything).
 
 **Refuses outright (an explicit error line, never a silent 0)** if either
 capture was served from an AI response cache (`RunnerResult.aiResponseCache`,
