@@ -988,6 +988,11 @@ export class PdfController {
             autoTagSkipReason: output?.autoTagSkipReason ?? null,
             structureTreeCompleteness: output?.structureTreeCompleteness ?? null,
             retagOutcome: output?.retagOutcome ?? null,
+            // Seam C only -- observability for the zone-detection cache
+            // (zone-detection-cache.service.ts), since it degrades silently
+            // to normal (non-deterministic) detection on any infra failure.
+            // See SeamCTagResult.zoneDetectionCache.
+            zoneDetectionCache: output?.zoneDetectionCache ?? null,
             ...auditReport,
             ...(issuesWithFingerprint ? { issues: issuesWithFingerprint } : {}),
             matterhornSummary,

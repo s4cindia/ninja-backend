@@ -26,6 +26,7 @@
         { "name": "YOLO_SERVICE_URL", "value": "http://ninja-zone-detector.ninja.local:8083" },
         { "name": "YOLO_WARM_START_HOUR_IST", "value": "9" },
         { "name": "YOLO_WARM_END_HOUR_IST", "value": "19" },
+        { "name": "ZONE_DETECTOR_VERSION", "value": "2026-11-26-pr894-cudnn-deterministic" },
         { "name": "NODE_OPTIONS", "value": "--max-old-space-size=14336" }
       ],
       "secrets": [

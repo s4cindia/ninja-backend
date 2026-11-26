@@ -21,10 +21,18 @@ import { logger } from '../../lib/logger';
 const WEIGHTS_SSM_PARAM = process.env.WEIGHTS_SSM_PARAM ?? '/ninja/zone-extractor/model-weights-path';
 // Deploy-time identity meant to capture "service image digest + detection
 // params" from one shared source across both this backend and
-// zone-detector-service -- NOT wired up here (a deploy-pipeline concern),
-// just read as a plain env var. Defaults to 'unknown' rather than
-// throwing: this cache is a pure optimization, never a reason to block
-// tagging.
+// zone-detector-service -- not auto-derived from either service's image
+// (a real deploy-pipeline concern, still not wired up), just read as a
+// plain env var manually bumped in
+// infrastructure/ecs/ninja-backend-worker-task-definition.json whenever a
+// change to zone-detector-service/main.py's detection behavior (model
+// weights are already covered by resolveWeightsIdentity() above --
+// bump this for everything else: RENDER_DPI/MAX_EDGE/IMGSZ/CONF handling,
+// cuDNN/torch settings, ultralytics version) should force every existing
+// cache row to miss. Defaults to 'unknown' rather than throwing: this
+// cache is a pure optimization, never a reason to block tagging -- but an
+// unset value here is itself a diagnostic signal (see
+// zoneDetectionCache.cacheKeyPrefix on job.output), not something to rely on.
 const ZONE_DETECTOR_VERSION = process.env.ZONE_DETECTOR_VERSION ?? 'unknown';
 
 // Mirrors zone-detector-service/main.py's own env-var defaults
@@ -111,6 +119,13 @@ export interface RawYoloZone {
   confidence?: number;
 }
 
+/** First 12 hex chars of a cache key -- enough to tell "two runs computed
+ *  the same key" from "two runs computed different keys" in a log line or
+ *  a job record, without printing the full (not secret, but noisy) hash. */
+function keyPrefix(cacheKey: string): string {
+  return cacheKey.slice(0, 12);
+}
+
 /**
  * Looks up a cached detection for `pdfBuffer` under `tenantId`. Resolves
  * the weights identity (TTL-cached) and computes the cache key itself, so
@@ -119,21 +134,48 @@ export interface RawYoloZone {
  * throw on a genuine infra failure (SSM/S3/DB unreachable) so the caller
  * can decide how to degrade -- see seam-c-tag.service.ts's own try/catch
  * around this call.
+ *
+ * Real bug, 2026-11-26 (see git log): this cache went live, but T4's own
+ * run-to-run Figure-count divergence recurred in the EXACT pre-cache
+ * shape -- with no AWS CloudWatch/log access available to diagnose why,
+ * confirmed root cause was ninja-backend-task-role missing
+ * ssm:GetParameter/s3:HeadObject on the weights resources, so every
+ * lookup/store silently failed and fell through to a fresh (non-
+ * deterministic) detection every time. `cacheKeyPrefix` on the return
+ * value exists so a caller (and ultimately job.output, see
+ * pdf-auto-tag-orchestrator.service.ts) can make this outcome visible
+ * without needing AWS log access at all.
  */
+export interface LookupCachedZonesResult {
+  hit: boolean;
+  /** The key THIS lookup computed, regardless of hit/miss -- a miss still
+   *  needs this so a caller can confirm the SUBSEQUENT store wrote under
+   *  the SAME key a later run's own lookup will compute, not just that
+   *  "a store happened." */
+  cacheKeyPrefix: string;
+  zones?: RawYoloZone[];
+}
+
 export async function lookupCachedZones(
   tenantId: string,
   pdfBuffer: Buffer
-): Promise<{ zones: RawYoloZone[] } | null> {
+): Promise<LookupCachedZonesResult> {
   const sourcePdfSha256 = sha256OfBuffer(pdfBuffer);
   const { weightsUri, weightsETag } = await resolveWeightsIdentity();
   const cacheKey = computeCacheKey(sourcePdfSha256, weightsUri, weightsETag);
+  const prefix = keyPrefix(cacheKey);
 
   const row = await prisma.zoneDetectionCache.findUnique({
     where: { tenantId_cacheKey: { tenantId, cacheKey } },
   });
-  if (!row) return null;
-  return { zones: row.zones as unknown as RawYoloZone[] };
+  if (!row) return { hit: false, cacheKeyPrefix: prefix };
+  return { hit: true, cacheKeyPrefix: prefix, zones: row.zones as unknown as RawYoloZone[] };
 }
+
+export type StoreDetectedZonesOutcome =
+  | { outcome: 'stored'; cacheKeyPrefix: string }
+  | { outcome: 'skipped_mismatch'; cacheKeyPrefix: string }
+  | { outcome: 'failed'; error: string };
 
 /**
  * Stores a freshly-detected result under `pdfBuffer`'s cache key for
@@ -144,14 +186,18 @@ export async function lookupCachedZones(
  * and skips the write entirely rather than risk a false cache hit later.
  * Never throws (infra failures here are logged and swallowed) -- caching
  * is a pure optimization, never a reason to fail a tagging job; see this
- * function's own caller for why that contract matters.
+ * function's own caller for why that contract matters. Returns an
+ * outcome instead of void (2026-11-26, see git log) so a caller without
+ * AWS log access can still tell a silent infra failure (e.g. a missing
+ * IAM permission -- the real bug that motivated this) from a genuine
+ * store.
  */
 export async function storeDetectedZones(params: {
   tenantId: string;
   pdfBuffer: Buffer;
   zones: RawYoloZone[];
   reportedWeightsSha256: string | null | undefined;
-}): Promise<void> {
+}): Promise<StoreDetectedZonesOutcome> {
   const { tenantId, pdfBuffer, zones, reportedWeightsSha256 } = params;
   try {
     const sourcePdfSha256 = sha256OfBuffer(pdfBuffer);
@@ -177,7 +223,7 @@ export async function storeDetectedZones(params: {
           `two real model versions. Skipping the cache write for this detection; the real zones are still ` +
           `returned to the caller unaffected.`
         );
-        return;
+        return { outcome: 'skipped_mismatch', cacheKeyPrefix: keyPrefix(cacheKey) };
       }
     }
 
@@ -198,10 +244,12 @@ export async function storeDetectedZones(params: {
         reportedWeightsSha256: reportedWeightsSha256 ?? null,
       },
     });
+    return { outcome: 'stored', cacheKeyPrefix: keyPrefix(cacheKey) };
   } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
     logger.warn(
-      `[ZoneDetectionCache] Failed to store detection result (non-fatal, tagging already succeeded): ` +
-      `${err instanceof Error ? err.message : String(err)}`
+      `[ZoneDetectionCache] Failed to store detection result (non-fatal, tagging already succeeded): ${message}`
     );
+    return { outcome: 'failed', error: message };
   }
 }

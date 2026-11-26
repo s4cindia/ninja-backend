@@ -190,6 +190,7 @@ export async function autoTagIfNeeded(
         wordBuffer: Buffer | null;
         elementCounts: unknown;
         parsedFlags: unknown;
+        zoneDetectionCache?: unknown;
       };
       let taggerSource: 'seam-c' | 'adobe' = 'adobe';
       autoTagResult = await runWithJobHeartbeat(dbJobId, async () => {
@@ -245,6 +246,13 @@ export async function autoTagIfNeeded(
         hasTaggingReport: !!autoTagResult.reportBuffer,
         hasWordExport: !!autoTagResult.wordBuffer,
         autoTagElementCounts: autoTagResult.elementCounts,
+        // Seam C only (Adobe's result shape never has this field) -- see
+        // SeamCTagResult. Surfaced to job.output (and from there, GET
+        // /pdf/job/:jobId/audit/result) specifically so a silently failing
+        // zone-detection cache is observable without AWS log access. Real
+        // bug this closes, 2026-11-26 (see git log): the cache went live
+        // but couldn't be confirmed working or broken from this environment.
+        ...(autoTagResult.zoneDetectionCache ? { zoneDetectionCache: autoTagResult.zoneDetectionCache } : {}),
       };
       logger.info(`[PdfAutoTagOrchestrator] ${taggerSource} tagging complete for job ${dbJobId}`);
     };
