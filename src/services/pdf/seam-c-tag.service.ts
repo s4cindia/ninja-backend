@@ -5,7 +5,7 @@ import { mapYoloLabel } from '../zone-extractor/yolo-label-mapper';
 import { buildStructTreeFromZones } from '../zone-extractor/seam-c/struct-tree-builder';
 import { fontToUnicodeService } from './font-tounicode.service';
 import type { OrderableZone } from '../zone-extractor/seam-c/reading-order';
-import type { RawYoloZone } from '../zone-extractor/zone-detection-cache.service';
+import type { RawYoloZone, LookupCachedZonesResult, StoreDetectedZonesOutcome } from '../zone-extractor/zone-detection-cache.service';
 import { lookupCachedZones, storeDetectedZones } from '../zone-extractor/zone-detection-cache.service';
 import { s3Service } from '../s3.service';
 import { config } from '../../config';
@@ -25,6 +25,25 @@ import { logger } from '../../lib/logger';
 // classification (paragraph/table/figure/etc.), keyed by the 11 canonical zone types
 // rather than Adobe's narrower {figures,tables,headings,paragraphs} shape.
 
+// Real bug, 2026-11-26 (see git log): the zone-detection cache went live,
+// but T4's own run-to-run Figure-count divergence recurred in the exact
+// pre-cache shape, with no AWS CloudWatch/log access available from this
+// environment to find out why (root cause, confirmed separately:
+// ninja-backend-task-role was missing ssm:GetParameter/s3:HeadObject on
+// the weights resources, so every lookup/store silently failed and fell
+// through to a fresh, non-deterministic detection every time). This
+// outcome is surfaced all the way to job.output (see
+// pdf-auto-tag-orchestrator.service.ts) specifically so a silently
+// failing optimization is observable without needing AWS log access at
+// all -- the exact gap that let this go undiagnosed.
+export type ZoneDetectionCacheOutcome =
+  | { outcome: 'hit'; cacheKeyPrefix: string }
+  | { outcome: 'miss'; cacheKeyPrefix: string }
+  | { outcome: 'lookup_failed'; error: string }
+  | { outcome: 'store_failed'; error: string }
+  | { outcome: 'skipped_mismatch'; cacheKeyPrefix: string }
+  | { outcome: 'skipped_no_tenant' };
+
 export interface SeamCTagResult {
   taggedPdfBuffer: Buffer;
   reportBuffer: null;
@@ -33,6 +52,7 @@ export interface SeamCTagResult {
   parsedFlags: never[];
   source: 'seam-c';
   buildResult: { elements: number; mcids: number; pages: number };
+  zoneDetectionCache: ZoneDetectionCacheOutcome;
 }
 
 type DetectResponse = { zones: RawYoloZone[]; modelInfo?: { weightsSha256?: string | null } };
@@ -51,8 +71,8 @@ export interface SeamCDeps {
    *  determinism guarantee by default). A HIT here skips ensureUp/
    *  uploadTemp/detect/deleteTemp/touchIdle entirely -- no GPU wake, not
    *  just a faster response. */
-  cacheLookup: (tenantId: string, pdfBuffer: Buffer) => Promise<{ zones: RawYoloZone[] } | null>;
-  cacheStore: (tenantId: string, pdfBuffer: Buffer, zones: RawYoloZone[], reportedWeightsSha256: string | null | undefined) => Promise<void>;
+  cacheLookup: (tenantId: string, pdfBuffer: Buffer) => Promise<LookupCachedZonesResult>;
+  cacheStore: (tenantId: string, pdfBuffer: Buffer, zones: RawYoloZone[], reportedWeightsSha256: string | null | undefined) => Promise<StoreDetectedZonesOutcome>;
 }
 
 const defaultDeps: SeamCDeps = {
@@ -81,15 +101,25 @@ export class SeamCTagService {
     // optimization: any cache failure (SSM/S3/DB unreachable) falls
     // through to the normal detect flow rather than failing tagging.
     let rawZones: RawYoloZone[] | null = null;
+    let lookupFailed: { error: string } | null = null;
+    let cacheOutcome: ZoneDetectionCacheOutcome = tenantId
+      ? { outcome: 'miss', cacheKeyPrefix: '' } // overwritten below once the lookup actually runs
+      : { outcome: 'skipped_no_tenant' };
     if (tenantId) {
       try {
         const cached = await deps.cacheLookup(tenantId, pdfBuffer);
-        if (cached) {
-          rawZones = cached.zones;
-          logger.info(`[SeamC] job ${jobId}: zone-detection cache HIT -- skipping GPU detection`);
+        if (cached.hit) {
+          rawZones = cached.zones ?? null;
+          cacheOutcome = { outcome: 'hit', cacheKeyPrefix: cached.cacheKeyPrefix };
+          logger.info(`[SeamC] job ${jobId}: zone-detection cache HIT (key ${cached.cacheKeyPrefix}) -- skipping GPU detection`);
+        } else {
+          cacheOutcome = { outcome: 'miss', cacheKeyPrefix: cached.cacheKeyPrefix };
         }
       } catch (err) {
-        logger.warn(`[SeamC] job ${jobId}: zone-detection cache lookup failed (non-fatal, detecting normally): ${err instanceof Error ? err.message : String(err)}`);
+        const message = err instanceof Error ? err.message : String(err);
+        lookupFailed = { error: message };
+        cacheOutcome = { outcome: 'lookup_failed', error: message };
+        logger.warn(`[SeamC] job ${jobId}: zone-detection cache lookup failed (non-fatal, detecting normally): ${message}`);
       }
     }
 
@@ -105,10 +135,43 @@ export class SeamCTagService {
       }
       rawZones = response.zones;
       if (tenantId) {
+        // storeDetectedZones' own real implementation never throws (it
+        // catches its own errors and returns {outcome:'failed'}), but
+        // deps.cacheStore is an injected dependency -- defend against a
+        // misbehaving one anyway, same "pure optimization, never fails
+        // tagging" contract as the lookup side above.
+        //
+        // If the LOOKUP already failed, that's the more alarming signal to
+        // keep: it means lookups for this exact input are broken right now
+        // (e.g. the SSM/S3 permission gap this whole mechanism exists to
+        // surface), which a later store succeeding doesn't resolve -- a
+        // future run's own lookup will hit the same failure before it ever
+        // reaches the DB. Only overwrite cacheOutcome with the store's own
+        // result when the lookup itself didn't fail.
         try {
-          await deps.cacheStore(tenantId, pdfBuffer, rawZones, response.modelInfo?.weightsSha256);
+          const stored = await deps.cacheStore(tenantId, pdfBuffer, rawZones, response.modelInfo?.weightsSha256);
+          if (!lookupFailed) {
+            if (stored.outcome === 'failed') {
+              cacheOutcome = { outcome: 'store_failed', error: stored.error };
+            } else if (stored.outcome === 'skipped_mismatch') {
+              cacheOutcome = { outcome: 'skipped_mismatch', cacheKeyPrefix: stored.cacheKeyPrefix };
+            } else {
+              // A successful store after a miss -- keep reporting 'miss' (what
+              // actually happened on lookup) isn't as useful here as recording
+              // the key that got stored, so a later run's own lookup outcome
+              // can be compared against it directly.
+              cacheOutcome = { outcome: 'miss', cacheKeyPrefix: stored.cacheKeyPrefix };
+            }
+          }
+          if (stored.outcome === 'failed') {
+            logger.warn(`[SeamC] job ${jobId}: zone-detection cache store failed (non-fatal): ${stored.error}`);
+          }
         } catch (err) {
-          logger.warn(`[SeamC] job ${jobId}: zone-detection cache store failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
+          const message = err instanceof Error ? err.message : String(err);
+          if (!lookupFailed) {
+            cacheOutcome = { outcome: 'store_failed', error: message };
+          }
+          logger.warn(`[SeamC] job ${jobId}: zone-detection cache store failed (non-fatal): ${message}`);
         }
       }
     }
@@ -158,6 +221,7 @@ export class SeamCTagService {
       parsedFlags: [],
       source: 'seam-c',
       buildResult,
+      zoneDetectionCache: cacheOutcome,
     };
   }
 }

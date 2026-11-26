@@ -158,16 +158,21 @@ describe('resolveWeightsIdentity', () => {
 });
 
 describe('lookupCachedZones', () => {
-  it('returns null on a miss', async () => {
+  it('returns hit:false (with the computed key, no AWS access needed to compare runs) on a miss', async () => {
     mockFindUnique.mockResolvedValue(null);
     const result = await lookupCachedZones('tenant-1', Buffer.from('pdf-bytes'));
-    expect(result).toBeNull();
+    expect(result.hit).toBe(false);
+    expect(result.zones).toBeUndefined();
+    expect(typeof result.cacheKeyPrefix).toBe('string');
+    expect(result.cacheKeyPrefix.length).toBeGreaterThan(0);
   });
 
-  it('returns the cached zones on a hit, keyed by (tenantId, cacheKey)', async () => {
+  it('returns hit:true with the cached zones, keyed by (tenantId, cacheKey)', async () => {
     mockFindUnique.mockResolvedValue({ zones: SAMPLE_ZONES });
     const result = await lookupCachedZones('tenant-1', Buffer.from('pdf-bytes'));
-    expect(result).toEqual({ zones: SAMPLE_ZONES });
+    expect(result.hit).toBe(true);
+    expect(result.zones).toEqual(SAMPLE_ZONES);
+    expect(typeof result.cacheKeyPrefix).toBe('string');
     const call = mockFindUnique.mock.calls[0][0];
     expect(call.where.tenantId_cacheKey.tenantId).toBe('tenant-1');
     expect(typeof call.where.tenantId_cacheKey.cacheKey).toBe('string');
@@ -247,30 +252,41 @@ describe('storeDetectedZones', () => {
     expect(message).toContain('sha-of-OLD-weights');
   });
 
-  it('never throws -- a Prisma failure is logged and swallowed, never propagated to the caller', async () => {
+  it('never throws -- a Prisma failure is logged, swallowed, and returned as an observable "failed" outcome', async () => {
     mockFindFirst.mockRejectedValue(new Error('DB unreachable'));
-    await expect(
-      storeDetectedZones({
-        tenantId: 'tenant-1',
-        pdfBuffer: Buffer.from('pdf-bytes'),
-        zones: SAMPLE_ZONES,
-        reportedWeightsSha256: 'sha-x',
-      })
-    ).resolves.toBeUndefined();
+    const result = await storeDetectedZones({
+      tenantId: 'tenant-1',
+      pdfBuffer: Buffer.from('pdf-bytes'),
+      zones: SAMPLE_ZONES,
+      reportedWeightsSha256: 'sha-x',
+    });
+    expect(result).toEqual({ outcome: 'failed', error: 'DB unreachable' });
     expect(logger.warn).toHaveBeenCalledOnce();
   });
 
-  it('never throws -- an SSM/S3 failure resolving weights identity is also logged and swallowed', async () => {
+  it('never throws -- an SSM/S3 failure resolving weights identity is also logged, swallowed, and returned as "failed"', async () => {
     mockSsmSend.mockRejectedValue(new Error('SSM unreachable'));
-    await expect(
-      storeDetectedZones({
-        tenantId: 'tenant-1',
-        pdfBuffer: Buffer.from('pdf-bytes'),
-        zones: SAMPLE_ZONES,
-        reportedWeightsSha256: 'sha-x',
-      })
-    ).resolves.toBeUndefined();
+    const result = await storeDetectedZones({
+      tenantId: 'tenant-1',
+      pdfBuffer: Buffer.from('pdf-bytes'),
+      zones: SAMPLE_ZONES,
+      reportedWeightsSha256: 'sha-x',
+    });
+    expect(result).toEqual({ outcome: 'failed', error: 'SSM unreachable' });
     expect(mockUpsert).not.toHaveBeenCalled();
     expect(logger.warn).toHaveBeenCalledOnce();
+  });
+
+  it('returns outcome:"stored" with the cache key on a genuine successful store', async () => {
+    mockFindFirst.mockResolvedValue(null);
+    mockUpsert.mockResolvedValue({});
+    const result = await storeDetectedZones({
+      tenantId: 'tenant-1',
+      pdfBuffer: Buffer.from('pdf-bytes'),
+      zones: SAMPLE_ZONES,
+      reportedWeightsSha256: 'sha-x',
+    });
+    expect(result.outcome).toBe('stored');
+    expect(typeof (result as { cacheKeyPrefix: string }).cacheKeyPrefix).toBe('string');
   });
 });

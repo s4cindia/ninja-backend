@@ -142,6 +142,13 @@ interface RunnerResult {
   measured: Record<string, unknown>; // measure.py's own top-level JSON, unmodified
   axes4?: unknown; // only present when --axes4 was passed for this run
   deployedCommitSha?: string | null; // via /health, fetched once per capture invocation
+  // Seam C's zone-detection cache outcome for this job (hit/miss/lookup_failed/
+  // store_failed/skipped_mismatch/skipped_no_tenant -- see SeamCTagResult),
+  // null when the title didn't go through Seam C tagging at all. Added
+  // 2026-11-26 (see git log) specifically to make this cache's own silent
+  // failure mode (falls through to normal, non-deterministic detection)
+  // observable per capture, without AWS log access.
+  zoneDetectionCache?: unknown;
 }
 
 // ---------------------------------------------------------------------------
@@ -300,6 +307,19 @@ async function runFullAutoMode(
   };
 }
 
+async function fetchZoneDetectionCacheOutcome(jobId: string): Promise<unknown> {
+  // Non-fatal by design -- same reasoning as the cache's own code (a
+  // caching optimization, and here an observability read of it, must
+  // never fail the capture itself).
+  try {
+    const res = await api('GET', `/pdf/job/${jobId}/audit/result`);
+    return res.data?.zoneDetectionCache ?? null;
+  } catch (err) {
+    console.error(`  [${jobId}] failed to fetch zoneDetectionCache outcome (non-fatal): ${err instanceof Error ? err.message : err}`);
+    return null;
+  }
+}
+
 async function downloadRemediated(jobId: string, outPath: string) {
   // Same retry reasoning as api()/the S3 PUT above -- a GET download is
   // safe to retry on a transient network-level failure.
@@ -413,7 +433,12 @@ async function runOne(id: string, entry: ManifestEntry, outDir: string, withAxes
     writeFileSync(path.join(outDir, `${id}.axes4.json`), JSON.stringify(axes4, null, 2));
   }
 
-  return { id, axis: entry.axis, jobId, wallSeconds, aiCostUsd, rounds, stopReason, measured, ...(axes4 ? { axes4 } : {}) };
+  const zoneDetectionCache = await fetchZoneDetectionCacheOutcome(jobId);
+  if (zoneDetectionCache) {
+    console.log(`  [${id}] zoneDetectionCache: ${JSON.stringify(zoneDetectionCache)}`);
+  }
+
+  return { id, axis: entry.axis, jobId, wallSeconds, aiCostUsd, rounds, stopReason, measured, zoneDetectionCache, ...(axes4 ? { axes4 } : {}) };
 }
 
 // ---------------------------------------------------------------------------

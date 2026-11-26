@@ -27,8 +27,8 @@ function mockDeps(overrides: Partial<SeamCDeps> = {}): SeamCDeps {
     detect: vi.fn(async () => DETECT_RESPONSE),
     uploadTemp: vi.fn(async () => 's3://bucket/seam-c-temp/job.pdf'),
     deleteTemp: vi.fn(async () => {}),
-    cacheLookup: vi.fn(async () => null),
-    cacheStore: vi.fn(async () => {}),
+    cacheLookup: vi.fn(async () => ({ hit: false, cacheKeyPrefix: 'default-key' })),
+    cacheStore: vi.fn(async () => ({ outcome: 'stored' as const, cacheKeyPrefix: 'default-key' })),
     ...overrides,
   };
 }
@@ -127,13 +127,14 @@ describe('SeamCTagService.tagPdf -- zone-detection cache', () => {
    * through to detection), before confirming it passes against the real
    * hit-skips-the-GPU-path behavior.
    */
-  it('on a cache hit, uses the cached zones and skips the entire GPU lifecycle', async () => {
+  it('on a cache hit, uses the cached zones, skips the entire GPU lifecycle, and reports outcome "hit"', async () => {
     const buf = await makeUntaggedPdf();
-    const deps = mockDeps({ cacheLookup: vi.fn(async () => ({ zones: DETECT_RESPONSE.zones })) });
+    const deps = mockDeps({ cacheLookup: vi.fn(async () => ({ hit: true, cacheKeyPrefix: 'abc123', zones: DETECT_RESPONSE.zones })) });
 
     const res = await svc.tagPdf(buf, 'job6', 'tenant-1', deps);
 
     expect(res.elementCounts).toEqual({ 'section-header': 1, paragraph: 1 });
+    expect(res.zoneDetectionCache).toEqual({ outcome: 'hit', cacheKeyPrefix: 'abc123' });
     expect(deps.cacheLookup).toHaveBeenCalledWith('tenant-1', buf);
     expect(deps.ensureUp).not.toHaveBeenCalled();
     expect(deps.uploadTemp).not.toHaveBeenCalled();
@@ -143,40 +144,55 @@ describe('SeamCTagService.tagPdf -- zone-detection cache', () => {
     expect(deps.cacheStore).not.toHaveBeenCalled();
   });
 
-  it('on a cache miss, detects normally and stores the result under the same tenantId', async () => {
+  it('on a cache miss, detects normally, stores the result under the same tenantId, and reports the stored key', async () => {
     const buf = await makeUntaggedPdf();
     const deps = mockDeps({
-      cacheLookup: vi.fn(async () => null),
+      cacheLookup: vi.fn(async () => ({ hit: false, cacheKeyPrefix: 'miss-key' })),
       detect: vi.fn(async () => ({ ...DETECT_RESPONSE, modelInfo: { weightsSha256: 'sha-of-weights' } })),
+      cacheStore: vi.fn(async () => ({ outcome: 'stored' as const, cacheKeyPrefix: 'stored-key' })),
     });
 
-    await svc.tagPdf(buf, 'job7', 'tenant-1', deps);
+    const res = await svc.tagPdf(buf, 'job7', 'tenant-1', deps);
 
     expect(deps.cacheLookup).toHaveBeenCalledWith('tenant-1', buf);
     expect(deps.ensureUp).toHaveBeenCalledOnce();
     expect(deps.detect).toHaveBeenCalledOnce();
     expect(deps.cacheStore).toHaveBeenCalledWith('tenant-1', buf, DETECT_RESPONSE.zones, 'sha-of-weights');
+    expect(res.zoneDetectionCache).toEqual({ outcome: 'miss', cacheKeyPrefix: 'stored-key' });
   });
 
-  it('degrades gracefully (detects normally) when the cache lookup itself throws', async () => {
+  it('degrades gracefully (detects normally) and reports "lookup_failed" when the cache lookup itself throws', async () => {
     const buf = await makeUntaggedPdf();
     const deps = mockDeps({ cacheLookup: vi.fn(async () => { throw new Error('SSM unreachable'); }) });
 
     const res = await svc.tagPdf(buf, 'job8', 'tenant-1', deps);
 
     expect(res.elementCounts).toEqual({ 'section-header': 1, paragraph: 1 });
+    expect(res.zoneDetectionCache).toEqual({ outcome: 'lookup_failed', error: 'SSM unreachable' });
     expect(deps.detect).toHaveBeenCalledOnce();
   });
 
-  it('degrades gracefully (still returns the tagged result) when the cache store itself throws', async () => {
+  it('degrades gracefully (still returns the tagged result) and reports "store_failed" when the cache store itself throws', async () => {
     const buf = await makeUntaggedPdf();
     const deps = mockDeps({
-      cacheLookup: vi.fn(async () => null),
+      cacheLookup: vi.fn(async () => ({ hit: false, cacheKeyPrefix: 'miss-key' })),
       cacheStore: vi.fn(async () => { throw new Error('DB unreachable'); }),
     });
 
     const res = await svc.tagPdf(buf, 'job9', 'tenant-1', deps);
 
     expect(res.elementCounts).toEqual({ 'section-header': 1, paragraph: 1 });
+    expect(res.zoneDetectionCache).toEqual({ outcome: 'store_failed', error: 'DB unreachable' });
+  });
+
+  it('reports outcome "skipped_no_tenant" when no tenantId is provided', async () => {
+    const buf = await makeUntaggedPdf();
+    const deps = mockDeps();
+
+    const res = await svc.tagPdf(buf, 'job10', undefined, deps);
+
+    expect(res.zoneDetectionCache).toEqual({ outcome: 'skipped_no_tenant' });
+    expect(deps.cacheLookup).not.toHaveBeenCalled();
+    expect(deps.cacheStore).not.toHaveBeenCalled();
   });
 });
