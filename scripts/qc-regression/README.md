@@ -105,6 +105,88 @@ metrics would see (they only look at the output in isolation).
 v0.2+, only computed when `--source` is given) but are informational
 only for now, not gated.
 
+## `alt_cross_run_divergent` / `alt_missing_one_run` -- catching ungrounded fabrication
+
+Real bug, 2026-11-26: `draftComplexImageBaseline` (`ai-analysis.service.ts`)
+called Gemini's text-only generation method for a "describe this image"
+prompt with no image attached at all -- a different, confidently-worded,
+completely unrelated fabrication every run, since nothing grounded it (T4:
+"AWS architecture diagram showing a VPC with public and private subnets,
+ECS Fargate..." for an actual conception/implantation diagram). Two earlier
+designs (whole-book and same-page literal word-overlap against the PDF's
+own prose) were tried and rejected: most photo alt text legitimately shares
+no vocabulary with surrounding prose at all (it describes a visual scene,
+not a paraphrase of the page), so neither design separated real
+fabrications from normal variety.
+
+`compare` and `finalize-baseline` instead match each Figure's alt text
+ACROSS the two independent runs being compared (same page, greedy
+highest-Jaccard pairing -- no MCID/struct-position data needed; validated
+that identical/near-identical text always self-selects its own true
+counterpart even on a page with several short labels, e.g. T4's
+"Chemistry"/"Closeness"/"Commitment"). A genuinely accurate description's
+key nouns stay stable even when reworded; an ungrounded fabrication has no
+reason to agree with itself at all. Validated directly against the real
+capture pairs that found this bug (T1, T4, T5): every known-real
+fabrication scored **exactly 0.00** stopword-filtered, lightly-stemmed
+content-word Jaccard similarity; the lowest score among legitimate
+(reworded-but-accurate) pairs was 0.04 across all three documents --
+`ALT_CROSS_RUN_JACCARD_THRESHOLD` (0.02) sits well inside that gap.
+
+**Two counts, split by root cause, not one** -- a pair where BOTH sides are
+real (non-empty) but disagree is `alt_cross_run_divergent` (the
+fabrication signal above). A pair where exactly ONE side is empty and the
+other real is a DIFFERENT defect -- `alt_missing_one_run` -- one run's
+drafting declined, failed, or was rejected entirely for a Figure the other
+run drafted something real for. Confirmed real and genuinely distinct: T1
+has a `alt_missing_one_run` case (p82, a parked drafting-failure item,
+unrelated to the vision-call bug) alongside its own `alt_cross_run_divergent`
+case (p155); T4 has one of each too (p50 missing, p62/p85/p89 divergent).
+Counting both under one number would conflate two unrelated root causes,
+and `draftComplexImageBaseline`'s vision fix should only be judged against
+the one it actually targets -- its acceptance test is
+`alt_cross_run_divergent == 0`, while `alt_missing_one_run` is tracked
+separately and not expected to reach 0 from that fix alone (T1's p82 stays
+open as its own parked item). Pairs where BOTH sides are empty are
+dropped entirely (both runs agreeing they drafted nothing isn't
+interesting either way).
+
+Pairs where either side has a short but NONZERO content-word count (1-2
+words, e.g. a single label like "Chemistry") are reported separately as
+`alt_cross_run_short_pairs` and excluded from BOTH gated counts -- a short
+label's Jaccard score is dominated by chance, not a meaningful signal.
+
+Must-not-increase, like `REGRESSION_METRICS`, but computed differently:
+there's no single-capture value to diff, since the check is inherently a
+comparison between two runs. `finalize-baseline` records both counts in
+`<id>.baseline.json`'s own `altCrossRunDivergence` field (`count` and
+`missingOneRunCount`) and refuses to finalize a NEW baseline if EITHER
+count exceeds what the EXISTING baseline recorded, checked independently
+(the pairs themselves are written to `<id>.alt-cross-run.details.json`,
+same outside-git hygiene as everything else here). `compare` only reports
+both (that command never gates on anything).
+
+**Refuses outright (an explicit error line, never a silent 0)** if either
+capture was served from an AI response cache (`RunnerResult.aiResponseCache`,
+not populated by anything today -- the separately-planned AI response
+cache doesn't exist yet) -- a cache hit means that run never independently
+re-asked the model at all, so agreement between the two captures would
+prove nothing.
+
+**Known blind spot, by design**: this only catches a fabrication that
+DISAGREES with itself across two runs. A model that confidently, visually
+plausibly, and *consistently* describes the wrong thing the same way every
+single time would score a perfect Jaccard match and sail through untouched
+-- cross-run divergence is evidence of ungroundedness, not proof of
+correctness, and the inverse doesn't hold either. Closing this gap needs an
+actual judge that can compare the image against its own alt text, which is
+out of scope for this corpus's two-independent-samples design. Planned (not
+built): an optional judge tier at baseline-capture time -- a sample of
+Figure crops + their drafted alt text sent to a different model family
+(Claude) asking whether the description actually matches the image. Until
+that exists, a consistent-but-wrong description is a human-sampling
+problem, not a corpus-tooling one.
+
 ## Acceptance test for this tooling itself
 
 Before trusting a baseline from this runner, confirm it actually catches
