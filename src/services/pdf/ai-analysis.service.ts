@@ -112,6 +112,20 @@ interface AiSuggestionResult {
   applyMode: 'apply-to-pdf' | 'guidance-only' | 'auto-resolve';
   requiresManualReview?: boolean;
   usage?: { promptTokens: number; completionTokens: number };
+  /**
+   * Set when draftComplexImageBaseline drafted a real, non-generic,
+   * non-caption-echoing shortAlt, but hasGroundedWordOverlap rejected it for
+   * sharing no word with the Figure's own real overlaid labels -- i.e. the
+   * figure still falls back to guidance-only, same as before this guard
+   * existed, but for a DIFFERENT reason than "the model gave up" (empty/
+   * generic/blocked). Counted per job in aiAnalysisStats.altTextGuardRejections
+   * (2026-11-26) specifically to measure this guard's own false-reject rate
+   * now that it's live: real on-image labels can legitimately share no
+   * vocabulary with an accurate description (e.g. axis tick labels "0"/"10"/
+   * "20" vs. "Bar chart of quarterly revenue"), so some rejections here are
+   * expected to be false positives, not every one is the guard doing its job.
+   */
+  altTextGuardRejected?: boolean;
 }
 
 export interface ApplyApprovedSuggestionsResult {
@@ -1968,6 +1982,13 @@ class AiAnalysisService {
       // Token stats accumulator — keyed so cached results are counted exactly once
       const statsAcc = { geminiPrompt: 0, geminiCompletion: 0, claudePrompt: 0, claudeCompletion: 0 };
       const countedCacheKeys = new Set<string>();
+      // Count of draftComplexImageBaseline's hasGroundedWordOverlap guard
+      // rejecting an otherwise-real drafted shortAlt (2026-11-26) -- see
+      // AiSuggestionResult.altTextGuardRejected's own doc comment. Persisted
+      // into aiAnalysisStats below so run-corpus.ts can report the false-
+      // reject rate per title without needing AWS log access, same
+      // observability reasoning as zoneDetectionCache.
+      let altTextGuardRejections = 0;
 
       // Process up to aiConfig.suggestionConcurrency issues concurrently
       // (AI_SUGGESTION_CONCURRENCY, default 10 -- see that config field's
@@ -1997,16 +2018,25 @@ class AiAnalysisService {
 
           const suggestion = await suggestionPromise;
 
-          // Accumulate token usage per unique cacheKey (avoid double-counting cached results)
-          if (suggestion?.usage && !countedCacheKeys.has(cacheKey)) {
+          // Accumulate token usage (and the guard-rejection count below) per
+          // unique cacheKey, avoiding double-counting cached results -- same
+          // dedup reasoning for both, one real dispatchIssue call behind a
+          // cacheKey shared by several issues should count as one event, not
+          // once per issue.
+          if (suggestion && !countedCacheKeys.has(cacheKey)) {
             countedCacheKeys.add(cacheKey);
-            const { promptTokens, completionTokens } = suggestion.usage;
-            if (suggestion.model === 'gemini-flash') {
-              statsAcc.geminiPrompt += promptTokens;
-              statsAcc.geminiCompletion += completionTokens;
-            } else if (suggestion.model === 'claude-haiku') {
-              statsAcc.claudePrompt += promptTokens;
-              statsAcc.claudeCompletion += completionTokens;
+            if (suggestion.usage) {
+              const { promptTokens, completionTokens } = suggestion.usage;
+              if (suggestion.model === 'gemini-flash') {
+                statsAcc.geminiPrompt += promptTokens;
+                statsAcc.geminiCompletion += completionTokens;
+              } else if (suggestion.model === 'claude-haiku') {
+                statsAcc.claudePrompt += promptTokens;
+                statsAcc.claudeCompletion += completionTokens;
+              }
+            }
+            if (suggestion.altTextGuardRejected) {
+              altTextGuardRejections++;
             }
           }
 
@@ -2221,6 +2251,9 @@ class AiAnalysisService {
           // both look identical in the analyzed/skipped counts alone.
           serviceStatus: geminiStatus.open ? ('degraded' as const) : ('ok' as const),
           serviceError: geminiStatus.reason,
+          // See altTextGuardRejections' own declaration above for why this is
+          // tracked here rather than just logged.
+          altTextGuardRejections,
         };
 
         const latestJob = await prisma.job.findUnique({ where: { id: jobId } });
@@ -3386,7 +3419,15 @@ class AiAnalysisService {
     doc: PDFDocument | undefined,
     pageNumber: number | undefined,
     figureBbox: AuditIssue['boundingBox']
-  ): Promise<{ shortAlt: string; longDescription?: string; confidence: number; rationale: string } | null> {
+  ): Promise<
+    | { accepted: true; shortAlt: string; longDescription?: string; confidence: number; rationale: string }
+    // rejectedNoOverlap distinguishes the hasGroundedWordOverlap rejection
+    // from every other reason (empty/generic shortAlt, caption echo, the
+    // vision call itself failing) -- see AiSuggestionResult.altTextGuardRejected's
+    // own doc comment for why this one case specifically needs to be
+    // countable, not just logged.
+    | { accepted: false; rejectedNoOverlap: boolean }
+  > {
     const wantsLongDescription = DIAGRAM_OR_CHART_TYPES.has(classification.type);
 
     const captionText = doc && pageNumber ? findNearbyCaptionText(doc, pageNumber, figureBbox) : null;
@@ -3421,9 +3462,11 @@ class AiAnalysisService {
       );
 
       const shortAlt = data.shortAlt?.trim();
-      if (!shortAlt || isGenericAltText(shortAlt)) return null;
+      if (!shortAlt || isGenericAltText(shortAlt)) return { accepted: false, rejectedNoOverlap: false };
 
-      if (captionText && shortAlt.trim().toLowerCase() === captionText.trim().toLowerCase()) return null;
+      if (captionText && shortAlt.trim().toLowerCase() === captionText.trim().toLowerCase()) {
+        return { accepted: false, rejectedNoOverlap: false };
+      }
 
       // Checked against overlaidText alone, NOT the full groundingText used
       // in the prompt above -- a Caption is very often just a bare title/
@@ -3435,17 +3478,30 @@ class AiAnalysisService {
       // actual hallucination signal (confirmed live on T4: the fabricated
       // "AWS architecture diagram..." shared not one word with the real
       // overlaid labels "Ovary, Fallopian tube, Implantation, Uterus...").
+      // Known false-reject risk, not just a hypothetical (2026-11-26, see
+      // AiSuggestionResult.altTextGuardRejected's own doc comment): real
+      // on-image labels can legitimately share no vocabulary with an
+      // accurate structural description (axis tick labels "0"/"10"/"20" vs.
+      // "Bar chart of quarterly revenue") -- counted, not just logged, so
+      // the next double capture can measure this guard's real false-reject
+      // rate rather than assuming it's negligible.
       if (!hasGroundedWordOverlap(shortAlt, overlaidText)) {
         logger.warn(
           `[AiAnalysis] draftComplexImageBaseline: alt text "${shortAlt}" has no word overlap with its own overlaid-text grounding -- rejecting`
         );
-        return null;
+        return { accepted: false, rejectedNoOverlap: true };
       }
 
-      return { shortAlt, longDescription: data.longDescription?.trim() || undefined, confidence: data.confidence, rationale: data.rationale };
+      return {
+        accepted: true,
+        shortAlt,
+        longDescription: data.longDescription?.trim() || undefined,
+        confidence: data.confidence,
+        rationale: data.rationale,
+      };
     } catch (err) {
       logger.warn(`[AiAnalysis] draftComplexImageBaseline failed: ${err instanceof Error ? err.message : String(err)}`);
-      return null;
+      return { accepted: false, rejectedNoOverlap: false };
     }
   }
 
@@ -3469,9 +3525,13 @@ class AiAnalysisService {
         // short-alt baseline first, so a complex diagram/chart doesn't ship
         // with NO alt at all (F-08) while its long description still
         // correctly waits for human review.
+        // Set only when draftComplexImageBaseline's hasGroundedWordOverlap
+        // guard specifically rejected a drafted shortAlt -- see
+        // AiSuggestionResult.altTextGuardRejected's own doc comment.
+        let guardRejectedNoOverlap = false;
         if (manualIfComplex) {
           const baseline = await this.draftComplexImageBaseline(image, classification, doc, issue.pageNumber, issue.boundingBox);
-          if (baseline) {
+          if (baseline.accepted) {
             return {
               suggestionType: 'alt-text',
               value: baseline.shortAlt,
@@ -3485,11 +3545,13 @@ class AiAnalysisService {
               usage: classification.usage,
             };
           }
+          guardRejectedNoOverlap = baseline.rejectedNoOverlap;
         }
         // Either ALWAYS_MANUAL_IMAGE_TYPES, or a MANUAL_IF_COMPLEX_IMAGE_TYPES
         // instance whose baseline draft didn't qualify (generic, a Caption
-        // echo, or the vision call itself failed) -- same guidance-only
-        // fallback this branch has always had, no regression.
+        // echo, the overlap guard, or the vision call itself failed) --
+        // same guidance-only fallback this branch has always had, no
+        // regression.
         const fallback = await this.tryGenerateFallbackAltText(jobId, tenantId, image);
         return {
           suggestionType: 'alt-text',
@@ -3504,6 +3566,7 @@ class AiAnalysisService {
           applyMode: 'guidance-only',
           requiresManualReview: true,
           usage: classification.usage,
+          ...(guardRejectedNoOverlap ? { altTextGuardRejected: true } : {}),
         };
       }
     }
