@@ -993,6 +993,12 @@ export class PdfController {
             // to normal (non-deterministic) detection on any infra failure.
             // See SeamCTagResult.zoneDetectionCache.
             zoneDetectionCache: output?.zoneDetectionCache ?? null,
+            // Count of draftComplexImageBaseline's hasGroundedWordOverlap
+            // guard rejecting an otherwise-real drafted shortAlt this round
+            // -- see AiSuggestionResult.altTextGuardRejected's own doc
+            // comment. Exposed here (not buried in CloudWatch) so this
+            // guard's real false-reject rate can be measured per title.
+            altTextGuardRejections: (output?.aiAnalysisStats as { altTextGuardRejections?: number } | undefined)?.altTextGuardRejections ?? null,
             ...auditReport,
             ...(issuesWithFingerprint ? { issues: issuesWithFingerprint } : {}),
             matterhornSummary,

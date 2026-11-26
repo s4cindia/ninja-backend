@@ -56,7 +56,7 @@ describe('MANUAL_IF_COMPLEX_IMAGE_TYPES chart matching', () => {
       // tries a real vision call before this guidance-only fallback -- a
       // generic-sounding draft here declines, so the test still exercises
       // the fallback path this assertion cares about.
-      vi.spyOn(geminiService, 'generateWithSchema').mockResolvedValue({
+      vi.spyOn(geminiService, 'analyzeImageWithSchema').mockResolvedValue({
         data: { shortAlt: 'a chart', confidence: 0.4, rationale: 'r' },
         usage: { promptTokens: 1, completionTokens: 1 },
       } as never);
