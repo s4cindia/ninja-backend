@@ -73,7 +73,7 @@ describe('analyzeAltText: short-alt baseline for MANUAL_IF_COMPLEX_IMAGE_TYPES (
 
   it('auto-applies a qualifying short alt as a baseline, keeps requiresManualReview for the long description', async () => {
     vi.spyOn(svc, 'classifyImageType').mockResolvedValue({ type: 'diagram', complexity: 'complex' });
-    vi.spyOn(geminiService, 'generateWithSchema').mockResolvedValue({
+    vi.spyOn(geminiService, 'analyzeImageWithSchema').mockResolvedValue({
       data: {
         shortAlt: 'Quadrant diagram comparing cost and value across four strategies',
         longDescription: 'X axis: cost (low to high). Y axis: value (low to high). Quadrant 1 (top-right): high value, high cost...',
@@ -93,13 +93,65 @@ describe('analyzeAltText: short-alt baseline for MANUAL_IF_COMPLEX_IMAGE_TYPES (
     expect(res.extendedAlt).toContain('Quadrant 1');
   });
 
+  it('real bug regression (2026-11-26): calls the vision method with the image bytes, never the text-only method', async () => {
+    vi.spyOn(svc, 'classifyImageType').mockResolvedValue({ type: 'diagram', complexity: 'complex' });
+    const visionSpy = vi.spyOn(geminiService, 'analyzeImageWithSchema').mockResolvedValue({
+      data: { shortAlt: 'Quadrant diagram comparing cost and value across four strategies', confidence: 0.8, rationale: 'r' },
+      usage: { promptTokens: 10, completionTokens: 20 },
+    } as never);
+    const textOnlySpy = vi.spyOn(geminiService, 'generateWithSchema');
+    const doc = await docWithNoCaption();
+
+    await svc.analyzeAltText(ISSUE, IMAGE, 'apply-to-pdf', 'job-1', 'tenant-1', doc);
+
+    expect(textOnlySpy).not.toHaveBeenCalled();
+    expect(visionSpy).toHaveBeenCalledTimes(1);
+    expect(visionSpy.mock.calls[0][0]).toBe(IMAGE.base64);
+    expect(visionSpy.mock.calls[0][1]).toBe(IMAGE.mimeType);
+  });
+
+  it('real bug regression (2026-11-26): rejects a drafted alt with no word overlap with real overlaid labels drawn in the figure', async () => {
+    vi.spyOn(svc, 'classifyImageType').mockResolvedValue({ type: 'diagram', complexity: 'complex' });
+    // extractFigureOverlaidText finds the Figure struct element by bbox match
+    // (locateMcidBoundingBoxes/extractStructureTagsForPage, bottom-left PDF
+    // point space, flipped to top-left before comparison against
+    // ISSUE.boundingBox -- see structure-tag-inventory.service.ts's own
+    // `y: pageHeight - maxY`) and reads its own MCID's readable text, the
+    // same shape figureHasOverlaidContent itself already relies on. The Tm
+    // anchor (150, 342) lands inside BBOX = {x:100,y:400,w:200,h:150} once
+    // flipped: pageHeight(792) - 342 = 450, within [400, 550].
+    const doc = await PDFDocument.create();
+    doc.addPage([612, 792]);
+    const page = doc.getPage(0);
+    const figureRef = doc.context.register(doc.context.obj({ S: PDFName.of('Figure'), Pg: page.ref, K: 3 }));
+    const root = doc.context.obj({ Type: PDFName.of('StructTreeRoot'), K: [figureRef] });
+    doc.catalog.set(PDFName.of('StructTreeRoot'), doc.context.register(root));
+    writePageContent(doc, 1, `<</MCID 3>>BDC BT 8 0 0 8 150 342 Tm (Ovary Fallopian tube Implantation Uterus) Tj ET EMC`);
+
+    vi.spyOn(geminiService, 'analyzeImageWithSchema').mockResolvedValue({
+      data: {
+        shortAlt: 'AWS architecture diagram showing a VPC with public and private subnets, ECS Fargate',
+        confidence: 0.8,
+        rationale: 'r',
+      },
+      usage: { promptTokens: 10, completionTokens: 20 },
+    } as never);
+    const fallbackSpy = vi.spyOn(svc, 'tryGenerateFallbackAltText').mockResolvedValue(null);
+
+    const res = await svc.analyzeAltText(ISSUE, IMAGE, 'apply-to-pdf', 'job-1', 'tenant-1', doc);
+
+    expect(fallbackSpy).toHaveBeenCalled();
+    expect(res.applyMode).toBe('guidance-only');
+    expect(res.value).toBeUndefined();
+  });
+
   it('does NOT request a longDescription for a non-diagram/chart MANUAL_IF_COMPLEX type -- there is none to request', async () => {
     // (diagram/chart are the only MANUAL_IF_COMPLEX_IMAGE_TYPES members --
     // this test documents that DIAGRAM_OR_CHART_TYPES gates the prompt's
     // own longDescription request, not a type outside that set, which
     // can't reach this branch at all.)
     vi.spyOn(svc, 'classifyImageType').mockResolvedValue({ type: 'bar-chart', complexity: 'complex' });
-    const spy = vi.spyOn(geminiService, 'generateWithSchema').mockResolvedValue({
+    const spy = vi.spyOn(geminiService, 'analyzeImageWithSchema').mockResolvedValue({
       data: { shortAlt: 'Bar chart of quarterly revenue by region', confidence: 0.8, rationale: 'r' },
       usage: { promptTokens: 10, completionTokens: 20 },
     } as never);
@@ -107,12 +159,12 @@ describe('analyzeAltText: short-alt baseline for MANUAL_IF_COMPLEX_IMAGE_TYPES (
 
     await svc.analyzeAltText(ISSUE, IMAGE, 'apply-to-pdf', 'job-1', 'tenant-1', doc);
 
-    expect(spy.mock.calls[0][0] as string).toContain('longDescription');
+    expect(spy.mock.calls[0][2] as string).toContain('longDescription');
   });
 
   it('falls back to guidance-only (no auto-apply) when the drafted short alt is a bare generic placeholder', async () => {
     vi.spyOn(svc, 'classifyImageType').mockResolvedValue({ type: 'diagram', complexity: 'complex' });
-    vi.spyOn(geminiService, 'generateWithSchema').mockResolvedValue({
+    vi.spyOn(geminiService, 'analyzeImageWithSchema').mockResolvedValue({
       data: { shortAlt: 'a diagram', confidence: 0.3, rationale: 'r' },
       usage: { promptTokens: 10, completionTokens: 20 },
     } as never);
@@ -128,7 +180,7 @@ describe('analyzeAltText: short-alt baseline for MANUAL_IF_COMPLEX_IMAGE_TYPES (
 
   it('falls back to guidance-only when the drafted short alt merely echoes a nearby Caption\'s own printed text', async () => {
     vi.spyOn(svc, 'classifyImageType').mockResolvedValue({ type: 'diagram', complexity: 'complex' });
-    vi.spyOn(geminiService, 'generateWithSchema').mockResolvedValue({
+    vi.spyOn(geminiService, 'analyzeImageWithSchema').mockResolvedValue({
       data: { shortAlt: 'Figure 5.2: The BATNA box', confidence: 0.7, rationale: 'r' },
       usage: { promptTokens: 10, completionTokens: 20 },
     } as never);
@@ -143,7 +195,7 @@ describe('analyzeAltText: short-alt baseline for MANUAL_IF_COMPLEX_IMAGE_TYPES (
 
   it('auto-applies normally when a Caption exists but the drafted short alt is genuinely different from it', async () => {
     vi.spyOn(svc, 'classifyImageType').mockResolvedValue({ type: 'diagram', complexity: 'complex' });
-    vi.spyOn(geminiService, 'generateWithSchema').mockResolvedValue({
+    vi.spyOn(geminiService, 'analyzeImageWithSchema').mockResolvedValue({
       data: { shortAlt: 'Quadrant diagram comparing cost and value', confidence: 0.8, rationale: 'r' },
       usage: { promptTokens: 10, completionTokens: 20 },
     } as never);
@@ -157,7 +209,7 @@ describe('analyzeAltText: short-alt baseline for MANUAL_IF_COMPLEX_IMAGE_TYPES (
 
   it('falls back to guidance-only (no auto-apply, no crash) when the vision call itself fails', async () => {
     vi.spyOn(svc, 'classifyImageType').mockResolvedValue({ type: 'diagram', complexity: 'complex' });
-    vi.spyOn(geminiService, 'generateWithSchema').mockRejectedValue(new Error('MAX_TOKENS'));
+    vi.spyOn(geminiService, 'analyzeImageWithSchema').mockRejectedValue(new Error('MAX_TOKENS'));
     const fallbackSpy = vi.spyOn(svc, 'tryGenerateFallbackAltText').mockResolvedValue(null);
     const doc = await docWithNoCaption();
 
@@ -169,7 +221,7 @@ describe('analyzeAltText: short-alt baseline for MANUAL_IF_COMPLEX_IMAGE_TYPES (
 
   it('never calls draftComplexImageBaseline for an ALWAYS_MANUAL_IMAGE_TYPES type (equation/circuit stay fully manual, no baseline attempt)', async () => {
     vi.spyOn(svc, 'classifyImageType').mockResolvedValue({ type: 'equation', complexity: 'complex' });
-    const spy = vi.spyOn(geminiService, 'generateWithSchema');
+    const spy = vi.spyOn(geminiService, 'analyzeImageWithSchema');
     vi.spyOn(svc, 'tryGenerateFallbackAltText').mockResolvedValue(null);
 
     const res = await svc.analyzeAltText(ISSUE, IMAGE, 'apply-to-pdf', 'job-1', 'tenant-1');
