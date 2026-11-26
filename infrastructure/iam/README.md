@@ -19,22 +19,25 @@ to, to build a cache key without ever waking the GPU zone-detector service.
 existed (only the zone-detector service's own, separate role read the actual
 weights file). Without them, every lookup/store throws, is caught by the
 non-fatal try/catch in `seam-c-tag.service.ts`, and silently falls through to
-normal (fresh, non-deterministic) detection every time — the cache's own
-job.output outcome field (`zoneDetectionCache`, see `SeamCTagResult`) is what
-surfaced this: both environments were reporting `lookup_failed`/`store_failed`
-once that became observable.
+normal (fresh, non-deterministic) detection every time — diagnosed by reading
+the code (no CloudWatch access from the dev environment), not yet confirmed
+via the cache's own job.output outcome field (`zoneDetectionCache`, see
+`SeamCTagResult`), which exists so the NEXT run can confirm it directly.
 
-Before applying: replace `<WEIGHTS_BUCKET_NAME>` in the policy with the real
-bucket from the SSM parameter's current value --
+The policy's `Resource` is already filled in with the real bucket
+(`ninja-epub-staging`, same bucket as `S3_BUCKET` in the worker task
+definition), resolved from the SSM parameter's current value --
 
 ```
 aws ssm get-parameter --name /ninja/zone-extractor/model-weights-path --query Parameter.Value --output text --region ap-south-1
 ```
 
-That returns an `s3://bucket/key` URI; take the bucket (the key changes on
-every model promotion -- see `evaluation.service.ts`'s `promoteTrainingRun`,
-which calls `ssm:PutParameter` with a new `onnxS3Path` each time -- so the
-policy is scoped to the whole bucket with a wildcard key, not one object).
+That returns an `s3://bucket/key` URI (the key changes on every model
+promotion -- see `evaluation.service.ts`'s `promoteTrainingRun`, which calls
+`ssm:PutParameter` with a new `onnxS3Path` each time -- so the policy is
+scoped to the whole bucket with a wildcard key, not one object). Re-run that
+command and update the policy's `Resource` if the weights ever move to a
+different bucket.
 
 Apply with:
 
