@@ -50,4 +50,17 @@ export interface YoloServiceResponse {
     confidence?: number;
   }>;
   processingTimeMs: number;
+  /** Self-describes what produced this exact result (zone-detector-service's
+   *  own cuDNN-determinism/provenance fix) -- the zone-detection cache uses
+   *  weightsSha256 as a safety net against its own SSM-URI+ETag identity
+   *  proxy. Optional: an older/degraded service response might not carry it. */
+  modelInfo?: {
+    device?: string;
+    weightsSha256?: string | null;
+    ultralyticsVersion?: string;
+    renderDpi?: number;
+    maxEdge?: number;
+    imgsz?: number;
+    conf?: number;
+  };
 }

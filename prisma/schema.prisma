@@ -29,6 +29,7 @@ model Tenant {
   integrityCheckJobs  IntegrityCheckJob[]
   plagiarismCheckJobs PlagiarismCheckJob[]
   teams               Team[]
+  zoneDetectionCaches ZoneDetectionCache[]
 }
 
 model User {
@@ -2969,4 +2970,54 @@ model TrainingRun {
 
   @@index([status])
   @@index([completedAt])
+}
+
+/// Caches a YOLO zone-detector result (seam-c-tag.service.ts) so the exact
+/// same source PDF, detected with the exact same model/weights/params,
+/// returns the exact same zones on a later run -- without ever calling the
+/// GPU service again. Real bug this closes (2026-11-26, see git log): T4 (a
+/// QC regression corpus title with no struct tree, so every Figure comes
+/// from a fresh YOLO pass every run) produced a different Figure count
+/// across two full-pipeline runs of the identical commit on the identical
+/// file -- GPU inference has no determinism guarantee by default. The
+/// zone-detector service itself now pins cuDNN to deterministic mode (see
+/// zone-detector-service/main.py), but this cache is a second, independent
+/// layer: even a residual GPU-driver/library-level difference can never
+/// surface as a different real-world result once a cache row exists for
+/// this exact (source, model, params) combination, and it saves the real
+/// GPU cost of re-detecting an already-seen document.
+///
+/// cacheKey is a single sha256 of every input that should distinguish one
+/// detection from another (source PDF bytes, the weights S3 URI + its own
+/// ETag, a deploy-time ZONE_DETECTOR_VERSION env var, and the detection
+/// params RENDER_DPI/MAX_EDGE/IMGSZ/CONF) -- see
+/// zone-detection-cache.service.ts's own computeCacheKey for the exact
+/// composition. reportedWeightsSha256 is the SAFETY NET: the live
+/// detection response (zone-detector-service's own /detect, PR #894) always
+/// reports the weights hash it actually used, so a later detection whose
+/// reported hash disagrees with an existing row's for the same source PDF
+/// means the SSM-URI+ETag proxy failed to distinguish two real model
+/// versions -- logged as an error, never silently trusted.
+///
+/// Tenant-scoped (never a global/shared cache) so a cache row is
+/// deletable per-tenant for a data-retention request, same as every other
+/// tenant-owned table in this schema.
+model ZoneDetectionCache {
+  id                    String   @id @default(cuid())
+  tenantId              String
+  tenant                Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  cacheKey              String
+  sourcePdfSha256        String
+  weightsUri             String
+  weightsETag            String
+  zoneDetectorVersion    String
+  /// From the live response's own modelInfo.weightsSha256 (PR #894) --
+  /// nullable since an older/degraded service response might not carry it.
+  reportedWeightsSha256  String?
+  /// The full YoloServiceResponse['zones'] array, unmodified.
+  zones                  Json
+  createdAt              DateTime @default(now())
+
+  @@unique([tenantId, cacheKey])
+  @@index([tenantId, sourcePdfSha256])
 }

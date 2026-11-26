@@ -5,6 +5,8 @@ import { mapYoloLabel } from '../zone-extractor/yolo-label-mapper';
 import { buildStructTreeFromZones } from '../zone-extractor/seam-c/struct-tree-builder';
 import { fontToUnicodeService } from './font-tounicode.service';
 import type { OrderableZone } from '../zone-extractor/seam-c/reading-order';
+import type { RawYoloZone } from '../zone-extractor/zone-detection-cache.service';
+import { lookupCachedZones, storeDetectedZones } from '../zone-extractor/zone-detection-cache.service';
 import { s3Service } from '../s3.service';
 import { config } from '../../config';
 import { logger } from '../../lib/logger';
@@ -13,7 +15,8 @@ import { logger } from '../../lib/logger';
 //
 // Turns an untagged PDF buffer into a tagged one, as a peer of adobeAutoTagService
 // with the SAME return shape so it drops into the worker's tag branch unchanged.
-// Pipeline: on-demand YOLO detection → canonical zones → buildStructTreeFromZones.
+// Pipeline: zone-detection cache lookup (skips the GPU entirely on a hit) → on-demand
+// YOLO detection on a miss → canonical zones → buildStructTreeFromZones.
 //
 // The detector reads from S3, so the buffer is staged to a temp key, detected, and
 // the temp object removed. Only `taggedPdfBuffer` is load-bearing downstream; the
@@ -32,13 +35,24 @@ export interface SeamCTagResult {
   buildResult: { elements: number; mcids: number; pages: number };
 }
 
+type DetectResponse = { zones: RawYoloZone[]; modelInfo?: { weightsSha256?: string | null } };
+
 /** Seams injected for testing (the real detector needs a live GPU service). */
 export interface SeamCDeps {
   ensureUp: () => Promise<void>;
   touchIdle: () => void;
-  detect: (pdfPath: string, jobId: string) => Promise<{ zones: Array<{ page: number; bbox: { x: number; y: number; w: number; h: number }; label: string }> }>;
+  detect: (pdfPath: string, jobId: string) => Promise<DetectResponse>;
   uploadTemp: (buffer: Buffer, jobId: string) => Promise<string>;   // returns s3://uri
   deleteTemp: (uri: string) => Promise<void>;
+  /** Zone-detection cache (zone-detection-cache.service.ts) -- real bug this
+   *  closes, 2026-11-26 (see git log): the SAME source PDF, detected by the
+   *  SAME model/params, produced a DIFFERENT Figure count across two
+   *  full-pipeline runs of the identical commit (GPU inference has no
+   *  determinism guarantee by default). A HIT here skips ensureUp/
+   *  uploadTemp/detect/deleteTemp/touchIdle entirely -- no GPU wake, not
+   *  just a faster response. */
+  cacheLookup: (tenantId: string, pdfBuffer: Buffer) => Promise<{ zones: RawYoloZone[] } | null>;
+  cacheStore: (tenantId: string, pdfBuffer: Buffer, zones: RawYoloZone[], reportedWeightsSha256: string | null | undefined) => Promise<void>;
 }
 
 const defaultDeps: SeamCDeps = {
@@ -53,23 +67,55 @@ const defaultDeps: SeamCDeps = {
     const key = uri.replace(/^s3:\/\/[^/]+\//, '');
     await s3Service.deleteFile(key).catch(() => {});
   },
+  cacheLookup: lookupCachedZones,
+  cacheStore: (tenantId, pdfBuffer, zones, reportedWeightsSha256) =>
+    storeDetectedZones({ tenantId, pdfBuffer, zones, reportedWeightsSha256 }),
 };
 
 export class SeamCTagService {
-  async tagPdf(pdfBuffer: Buffer, jobId: string, deps: SeamCDeps = defaultDeps): Promise<SeamCTagResult> {
-    // 1 — detect zones via the on-demand YOLO service
-    await deps.ensureUp();
-    const uri = await deps.uploadTemp(pdfBuffer, jobId);
-    let zones: OrderableZone[];
-    try {
-      const response = await deps.detect(uri, jobId);
-      zones = response.zones
-        .filter((z) => z.bbox && typeof z.bbox.x === 'number')
-        .map((z) => ({ pageNumber: z.page, bbox: z.bbox, zoneType: mapYoloLabel(z.label) }));
-    } finally {
-      await deps.deleteTemp(uri);
-      deps.touchIdle();
+  async tagPdf(pdfBuffer: Buffer, jobId: string, tenantId?: string, deps: SeamCDeps = defaultDeps): Promise<SeamCTagResult> {
+    // 1 — detect zones, via the zone-detection cache on a hit or the
+    // on-demand YOLO service on a miss. Caching is strictly opt-in on
+    // tenantId being provided (never a global/shared cache -- see
+    // ZoneDetectionCache's own schema.prisma doc comment) and a pure
+    // optimization: any cache failure (SSM/S3/DB unreachable) falls
+    // through to the normal detect flow rather than failing tagging.
+    let rawZones: RawYoloZone[] | null = null;
+    if (tenantId) {
+      try {
+        const cached = await deps.cacheLookup(tenantId, pdfBuffer);
+        if (cached) {
+          rawZones = cached.zones;
+          logger.info(`[SeamC] job ${jobId}: zone-detection cache HIT -- skipping GPU detection`);
+        }
+      } catch (err) {
+        logger.warn(`[SeamC] job ${jobId}: zone-detection cache lookup failed (non-fatal, detecting normally): ${err instanceof Error ? err.message : String(err)}`);
+      }
     }
+
+    if (rawZones === null) {
+      await deps.ensureUp();
+      const uri = await deps.uploadTemp(pdfBuffer, jobId);
+      let response: DetectResponse;
+      try {
+        response = await deps.detect(uri, jobId);
+      } finally {
+        await deps.deleteTemp(uri);
+        deps.touchIdle();
+      }
+      rawZones = response.zones;
+      if (tenantId) {
+        try {
+          await deps.cacheStore(tenantId, pdfBuffer, rawZones, response.modelInfo?.weightsSha256);
+        } catch (err) {
+          logger.warn(`[SeamC] job ${jobId}: zone-detection cache store failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
+    }
+
+    const zones: OrderableZone[] = rawZones
+      .filter((z) => z.bbox && typeof z.bbox.x === 'number')
+      .map((z) => ({ pageNumber: z.page, bbox: z.bbox, zoneType: mapYoloLabel(z.label) }));
     if (zones.length === 0) {
       throw new Error('SEAM_C_NO_ZONES: detector returned no zones');
     }

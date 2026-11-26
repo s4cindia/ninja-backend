@@ -92,11 +92,30 @@ describe('autoTagIfNeeded', () => {
 
     const result = await autoTagIfNeeded(originalBuffer, 'job-1', 'doc.pdf');
 
-    expect(seamCTagService.tagPdf).toHaveBeenCalledWith(originalBuffer, 'job-1');
+    // tenantId (3rd arg, zone-detection cache opt-in) comes from the same
+    // Job row read that already fetches `input` -- the mock above returns
+    // none, so it's undefined here (caching simply doesn't activate).
+    expect(seamCTagService.tagPdf).toHaveBeenCalledWith(originalBuffer, 'job-1', undefined);
     expect(adobeAutoTagService.tagPdf).not.toHaveBeenCalled();
     expect(result.auditBuffer).toBe(taggedBuffer);
     expect(result.isTagged).toBe(false);
     expect(result.autoTagMeta).toMatchObject({ autoTagStatus: 'complete', taggerSource: 'seam-c' });
+  });
+
+  it('threads the real tenantId into seamCTagService.tagPdf when the Job row has one', async () => {
+    vi.mocked(pdfParserService.parseBuffer).mockResolvedValue({ structure: { metadata: { isTagged: false } } } as any);
+    vi.mocked(prisma.job.findUnique).mockResolvedValue({ input: {}, tenantId: 'tenant-xyz' } as any);
+    vi.mocked(seamCTagService.tagPdf).mockResolvedValue({
+      taggedPdfBuffer: taggedBuffer,
+      reportBuffer: null,
+      wordBuffer: null,
+      elementCounts: { Figure: 2 },
+      parsedFlags: {},
+    } as any);
+
+    await autoTagIfNeeded(originalBuffer, 'job-1', 'doc.pdf');
+
+    expect(seamCTagService.tagPdf).toHaveBeenCalledWith(originalBuffer, 'job-1', 'tenant-xyz');
   });
 
   it('skips tagging and returns the original buffer unchanged when the PDF is already tagged', async () => {

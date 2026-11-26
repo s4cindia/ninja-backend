@@ -164,8 +164,12 @@ export async function autoTagIfNeeded(
       logger.info(`[PdfAutoTagOrchestrator] PDF is untagged — tagging (${aiConfig.seamC.enabled ? 'Seam C' : 'Adobe'}) for job ${dbJobId}`);
     }
 
-    // Record autoTagProgress start in job.input
-    const ejStart = await prisma.job.findUnique({ where: { id: dbJobId }, select: { input: true } });
+    // Record autoTagProgress start in job.input -- tenantId read here too
+    // (not a separate query) so Seam C's own zone-detection cache
+    // (tenant-scoped, see ZoneDetectionCache's schema.prisma doc comment)
+    // can look itself up without this function's own signature having to
+    // grow a new parameter through every caller.
+    const ejStart = await prisma.job.findUnique({ where: { id: dbJobId }, select: { input: true, tenantId: true } });
     const eiStart = ejStart?.input && typeof ejStart.input === 'object' && !Array.isArray(ejStart.input)
       ? ejStart.input as Record<string, unknown> : {};
     await prisma.job.update({
@@ -191,7 +195,7 @@ export async function autoTagIfNeeded(
       autoTagResult = await runWithJobHeartbeat(dbJobId, async () => {
         if (aiConfig.seamC.enabled) {
           try {
-            const result = await seamCTagService.tagPdf(bufferToTag, dbJobId);
+            const result = await seamCTagService.tagPdf(bufferToTag, dbJobId, ejStart?.tenantId);
             taggerSource = 'seam-c';
             return result;
           } catch (seamErr) {
