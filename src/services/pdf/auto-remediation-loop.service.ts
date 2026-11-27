@@ -988,6 +988,15 @@ class AutoRemediationLoopService {
 
         logger.warn(`[AutoRemediationLoop] Reconciling orphaned post-remediation re-audit for job ${jobId} -- postRemediationStatus stuck at 'pending' with a free/stale lock (the process that applied these fixes must have died before its own re-audit finished)`);
 
+        // Deliberately NOT wrapped in its own try/catch to mark 'failed' on
+        // a throw here -- unlike runRound's own direct reaudit call above,
+        // this is a repeating watchdog sweep: a THROWN exception (as
+        // opposed to a returned comparison.success: false, handled by the
+        // write below) is left to the outer catch's existing log-and-retry
+        // behavior on purpose, since it may be transient (a storage
+        // blip) and the next tick is expected to simply succeed. The
+        // NUL-byte case this investigation started from is fixed at its
+        // real source (lib/prisma.ts's sanitizer), not here.
         const comparison = await pdfReauditService.reauditAndCompare(jobId, buffer, fileName);
         const freshJob = await prisma.job.findUnique({ where: { id: jobId } });
         const freshOutput = (freshJob?.output ?? {}) as Record<string, unknown>;
@@ -1343,7 +1352,18 @@ class AutoRemediationLoopService {
       }
     } catch (err) {
       stopReason = 'error';
-      stopErrorMessage = err instanceof Error ? err.message : String(err);
+      // Real incident (2026-11-27): the ONLY place this exception's real
+      // text ever ended up was logger.error below (CloudWatch) -- nothing
+      // queryable through this API persisted it, so diagnosing a real
+      // crash always needed AWS log access. The first real stack frame
+      // (not the error's own message line, which stack[0] duplicates) is
+      // included because it pinpoints WHERE the exception originated --
+      // often enough on its own to root-cause without a stack trace at
+      // all, as this exact incident (a Postgres 22P05 from a NUL byte
+      // reaching job.output) confirmed.
+      const message = err instanceof Error ? err.message : String(err);
+      const firstStackFrame = err instanceof Error ? err.stack?.split('\n')[1]?.trim() : undefined;
+      stopErrorMessage = firstStackFrame ? `${message} | ${firstStackFrame}` : message;
       logger.error(
         `[AutoRemediationLoop] Job ${jobId} (${driver.describe()}) stopped on error after ${roundsCompleted} round(s): ${stopErrorMessage}`
       );
@@ -1378,17 +1398,48 @@ class AutoRemediationLoopService {
       // by GET /auto-mode/status for Comparison Study). This is just a
       // marker entry in the same append-only history the manual flow uses,
       // summarized into errorMessage regardless of outcome since that's the
-      // only free-text field available on the event.
+      // only free-text field available on the event. When stopReason is
+      // 'error', stopErrorMessage (the real err.message + its first stack
+      // frame, set in the catch block above) is appended -- without this,
+      // the only place a real exception's text ever ended up was
+      // logger.error (CloudWatch), unqueryable through this API (real
+      // incident, 2026-11-27).
+      const summaryErrorMessage = `${roundsCompleted} round(s), $${costSpentUsd.toFixed(4)} spent, stopped: ${stopReason}` +
+        (stopErrorMessage ? ` -- ${stopErrorMessage}` : '');
       await remediationCycleHistoryService.logEvent({
         jobId,
         cycleNumber,
         action: 'auto_loop_summary',
         source: 'auto_loop',
         status: stopReason === 'error' ? 'failed' : 'completed',
-        errorMessage: `${roundsCompleted} round(s), $${costSpentUsd.toFixed(4)} spent, stopped: ${stopReason}`,
+        errorMessage: summaryErrorMessage,
         triggeredBy: AUTO_MODE_ACTOR,
         startedAt: loopStartedAt,
       });
+      // Also onto job.output, read-only exposed via GET /pdf/:jobId/audit/result
+      // and GET /pdf/:jobId/auto-mode/status -- same reasoning as the
+      // memory heartbeat above: a human (or run-corpus.ts) diagnosing a
+      // failed job shouldn't need CloudWatch access for either piece of
+      // evidence. Only written on the 'error' path; a clean stop has
+      // nothing worth persisting here.
+      if (stopReason === 'error') {
+        await prisma.job.findUnique({ where: { id: jobId } }).then(async (latestJob) => {
+          const latestOutput = (latestJob?.output ?? {}) as Record<string, unknown>;
+          await prisma.job.update({
+            where: { id: jobId },
+            data: {
+              output: {
+                ...latestOutput,
+                autoLoopLastError: { message: stopErrorMessage ?? 'unknown error', at: new Date().toISOString(), roundsCompleted, costSpentUsd },
+              } as unknown as Prisma.InputJsonObject,
+            },
+          });
+        }).catch((updateErr) => {
+          logger.warn(
+            `[AutoRemediationLoop] Failed to persist autoLoopLastError for job ${jobId} (non-fatal): ${updateErr instanceof Error ? updateErr.message : String(updateErr)}`
+          );
+        });
+      }
       logger.info(
         `[AutoRemediationLoop] Job ${jobId} (${driver.describe()}) finished: ${roundsCompleted} round(s), $${costSpentUsd.toFixed(4)} spent, stopped: ${stopReason}`
       );
@@ -1728,7 +1779,39 @@ class AutoRemediationLoopService {
 
     const reauditStartedAt = new Date();
     stageRef.current = `cycle${cycleNumber}_reaudit`;
-    const comparison = await pdfReauditService.reauditAndCompare(jobId, modifiedBuffer, fileName);
+    let comparison: Awaited<ReturnType<typeof pdfReauditService.reauditAndCompare>>;
+    try {
+      comparison = await pdfReauditService.reauditAndCompare(jobId, modifiedBuffer, fileName);
+    } catch (err) {
+      // Real incident (2026-11-27, Math_Weir_PDF.pdf): a THROWN exception
+      // here (distinct from the comparison.success: false RETURN case
+      // handled by the write below) left postRemediationStatus stuck at
+      // 'pending' forever -- applyApprovedSuggestions sets it to 'pending'
+      // right before this call, expecting this call to flip it to
+      // 'complete'/'failed' once it returns; an exception means it never
+      // does. reconcileStalePostRemediation's own watchdog sweep exists
+      // specifically to recover a job stuck this way, but it re-runs the
+      // IDENTICAL reaudit against the IDENTICAL buffer -- a deterministic
+      // failure (e.g. the NUL-byte Postgres rejection this incident turned
+      // out to be, now fixed at the source in lib/prisma.ts, but any OTHER
+      // deterministic failure would hit the same loop) keeps failing it
+      // forever, silently, on every sweep. Marking 'failed' here, before
+      // re-throwing, lets a deterministic failure surface once instead of
+      // looping invisibly; the re-throw preserves every bit of the outer
+      // catch's existing stopReason/stopErrorMessage/lock-release/history
+      // logging, unchanged.
+      const latestJob = await prisma.job.findUnique({ where: { id: jobId } });
+      const latestOutput = (latestJob?.output ?? {}) as Record<string, unknown>;
+      await prisma.job.update({
+        where: { id: jobId },
+        data: { output: { ...latestOutput, postRemediationStatus: 'failed' } as unknown as Prisma.InputJsonObject },
+      }).catch((updateErr) => {
+        logger.warn(
+          `[AutoRemediationLoop] Failed to mark postRemediationStatus 'failed' for job ${jobId} after a reaudit exception (non-fatal): ${updateErr instanceof Error ? updateErr.message : String(updateErr)}`
+        );
+      });
+      throw err;
+    }
     const latestJob = await prisma.job.findUnique({ where: { id: jobId } });
     const latestOutput = (latestJob?.output ?? {}) as Record<string, unknown>;
     const { resolvedCount, remainingCount, regressionCount, resolutionRate } = comparison.metrics;

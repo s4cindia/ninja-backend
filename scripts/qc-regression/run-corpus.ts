@@ -305,7 +305,7 @@ async function uploadAndStartJob(id: string, filePath: string): Promise<string> 
 async function runFullAutoMode(
   id: string,
   jobId: string
-): Promise<{ wallSeconds: number; aiCostUsd: number; rounds: number; stopReason: string }> {
+): Promise<{ wallSeconds: number; aiCostUsd: number; rounds: number; stopReason: string; lastError: { message: string; at: string } | null }> {
   await api('POST', `/pdf/${jobId}/auto-mode/start`, {});
   const start = Date.now();
   let status: any;
@@ -327,6 +327,11 @@ async function runFullAutoMode(
     aiCostUsd: status.data.autoCostSpentUsd,
     rounds: status.data.autoRoundsCompleted,
     stopReason: status.data.autoStopReason,
+    // Real err.message + first stack frame for the loop's own last
+    // 'error' stop (auto-remediation-loop.service.ts) -- without this, a
+    // job that errors here needs AWS CloudWatch access to diagnose at all
+    // (confirmed real, 2026-11-27: a NUL-byte Postgres write rejection).
+    lastError: status.data.autoLoopLastError ?? null,
   };
 }
 
@@ -433,8 +438,11 @@ async function runOne(id: string, entry: ManifestEntry, outDir: string, withAxes
   const jobId = await uploadAndStartJob(id, sourcePath);
 
   console.log(`[${id}] starting Full Auto Mode (job ${jobId})...`);
-  const { wallSeconds, aiCostUsd, rounds, stopReason } = await runFullAutoMode(id, jobId);
+  const { wallSeconds, aiCostUsd, rounds, stopReason, lastError } = await runFullAutoMode(id, jobId);
   console.log(`[${id}] settled: ${stopReason}, ${rounds} round(s), $${aiCostUsd.toFixed(2)}, ${wallSeconds.toFixed(0)}s wall time`);
+  if (stopReason === 'error' && lastError) {
+    console.log(`  [${id}] lastError: ${lastError.message} (at ${lastError.at})`);
+  }
 
   // Real bug, found live (2026-11-24): a job whose Auto Mode genuinely
   // errored (0 rounds, nothing applied) used to still get downloaded,
@@ -443,7 +451,8 @@ async function runOne(id: string, entry: ManifestEntry, outDir: string, withAxes
   // result for that title. Fail the whole title instead, so it's reported
   // as a failure (and retried) rather than quietly corrupting a baseline.
   if (stopReason === 'error') {
-    throw new Error(`[${id}] job ${jobId} Auto Mode errored (${rounds} round(s) completed) -- not a valid capture`);
+    const errSuffix = lastError ? `: ${lastError.message}` : '';
+    throw new Error(`[${id}] job ${jobId} Auto Mode errored (${rounds} round(s) completed) -- not a valid capture${errSuffix}`);
   }
 
   mkdirSync(outDir, { recursive: true });
