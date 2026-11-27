@@ -94,6 +94,90 @@ describe('authorizeJobAccess with allowTeamLeaderAction', () => {
   });
 });
 
+/**
+ * The Team-Leader-uploads-and-assigns case, end to end through the real
+ * resolveAssignedOwner: the job's owner (userId) must be the assigned
+ * Executive -- not the uploading Team Leader -- so the Executive passes as
+ * owner, and the Team Leader passes the TL tier tested against that
+ * Executive (not against themselves).
+ */
+describe('Team Leader uploads and assigns to an Executive', () => {
+  async function jobFromUpload(callerId: string, assigneeUserId: string | null) {
+    const { resolveAssignedOwner } = await import('../../../src/utils/team-roster');
+    const assignment = await resolveAssignedOwner(callerId, assigneeUserId);
+    // Same fields both PDF upload paths write (pdf.controller.ts).
+    const job = {
+      id: 'job-1', tenantId: 'tenant-1', type: 'PDF_ACCESSIBILITY',
+      userId: assignment.ownerId, assignedById: assignment.assignedById,
+    };
+    findJob.mockImplementation((async (args: { where: { id: string; userId?: string; tenantId?: string } }) => {
+      const { where } = args;
+      if (where.id !== job.id) return null;
+      if (where.userId !== undefined) return where.userId === job.userId ? job : null;
+      if (where.tenantId !== undefined) return where.tenantId === job.tenantId ? job : null;
+      return null;
+    }) as never);
+    return job;
+  }
+
+  it('makes the assigned Executive the owner, recording the Team Leader only as assignedById', async () => {
+    const job = await jobFromUpload('leader-1', 'exec-1');
+    expect(job.userId).toBe('exec-1');
+    expect(job.assignedById).toBe('leader-1');
+  });
+
+  it('lets the assigned Executive act as owner (no team lookup needed)', async () => {
+    await jobFromUpload('leader-1', 'exec-1');
+    findMembership.mockClear();
+    await expect(
+      authorizeJobAccess('job-1', 'exec-1', { tenantId: 'tenant-1', allowTeamLeaderAction: true }),
+    ).resolves.toMatchObject({ userId: 'exec-1' });
+    expect(findMembership).not.toHaveBeenCalled();
+  });
+
+  it('lets the uploading Team Leader act, tested as TL of the assigned Executive', async () => {
+    await jobFromUpload('leader-1', 'exec-1');
+    findMembership.mockClear();
+
+    await expect(
+      authorizeJobAccess('job-1', 'leader-1', { tenantId: 'tenant-1', allowTeamLeaderAction: true }),
+    ).resolves.toMatchObject({ userId: 'exec-1', assignedById: 'leader-1' });
+
+    // The TL check ran against the Executive, not the Team Leader themselves.
+    expect(findMembership).toHaveBeenCalledWith({
+      where: {
+        userId: 'leader-1',
+        teamRole: 'TEAM_LEADER',
+        team: { members: { some: { userId: 'exec-1', teamRole: 'EXECUTIVE' } } },
+      },
+    });
+  });
+
+  it('refuses a VIEWER on the same team, and another team\'s leader, on an assigned job', async () => {
+    await jobFromUpload('leader-1', 'exec-1');
+    for (const user of ['viewer-1', 'leader-2']) {
+      await expect(
+        authorizeJobAccess('job-1', user, { tenantId: 'tenant-1', allowTeamLeaderAction: true }),
+      ).rejects.toThrow('access denied');
+    }
+  });
+
+  it('refuses the assignment itself when the uploader does not lead the Executive', async () => {
+    const { resolveAssignedOwner } = await import('../../../src/utils/team-roster');
+    await expect(resolveAssignedOwner('leader-2', 'exec-1')).rejects.toMatchObject({
+      statusCode: 403, code: 'NOT_TEAM_LEADER_OF_EXECUTIVE',
+    });
+  });
+
+  it('a Team Leader self-upload (no assignee) is owned by the Team Leader', async () => {
+    const job = await jobFromUpload('leader-1', null);
+    expect(job).toMatchObject({ userId: 'leader-1', assignedById: null });
+    await expect(
+      authorizeJobAccess('job-1', 'leader-1', { tenantId: 'tenant-1', allowTeamLeaderAction: true }),
+    ).resolves.toMatchObject({ userId: 'leader-1' });
+  });
+});
+
 describe('authorizeJobForTeamLeaderAction middleware', () => {
   function run(user: Record<string, string> | undefined, jobId = 'job-1') {
     const req = { params: { jobId }, user } as unknown as Request;
