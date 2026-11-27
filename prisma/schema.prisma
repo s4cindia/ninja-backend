@@ -2965,7 +2965,9 @@ model JobCertification {
   pacFail                 Int
   // Operator-attested PDF/UA error count; must be 0.
   pacPdfUaErrorsAttested  Int
-  // [{ failure, reason, waivedById, waivedAt }], one per counted PAC failure.
+  // [{ check, count, reason, waivedById, waivedAt }], one per failed PAC
+  // check (WCAG side; PDF/UA errors must be 0). PAC's fail counts
+  // occurrences, so the waived counts must sum to pacFail.
   pacWaivers              Json
   revokedAt               DateTime?
   revokedById             String?

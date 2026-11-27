@@ -20,7 +20,13 @@ export const certifyJobSchema = {
     acrobatNotes: z.string().max(2000).optional(),
     acrobatWaivers: z.array(z.object({ ruleKey: z.string().min(1).max(200), reason })).max(100).default([]),
     pacPdfUaErrors: z.number().int().nonnegative(),
-    pacWaivers: z.array(z.object({ failure: z.string().trim().min(1).max(500), reason })).max(500).default([]),
+    // One per failed PAC check (WCAG side -- PDF/UA errors must be 0): the
+    // check's name as shown in PAC, its occurrence count, and the reason.
+    pacWaivers: z.array(z.object({
+      check: z.string().trim().min(1).max(500),
+      count: z.number().int().positive(),
+      reason,
+    })).max(200).default([]),
   }).strict(),
 };
 

@@ -14,7 +14,11 @@
  *     with no waivers for rules that didn't fail; the failures must be
  *     identifiable from the report (a parsed rule table);
  *   - PAC: the fail count is known; the operator attests 0 PDF/UA errors;
- *     if fail > 0, one waiver (failure + reason) per counted failure.
+ *     if fail > 0, one waiver per failed PAC CHECK -- { check name as shown
+ *     in PAC, count, reason } -- whose counts sum to the fail count. PAC's
+ *     `fail` counts occurrences, not checks (e.g. 13 occurrences of one
+ *     list error), hence count per check. Since PDF/UA errors must be 0,
+ *     these waivers cover WCAG-side failures only.
  *
  * Validity is re-checked whenever the certification is read or used: a
  * changed PDF or a replaced/deleted report revokes it automatically. Who
@@ -35,7 +39,8 @@ import { revokeActiveCertification, type AutoRevokeReason } from './certificatio
 import type { AcrobatRuleResult } from './acrobat-report-parser';
 
 export interface AcrobatWaiverInput { ruleKey: string; reason: string }
-export interface PacWaiverInput { failure: string; reason: string }
+/** One failed PAC check (WCAG side), as named in PAC, with its occurrence count. */
+export interface PacWaiverInput { check: string; count: number; reason: string }
 
 export interface CertifyInput {
   certifiedById: string;
@@ -212,17 +217,34 @@ export async function certifyJob(jobId: string, input: CertifyInput): Promise<Jo
   if (checkBinding(pac, 'PAC', 'PAC_REPORT') && pac) {
     if (pac.fail === null) {
       problems.push({ code: 'PAC_FAIL_COUNT_MISSING', message: "Enter the PAC report's Failed count when uploading it." });
-    } else if (input.pacWaivers.length !== pac.fail) {
-      problems.push({
-        code: 'PAC_WAIVER_COUNT_MISMATCH',
-        message: `PAC shows ${pac.fail} failure(s); record exactly one waiver (failure + reason) per failure (got ${input.pacWaivers.length}).`,
-      });
     } else {
+      const seen = new Set<string>();
+      let duplicate = false;
       for (const w of input.pacWaivers) {
-        pacWaivers.push({
-          failure: w.failure.trim(), reason: w.reason.trim(),
-          waivedById: input.certifiedById, waivedAt: new Date().toISOString(),
+        const name = w.check.trim().toLowerCase();
+        if (seen.has(name)) {
+          duplicate = true;
+          problems.push({
+            code: 'PAC_WAIVER_DUPLICATE_CHECK',
+            message: `PAC check "${w.check.trim()}" is waived more than once; give it one waiver with its total count.`,
+          });
+        }
+        seen.add(name);
+      }
+      const waived = input.pacWaivers.reduce((sum, w) => sum + w.count, 0);
+      if (waived !== pac.fail) {
+        problems.push({
+          code: 'PAC_WAIVER_COUNT_MISMATCH',
+          message: `PAC shows ${pac.fail} failed occurrence(s); the waived WCAG checks add up to ${waived}. ` +
+            'Waive each failed check once, with its count as shown in PAC.',
         });
+      } else if (!duplicate) {
+        for (const w of input.pacWaivers) {
+          pacWaivers.push({
+            check: w.check.trim(), count: w.count, reason: w.reason.trim(),
+            waivedById: input.certifiedById, waivedAt: new Date().toISOString(),
+          });
+        }
       }
     }
   }

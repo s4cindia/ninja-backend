@@ -120,22 +120,43 @@ describe('certifyJob', () => {
     ]);
   });
 
-  it('accepts PAC failures with one waiver each, recording who/when/what/why', async () => {
-    db.jobExternalPacReport.findUnique.mockResolvedValue(pacReport({ fail: 2 }));
+  it('accepts PAC failures waived per check, counts summing to the occurrence total', async () => {
+    // PAC's fail counts occurrences: 24 = 13 of one list error + 11 of a contrast check.
+    db.jobExternalPacReport.findUnique.mockResolvedValue(pacReport({ fail: 24 }));
 
     await certifyJob('job-1', input({
       pacWaivers: [
-        { failure: 'WCAG 1.4.3 contrast, p.12 caption', reason: 'Decorative text, artifacted' },
-        { failure: 'WCAG 2.4.4 link purpose, p.40', reason: 'Context provided by sentence' },
+        { check: 'List item content', count: 13, reason: 'Run-in list labels; reviewed, reads correctly' },
+        { check: '  Contrast  ', count: 11, reason: 'Decorative text, artifacted' },
       ],
     }));
 
     const data = db.jobCertification.create.mock.calls[0][0].data;
-    expect(data.pacFail).toBe(2);
+    expect(data.pacFail).toBe(24);
     expect(data.pacWaivers).toEqual([
-      { failure: 'WCAG 1.4.3 contrast, p.12 caption', reason: 'Decorative text, artifacted', waivedById: 'tl-1', waivedAt: expect.any(String) },
-      expect.objectContaining({ failure: 'WCAG 2.4.4 link purpose, p.40', waivedById: 'tl-1' }),
+      { check: 'List item content', count: 13, reason: 'Run-in list labels; reviewed, reads correctly', waivedById: 'tl-1', waivedAt: expect.any(String) },
+      { check: 'Contrast', count: 11, reason: 'Decorative text, artifacted', waivedById: 'tl-1', waivedAt: expect.any(String) },
     ]);
+  });
+
+  it.each([
+    ['too few', [{ check: 'List item content', count: 13, reason: 'covers only part' }]],
+    ['too many', [{ check: 'List item content', count: 13, reason: 'r1 reason' }, { check: 'Contrast', count: 12, reason: 'r2 reason' }]],
+    ['none', []],
+  ])('blocks when the waived counts do not sum to the fail count (%s)', async (_label, pacWaivers) => {
+    db.jobExternalPacReport.findUnique.mockResolvedValue(pacReport({ fail: 24 }));
+    expect(await blockedCodes(certifyJob('job-1', input({ pacWaivers })))).toEqual(['PAC_WAIVER_COUNT_MISMATCH']);
+  });
+
+  it('blocks a check waived twice (case-insensitive), even if the counts add up', async () => {
+    db.jobExternalPacReport.findUnique.mockResolvedValue(pacReport({ fail: 24 }));
+    const codes = await blockedCodes(certifyJob('job-1', input({
+      pacWaivers: [
+        { check: 'Contrast', count: 12, reason: 'first half' },
+        { check: 'contrast ', count: 12, reason: 'second half' },
+      ],
+    })));
+    expect(codes).toEqual(['PAC_WAIVER_DUPLICATE_CHECK']);
   });
 
   it('reports every unmet rule together, and creates nothing', async () => {
@@ -148,7 +169,7 @@ describe('certifyJob', () => {
         { ruleKey: 'FigAltText', reason: 'This rule did not fail' },
       ],
       pacPdfUaErrors: 1,
-      pacWaivers: [{ failure: 'one', reason: 'only one of two' }],
+      pacWaivers: [{ check: 'Contrast', count: 1, reason: 'only one of two' }],
     })));
 
     expect(codes.sort()).toEqual([
