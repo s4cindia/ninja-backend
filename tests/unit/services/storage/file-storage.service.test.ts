@@ -327,3 +327,54 @@ describe('FileStorageService — local-disk fallback (S3 not configured)', () =>
     expect(fs.stat).not.toHaveBeenCalled();
   });
 });
+
+describe('FileStorageService -- remediated-file-saved listeners and fingerprints', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(s3Service.isConfigured).mockReturnValue(true);
+  });
+
+  it('notifies listeners after an S3 save with the key, bytes and ETag/version fingerprint', async () => {
+    vi.mocked(s3Client.send).mockResolvedValue({ ETag: '"abc"', VersionId: 'v1' } as any);
+    const listener = vi.fn();
+    const off = fileStorageService.onRemediatedFileSaved(listener);
+    try {
+      const buf = Buffer.from('%PDF synthetic');
+      const key = await fileStorageService.saveRemediatedFile('job-1', 'doc.pdf', buf);
+      expect(listener).toHaveBeenCalledWith({
+        jobId: 'job-1', fileName: 'doc.pdf', fileRef: key, buffer: buf, fingerprint: 's3:v1:"abc"',
+      });
+    } finally {
+      off();
+    }
+  });
+
+  it('a failing listener never fails the save; unsubscribe stops notifications', async () => {
+    vi.mocked(s3Client.send).mockResolvedValue({ ETag: '"abc"' } as any);
+    const failing = vi.fn().mockRejectedValue(new Error('db down'));
+    const off = fileStorageService.onRemediatedFileSaved(failing);
+
+    await expect(fileStorageService.saveRemediatedFile('job-1', 'doc.pdf', Buffer.from('x')))
+      .resolves.toBe('job-storage/job-1/remediated/doc.pdf');
+    expect(failing).toHaveBeenCalledTimes(1);
+
+    off();
+    await fileStorageService.saveRemediatedFile('job-1', 'doc.pdf', Buffer.from('x'));
+    expect(failing).toHaveBeenCalledTimes(1);
+  });
+
+  it('getFileFingerprint HEADs (never GETs) and maps not-found to null', async () => {
+    vi.mocked(s3Client.send).mockResolvedValueOnce({ ETag: '"abc"' } as any);
+    expect(await fileStorageService.getFileFingerprint('k')).toBe('s3:-:"abc"');
+    expect((vi.mocked(s3Client.send).mock.calls[0][0] as any).constructor.name).toBe('HeadObjectCommand');
+
+    vi.mocked(s3Client.send).mockRejectedValueOnce(notFoundError('NotFound'));
+    expect(await fileStorageService.getFileFingerprint('k')).toBeNull();
+  });
+
+  it('openReadStreamWithFingerprint takes the fingerprint from the GET response itself', async () => {
+    vi.mocked(s3Client.send).mockResolvedValue({ Body: asyncIterableOf(Buffer.from('b')), ETag: '"e2"', VersionId: 'v9' } as any);
+    const { fingerprint } = await fileStorageService.openReadStreamWithFingerprint('k');
+    expect(fingerprint).toBe('s3:v9:"e2"');
+  });
+});

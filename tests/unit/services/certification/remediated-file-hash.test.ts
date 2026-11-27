@@ -3,11 +3,14 @@ import { createHash } from 'crypto';
 import { Readable } from 'stream';
 
 vi.mock('../../../../src/lib/prisma', () => ({
-  default: { job: { findUnique: vi.fn() } },
+  default: { job: { findUnique: vi.fn(), updateMany: vi.fn() } },
 }));
 
 vi.mock('../../../../src/services/storage/file-storage.service', () => ({
-  fileStorageService: { openReadStream: vi.fn(), downloadFile: vi.fn(), findRemediatedFileRef: vi.fn() },
+  fileStorageService: {
+    openReadStreamWithFingerprint: vi.fn(), getFileFingerprint: vi.fn(),
+    downloadFile: vi.fn(), findRemediatedFileRef: vi.fn(),
+  },
 }));
 
 import prisma from '../../../../src/lib/prisma';
@@ -19,11 +22,14 @@ import {
 } from '../../../../src/services/certification/remediated-file-hash';
 
 const findUnique = prisma.job.findUnique as unknown as ReturnType<typeof vi.fn>;
-const openReadStream = fileStorageService.openReadStream as unknown as ReturnType<typeof vi.fn>;
+const updateMany = prisma.job.updateMany as unknown as ReturnType<typeof vi.fn>;
+const openStream = fileStorageService.openReadStreamWithFingerprint as unknown as ReturnType<typeof vi.fn>;
+const getFileFingerprint = fileStorageService.getFileFingerprint as unknown as ReturnType<typeof vi.fn>;
 const downloadFile = fileStorageService.downloadFile as unknown as ReturnType<typeof vi.fn>;
 const findRemediatedFileRef = fileStorageService.findRemediatedFileRef as unknown as ReturnType<typeof vi.fn>;
 
 const REF = 'job-storage/job-1/remediated/a.pdf';
+const FP = 's3:-:"etag-1"';
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -54,11 +60,11 @@ describe('sha256OfStream', () => {
 describe('getCurrentRemediatedFileHash', () => {
   it('streams the bytes behind output.remediatedFileUrl and never buffers via downloadFile', async () => {
     const parts = [Buffer.from('%PDF-1.7 '), Buffer.from('synthetic '), Buffer.from('body')];
-    openReadStream.mockResolvedValue(Readable.from(parts));
+    openStream.mockResolvedValue({ stream: Readable.from(parts), fingerprint: FP });
 
     const result = await getCurrentRemediatedFileHash('job-1');
 
-    expect(openReadStream).toHaveBeenCalledWith(REF);
+    expect(openStream).toHaveBeenCalledWith(REF);
     expect(downloadFile).not.toHaveBeenCalled();
     expect(result).toEqual({
       sha256: createHash('sha256').update(Buffer.concat(parts)).digest('hex'),
@@ -75,17 +81,17 @@ describe('getCurrentRemediatedFileHash', () => {
     findRemediatedFileRef.mockResolvedValue(null);
     expect(await getCurrentRemediatedFileHash('job-1')).toBeNull();
     expect(findRemediatedFileRef).toHaveBeenCalledWith('job-1', 'book.pdf');
-    expect(openReadStream).not.toHaveBeenCalled();
+    expect(openStream).not.toHaveBeenCalled();
   });
 
   it('without a recorded URL, hashes the file the download endpoint would serve (name fallback)', async () => {
     findUnique.mockResolvedValue({ output: {}, input: { fileName: 'book.pdf' } });
     findRemediatedFileRef.mockResolvedValue('job-storage/job-1/remediated/book_remediated.pdf');
-    openReadStream.mockResolvedValue(Readable.from([Buffer.from('bytes')]));
+    openStream.mockResolvedValue({ stream: Readable.from([Buffer.from('bytes')]), fingerprint: FP });
 
     const result = await getCurrentRemediatedFileHash('job-1');
 
-    expect(openReadStream).toHaveBeenCalledWith('job-storage/job-1/remediated/book_remediated.pdf');
+    expect(openStream).toHaveBeenCalledWith('job-storage/job-1/remediated/book_remediated.pdf');
     expect(result).toEqual({ sha256: sha256Hex(Buffer.from('bytes')), fileRef: 'job-storage/job-1/remediated/book_remediated.pdf' });
   });
 
@@ -97,7 +103,7 @@ describe('getCurrentRemediatedFileHash', () => {
   });
 
   it('a recorded URL wins: no name fallback even if its object is gone', async () => {
-    openReadStream.mockRejectedValue(new Error(`File not found in S3: ${REF}`));
+    openStream.mockRejectedValue(new Error(`File not found in S3: ${REF}`));
     expect(await getCurrentRemediatedFileHash('job-1')).toBeNull();
     expect(findRemediatedFileRef).not.toHaveBeenCalled();
   });
@@ -108,17 +114,17 @@ describe('getCurrentRemediatedFileHash', () => {
   });
 
   it('returns null when the referenced object is gone (S3 not-found)', async () => {
-    openReadStream.mockRejectedValue(new Error(`File not found in S3: ${REF}`));
+    openStream.mockRejectedValue(new Error(`File not found in S3: ${REF}`));
     expect(await getCurrentRemediatedFileHash('job-1')).toBeNull();
   });
 
   it('returns null on a local ENOENT', async () => {
-    openReadStream.mockRejectedValue(Object.assign(new Error('nope'), { code: 'ENOENT' }));
+    openStream.mockRejectedValue(Object.assign(new Error('nope'), { code: 'ENOENT' }));
     expect(await getCurrentRemediatedFileHash('job-1')).toBeNull();
   });
 
   it('rethrows a real storage failure instead of reporting "no file"', async () => {
-    openReadStream.mockRejectedValue(new Error('AccessDenied'));
+    openStream.mockRejectedValue(new Error('AccessDenied'));
     await expect(getCurrentRemediatedFileHash('job-1')).rejects.toThrow('AccessDenied');
   });
 
@@ -127,7 +133,63 @@ describe('getCurrentRemediatedFileHash', () => {
       yield Buffer.from('first chunk');
       throw new Error('ECONNRESET');
     }
-    openReadStream.mockResolvedValue(Readable.from(broken()));
+    openStream.mockResolvedValue({ stream: Readable.from(broken()), fingerprint: FP });
     await expect(getCurrentRemediatedFileHash('job-1')).rejects.toThrow('ECONNRESET');
+  });
+});
+
+describe('getCurrentRemediatedFileHash -- cached hash', () => {
+  const CACHED = 'c'.repeat(64);
+  const cachedJob = (over: Record<string, unknown> = {}) => ({
+    output: { remediatedFileUrl: REF },
+    remediatedSha256: CACHED, remediatedSha256Ref: REF, remediatedSha256Fingerprint: FP, ...over,
+  });
+
+  it('same object version (HEAD fingerprint matches): returns the cached hash without reading the file', async () => {
+    findUnique.mockResolvedValue(cachedJob());
+    getFileFingerprint.mockResolvedValue(FP);
+
+    expect(await getCurrentRemediatedFileHash('job-1')).toEqual({ sha256: CACHED, fileRef: REF });
+    expect(getFileFingerprint).toHaveBeenCalledWith(REF);
+    expect(openStream).not.toHaveBeenCalled();
+    expect(updateMany).not.toHaveBeenCalled();
+  });
+
+  it('fingerprint changed: re-hashes and caches under the fingerprint of the GET that produced the bytes', async () => {
+    findUnique.mockResolvedValue(cachedJob());
+    getFileFingerprint.mockResolvedValue('s3:-:"etag-2"');
+    openStream.mockResolvedValue({ stream: Readable.from([Buffer.from('new bytes')]), fingerprint: 's3:-:"etag-3"' });
+
+    const result = await getCurrentRemediatedFileHash('job-1');
+
+    expect(result).toEqual({ sha256: sha256Hex(Buffer.from('new bytes')), fileRef: REF });
+    expect(updateMany).toHaveBeenCalledWith({
+      where: { id: 'job-1' },
+      data: expect.objectContaining({
+        remediatedSha256: sha256Hex(Buffer.from('new bytes')),
+        remediatedSha256Ref: REF,
+        remediatedSha256Fingerprint: 's3:-:"etag-3"',
+      }),
+    });
+  });
+
+  it('cache for a different stored file is ignored (no HEAD shortcut)', async () => {
+    findUnique.mockResolvedValue(cachedJob({ remediatedSha256Ref: 'job-storage/job-1/remediated/other.pdf' }));
+    openStream.mockResolvedValue({ stream: Readable.from([Buffer.from('x')]), fingerprint: FP });
+
+    expect(await getCurrentRemediatedFileHash('job-1')).toEqual({ sha256: sha256Hex(Buffer.from('x')), fileRef: REF });
+    expect(getFileFingerprint).not.toHaveBeenCalled();
+  });
+
+  it('HEAD finds the object gone: null, even with a cached hash', async () => {
+    findUnique.mockResolvedValue(cachedJob());
+    getFileFingerprint.mockResolvedValue(null);
+    expect(await getCurrentRemediatedFileHash('job-1')).toBeNull();
+  });
+
+  it('a read with no fingerprint (S3 returned neither ETag nor version) is not cached', async () => {
+    openStream.mockResolvedValue({ stream: Readable.from([Buffer.from('x')]), fingerprint: null });
+    await getCurrentRemediatedFileHash('job-1');
+    expect(updateMany).not.toHaveBeenCalled();
   });
 });

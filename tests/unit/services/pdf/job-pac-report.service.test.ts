@@ -48,12 +48,17 @@ vi.mock('../../../../src/config', () => ({
   },
 }));
 
+vi.mock('../../../../src/lib/logger', () => ({
+  logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
+}));
+
 import { Prisma } from '@prisma/client';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import prisma from '../../../../src/lib/prisma';
 import { s3Client, s3Service } from '../../../../src/services/s3.service';
 import { getCurrentRemediatedFileHash } from '../../../../src/services/certification/remediated-file-hash';
 import { revokeActiveCertification } from '../../../../src/services/certification/certification-revoke';
+import { logger } from '../../../../src/lib/logger';
 import {
   getJobPacReportUploadUrl,
   confirmJobPacReportUpload,
@@ -75,22 +80,30 @@ beforeEach(() => {
 });
 
 describe('getJobPacReportUploadUrl', () => {
-  it('presigns a deterministic, job-storage-prefixed key', async () => {
+  it('presigns a per-upload staging key under job-storage and returns its uploadId', async () => {
     mockPrisma.job.findUnique.mockResolvedValue({ id: 'job-1' });
 
     const result = await getJobPacReportUploadUrl('job-1', 'PAC Report Final.pdf', 'application/pdf');
 
+    expect(result.uploadId).toMatch(/^[0-9a-f-]{36}$/);
     expect(getSignedUrl).toHaveBeenCalledWith(
       s3Client,
       expect.objectContaining({
         input: expect.objectContaining({
           Bucket: 'ninja-epub-staging',
-          Key: 'job-storage/job-1/external-pac-report/pac-report-final.pdf',
+          Key: `job-storage/job-1/external-pac-report/uploads/${result.uploadId}/pac-report-final.pdf`,
         }),
       }),
       { expiresIn: 30 * 60 },
     );
     expect(result.uploadUrl).toBe('https://s3.example.com/signed-url');
+  });
+
+  it('issues a different uploadId (and staging key) per upload of the same file name', async () => {
+    mockPrisma.job.findUnique.mockResolvedValue({ id: 'job-1' });
+    const a = await getJobPacReportUploadUrl('job-1', 'pac.pdf', 'application/pdf');
+    const b = await getJobPacReportUploadUrl('job-1', 'pac.pdf', 'application/pdf');
+    expect(a.uploadId).not.toBe(b.uploadId);
   });
 
   it('throws a 404 AppError when the job does not exist', async () => {
@@ -111,7 +124,7 @@ describe('confirmJobPacReportUpload', () => {
     uploadedById: 'user-1',
   };
 
-  it('regenerates the deterministic key server-side, verifies via HeadObjectCommand, and upserts the report', async () => {
+  it('legacy (no uploadId): regenerates the deterministic key server-side, verifies via HeadObjectCommand, and upserts the report', async () => {
     mockPrisma.job.findUnique.mockResolvedValue({ id: 'job-1' });
     (s3Client.send as ReturnType<typeof vi.fn>).mockResolvedValue({ ContentLength: 12345 });
     mockPrisma.jobExternalPacReport.upsert.mockResolvedValue({ id: 'report-1', jobId: 'job-1', ...baseInput, size: 12345 });
@@ -143,6 +156,7 @@ describe('confirmJobPacReportUpload', () => {
       update: expect.objectContaining({ size: 12345, remediatedSha256: 'deadbeef' }),
     });
     expect(result.id).toBe('report-1');
+    expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('Legacy confirm without uploadId'));
   });
 
   it('upserts (not creates) so a re-upload after a mistake never requires a manual delete first', async () => {
@@ -249,5 +263,104 @@ describe('confirmJobPacReportUpload -- certification evidence', () => {
     mockPrisma.jobExternalPacReport.findUnique.mockResolvedValueOnce({ id: 'report-1' });
     await confirmJobPacReportUpload('job-1', input);
     expect(revokeActiveCertification).toHaveBeenCalledWith('job-1', 'pac-report-replaced');
+  });
+});
+
+describe('confirmJobPacReportUpload -- staging/confirmed split', () => {
+  const UPLOAD_ID = '6f1c2b0e-3d4a-4b5c-8d9e-0f1a2b3c4d5e';
+  const STAGING = `job-storage/job-1/external-pac-report/uploads/${UPLOAD_ID}/pac-report-final.pdf`;
+  const CONFIRMED = `job-storage/job-1/external-pac-report/confirmed/${UPLOAD_ID}.pdf`;
+  const input = {
+    uploadId: UPLOAD_ID,
+    originalFileName: 'PAC Report Final.pdf',
+    mimeType: 'application/pdf',
+    summary: { fail: 3 },
+    uploadedById: 'user-1',
+  };
+  const send = s3Client.send as ReturnType<typeof vi.fn>;
+  const commands = () => send.mock.calls.map((c) => ({ name: c[0].constructor.name, input: c[0].input }));
+
+  beforeEach(() => {
+    mockPrisma.job.findUnique.mockResolvedValue({ id: 'job-1' });
+    mockPrisma.jobExternalPacReport.upsert.mockResolvedValue({ id: 'report-1' });
+    send.mockImplementation((cmd: { constructor: { name: string } }) =>
+      Promise.resolve(cmd.constructor.name === 'HeadObjectCommand' ? { ContentLength: 777, ETag: '"e1"' } : {}));
+  });
+
+  it('copies exactly the HEADed version to an immutable confirmed key, records that key, then deletes the staging object', async () => {
+    mockPrisma.jobExternalPacReport.findUnique.mockResolvedValue(null);
+
+    await confirmJobPacReportUpload('job-1', input);
+
+    const cmds = commands();
+    expect(cmds[0]).toEqual({ name: 'HeadObjectCommand', input: { Bucket: 'ninja-epub-staging', Key: STAGING } });
+    expect(cmds[1]).toEqual({
+      name: 'CopyObjectCommand',
+      input: { Bucket: 'ninja-epub-staging', Key: CONFIRMED, CopySource: `ninja-epub-staging/${STAGING}`, CopySourceIfMatch: '"e1"' },
+    });
+    expect(mockPrisma.jobExternalPacReport.upsert.mock.calls[0][0].create).toMatchObject({ s3Key: CONFIRMED, size: 777, fail: 3 });
+    expect(cmds[2]).toEqual({ name: 'DeleteObjectCommand', input: { Bucket: 'ninja-epub-staging', Key: STAGING } });
+    expect(cmds).toHaveLength(3);
+    expect(logger.warn).not.toHaveBeenCalled();
+  });
+
+  it('replacing a report deletes the previous confirmed object (after the record switched)', async () => {
+    mockPrisma.jobExternalPacReport.findUnique.mockResolvedValue({
+      id: 'report-1', s3Key: 'job-storage/job-1/external-pac-report/confirmed/old.pdf',
+    });
+
+    await confirmJobPacReportUpload('job-1', input);
+
+    expect(revokeActiveCertification).toHaveBeenCalledWith('job-1', 'pac-report-replaced');
+    const deletes = commands().filter((c) => c.name === 'DeleteObjectCommand').map((c) => c.input.Key);
+    expect(deletes).toEqual([STAGING, 'job-storage/job-1/external-pac-report/confirmed/old.pdf']);
+  });
+
+  it('the staged file changed between HEAD and copy: 409, nothing recorded', async () => {
+    send.mockImplementation((cmd: { constructor: { name: string } }) => {
+      if (cmd.constructor.name === 'HeadObjectCommand') return Promise.resolve({ ContentLength: 1, ETag: '"e1"' });
+      return Promise.reject(Object.assign(new Error('At least one of the pre-conditions you specified did not hold'), {
+        name: 'PreconditionFailed', $metadata: { httpStatusCode: 412 },
+      }));
+    });
+
+    await expect(confirmJobPacReportUpload('job-1', input)).rejects.toMatchObject({
+      statusCode: 409, code: 'PAC_REPORT_UPLOAD_CHANGED',
+    });
+    expect(mockPrisma.jobExternalPacReport.upsert).not.toHaveBeenCalled();
+  });
+
+  it('a staging object that never landed: 400 before any copy', async () => {
+    send.mockRejectedValue(new Error('NotFound'));
+    await expect(confirmJobPacReportUpload('job-1', input)).rejects.toMatchObject({ statusCode: 400 });
+    expect(commands().map((c) => c.name)).toEqual(['HeadObjectCommand']);
+  });
+
+  it('a file name without a usable extension gets a .bin confirmed key', async () => {
+    mockPrisma.jobExternalPacReport.findUnique.mockResolvedValue(null);
+    await confirmJobPacReportUpload('job-1', { ...input, originalFileName: 'report' });
+    expect(mockPrisma.jobExternalPacReport.upsert.mock.calls[0][0].create.s3Key)
+      .toBe(`job-storage/job-1/external-pac-report/confirmed/${UPLOAD_ID}.bin`);
+  });
+});
+
+describe('deleteJobPacReport -- S3 cleanup', () => {
+  it('deletes the stored object after the record', async () => {
+    mockPrisma.jobExternalPacReport.delete.mockResolvedValue({ id: 'report-1', s3Key: 'job-storage/job-1/external-pac-report/confirmed/x.pdf' });
+    (s3Client.send as ReturnType<typeof vi.fn>).mockResolvedValue({});
+
+    await expect(deleteJobPacReport('job-1')).resolves.toBe(true);
+
+    const call = (s3Client.send as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    expect(call.constructor.name).toBe('DeleteObjectCommand');
+    expect(call.input).toEqual({ Bucket: 'ninja-epub-staging', Key: 'job-storage/job-1/external-pac-report/confirmed/x.pdf' });
+  });
+
+  it('a failed S3 delete is logged, not thrown (the record is already gone)', async () => {
+    mockPrisma.jobExternalPacReport.delete.mockResolvedValue({ id: 'report-1', s3Key: 'k' });
+    (s3Client.send as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('AccessDenied'));
+
+    await expect(deleteJobPacReport('job-1')).resolves.toBe(true);
+    expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('Could not delete deleted report k'));
   });
 });

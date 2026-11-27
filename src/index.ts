@@ -20,11 +20,16 @@ import { integrityCheckService } from './services/integrity/integrity-check.serv
 import { plagiarismCheckService } from './services/plagiarism/plagiarism-check.service';
 import { getWorkerFlags } from './config/process-role';
 import { ensureCanvasFontAliases } from './lib/canvas-font-aliases';
+import { registerRemediatedFileSaveHook } from './services/certification/remediated-file-save-hook';
 
 // Must run before any PDF page render (contrast detection/verification,
 // alt-text page-render-crop) -- see canvas-font-aliases.ts's own doc
 // comment for why this is required on Linux, including in production.
 ensureCanvasFontAliases();
+
+// Both roles save remediated files (web: manual apply; worker: Auto Mode),
+// so both register the EPUB-from-PDF certification's post-save hook.
+registerRemediatedFileSaveHook();
 
 // Web/worker process split -- see the doc comment on config.processRole.
 // null (unset) is the legacy/monolith default: runs both the HTTP server

@@ -254,10 +254,10 @@ export class PacReportController {
   async confirmExternalUpload(req: AuthenticatedRequest, res: Response): Promise<Response> {
     try {
       const { jobId } = req.params;
-      const { originalFileName, mimeType, summary } = req.body as JobPacReportConfirmBody;
+      const { uploadId, originalFileName, mimeType, summary } = req.body as JobPacReportConfirmBody;
       const uploadedById = req.user!.id;
 
-      const report = await confirmJobPacReportUpload(jobId, { originalFileName, mimeType, summary, uploadedById });
+      const report = await confirmJobPacReportUpload(jobId, { uploadId, originalFileName, mimeType, summary, uploadedById });
       return res.status(201).json({ success: true, data: report });
     } catch (err: unknown) {
       if (err instanceof AppError) {

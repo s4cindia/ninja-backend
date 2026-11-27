@@ -246,6 +246,19 @@ model Job {
   // identifier meanwhile and cannot be delivered until this is set.
   epubIsbn String?
 
+  // Cached sha256 of the remediated PDF (EPUB-from-certified-PDF, B3b), so
+  // certification checks don't re-hash a multi-hundred-MB file on every
+  // read. Valid only for the storage object it names: remediatedSha256Ref
+  // is the S3 key / local path, remediatedSha256Fingerprint that object's
+  // ETag + versionId (S3) or size + mtime (local) when it was hashed. A
+  // reader HEADs the object and re-hashes only if the fingerprint differs.
+  // Written by the post-save hook on fileStorageService.saveRemediatedFile
+  // and by remediated-file-hash.ts on a cache miss.
+  remediatedSha256            String?
+  remediatedSha256Ref         String?
+  remediatedSha256Fingerprint String?
+  remediatedSha256At          DateTime?
+
   // Remediation-cycle concurrency lock -- prevents two overlapping "apply
   // fixes -> re-audit -> re-run AI analysis" cycles on the same job from
   // interleaving their job.output writes with no ordering guarantee (the
