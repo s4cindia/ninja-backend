@@ -5,6 +5,7 @@
  */
 
 import { PrismaClient, Prisma } from '@prisma/client';
+import { logger } from './logger';
 
 declare global {
   var prisma: PrismaClient | undefined;
@@ -71,6 +72,33 @@ export function stripNulBytes<T>(value: T): T {
   return value;
 }
 
+/**
+ * Counts NUL bytes stripNulBytes would remove, without mutating anything --
+ * kept separate from stripNulBytes itself so that function's existing
+ * simple `(value) => value` signature and tests stay untouched. Used only
+ * to decide whether a write actually needed stripping, for the log line
+ * below -- this incident (see stripNulBytes's own doc comment) has only
+ * ever been observed once; logging a count each time it recurs tells us
+ * whether it's a one-off or an ongoing, measurable rate worth deeper
+ * investigation (which model/field it keeps showing up on).
+ */
+export function countNulBytes(value: unknown): number {
+  if (typeof value === 'string') {
+    let count = 0;
+    for (let i = 0; i < value.length; i++) {
+      if (value.charCodeAt(i) === 0) count++;
+    }
+    return count;
+  }
+  if (Array.isArray(value)) {
+    return value.reduce((sum: number, v) => sum + countNulBytes(v), 0);
+  }
+  if (value !== null && typeof value === 'object' && value.constructor === Object) {
+    return Object.values(value as Record<string, unknown>).reduce((sum: number, v) => sum + countNulBytes(v), 0);
+  }
+  return 0;
+}
+
 // Cast back to the plain PrismaClient type every existing call site in this
 // codebase already declares (constructor params, test doubles, etc.) --
 // $extends's own return type structurally drops the legacy $on/$use methods
@@ -84,9 +112,14 @@ const prisma = basePrisma.$extends({
   name: 'strip-nul-bytes',
   query: {
     $allModels: {
-      async $allOperations({ args, query }) {
+      async $allOperations({ model, operation, args, query }) {
         if (args && typeof args === 'object' && 'data' in args) {
-          (args as { data: unknown }).data = stripNulBytes((args as { data: unknown }).data);
+          const data = (args as { data: unknown }).data;
+          const nulCount = countNulBytes(data);
+          if (nulCount > 0) {
+            logger.warn(`[Prisma] strip-nul-bytes: removed ${nulCount} NUL byte(s) from ${model}.${operation}'s write payload`);
+          }
+          (args as { data: unknown }).data = stripNulBytes(data);
         }
         return query(args);
       },
