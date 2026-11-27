@@ -21,6 +21,7 @@ import { logger } from '../../lib/logger';
 import { config } from '../../config';
 import { s3Client, s3Service } from '../s3.service';
 import { AppError } from '../../utils/app-error';
+import { getCurrentRemediatedFileHash } from '../certification/remediated-file-hash';
 
 const JOB_PAC_REPORT_PREFIX = 'job-storage';
 // Matches comparison-study.service.ts's own UPLOAD_URL_EXPIRY_SECONDS --
@@ -96,6 +97,10 @@ export async function confirmJobPacReportUpload(
     throw AppError.badRequest('Uploaded file not found in S3 -- the upload may have failed or not completed yet');
   }
 
+  // Bind the report to the exact remediated PDF it was run on (EPUB-from-
+  // certified-PDF gate). Null when the job has no remediated file yet.
+  const remediated = await getCurrentRemediatedFileHash(jobId);
+
   const data = {
     s3Key,
     originalFileName: input.originalFileName,
@@ -107,6 +112,7 @@ export async function confirmJobPacReportUpload(
     humanRequired: input.summary.humanRequired ?? null,
     notApplicable: input.summary.notApplicable ?? null,
     uploadedById: input.uploadedById,
+    remediatedSha256: remediated?.sha256 ?? null,
   };
 
   const report = await prisma.jobExternalPacReport.upsert({

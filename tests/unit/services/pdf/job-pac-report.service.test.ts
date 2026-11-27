@@ -34,6 +34,10 @@ vi.mock('@aws-sdk/s3-request-presigner', () => ({
   getSignedUrl: vi.fn(() => Promise.resolve('https://s3.example.com/signed-url')),
 }));
 
+vi.mock('../../../../src/services/certification/remediated-file-hash', () => ({
+  getCurrentRemediatedFileHash: vi.fn(() => Promise.resolve({ sha256: 'deadbeef', fileRef: 'job-storage/job-1/remediated/x.pdf' })),
+}));
+
 vi.mock('../../../../src/config', () => ({
   config: {
     s3Bucket: 'ninja-epub-staging',
@@ -44,6 +48,7 @@ import { Prisma } from '@prisma/client';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import prisma from '../../../../src/lib/prisma';
 import { s3Client, s3Service } from '../../../../src/services/s3.service';
+import { getCurrentRemediatedFileHash } from '../../../../src/services/certification/remediated-file-hash';
 import {
   getJobPacReportUploadUrl,
   confirmJobPacReportUpload,
@@ -128,8 +133,9 @@ describe('confirmJobPacReportUpload', () => {
         humanRequired: 1,
         notApplicable: 0,
         uploadedById: 'user-1',
+        remediatedSha256: 'deadbeef',
       }),
-      update: expect.objectContaining({ size: 12345 }),
+      update: expect.objectContaining({ size: 12345, remediatedSha256: 'deadbeef' }),
     });
     expect(result.id).toBe('report-1');
   });
@@ -143,6 +149,17 @@ describe('confirmJobPacReportUpload', () => {
     await confirmJobPacReportUpload('job-1', baseInput);
 
     expect(mockPrisma.jobExternalPacReport.upsert).toHaveBeenCalledTimes(2);
+  });
+
+  it('records a null remediatedSha256 when the job has no remediated file yet', async () => {
+    mockPrisma.job.findUnique.mockResolvedValue({ id: 'job-1' });
+    (s3Client.send as ReturnType<typeof vi.fn>).mockResolvedValue({ ContentLength: 1 });
+    mockPrisma.jobExternalPacReport.upsert.mockResolvedValue({ id: 'report-1' });
+    vi.mocked(getCurrentRemediatedFileHash).mockResolvedValueOnce(null);
+
+    await confirmJobPacReportUpload('job-1', baseInput);
+
+    expect(mockPrisma.jobExternalPacReport.upsert.mock.calls[0][0].create.remediatedSha256).toBeNull();
   });
 
   it('throws a 404 AppError when the job does not exist', async () => {
