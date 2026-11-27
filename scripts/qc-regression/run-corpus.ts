@@ -29,7 +29,7 @@
  * (defaults to the staging API), QC_PYTHON (defaults to "python").
  */
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { createReadStream, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 
 // ---------------------------------------------------------------------------
@@ -261,17 +261,25 @@ async function uploadAndStartJob(id: string, filePath: string): Promise<string> 
     fileSize: size,
   });
 
-  const buf = readFileSync(filePath);
-  // S3 PUT is idempotent (same bytes, same key) -- safe to retry on a
-  // transient network-level failure, same reasoning as api()'s own retry.
+  // Streamed, not buffered whole into memory -- a 60MB+ corpus title read
+  // via readFileSync, on top of everything else this session runs
+  // concurrently, was enough to trip Claude Code's own low-memory
+  // background-task reaper mid-upload (2026-11-27, T3's 408pp/60MB file).
+  // A fresh stream per attempt: a Node ReadStream is single-use, unlike the
+  // Buffer this replaces, which the old retry loop re-sent byte-for-byte on
+  // each attempt. S3 PUT is idempotent (same bytes, same key) -- safe to
+  // retry on a transient network-level failure, same reasoning as api()'s
+  // own retry. `duplex: 'half'` is required by Node's fetch/undici whenever
+  // the body is a stream rather than a Buffer/string.
   let putOk = false;
   for (let attempt = 1; attempt <= 4 && !putOk; attempt++) {
     try {
       const put = await fetch(presign.data.uploadUrl, {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/pdf' },
-        body: buf,
-      });
+        headers: { 'Content-Type': 'application/pdf', 'Content-Length': String(size) },
+        body: createReadStream(filePath),
+        duplex: 'half',
+      } as RequestInit);
       if (!put.ok) throw new Error(`HTTP ${put.status}`);
       putOk = true;
     } catch (err) {
