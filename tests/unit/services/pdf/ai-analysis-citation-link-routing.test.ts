@@ -5,12 +5,15 @@ import type { AuditIssue } from '../../../../src/services/audit/base-audit.servi
 import type { PdfParseResult } from '../../../../src/services/pdf/pdf-comprehensive-parser.service';
 
 /**
- * Regression coverage for CITATION-MISSING-LINK's dispatch: routes to the
- * deterministic apply-to-pdf fix whenever citationData is present
- * (fixCitationLink's own resolveCitationDestination is the REAL gate, at
- * apply time -- this dispatch is optimistic, same shape as
- * LINK_MISSING_ANNOTATION_CODES/CROSS_REFERENCE_MISSING_LINK_CODES), but
- * never generates a suggestion with no citationData at all.
+ * Regression coverage for CITATION-MISSING-LINK's dispatch: routes to a
+ * deterministic, rule-based guidance-only suggestion whenever citationData
+ * is present (fixCitationLink's own resolveCitationDestination is the REAL
+ * resolution gate, same shape as LINK_MISSING_ANNOTATION_CODES/
+ * CROSS_REFERENCE_MISSING_LINK_CODES), but never generates a suggestion
+ * with no citationData at all. Guidance-only by default since 2026-11-27:
+ * creating new links is outside the scope of making existing content
+ * accessible -- see link-missing-annotation-routing.test.ts's own doc
+ * comment for the real regression this closed.
  */
 
 // dispatchIssue is private; exercise via cast, same pattern as every other
@@ -50,7 +53,7 @@ function buildParsed(): PdfParseResult {
 }
 
 describe('dispatchIssue: CITATION-MISSING-LINK routing', () => {
-  it('routes to the deterministic rule-based apply-to-pdf fix when citationData is present', async () => {
+  it('routes to the deterministic rule-based guidance-only suggestion when citationData is present', async () => {
     const parsed = buildParsed();
     const issue = citationIssue({ authorText: 'Karsaklian', year: '2017', fullText: '(Karsaklian 2017)' });
 
@@ -58,7 +61,8 @@ describe('dispatchIssue: CITATION-MISSING-LINK routing', () => {
 
     expect(res).not.toBeNull();
     expect(res.suggestionType).toBe('citation-link-fix');
-    expect(res.applyMode).toBe('apply-to-pdf');
+    expect(res.applyMode).toBe('guidance-only');
+    expect(res.requiresManualReview).toBe(true);
     expect(res.model).toBe('rule-based');
     expect(res.confidence).toBe(1.0);
   });

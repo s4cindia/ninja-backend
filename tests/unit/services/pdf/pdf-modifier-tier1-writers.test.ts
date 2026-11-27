@@ -55,6 +55,72 @@ describe('setLinkAltText', () => {
     expect((contents as PDFHexString).decodeText()).toBe('Download the 2024 annual report');
   });
 
+  // User-requested fix direction, 2026-11-27: set the enclosing Link
+  // struct element's own /Alt too, alongside /Contents on the annotation
+  // -- never the page's own visible text (this annotation's /Rect-based
+  // match is resolved by position alone, the content stream is untouched).
+  it("also sets /Alt on the Link annotation's enclosing struct element when its /StructParent resolves", async () => {
+    const doc = await PDFDocument.create();
+    doc.addPage([400, 600]);
+
+    const linkRef = doc.context.register(
+      doc.context.obj({
+        Type: PDFName.of('Annot'),
+        Subtype: PDFName.of('Link'),
+        Rect: doc.context.obj([100, 400, 300, 420]),
+        StructParent: 5,
+      })
+    );
+    doc.getPage(0).node.set(PDFName.of('Annots'), doc.context.obj([linkRef]));
+
+    const linkStructElemRef = doc.context.register(
+      doc.context.obj({ Type: PDFName.of('StructElem'), S: PDFName.of('Link') })
+    );
+    const structTreeRootRef = doc.context.register(
+      doc.context.obj({
+        Type: PDFName.of('StructTreeRoot'),
+        ParentTree: doc.context.obj({ Nums: [5, linkStructElemRef] }),
+      })
+    );
+    doc.catalog.set(PDFName.of('StructTreeRoot'), structTreeRootRef);
+
+    const issue = baseIssue({
+      code: 'LINK-GENERIC-TEXT',
+      pageNumber: 1,
+      boundingBox: { x: 100, y: 180, width: 200, height: 20, pageWidth: 400, pageHeight: 600 },
+    });
+
+    const result = await pdfModifierService.setLinkAltText(doc, issue, 'Download the 2024 annual report');
+
+    expect(result.success).toBe(true);
+    const linkDict = doc.context.lookup(linkRef) as PDFDict;
+    expect((linkDict.get(PDFName.of('Contents')) as PDFHexString).decodeText()).toBe('Download the 2024 annual report');
+    const structElemDict = doc.context.lookup(linkStructElemRef) as PDFDict;
+    const alt = structElemDict.get(PDFName.of('Alt'));
+    expect(alt).toBeInstanceOf(PDFHexString);
+    expect((alt as PDFHexString).decodeText()).toBe('Download the 2024 annual report');
+  });
+
+  it("still succeeds via /Contents alone when the annotation has no /StructParent to resolve an /Alt target from", async () => {
+    const doc = await PDFDocument.create();
+    doc.addPage([400, 600]);
+
+    const linkRef = doc.context.register(
+      doc.context.obj({ Type: PDFName.of('Annot'), Subtype: PDFName.of('Link'), Rect: doc.context.obj([100, 400, 300, 420]) })
+    );
+    doc.getPage(0).node.set(PDFName.of('Annots'), doc.context.obj([linkRef]));
+
+    const issue = baseIssue({
+      code: 'LINK-GENERIC-TEXT',
+      pageNumber: 1,
+      boundingBox: { x: 100, y: 180, width: 200, height: 20, pageWidth: 400, pageHeight: 600 },
+    });
+
+    const result = await pdfModifierService.setLinkAltText(doc, issue, 'Download the 2024 annual report');
+    expect(result.success).toBe(true);
+    expect(((doc.context.lookup(linkRef) as PDFDict).get(PDFName.of('Contents')) as PDFHexString).decodeText()).toBe('Download the 2024 annual report');
+  });
+
   it('picks the closest Link annotation when several exist on the page', async () => {
     const doc = await PDFDocument.create();
     doc.addPage([400, 600]);

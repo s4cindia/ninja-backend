@@ -3161,46 +3161,51 @@ class AiAnalysisService {
     }
 
     if (LINK_MISSING_ANNOTATION_CODES.has(code)) {
-      // Deterministic, but genuinely declines (not "applies") most real
-      // cases -- fixLinkMissingAnnotation itself is the actual gate (no
-      // enclosing MCID, URL shares an operand with other prose, enclosing
-      // struct element's /S or /K no longer matches what was analyzed,
-      // etc.), same as every other apply-to-pdf fixer in this file that
-      // can discover at apply-time it can't safely proceed. Returning the
-      // suggestion unconditionally here (rather than pre-checking and
-      // returning null) keeps this issue visible to the user as "will be
-      // attempted" rather than silently reclassifying it as guidance-only
-      // before the real writer has even tried.
+      // Real regression, 2026-11-27 (T2/Math_Weir_PDF.pdf): auto-applying
+      // this unconditionally creates a brand-new /Link annotation using
+      // the pre-existing bare text (a raw URL, or generic prose) as its
+      // own visible link text, which immediately re-trips
+      // LINK-URL-AS-TEXT/LINK-GENERIC-TEXT/LINK-NOT-DESCRIPTIVE on
+      // re-audit -- resolving one Matterhorn checkpoint while mechanically
+      // reintroducing another at the same spot. Accessibility requires
+      // EXISTING links to be made accessible, not new links to be
+      // invented, so this now defaults to guidance-only -- note
+      // applyMode: 'guidance-only' is a hard block on Ninja's own apply
+      // path (pdf-ai-analysis.controller.ts's applySuggestion rejects it
+      // outright), same as every other guidance-only suggestion in this
+      // file: the operator acts on the guidance text themselves in their
+      // authoring tool (Acrobat Pro), Ninja never creates this annotation.
       if (!issue.linkCompletenessData?.url) return null;
       return {
         suggestionType: 'link-missing-annotation-fix',
-        guidance: 'This text reads as a hyperlink but has no underlying Link annotation -- a real Link annotation and matching structure element will be created for it.',
+        guidance: `This text reads as a hyperlink ("${issue.linkCompletenessData.url.slice(0, 80)}") but has no underlying Link annotation. Creating new links is outside the scope of making existing content accessible -- add a real Link annotation to this text yourself in Acrobat Pro or your authoring tool, targeting this URL.`,
         confidence: 1.0,
-        rationale: 'Deterministic fix -- the validator already extracted and validated the URL text; no AI judgment needed to create the annotation and structure element, only to locate the URL\'s own exact bytes in the content stream (handled by findUrlOperatorRun, which declines rather than guesses when the URL shares its own text-show operand with other prose)',
+        rationale: 'Deterministic -- the validator already extracted and validated the URL text, so locating it in the content stream is no longer the issue. Defaults to guidance-only: creating a new annotation out of this text as its own visible link label can itself trip a link-text-quality check (LINK-URL-AS-TEXT/LINK-GENERIC-TEXT) on re-audit -- confirmed real on a 377-page title.',
         model: 'rule-based',
-        applyMode: 'apply-to-pdf',
+        applyMode: 'guidance-only',
+        requiresManualReview: true,
       };
     }
 
     if (CROSS_REFERENCE_MISSING_LINK_CODES.has(code)) {
-      // Same "optimistic at dispatch, real gate at apply-time" shape as
-      // LINK_MISSING_ANNOTATION_CODES just above -- fixCrossReferenceLink's
-      // own resolveCrossReferenceDestination is the actual gate (declines
-      // on anything but an unambiguous single match), not this dispatch.
-      // Only chapter/section/page/pg/p have any resolution path at all
-      // (see that method's own doc comment) -- figure/fig/table fall
-      // through to null here, staying manual-review-only exactly as before
-      // this feature existed.
+      // Same link-creation-is-opt-in reasoning as LINK_MISSING_ANNOTATION_CODES
+      // just above. fixCrossReferenceLink's own resolveCrossReferenceDestination
+      // is the real resolution gate (declines on anything but an unambiguous
+      // single match), not this dispatch. Only chapter/section/page/pg/p have
+      // any resolution path at all (see that method's own doc comment) --
+      // figure/fig/table fall through to null here, staying manual-review-only
+      // exactly as before this feature existed.
       if (!issue.crossReferenceData) return null;
       const { keyword } = issue.crossReferenceData;
       if (!['chapter', 'section', 'page', 'pg', 'p'].includes(keyword)) return null;
       return {
         suggestionType: 'cross-reference-link-fix',
-        guidance: 'This text reads as a cross-reference with no underlying link -- a real internal Link annotation will be created if its target can be resolved unambiguously.',
+        guidance: 'This text reads as a cross-reference with no underlying link. Creating new links is outside the scope of making existing content accessible -- add a real internal Link annotation to this text yourself in Acrobat Pro or your authoring tool, targeting its referenced destination.',
         confidence: 1.0,
-        rationale: 'Deterministic fix when resolvable -- the destination is found via this document\'s own real tagged headings or /PageLabels, never guessed; declines rather than guesses when more than one match exists or none at all',
+        rationale: 'Resolvable deterministically when wanted -- the destination is found via this document\'s own real tagged headings or /PageLabels, never guessed. Defaults to guidance-only, same reasoning as link-missing-annotation-fix above.',
         model: 'rule-based',
-        applyMode: 'apply-to-pdf',
+        applyMode: 'guidance-only',
+        requiresManualReview: true,
       };
     }
 
@@ -3242,19 +3247,20 @@ class AiAnalysisService {
     }
 
     if (CITATION_MISSING_LINK_CODES.has(code)) {
-      // Same "optimistic at dispatch, real gate at apply-time" shape as
+      // Same link-creation-is-opt-in reasoning as
       // LINK_MISSING_ANNOTATION_CODES/CROSS_REFERENCE_MISSING_LINK_CODES
       // above -- fixCitationLink's own resolveCitationDestination is the
-      // actual gate (declines on anything but an unambiguous single
-      // /REF-entry match), not this dispatch.
+      // real resolution gate (declines on anything but an unambiguous
+      // single /REF-entry match), not this dispatch.
       if (!issue.citationData) return null;
       return {
         suggestionType: 'citation-link-fix',
-        guidance: 'This text reads as an in-text citation with no underlying link -- a real internal Link annotation will be created if its reference-list entry can be resolved unambiguously.',
+        guidance: 'This text reads as an in-text citation with no underlying link. Creating new links is outside the scope of making existing content accessible -- add a real internal Link annotation to this citation yourself in Acrobat Pro or your authoring tool, targeting its reference-list entry.',
         confidence: 1.0,
-        rationale: 'Deterministic fix when resolvable -- the destination is found via this document\'s own real tagged /REF reference-list entries, matched on author surname + year (with any disambiguating suffix letter); declines rather than guesses when more than one entry matches or none at all',
+        rationale: 'Resolvable deterministically when wanted -- the destination is found via this document\'s own real tagged /REF reference-list entries, matched on author surname + year (with any disambiguating suffix letter). Defaults to guidance-only, same reasoning as link-missing-annotation-fix above.',
         model: 'rule-based',
-        applyMode: 'apply-to-pdf',
+        applyMode: 'guidance-only',
+        requiresManualReview: true,
       };
     }
 

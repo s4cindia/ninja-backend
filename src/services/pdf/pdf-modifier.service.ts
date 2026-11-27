@@ -1478,6 +1478,7 @@ export class PdfModifierService {
         }
         const best = candidates[0];
         best.set(PDFName.of('Contents'), PDFHexString.fromText(altText));
+        this.trySetLinkStructAlt(doc, best, altText);
         logger.info(`[PdfModifier] Set link description on page ${targetPage} (sole undescribed-link match, no position data)`);
         return {
           success: true,
@@ -1559,6 +1560,7 @@ export class PdfModifierService {
           ? contentsEntry.decodeText()
           : 'None';
       best.set(PDFName.of('Contents'), PDFHexString.fromText(altText));
+      this.trySetLinkStructAlt(doc, best, altText);
 
       logger.info(`[PdfModifier] Set link description on page ${targetPage} (positional match, ${bestDist.toFixed(1)}pt from target)`);
 
@@ -1576,6 +1578,82 @@ export class PdfModifierService {
         error: error instanceof Error ? error.message : String(error),
       };
     }
+  }
+
+  /**
+   * Best-effort: also sets a Link annotation's enclosing structure
+   * element's own /Alt to the same accessible description, alongside
+   * /Contents on the annotation itself (set by setLinkAltText's two call
+   * sites above) -- never the visible page text, which both call sites
+   * already leave untouched. PDF/UA readers can source a Link's
+   * accessible name from either /Contents or the struct element's /Alt;
+   * setting both is strictly additive. Silently no-ops when the
+   * annotation has no /StructParent, or the key doesn't resolve to a real
+   * struct element -- /Contents alone already satisfies MATTERHORN-28-004.
+   */
+  private trySetLinkStructAlt(doc: PDFDocument, linkAnnot: PDFDict, altText: string): void {
+    const structParentRaw = linkAnnot.get(PDFName.of('StructParent'));
+    const structParent = structParentRaw instanceof PDFRef ? doc.context.lookup(structParentRaw) : structParentRaw;
+    if (!(structParent instanceof PDFNumber)) return;
+    const structElem = this.resolveStructElementByAnnotationStructParent(doc, structParent.asNumber());
+    if (!structElem) return;
+    structElem.set(PDFName.of('Alt'), PDFHexString.fromText(altText));
+  }
+
+  /**
+   * Resolves a standalone object's /StructParent key back to its structure
+   * element, via /StructTreeRoot's own top-level /ParentTree -- a separate,
+   * document-wide keyspace from a page's own MCID-indexed ParentTree array
+   * (pdf-structure-writer.service.ts's appendAnnotationParentTreeEntry is
+   * the only place in this codebase that assigns one of these keys; see its
+   * own doc comment for the two-mechanisms distinction). Walks the whole
+   * /Kids hierarchy rather than assuming a flat tree, same shape as
+   * pdf-structure-writer.service.ts's own page-indexed ParentTree walk.
+   */
+  private resolveStructElementByAnnotationStructParent(doc: PDFDocument, key: number): PDFDict | null {
+    const structTreeRoot = this.getStructTreeRoot(doc);
+    if (!structTreeRoot) return null;
+    const parentTreeRaw = structTreeRoot.get(PDFName.of('ParentTree'));
+    const parentTreeDict = parentTreeRaw instanceof PDFRef ? doc.context.lookup(parentTreeRaw) : parentTreeRaw;
+    if (!(parentTreeDict instanceof PDFDict)) return null;
+
+    const findInNode = (node: PDFDict): PDFDict | null => {
+      const numsRaw = node.get(PDFName.of('Nums'));
+      if (numsRaw) {
+        const numsArr = numsRaw instanceof PDFRef ? doc.context.lookup(numsRaw) : numsRaw;
+        if (!(numsArr instanceof PDFArray)) return null;
+        const raw = numsArr.asArray();
+        for (let i = 0; i < raw.length; i += 2) {
+          const keyEntry = raw[i] instanceof PDFRef ? doc.context.lookup(raw[i] as PDFRef) : raw[i];
+          const foundKey = keyEntry instanceof PDFNumber ? keyEntry.asNumber() : null;
+          if (foundKey !== key) continue;
+          const valRaw = raw[i + 1];
+          const val = valRaw instanceof PDFRef ? doc.context.lookup(valRaw) : valRaw;
+          return val instanceof PDFDict ? val : null;
+        }
+        return null;
+      }
+      const kidsRaw = node.get(PDFName.of('Kids'));
+      if (!kidsRaw) return null;
+      const kids = kidsRaw instanceof PDFRef ? doc.context.lookup(kidsRaw) : kidsRaw;
+      if (!(kids instanceof PDFArray)) return null;
+      for (const kidRef of kids.asArray()) {
+        const kid = kidRef instanceof PDFRef ? doc.context.lookup(kidRef) : kidRef;
+        if (!(kid instanceof PDFDict)) continue;
+        const limitsRaw = kid.get(PDFName.of('Limits'));
+        const limits = limitsRaw instanceof PDFRef ? doc.context.lookup(limitsRaw) : limitsRaw;
+        if (limits instanceof PDFArray) {
+          const bounds = limits.asArray();
+          const lo = bounds[0] instanceof PDFNumber ? (bounds[0] as PDFNumber).asNumber() : null;
+          const hi = bounds[1] instanceof PDFNumber ? (bounds[1] as PDFNumber).asNumber() : null;
+          if (lo !== null && hi !== null && (key < lo || key > hi)) continue;
+        }
+        const found = findInNode(kid);
+        if (found) return found;
+      }
+      return null;
+    };
+    return findInNode(parentTreeDict);
   }
 
   /**

@@ -11186,6 +11186,17 @@ export class PdfStructureWriterService {
 
       page.node.set(PDFName.of('Annots'), doc.context.obj([...existingAnnotRefs, annotRef]));
 
+      // QC F-21 (Matterhorn 28-008/28-009, PDF32000-1:2008 §12.5/§14.8.4.2):
+      // any page getting its first-ever annotation needs /Tabs=/S too, or
+      // keyboard/screen-reader tab order is undefined on it -- confirmed
+      // real on T2 (Math_Weir_PDF.pdf, 2026-11-27): every one of the link-
+      // creation fixes below used to leave this unset, so the very
+      // annotation meant to resolve one Matterhorn checkpoint tripped
+      // TAB-ORDER-NOT-STRUCTURE on re-audit. Shared by every caller of this
+      // method (buildLinkAnnotationFix and the direct-MCID callers alike),
+      // same mechanical set fixTabOrder itself performs.
+      page.node.set(PDFName.of('Tabs'), PDFName.of('S'));
+
       let newContent = originalContent;
       for (const edit of [...splice.edits].sort((a, b) => b.offset - a.offset)) {
         newContent = newContent.slice(0, edit.offset) + edit.text + newContent.slice(edit.offset);

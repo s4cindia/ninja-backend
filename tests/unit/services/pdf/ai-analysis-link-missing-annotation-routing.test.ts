@@ -6,11 +6,15 @@ import type { PdfParseResult } from '../../../../src/services/pdf/pdf-comprehens
 
 /**
  * Regression coverage for LINK-MISSING-ANNOTATION's dispatch routing --
- * Slice 4 of the fixer (Matterhorn 28-011). Deterministic, rule-based
- * apply-to-pdf fix: no AI judgment needed, the validator already extracted
- * and validated the URL -- fixLinkMissingAnnotation itself is the real
- * gate (see pdf-structure-writer-link-missing-annotation.test.ts), not any
- * decision made here.
+ * Slice 4 of the fixer (Matterhorn 28-011). Deterministic, rule-based, but
+ * guidance-only by default (2026-11-27): creating a brand-new /Link
+ * annotation out of this text as its own visible link label can itself
+ * trip LINK-URL-AS-TEXT/LINK-GENERIC-TEXT on re-audit -- confirmed real on
+ * a 377-page title. Accessibility requires existing links to be made
+ * accessible, not new links invented, so this is now guidance the operator
+ * acts on themselves in Acrobat Pro, same as fixLinkMissingAnnotation's own
+ * tests (pdf-structure-writer-link-missing-annotation.test.ts) still cover
+ * the writer itself unconditionally.
  */
 
 // dispatchIssue is private; exercise via cast, same pattern as
@@ -50,14 +54,15 @@ function linkMissingIssue(overrides: Partial<AuditIssue> = {}): AuditIssue {
 }
 
 describe('dispatchIssue: LINK-MISSING-ANNOTATION routing', () => {
-  it('returns a deterministic rule-based apply-to-pdf fix, no AI call involved', async () => {
+  it('returns a deterministic rule-based guidance-only suggestion, no AI call involved', async () => {
     const parsed = { isTagged: true, pages: [{}] } as unknown as PdfParseResult;
 
     const res = await svc.dispatchIssue(linkMissingIssue(), parsed, CONFIG, new Map(), new Map(), new Map());
 
     expect(res).not.toBeNull();
     expect(res.suggestionType).toBe('link-missing-annotation-fix');
-    expect(res.applyMode).toBe('apply-to-pdf');
+    expect(res.applyMode).toBe('guidance-only');
+    expect(res.requiresManualReview).toBe(true);
     expect(res.model).toBe('rule-based');
     expect(res.confidence).toBe(1.0);
   });
