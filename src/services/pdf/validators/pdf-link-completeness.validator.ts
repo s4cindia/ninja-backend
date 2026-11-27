@@ -231,14 +231,20 @@ class PdfLinkCompletenessValidator {
     pageNumber: number
   ): Promise<{ items: Array<{ str: string; transform: number[]; width?: number }>; viewport: pdfjsLib.PageViewport }> {
     const page = await pdfjsDoc.getPage(pageNumber);
-    const viewport = page.getViewport({ scale: 1 });
-    const content = await page.getTextContent();
-    const items: Array<{ str: string; transform: number[]; width?: number }> = [];
-    for (const rawItem of content.items) {
-      if (!('str' in rawItem)) continue;
-      items.push(rawItem as { str: string; transform: number[]; width?: number });
+    try {
+      const viewport = page.getViewport({ scale: 1 });
+      const content = await page.getTextContent();
+      const items: Array<{ str: string; transform: number[]; width?: number }> = [];
+      for (const rawItem of content.items) {
+        if (!('str' in rawItem)) continue;
+        items.push(rawItem as { str: string; transform: number[]; width?: number });
+      }
+      return { items, viewport };
+    } finally {
+      // See text-extractor.service.ts's own fix comment -- same uncleaned-
+      // pdfjs-page-cache OOM contributor, every page.
+      page.cleanup();
     }
-    return { items, viewport };
   }
 
   private findMissingLinkSpans(

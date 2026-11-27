@@ -31,6 +31,13 @@ function buildFakeParsedPdf(overrides: { getPage?: () => Promise<unknown> } = {}
       getPage: overrides.getPage ?? (async () => ({
         getViewport: () => ({ width: 100, height: 100 }),
         render: () => ({ promise: Promise.resolve() }),
+        // Real pdfjs API renderPageToBase64/renderRegionToBase64 now call
+        // in their own finally block (2026-11-27 OOM fix) -- a mock page
+        // missing this throws "page.cleanup is not a function" the moment
+        // a render actually completes (never reached by the hang-forever
+        // tests below, since their own finally never runs on a promise
+        // that never settles).
+        cleanup: () => {},
       })),
     },
   } as unknown as ParsedPDF;
@@ -60,6 +67,7 @@ describe('AiAnalysisService render timeout', () => {
       getPage: async () => ({
         getViewport: () => ({ width: 100, height: 100 }),
         render: () => ({ promise: new Promise(() => {}), cancel }),
+        cleanup: () => {},
       }),
     });
 
@@ -76,6 +84,7 @@ describe('AiAnalysisService render timeout', () => {
       getPage: async () => ({
         getViewport: () => ({ width: 100, height: 100 }),
         render: () => ({ promise: new Promise(() => {}), cancel }),
+        cleanup: () => {},
       }),
     });
 

@@ -999,6 +999,15 @@ export class PdfController {
             // comment. Exposed here (not buried in CloudWatch) so this
             // guard's real false-reject rate can be measured per title.
             altTextGuardRejections: (output?.aiAnalysisStats as { altTextGuardRejections?: number } | undefined)?.altTextGuardRejections ?? null,
+            // Last-known stage + RSS before a hard container kill (the
+            // documented OOM class on 377-544 page documents) -- a crash
+            // can't log at the moment of death, so this heartbeat's own
+            // `at` timestamp, cross-referenced against when the job's
+            // status actually went stale, is the only evidence of what the
+            // process was doing right before it vanished. See
+            // AutoRemediationLoopService.writeMemoryHeartbeat's own doc
+            // comment (auto-remediation-loop.service.ts).
+            memoryHeartbeat: (output?.memoryHeartbeat as unknown) ?? null,
             ...auditReport,
             ...(issuesWithFingerprint ? { issues: issuesWithFingerprint } : {}),
             matterhornSummary,

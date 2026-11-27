@@ -42,6 +42,15 @@ const ALWAYS_MANUAL_SUGGESTION_TYPE = 'alt-text-decorative';
 
 const AUTO_MODE_ACTOR = 'auto-mode';
 
+// Deliberately much shorter than remediationCycleLockService's own 5-minute
+// lock heartbeat -- that one only has to beat STALE_LOCK_MS (20 min); this
+// one has to beat how recently-stale evidence of a hard kill is still
+// useful. 30s keeps the DB-write volume trivial (one job.update per round-
+// phase, not per page/item) while still landing well inside the handful of
+// seconds a container typically has between crossing its memory limit and
+// the OOM killer actually firing.
+const MEMORY_HEARTBEAT_INTERVAL_MS = 30 * 1000;
+
 /**
  * Retries a possibly-transient null read up to 2 extra times (300ms, then
  * 600ms backoff) before accepting it as genuinely absent. Built for
@@ -801,6 +810,58 @@ class AutoRemediationLoopService {
   }
 
   /**
+   * Writes process RSS + whatever stage `stageRef.current` holds right now
+   * onto job.output.memoryHeartbeat, same read-merge-write shape as every
+   * other small observability field here (see aiAnalysisStats's own write
+   * site for the established convention). A hard container kill (the
+   * documented OOM class on 377-544 page documents, pdf.config.ts's own
+   * auditLaneConcurrency comment) can't log anything at the moment of
+   * death -- this heartbeat's last write, cross-referenced against its own
+   * `at` timestamp, is the only evidence of what the process was doing and
+   * how much memory it was holding right before it vanished. Non-fatal: a
+   * missed tick just means slightly stale evidence next time, never worth
+   * failing the round over.
+   */
+  private async writeMemoryHeartbeat(jobId: string, stage: string): Promise<void> {
+    try {
+      const latestJob = await prisma.job.findUnique({ where: { id: jobId } });
+      const latestOutput = (latestJob?.output ?? {}) as Record<string, unknown>;
+      await prisma.job.update({
+        where: { id: jobId },
+        data: {
+          output: {
+            ...latestOutput,
+            memoryHeartbeat: {
+              stage,
+              rssBytes: process.memoryUsage().rss,
+              at: new Date().toISOString(),
+            },
+          } as Prisma.InputJsonObject,
+        },
+      });
+    } catch (err) {
+      logger.warn(
+        `[AutoRemediationLoop] Failed to write memory heartbeat for job ${jobId} (non-fatal): ${err instanceof Error ? err.message : String(err)}`
+      );
+    }
+  }
+
+  /** `stageRef` is a plain mutable object (not a string param) so the SAME
+   *  reference can be read by this interval's own closure while runRound
+   *  mutates `.current` as it moves between ai_analysis/apply_fixes/reaudit
+   *  -- the heartbeat always reports whatever stage is active right now,
+   *  not whatever it was when the interval was started. */
+  private startMemoryHeartbeat(jobId: string, stageRef: { current: string }, intervalMs = MEMORY_HEARTBEAT_INTERVAL_MS): NodeJS.Timeout {
+    return setInterval(() => {
+      void this.writeMemoryHeartbeat(jobId, stageRef.current);
+    }, intervalMs);
+  }
+
+  private stopMemoryHeartbeat(handle: NodeJS.Timeout): void {
+    clearInterval(handle);
+  }
+
+  /**
    * Periodic runtime safety net, called from the worker's watchdog interval
    * (same cadence as cleanupStalePdfJobs in workers/index.ts). Sweeps every
    * ComparisonTrial/PdfAutoRemediationRun row currently reporting
@@ -1104,6 +1165,8 @@ class AutoRemediationLoopService {
     }
     const cycleNumber = lock.cycleNumber!;
     const heartbeat = remediationCycleLockService.startHeartbeat(jobId, cycleNumber);
+    const stageRef = { current: 'starting' };
+    const memoryHeartbeat = this.startMemoryHeartbeat(jobId, stageRef);
     const loopStartedAt = new Date();
 
     // Fresh run -- reset the counters even if a previous run left them
@@ -1187,6 +1250,7 @@ class AutoRemediationLoopService {
           break;
         }
 
+        stageRef.current = `round_${roundsCompleted + 1}_starting`;
         const { actionableFound, resolvedCount, regressionCount } = await this.runRound(
           jobId,
           cycleNumber,
@@ -1195,6 +1259,7 @@ class AutoRemediationLoopService {
           resolveAltTextMode(state.autoAltTextMode),
           resolveLinkTextMode(state.autoLinkTextMode),
           resolveBookmarkMode(state.autoBookmarkMode),
+          stageRef,
         );
 
         // A fresh analysis pass (against whatever the *previous* round's
@@ -1284,6 +1349,7 @@ class AutoRemediationLoopService {
       );
     } finally {
       remediationCycleLockService.stopHeartbeat(heartbeat);
+      this.stopMemoryHeartbeat(memoryHeartbeat);
       // Terminal state is written BEFORE the lock is released (not after) --
       // otherwise there's a window where the lock reads as free while
       // autoStatus still says 'running', during which a status/stop request
@@ -1439,8 +1505,10 @@ class AutoRemediationLoopService {
     altTextModeOverride: AltTextMode | undefined,
     linkTextModeOverride: LinkTextMode | undefined,
     bookmarkModeOverride: BookmarkMode | undefined,
+    stageRef: { current: string },
   ): Promise<{ actionableFound: number; applied: number; resolvedCount: number; regressionCount: number }> {
     const roundStartedAt = new Date();
+    stageRef.current = `cycle${cycleNumber}_ai_analysis`;
     const analysis = await aiAnalysisService.analyzeJob(
       jobId,
       tenantId,
@@ -1642,6 +1710,7 @@ class AutoRemediationLoopService {
     // this timestamp is what lets the revert below scope itself to exactly
     // this apply pass's own rows.
     const applyStartedAt = new Date();
+    stageRef.current = `cycle${cycleNumber}_apply_fixes`;
     const result = await aiAnalysisService.applyApprovedSuggestions(jobId, cycleNumber, AUTO_MODE_ACTOR, 'auto_loop');
     // Captured now, before the reaudit call below, and used at every return
     // point in this function from here on -- `result.applied` is the only
@@ -1658,6 +1727,7 @@ class AutoRemediationLoopService {
     const { modifiedBuffer, fileName } = result;
 
     const reauditStartedAt = new Date();
+    stageRef.current = `cycle${cycleNumber}_reaudit`;
     const comparison = await pdfReauditService.reauditAndCompare(jobId, modifiedBuffer, fileName);
     const latestJob = await prisma.job.findUnique({ where: { id: jobId } });
     const latestOutput = (latestJob?.output ?? {}) as Record<string, unknown>;

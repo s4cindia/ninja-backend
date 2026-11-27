@@ -178,7 +178,17 @@ class TextExtractorService {
       const batchContents = await Promise.all(
         batchNums.map(async (pageNum) => {
           const page = await parsedPdf.pdfjsDoc.getPage(pageNum);
-          return page.getTextContent();
+          try {
+            return await page.getTextContent();
+          } finally {
+            // Real OOM cause (2026-11-27, confirmed by a memory-constrained
+            // repro on a 377-page document): pdfjs retains each page's own
+            // decoded content internally until cleanup() is called on it --
+            // never calling it here left every page's data resident for the
+            // lifetime of the whole PDFDocumentProxy. Only
+            // pdf-contrast.validator.ts called this before.
+            page.cleanup();
+          }
         })
       );
       for (const textContent of batchContents) {
@@ -253,6 +263,7 @@ class TextExtractorService {
     }
   ): Promise<PageText> {
     const page = await pdfjsDoc.getPage(pageNumber);
+    try {
     const viewport = page.getViewport({ scale: 1 });
     const textContent = await page.getTextContent();
 
@@ -305,6 +316,10 @@ class TextExtractorService {
       wordCount: this.countWords(normalizedText),
       characterCount: normalizedText.length,
     };
+    } finally {
+      // See the Pass-1 batch loop above's own comment on why this matters.
+      page.cleanup();
+    }
   }
 
   private processTextItem(
@@ -585,12 +600,16 @@ class TextExtractorService {
 
     for (const pageNum of pageNumbers) {
       const page = await parsedPdf.pdfjsDoc.getPage(pageNum);
-      const textContent = await page.getTextContent();
-      for (const item of textContent.items) {
-        if ('transform' in item && item.transform) {
-          const fontSize = Math.abs(item.transform[0]);
-          if (fontSize > 0) allFontSizes.push(fontSize);
+      try {
+        const textContent = await page.getTextContent();
+        for (const item of textContent.items) {
+          if ('transform' in item && item.transform) {
+            const fontSize = Math.abs(item.transform[0]);
+            if (fontSize > 0) allFontSizes.push(fontSize);
+          }
         }
+      } finally {
+        page.cleanup();
       }
     }
 

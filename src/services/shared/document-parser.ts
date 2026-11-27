@@ -137,41 +137,47 @@ export class DocumentParser {
 
     for (let i = 1; i <= pdfDoc.numPages; i++) {
       const page = await pdfDoc.getPage(i);
-      const textContent = await page.getTextContent();
-      
-      let pageText = '';
-      let lastY: number | null = null;
-      
-      for (const item of textContent.items) {
-        if ('str' in item) {
-          const textItem = item as { str: string; transform: number[] };
-          const y = textItem.transform[5];
-          
-          if (lastY !== null && Math.abs(y - lastY) > 12) {
-            pageText += '\n';
-          } else if (pageText.length > 0 && !pageText.endsWith(' ') && !pageText.endsWith('\n')) {
-            pageText += ' ';
+      try {
+        const textContent = await page.getTextContent();
+
+        let pageText = '';
+        let lastY: number | null = null;
+
+        for (const item of textContent.items) {
+          if ('str' in item) {
+            const textItem = item as { str: string; transform: number[] };
+            const y = textItem.transform[5];
+
+            if (lastY !== null && Math.abs(y - lastY) > 12) {
+              pageText += '\n';
+            } else if (pageText.length > 0 && !pageText.endsWith(' ') && !pageText.endsWith('\n')) {
+              pageText += ' ';
+            }
+
+            pageText += textItem.str;
+            lastY = y;
           }
-          
-          pageText += textItem.str;
-          lastY = y;
         }
-      }
-      
-      pageText = pageText.trim();
-      if (pageText) {
-        const headingMatch = pageText.match(/^([A-Z][A-Z\s]{2,50})$/m);
-        if (headingMatch) {
-          headings.push({
-            level: 1,
-            text: headingMatch[1].trim(),
-            offset: currentOffset,
-          });
+
+        pageText = pageText.trim();
+        if (pageText) {
+          const headingMatch = pageText.match(/^([A-Z][A-Z\s]{2,50})$/m);
+          if (headingMatch) {
+            headings.push({
+              level: 1,
+              text: headingMatch[1].trim(),
+              offset: currentOffset,
+            });
+          }
+
+          pageTexts.push({ text: pageText, pageNumber: i });
+          fullText += pageText + '\n\n';
+          currentOffset += pageText.length + 2;
         }
-        
-        pageTexts.push({ text: pageText, pageNumber: i });
-        fullText += pageText + '\n\n';
-        currentOffset += pageText.length + 2;
+      } finally {
+        // See text-extractor.service.ts's own fix comment -- same
+        // uncleaned-pdfjs-page-cache OOM contributor, every page.
+        page.cleanup();
       }
     }
 

@@ -537,30 +537,36 @@ class PdfComprehensiveParserService {
     try {
       for (let pageNum = 1; pageNum <= pageCount; pageNum++) {
         const page = await pdfjsDoc.getPage(pageNum);
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const annotations: any[] = await (page as any).getAnnotations({ intent: 'display' });
-        const formFields: PdfFormField[] = annotations
-          .filter(a => a.subtype === 'Widget')
-          .map(a => {
-            const rect: [number, number, number, number] = a.rect ?? [0, 0, 0, 0];
-            return {
-              name: String(a.fieldName ?? ''),
-              type: this.mapFormFieldType(a),
-              label: String(a.alternativeText ?? a.fieldName ?? ''),
-              value: Array.isArray(a.fieldValue)
-                ? String(a.fieldValue[0] ?? '')
-                : String(a.fieldValue ?? ''),
-              required: Boolean(a.required),
-              position: {
-                x: rect[0],
-                y: rect[1],
-                width: Math.abs(rect[2] - rect[0]),
-                height: Math.abs(rect[3] - rect[1]),
-              },
-            } satisfies PdfFormField;
-          });
-        if (formFields.length > 0) {
-          result.set(pageNum, formFields);
+        try {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const annotations: any[] = await (page as any).getAnnotations({ intent: 'display' });
+          const formFields: PdfFormField[] = annotations
+            .filter(a => a.subtype === 'Widget')
+            .map(a => {
+              const rect: [number, number, number, number] = a.rect ?? [0, 0, 0, 0];
+              return {
+                name: String(a.fieldName ?? ''),
+                type: this.mapFormFieldType(a),
+                label: String(a.alternativeText ?? a.fieldName ?? ''),
+                value: Array.isArray(a.fieldValue)
+                  ? String(a.fieldValue[0] ?? '')
+                  : String(a.fieldValue ?? ''),
+                required: Boolean(a.required),
+                position: {
+                  x: rect[0],
+                  y: rect[1],
+                  width: Math.abs(rect[2] - rect[0]),
+                  height: Math.abs(rect[3] - rect[1]),
+                },
+              } satisfies PdfFormField;
+            });
+          if (formFields.length > 0) {
+            result.set(pageNum, formFields);
+          }
+        } finally {
+          // See text-extractor.service.ts's own fix comment -- same
+          // uncleaned-pdfjs-page-cache OOM contributor, every page.
+          page.cleanup();
         }
       }
     } catch (err) {

@@ -108,6 +108,7 @@ export async function findNearestMcidCandidatesForPosition(
   target: { x: number; y: number }
 ): Promise<Array<{ mcid: number; distance: number }>> {
   const page = await parsedPdf.pdfjsDoc.getPage(pageNumber);
+  try {
   const viewport = page.getViewport({ scale: 1 });
   const textContent = await page.getTextContent({ includeMarkedContent: true });
 
@@ -150,6 +151,11 @@ export async function findNearestMcidCandidatesForPosition(
   return [...bestDistByMcid.entries()]
     .map(([mcid, distance]) => ({ mcid, distance }))
     .sort((a, b) => a.distance - b.distance);
+  } finally {
+    // See text-extractor.service.ts's own fix comment -- same uncleaned-
+    // pdfjs-page-cache OOM contributor.
+    page.cleanup();
+  }
 }
 
 /**

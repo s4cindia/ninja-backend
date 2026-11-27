@@ -163,8 +163,12 @@ export async function collectHeadingStyleData(parsedPdf: ParsedPDF): Promise<Hea
     let structTree: StructNode | null = null;
     let fontMap: ContentIdFontMap;
     let textMap: ContentIdTextMap;
+    // Hoisted so it's cleaned up on every exit path (the early `continue`
+    // included) -- see text-extractor.service.ts's own fix comment for why
+    // (uncleaned pdfjs page data is a real, confirmed OOM contributor).
+    let page: Awaited<ReturnType<typeof pdfjsDoc.getPage>> | undefined;
     try {
-      const page = await pdfjsDoc.getPage(pageNum);
+      page = await pdfjsDoc.getPage(pageNum);
       const tree = await page.getStructTree();
       if (!tree?.children?.length) continue;
       structTree = tree as unknown as StructNode;
@@ -175,6 +179,8 @@ export async function collectHeadingStyleData(parsedPdf: ParsedPDF): Promise<Hea
     } catch (err) {
       logger.debug(`[HeadingStyleClassifier] Could not read page ${pageNum}: ${err instanceof Error ? err.message : String(err)}`);
       continue;
+    } finally {
+      page?.cleanup();
     }
 
     walkForCandidatesAndHeadings(structTree, fontMap, textMap, pageNum, rawCandidates, existingHeadings);
@@ -295,12 +301,15 @@ export async function computeContentStreamBodyMedianFontSize(pdfjsDoc: pdfjsLib.
     const pageNums = Array.from({ length: end - start + 1 }, (_, k) => start + k);
     const textContents = await Promise.all(
       pageNums.map(async (pageNum) => {
+        let page: Awaited<ReturnType<typeof pdfjsDoc.getPage>> | undefined;
         try {
-          const page = await pdfjsDoc.getPage(pageNum);
+          page = await pdfjsDoc.getPage(pageNum);
           return await page.getTextContent();
         } catch (err) {
           logger.debug(`[HeadingStyleClassifier] computeContentStreamBodyMedianFontSize: could not read page ${pageNum}: ${err instanceof Error ? err.message : String(err)}`);
           return null;
+        } finally {
+          page?.cleanup();
         }
       })
     );

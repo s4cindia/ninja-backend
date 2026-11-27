@@ -5386,26 +5386,33 @@ class AiAnalysisService {
     try {
       return await this.withRenderTimeout(pageNumber, async (registerCancel) => {
         const page = await parsedPdf.pdfjsDoc.getPage(pageNumber);
-        const viewport = page.getViewport({ scale });
-        const full = createCanvas(Math.round(viewport.width), Math.round(viewport.height));
-        const fctx = full.getContext('2d');
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const renderTask = page.render({ canvas: full as any, canvasContext: fctx as any, viewport });
-        registerCancel(() => renderTask.cancel());
-        await renderTask.promise;
+        try {
+          const viewport = page.getViewport({ scale });
+          const full = createCanvas(Math.round(viewport.width), Math.round(viewport.height));
+          const fctx = full.getContext('2d');
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const renderTask = page.render({ canvas: full as any, canvasContext: fctx as any, viewport });
+          registerCancel(() => renderTask.cancel());
+          await renderTask.promise;
 
-        const pad = 4 * scale;
-        const sx = Math.max(0, Math.round(region.x * scale - pad));
-        const sy = Math.max(0, Math.round(region.y * scale - pad));
-        const sw = Math.min(full.width - sx, Math.round(region.width * scale + pad * 2));
-        const sh = Math.min(full.height - sy, Math.round(region.height * scale + pad * 2));
-        if (sw <= 0 || sh <= 0) return full.toBuffer('image/png').toString('base64');
+          const pad = 4 * scale;
+          const sx = Math.max(0, Math.round(region.x * scale - pad));
+          const sy = Math.max(0, Math.round(region.y * scale - pad));
+          const sw = Math.min(full.width - sx, Math.round(region.width * scale + pad * 2));
+          const sh = Math.min(full.height - sy, Math.round(region.height * scale + pad * 2));
+          if (sw <= 0 || sh <= 0) return full.toBuffer('image/png').toString('base64');
 
-        const crop = createCanvas(sw, sh);
-        const cctx = crop.getContext('2d');
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        cctx.drawImage(full as any, sx, sy, sw, sh, 0, 0, sw, sh);
-        return crop.toBuffer('image/png').toString('base64');
+          const crop = createCanvas(sw, sh);
+          const cctx = crop.getContext('2d');
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          cctx.drawImage(full as any, sx, sy, sw, sh, 0, 0, sw, sh);
+          return crop.toBuffer('image/png').toString('base64');
+        } finally {
+          // See text-extractor.service.ts's own fix comment -- same
+          // uncleaned-pdfjs-page-cache OOM contributor, doubly so here
+          // since this page was also just fully rasterized.
+          page.cleanup();
+        }
       });
     } catch (err) {
       logger.warn(
@@ -5467,16 +5474,23 @@ class AiAnalysisService {
     try {
       return await this.withRenderTimeout(pageNumber, async (registerCancel) => {
         const page = await parsedPdf.pdfjsDoc.getPage(pageNumber);
-        const viewport = page.getViewport({ scale: 1.0 });
-        const canvas = createCanvas(Math.round(viewport.width), Math.round(viewport.height));
-        const context = canvas.getContext('2d');
+        try {
+          const viewport = page.getViewport({ scale: 1.0 });
+          const canvas = createCanvas(Math.round(viewport.width), Math.round(viewport.height));
+          const context = canvas.getContext('2d');
 
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const renderTask = page.render({ canvas: canvas as any, canvasContext: context as any, viewport });
-        registerCancel(() => renderTask.cancel());
-        await renderTask.promise;
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const renderTask = page.render({ canvas: canvas as any, canvasContext: context as any, viewport });
+          registerCancel(() => renderTask.cancel());
+          await renderTask.promise;
 
-        return canvas.toBuffer('image/png').toString('base64');
+          return canvas.toBuffer('image/png').toString('base64');
+        } finally {
+          // See text-extractor.service.ts's own fix comment -- same
+          // uncleaned-pdfjs-page-cache OOM contributor, doubly so here
+          // since this page was also just fully rasterized.
+          page.cleanup();
+        }
       });
     } catch (err) {
       logger.warn(`[AiAnalysis] Failed to render page ${pageNumber}: ${err instanceof Error ? err.message : String(err)}`);
