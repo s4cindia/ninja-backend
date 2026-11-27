@@ -143,6 +143,13 @@ describe('analyzeAltText: short-alt baseline for MANUAL_IF_COMPLEX_IMAGE_TYPES (
     expect(fallbackSpy).toHaveBeenCalled();
     expect(res.applyMode).toBe('guidance-only');
     expect(res.value).toBeUndefined();
+    // 2026-11-27: the rejected candidate and its grounding text must ride
+    // along on the suggestion so analyzeJob can persist them onto this
+    // issue's AiAnalysis.rejectedBaselineHistory -- a false-reject judgment
+    // needs the actual rejected text, not just the altTextGuardRejected flag.
+    expect(res.altTextGuardRejected).toBe(true);
+    expect(res.guardRejectedAlt).toBe('AWS architecture diagram showing a VPC with public and private subnets, ECS Fargate');
+    expect(res.guardRejectedGroundingText).toContain('Ovary');
   });
 
   it('does NOT request a longDescription for a non-diagram/chart MANUAL_IF_COMPLEX type -- there is none to request', async () => {
