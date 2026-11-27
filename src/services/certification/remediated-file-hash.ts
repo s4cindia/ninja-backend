@@ -45,15 +45,34 @@ function isNotFound(error: unknown): boolean {
 }
 
 /**
- * Null when the job has no remediated file yet (no reference recorded, or
- * the referenced object is gone). Throws on a real storage error, so a
+ * Resolves the remediated file exactly as the remediated-PDF download
+ * endpoint does (pdf-remediation.controller.ts downloadRemediatedPdf):
+ * `output.remediatedFileUrl` when recorded; otherwise the same
+ * candidate-file-name fallback over input.fileName that endpoint uses for
+ * jobs whose producer never recorded a URL (e.g. the post-audit auto-fix in
+ * accessibility.processor.ts). So whatever the download endpoint can serve
+ * is what gets hashed -- never a null hash for a downloadable file.
+ */
+async function resolveRemediatedFileRef(jobId: string): Promise<string | null> {
+  const job = await prisma.job.findUnique({ where: { id: jobId }, select: { output: true, input: true } });
+  if (!job) return null;
+  const output = (job.output && typeof job.output === 'object' ? job.output : {}) as Record<string, unknown>;
+  if (typeof output.remediatedFileUrl === 'string' && output.remediatedFileUrl.length > 0) {
+    return output.remediatedFileUrl;
+  }
+  const input = (job.input && typeof job.input === 'object' ? job.input : {}) as { fileName?: unknown };
+  const fileName = typeof input.fileName === 'string' && input.fileName ? input.fileName : 'document.pdf';
+  return fileStorageService.findRemediatedFileRef(jobId, fileName);
+}
+
+/**
+ * Null when the job has no remediated file (none recorded or found, or the
+ * referenced object is gone). Throws on a real storage error, so a
  * transient S3 failure is never mistaken for "no file".
  */
 export async function getCurrentRemediatedFileHash(jobId: string): Promise<RemediatedFileHash | null> {
-  const job = await prisma.job.findUnique({ where: { id: jobId }, select: { output: true } });
-  const output = (job?.output && typeof job.output === 'object' ? job.output : {}) as Record<string, unknown>;
-  const fileRef = output.remediatedFileUrl;
-  if (typeof fileRef !== 'string' || fileRef.length === 0) return null;
+  const fileRef = await resolveRemediatedFileRef(jobId);
+  if (!fileRef) return null;
 
   // Streamed, never buffered whole. A failure mid-stream (connection
   // reset, etc.) propagates as a real error, never as "no file".

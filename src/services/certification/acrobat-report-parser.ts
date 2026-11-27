@@ -87,6 +87,15 @@ const STATUS_BY_LOWER: Record<string, AcrobatRuleStatus> = {
   'failed manually': 'Failed manually',
 };
 
+/**
+ * Own-property lookup only -- a plain `STATUS_BY_LOWER[text]` would also
+ * "recognise" inherited names such as "constructor".
+ */
+function lookupStatus(text: string): AcrobatRuleStatus | undefined {
+  const key = text.toLowerCase();
+  return Object.prototype.hasOwnProperty.call(STATUS_BY_LOWER, key) ? STATUS_BY_LOWER[key] : undefined;
+}
+
 const COUNT_KEY_BY_STATUS: Record<AcrobatRuleStatus, keyof AcrobatReportCounts> = {
   Passed: 'passed',
   Failed: 'failed',
@@ -124,21 +133,30 @@ function findAfterHeading(
   return found.length > 0 ? found : null;
 }
 
-function parseSummary($: cheerio.CheerioAPI, warnings: string[]): AcrobatReportCounts | null {
+interface SummaryParse {
+  /** Best-effort counts for pre-filling; null when Passed/Failed are missing. */
+  counts: AcrobatReportCounts | null;
+  /** False when any line wasn't understood -- the summary is then not trusted. */
+  clean: boolean;
+}
+
+function parseSummary($: cheerio.CheerioAPI, warnings: string[]): SummaryParse {
   const list = findAfterHeading($, 'Summary', 'ul');
   if (!list) {
     warnings.push('Summary list not found.');
-    return null;
+    return { counts: null, clean: false };
   }
 
   const counts = emptyCounts();
   const seen = new Set<keyof AcrobatReportCounts>();
+  let clean = true;
   list.children('li').each((_, li) => {
     const text = normaliseText($(li).text());
     const match = /^(.+?):\s*(\d+)$/.exec(text);
-    const status = match ? STATUS_BY_LOWER[match[1].toLowerCase()] : undefined;
+    const status = match ? lookupStatus(match[1]) : undefined;
     if (!match || !status) {
       warnings.push(`Unrecognised summary line: "${text}".`);
+      clean = false;
       return;
     }
     const key = COUNT_KEY_BY_STATUS[status];
@@ -150,9 +168,9 @@ function parseSummary($: cheerio.CheerioAPI, warnings: string[]): AcrobatReportC
   // list isn't one we understand.
   if (!seen.has('passed') || !seen.has('failed')) {
     warnings.push('Summary list is missing its Passed or Failed line.');
-    return null;
+    return { counts: null, clean: false };
   }
-  return counts;
+  return { counts, clean };
 }
 
 function ruleIdFromHref(href: string | undefined): string | null {
@@ -194,7 +212,7 @@ function parseRuleTable($: cheerio.CheerioAPI, warnings: string[]): AcrobatRuleR
     const ruleCell = cells.eq(0);
     const rule = normaliseText(ruleCell.text());
     const statusText = normaliseText(cells.eq(1).text());
-    const status = STATUS_BY_LOWER[statusText.toLowerCase()];
+    const status = lookupStatus(statusText);
     if (!status) {
       warnings.push(`Rule "${rule}" has unrecognised status "${statusText}".`);
       unreadable = true;
@@ -245,11 +263,11 @@ export function parseAcrobatReport(html: string): AcrobatReportParseResult {
   }
 
   const warnings: string[] = [];
-  const summary = parseSummary($, warnings);
+  const { counts: summary, clean: summaryClean } = parseSummary($, warnings);
   const rules = parseRuleTable($, warnings);
   const tableCounts = rules ? tally(rules) : null;
 
-  let trusted = summary !== null && tableCounts !== null;
+  let trusted = summaryClean && summary !== null && tableCounts !== null;
   if (summary && tableCounts) {
     for (const key of COUNT_KEYS) {
       if (summary[key] !== tableCounts[key]) {

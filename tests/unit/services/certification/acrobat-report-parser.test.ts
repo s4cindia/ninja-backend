@@ -101,6 +101,29 @@ describe('parseAcrobatReport', () => {
     expect(result.warnings.join(' ')).toMatch(/unrecognised status "Échec"/);
   });
 
+  it.each(['constructor', 'toString', '__proto__', 'hasOwnProperty'])(
+    'does not "recognise" the inherited name %j as a status',
+    (name) => {
+      const html = setRuleStatus(FIXTURE, 'TabOrder', name);
+      const result = parseAcrobatReport(html);
+      expect(result.trusted).toBe(false);
+      expect(result.warnings.join(' ')).toMatch(/unrecognised status/);
+    },
+  );
+
+  it('is not trusted when the summary has an extra, unrecognised line, even if the rest agrees', () => {
+    const html = FIXTURE.replace('<li>Failed: 3</li>', '<li>Failed: 3</li>\n<li>Unknown check: 1</li>');
+    const result = parseAcrobatReport(html);
+    expect(result.trusted).toBe(false);
+    expect(result.counts?.failed).toBe(3); // still offered for pre-filling
+    expect(result.warnings.join(' ')).toMatch(/Unrecognised summary line: "Unknown check: 1"/);
+  });
+
+  it('is not trusted when an inherited name appears as a summary label', () => {
+    const html = FIXTURE.replace('<li>Failed: 3</li>', '<li>Failed: 3</li>\n<li>constructor: 1</li>');
+    expect(parseAcrobatReport(html).trusted).toBe(false);
+  });
+
   it('falls back to table tallies when the summary is missing', () => {
     const html = FIXTURE.replace(/<h2>Summary<\/h2>[\s\S]*?<\/ul>/, '');
     const result = parseAcrobatReport(html);

@@ -289,6 +289,17 @@ class FileStorageService {
    * survives every round's pruning.
    */
   async remediatedFileExists(jobId: string, fileName: string): Promise<boolean> {
+    return (await this.findRemediatedFileRef(jobId, fileName)) !== null;
+  }
+
+  /**
+   * Storage reference (S3 key, or a STORAGE_BASE-relative local path) of
+   * the remediated file getRemediatedFile would return -- same candidate
+   * names, same order, HEAD/fs.access only. Null when none exists. The
+   * reference is accepted by downloadFile/openReadStream, so a caller can
+   * stream the file a job without `output.remediatedFileUrl` still serves.
+   */
+  async findRemediatedFileRef(jobId: string, fileName: string): Promise<string | null> {
     const sanitizedFileName = path.basename(fileName);
     const ext = path.extname(sanitizedFileName);
     const baseName = sanitizedFileName.slice(0, -ext.length);
@@ -300,17 +311,18 @@ class FileStorageService {
 
     for (const candidate of candidates) {
       if (s3Service.isConfigured()) {
-        if (await s3ObjectExists(`${S3_PREFIX}/${jobId}/remediated/${candidate}`)) return true;
+        const key = `${S3_PREFIX}/${jobId}/remediated/${candidate}`;
+        if (await s3ObjectExists(key)) return key;
         continue;
       }
       try {
         await fs.access(path.join(STORAGE_BASE, jobId, 'remediated', candidate));
-        return true;
+        return `${jobId}/remediated/${candidate}`;
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
       }
     }
-    return false;
+    return null;
   }
 
   /**

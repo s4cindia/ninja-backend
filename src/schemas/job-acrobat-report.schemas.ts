@@ -24,6 +24,8 @@ export const jobAcrobatReportConfirmSchema = {
     jobId: z.string().min(1, 'Job ID is required'),
   }),
   body: z.object({
+    // Returned by upload-url; selects this upload's own staging key.
+    uploadId: z.string().uuid('uploadId must be the value returned by upload-url'),
     originalFileName: z.string().min(1).max(255).regex(/\.html?$/i, 'Acrobat accessibility reports are .html files'),
     // Required only when the server can't parse the report unambiguously
     // (it answers 422 ACROBAT_REPORT_COUNTS_REQUIRED in that case).

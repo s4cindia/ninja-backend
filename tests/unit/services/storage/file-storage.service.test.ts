@@ -232,6 +232,23 @@ describe('FileStorageService — S3 mode', () => {
     vi.mocked(s3Client.send).mockRejectedValue(denied);
     await expect(fileStorageService.openReadStream('job-storage/job-1/doc.pdf')).rejects.toBe(denied);
   });
+
+  it('findRemediatedFileRef returns the S3 key of the first existing candidate (HEAD only)', async () => {
+    vi.mocked(s3Client.send)
+      .mockRejectedValueOnce(notFoundError('NotFound')) // doc.pdf
+      .mockResolvedValueOnce({} as any); // doc_remediated.pdf
+
+    const ref = await fileStorageService.findRemediatedFileRef('job-1', 'doc.pdf');
+
+    expect(ref).toBe('job-storage/job-1/remediated/doc_remediated.pdf');
+    const keys = vi.mocked(s3Client.send).mock.calls.map(([c]) => (c as any).input.Key);
+    expect(keys).toEqual(['job-storage/job-1/remediated/doc.pdf', 'job-storage/job-1/remediated/doc_remediated.pdf']);
+  });
+
+  it('findRemediatedFileRef returns null when no candidate exists', async () => {
+    vi.mocked(s3Client.send).mockRejectedValue(notFoundError('NotFound'));
+    expect(await fileStorageService.findRemediatedFileRef('job-1', 'doc.pdf')).toBeNull();
+  });
 });
 
 describe('FileStorageService — local-disk fallback (S3 not configured)', () => {
@@ -292,6 +309,14 @@ describe('FileStorageService — local-disk fallback (S3 not configured)', () =>
     const exists = await fileStorageService.remediatedFileExists('job-1', 'doc.pdf');
     expect(exists).toBe(false);
   });
+  it('findRemediatedFileRef returns a STORAGE_BASE-relative path that openReadStream accepts', async () => {
+    vi.mocked(fs.access).mockRejectedValueOnce(enoent()).mockResolvedValueOnce(undefined);
+
+    const ref = await fileStorageService.findRemediatedFileRef('job-1', 'doc.pdf');
+
+    expect(ref).toBe('job-1/remediated/doc_remediated.pdf');
+  });
+
   it('openReadStream rejects with ENOENT for a missing local file', async () => {
     vi.mocked(fs.stat).mockRejectedValue(enoent());
     await expect(fileStorageService.openReadStream('job-1/remediated/doc.pdf')).rejects.toMatchObject({ code: 'ENOENT' });

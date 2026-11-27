@@ -7,7 +7,7 @@ vi.mock('../../../../src/lib/prisma', () => ({
 }));
 
 vi.mock('../../../../src/services/storage/file-storage.service', () => ({
-  fileStorageService: { openReadStream: vi.fn(), downloadFile: vi.fn() },
+  fileStorageService: { openReadStream: vi.fn(), downloadFile: vi.fn(), findRemediatedFileRef: vi.fn() },
 }));
 
 import prisma from '../../../../src/lib/prisma';
@@ -21,6 +21,7 @@ import {
 const findUnique = prisma.job.findUnique as unknown as ReturnType<typeof vi.fn>;
 const openReadStream = fileStorageService.openReadStream as unknown as ReturnType<typeof vi.fn>;
 const downloadFile = fileStorageService.downloadFile as unknown as ReturnType<typeof vi.fn>;
+const findRemediatedFileRef = fileStorageService.findRemediatedFileRef as unknown as ReturnType<typeof vi.fn>;
 
 const REF = 'job-storage/job-1/remediated/a.pdf';
 
@@ -69,10 +70,36 @@ describe('getCurrentRemediatedFileHash', () => {
     expect(sha256Hex(Buffer.from('abc'))).not.toBe(sha256Hex(Buffer.from('abd')));
   });
 
-  it('returns null when the job has no remediated file recorded', async () => {
-    findUnique.mockResolvedValue({ output: { auditReport: {} } });
+  it('returns null when no URL is recorded and the download fallback finds no file either', async () => {
+    findUnique.mockResolvedValue({ output: { auditReport: {} }, input: { fileName: 'book.pdf' } });
+    findRemediatedFileRef.mockResolvedValue(null);
     expect(await getCurrentRemediatedFileHash('job-1')).toBeNull();
+    expect(findRemediatedFileRef).toHaveBeenCalledWith('job-1', 'book.pdf');
     expect(openReadStream).not.toHaveBeenCalled();
+  });
+
+  it('without a recorded URL, hashes the file the download endpoint would serve (name fallback)', async () => {
+    findUnique.mockResolvedValue({ output: {}, input: { fileName: 'book.pdf' } });
+    findRemediatedFileRef.mockResolvedValue('job-storage/job-1/remediated/book_remediated.pdf');
+    openReadStream.mockResolvedValue(Readable.from([Buffer.from('bytes')]));
+
+    const result = await getCurrentRemediatedFileHash('job-1');
+
+    expect(openReadStream).toHaveBeenCalledWith('job-storage/job-1/remediated/book_remediated.pdf');
+    expect(result).toEqual({ sha256: sha256Hex(Buffer.from('bytes')), fileRef: 'job-storage/job-1/remediated/book_remediated.pdf' });
+  });
+
+  it('falls back to "document.pdf" when the job input has no file name, like the download endpoint', async () => {
+    findUnique.mockResolvedValue({ output: {}, input: {} });
+    findRemediatedFileRef.mockResolvedValue(null);
+    await getCurrentRemediatedFileHash('job-1');
+    expect(findRemediatedFileRef).toHaveBeenCalledWith('job-1', 'document.pdf');
+  });
+
+  it('a recorded URL wins: no name fallback even if its object is gone', async () => {
+    openReadStream.mockRejectedValue(new Error(`File not found in S3: ${REF}`));
+    expect(await getCurrentRemediatedFileHash('job-1')).toBeNull();
+    expect(findRemediatedFileRef).not.toHaveBeenCalled();
   });
 
   it('returns null when the job or its output is missing', async () => {

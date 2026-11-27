@@ -51,8 +51,9 @@ export class AcrobatReportController {
   /** POST /api/v1/pdf/:jobId/acrobat-report/confirm */
   async confirmUpload(req: AuthenticatedRequest, res: Response): Promise<Response> {
     try {
-      const { originalFileName, operatorCounts } = req.body as JobAcrobatReportConfirmBody;
+      const { uploadId, originalFileName, operatorCounts } = req.body as JobAcrobatReportConfirmBody;
       const result = await confirmJobAcrobatReportUpload(req.params.jobId, {
+        uploadId,
         originalFileName,
         operatorCounts,
         uploadedById: req.user!.id,
