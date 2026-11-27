@@ -42,6 +42,7 @@ import {
   type AcrobatReportParseResult,
 } from './acrobat-report-parser';
 import { getCurrentRemediatedFileHash } from './remediated-file-hash';
+import { revokeActiveCertification } from './certification-revoke';
 
 const UPLOAD_URL_EXPIRY_SECONDS = 30 * 60;
 const DOWNLOAD_URL_EXPIRY_SECONDS = 60 * 60;
@@ -238,6 +239,8 @@ export async function confirmJobAcrobatReportUpload(
   });
   // Only once the record points at the new confirmed object do the staging
   // copy and the previous confirmed object go.
+  // Replacing the evidence an active certification relies on revokes it.
+  if (previous) await revokeActiveCertification(jobId, 'acrobat-report-replaced');
   await deleteObjectQuietly(stagingKey, 'staging upload');
   if (previous && previous.s3Key !== confirmedKey) {
     await deleteObjectQuietly(previous.s3Key, 'replaced report');
@@ -274,6 +277,7 @@ export async function deleteJobAcrobatReport(jobId: string): Promise<boolean> {
     if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2025') return false;
     throw err;
   }
+  await revokeActiveCertification(jobId, 'acrobat-report-deleted');
   await deleteObjectQuietly(deleted.s3Key, 'deleted report');
   return true;
 }
