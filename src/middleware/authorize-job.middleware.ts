@@ -90,6 +90,53 @@ export const authorizeJobForReview = async (req: Request, res: Response, next: N
   }
 };
 
+/**
+ * Mutating counterpart to authorizeJobForReview, for the EPUB-from-
+ * certified-PDF actions ONLY: the job owner, an ADMIN in the job's tenant,
+ * or the owner's own TEAM_LEADER (isTeamLeaderOfExecutive -- a VIEWER, or a
+ * Team Leader of some other team, is refused). Wired into: the EPUB flag +
+ * ISBN settings, certification-evidence upload/remove (PAC and Acrobat
+ * reports), and, in later PRs, certify/revoke and release. Do not reuse it
+ * for other mutating routes without an explicit RBAC decision.
+ */
+export const authorizeJobForTeamLeaderAction = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const jobId = req.params.jobId;
+    const userId = req.user?.id;
+
+    if (!userId) {
+      res.status(401).json({
+        success: false,
+        error: { message: 'Authentication required' }
+      });
+      return;
+    }
+
+    if (!jobId) {
+      res.status(400).json({
+        success: false,
+        error: { message: 'Job ID is required' }
+      });
+      return;
+    }
+
+    const job = await authorizeJobAccess(jobId, userId, {
+      role: req.user?.role,
+      tenantId: req.user?.tenantId,
+      allowTeamLeaderAction: true,
+    });
+    req.job = job;
+    next();
+  } catch (error) {
+    logger.warn(`Authorization failed for job ${req.params.jobId}: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    res.status(404).json({
+      success: false,
+      error: { message: 'Resource not found or access denied' }
+    });
+    return;
+  }
+};
+
 export const authorizeAcr = async (req: Request, res: Response, next: NextFunction) => {
   try {
     // ACR (Accessibility Conformance Report) is generated from job audit results

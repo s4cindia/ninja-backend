@@ -12,9 +12,9 @@
 
 import { Router } from 'express';
 import { authenticate } from '../middleware/auth.middleware';
-import { authorizeJob, authorizeJobForReview } from '../middleware/authorize-job.middleware';
+import { authorizeJob, authorizeJobForReview, authorizeJobForTeamLeaderAction } from '../middleware/authorize-job.middleware';
 import { validate } from '../middleware/validate.middleware';
-import { startAutoModeSchema, updateJobSettingsSchema } from '../schemas/pdf-auto-mode.schemas';
+import { startAutoModeSchema, updateJobSettingsSchema, updateJobEpubSettingsSchema } from '../schemas/pdf-auto-mode.schemas';
 import { pdfAutoModeController } from '../controllers/pdf-auto-mode.controller';
 
 const router = Router();
@@ -83,6 +83,20 @@ router.patch(
   authorizeJob,
   validate(updateJobSettingsSchema),
   pdfAutoModeController.updateJobSettings.bind(pdfAutoModeController)
+);
+
+/**
+ * PATCH /pdf/:jobId/settings/epub
+ * "Also produce accessible EPUB" flag + EPUB ISBN. Owner, ADMIN or the
+ * owner's Team Leader (authorizeJobForTeamLeaderAction); see
+ * pdfAutoModeController.updateJobEpubSettings.
+ */
+router.patch(
+  '/:jobId/settings/epub',
+  authenticate,
+  authorizeJobForTeamLeaderAction,
+  validate(updateJobEpubSettingsSchema),
+  pdfAutoModeController.updateJobEpubSettings.bind(pdfAutoModeController)
 );
 
 export default router;

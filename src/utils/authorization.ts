@@ -1,4 +1,5 @@
 import prisma from '../lib/prisma';
+import { isTeamLeaderOfExecutive } from './team-roster';
 
 export interface AuthorizeJobOptions {
   /** ADMIN tenant-wide bypass -- an ADMIN can access any job in their own
@@ -14,13 +15,23 @@ export interface AuthorizeJobOptions {
    * grant to act on someone else's job.
    */
   allowTeamReview?: boolean;
+  /**
+   * Opt-in: also allow the job owner's TEAM_LEADER (never a VIEWER) to ACT
+   * on the job. Narrow by design -- only for the EPUB-from-certified-PDF
+   * actions a Team Leader is responsible for (certify/revoke, release, the
+   * per-job EPUB flag + ISBN, and uploading/removing the certification
+   * evidence). Every other mutating route keeps strict owner/ADMIN access.
+   * See authorizeJobForTeamLeaderAction in authorize-job.middleware.ts.
+   */
+  allowTeamLeaderAction?: boolean;
 }
 
 /**
- * 3-tier check, in order: (1) exact owner -- the original, fast common-case
+ * Tiered check, in order: (1) exact owner -- the original, fast common-case
  * path, unchanged; (2) ADMIN tenant-wide bypass; (3) TEAM_LEADER/VIEWER
- * review access to a teammate's job, opt-in via allowTeamReview. See the
- * RBAC design doc for the full rationale.
+ * review access to a teammate's job, opt-in via allowTeamReview; (4) the
+ * owner's own TEAM_LEADER acting on the job, opt-in via
+ * allowTeamLeaderAction. See the RBAC design doc for the full rationale.
  */
 export const authorizeJobAccess = async (jobId: string, userId: string, options: AuthorizeJobOptions = {}) => {
   const ownJob = await prisma.job.findFirst({
@@ -55,6 +66,13 @@ export const authorizeJobAccess = async (jobId: string, userId: string, options:
       });
       if (teamAccess) return job;
     }
+  }
+
+  if (options.allowTeamLeaderAction && options.tenantId) {
+    const job = await prisma.job.findFirst({
+      where: { id: jobId, tenantId: options.tenantId },
+    });
+    if (job && await isTeamLeaderOfExecutive(userId, job.userId)) return job;
   }
 
   throw new Error('Job not found or access denied');

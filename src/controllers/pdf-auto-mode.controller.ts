@@ -44,7 +44,8 @@ import {
 import { getEffectiveAiRemediationConfig } from '../services/pdf/ai-remediation-tenant-config.service';
 import { estimateBudgetForJob } from '../services/pdf/auto-mode-budget-estimate.service';
 import { remediationCycleLockService, STALE_LOCK_MS } from '../services/pdf/remediation-cycle-lock.service';
-import type { StartAutoModeBody, UpdateJobSettingsBody } from '../schemas/pdf-auto-mode.schemas';
+import type { StartAutoModeBody, UpdateJobSettingsBody, UpdateJobEpubSettingsBody } from '../schemas/pdf-auto-mode.schemas';
+import { resolveProduceAccessibleEpub, parseEpubIsbnField } from '../services/epub-from-pdf/epub-settings';
 
 /**
  * Real incident (Whiting_186772, 2026-11-20): a round died mid-reaudit with
@@ -412,7 +413,10 @@ export class PdfAutoModeController {
       const jobId = req.job!.id;
 
       const [job, aiRemediationConfig] = await Promise.all([
-        prisma.job.findUnique({ where: { id: jobId }, select: { fullAutoMode: true, autoEscalateOnStall: true, fullQC: true } }),
+        prisma.job.findUnique({
+          where: { id: jobId },
+          select: { fullAutoMode: true, autoEscalateOnStall: true, fullQC: true, produceAccessibleEpub: true, epubIsbn: true },
+        }),
         getEffectiveAiRemediationConfig(req.job!.tenantId),
       ]);
       if (!job) throw AppError.notFound('Job not found.');
@@ -438,6 +442,13 @@ export class PdfAutoModeController {
             tenantDefault: aiRemediationConfig.fullQCDefault,
             effective: resolveFullQC(job.fullQC, aiRemediationConfig.fullQCDefault),
           },
+          // EPUB-from-certified-PDF -- editable via PATCH /settings/epub.
+          produceAccessibleEpub: {
+            override: job.produceAccessibleEpub,
+            tenantDefault: aiRemediationConfig.epubFromPdfDefault,
+            effective: resolveProduceAccessibleEpub(job.produceAccessibleEpub, aiRemediationConfig.epubFromPdfDefault),
+          },
+          epubIsbn: job.epubIsbn,
         },
       });
     } catch (error) {
@@ -483,6 +494,54 @@ export class PdfAutoModeController {
             tenantDefault: aiRemediationConfig.autoEscalateOnStallDefault,
             effective: resolveEscalateOnStall(job.autoEscalateOnStall, aiRemediationConfig.autoEscalateOnStallDefault),
           },
+        },
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
+   * PATCH /pdf/:jobId/settings/epub
+   * Turns "Also produce accessible EPUB" on/off (null = back to the tenant
+   * default) and/or sets the EPUB ISBN, at any time after upload. Behind
+   * authorizeJobForTeamLeaderAction, so the owner's Team Leader can do it
+   * too -- that's why it isn't part of PATCH /settings above (owner/ADMIN
+   * only). Omitted fields are left untouched. PDF jobs only.
+   *
+   * Phase 1 will act on a change here (start the linked EPUB job when the
+   * PDF is already certified; cancel it when switched off before delivery).
+   */
+  async updateJobEpubSettings(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      if (!req.user) throw AppError.unauthorized('Not authenticated');
+      if (req.job!.type !== 'PDF_ACCESSIBILITY') {
+        throw AppError.badRequest('EPUB settings apply to PDF accessibility jobs only', 'NOT_A_PDF_JOB');
+      }
+      const body = (req.body ?? {}) as UpdateJobEpubSettingsBody;
+      const epubIsbn = parseEpubIsbnField(body.epubIsbn);
+
+      const [job, aiRemediationConfig] = await Promise.all([
+        prisma.job.update({
+          where: { id: req.job!.id },
+          data: {
+            ...(body.produceAccessibleEpub !== undefined && { produceAccessibleEpub: body.produceAccessibleEpub }),
+            ...(epubIsbn !== undefined && { epubIsbn }),
+          },
+          select: { produceAccessibleEpub: true, epubIsbn: true },
+        }),
+        getEffectiveAiRemediationConfig(req.job!.tenantId),
+      ]);
+
+      res.json({
+        success: true,
+        data: {
+          produceAccessibleEpub: {
+            override: job.produceAccessibleEpub,
+            tenantDefault: aiRemediationConfig.epubFromPdfDefault,
+            effective: resolveProduceAccessibleEpub(job.produceAccessibleEpub, aiRemediationConfig.epubFromPdfDefault),
+          },
+          epubIsbn: job.epubIsbn,
         },
       });
     } catch (error) {

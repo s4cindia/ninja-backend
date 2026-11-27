@@ -41,6 +41,12 @@ export const DEFAULT_AI_REMEDIATION_CONFIG = {
   // upload-time fullQC override says otherwise. See resolveFullQC in
   // auto-remediation-loop.service.ts.
   fullQCDefault: false,
+  // Tenant-wide default for "Also produce accessible EPUB" on a PDF job --
+  // see resolveProduceAccessibleEpub in epub-from-pdf/epub-settings.ts.
+  epubFromPdfDefault: false,
+  // When true (the default), an EPUB generated from a certified PDF needs a
+  // Team Leader's release before delivery; a tenant can switch it off.
+  epubTlReleaseRequired: true,
 };
 
 /**

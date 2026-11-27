@@ -4,13 +4,15 @@
  * Upload / read / remove the Acrobat Pro accessibility report for a PDF
  * job -- evidence for the EPUB-from-certified-PDF certification gate.
  * Mirrors the job PAC report's external-upload routes (pac-report.routes.ts):
- * writes are owner/ADMIN only (authorizeJob), the read also allows team
- * reviewers (authorizeJobForReview).
+ * writes allow the owner, an ADMIN or the owner's Team Leader
+ * (authorizeJobForTeamLeaderAction -- the Team Leader who certifies must be
+ * able to upload the evidence); the read also allows team reviewers
+ * (authorizeJobForReview).
  */
 
 import { Router } from 'express';
 import { authenticate } from '../middleware/auth.middleware';
-import { authorizeJob, authorizeJobForReview } from '../middleware/authorize-job.middleware';
+import { authorizeJobForReview, authorizeJobForTeamLeaderAction } from '../middleware/authorize-job.middleware';
 import { rateLimiters } from '../middleware/rate-limit.middleware';
 import { validate } from '../middleware/validate.middleware';
 import { jobAcrobatReportUploadUrlSchema, jobAcrobatReportConfirmSchema } from '../schemas/job-acrobat-report.schemas';
@@ -22,7 +24,7 @@ const router = Router();
 router.post(
   '/:jobId/acrobat-report/upload-url',
   authenticate,
-  authorizeJob,
+  authorizeJobForTeamLeaderAction,
   rateLimiters.styleGuideUpload,
   validate(jobAcrobatReportUploadUrlSchema),
   (req, res) => acrobatReportController.getUploadUrl(req, res),
@@ -32,7 +34,7 @@ router.post(
 router.post(
   '/:jobId/acrobat-report/confirm',
   authenticate,
-  authorizeJob,
+  authorizeJobForTeamLeaderAction,
   validate(jobAcrobatReportConfirmSchema),
   (req, res) => acrobatReportController.confirmUpload(req, res),
 );
@@ -49,7 +51,7 @@ router.get(
 router.delete(
   '/:jobId/acrobat-report',
   authenticate,
-  authorizeJob,
+  authorizeJobForTeamLeaderAction,
   (req, res) => acrobatReportController.deleteReport(req, res),
 );
 

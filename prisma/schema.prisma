@@ -231,6 +231,21 @@ model Job {
   // editing (see the Full QC design decision, 2026-11-16).
   fullQC Boolean?
 
+  // "Also produce accessible EPUB" -- null means "inherit the tenant's own
+  // aiRemediation.epubFromPdfDefault setting" (see
+  // resolveProduceAccessibleEpub in epub-from-pdf/epub-settings.ts), same
+  // three-state shape as fullQC above. Set at upload, and -- unlike fullQC
+  // -- editable afterwards (PATCH /pdf/:jobId/settings/epub) by the owner,
+  // an ADMIN or the owner's Team Leader, so a late customer request needs
+  // no re-upload. PDF_ACCESSIBILITY jobs only.
+  produceAccessibleEpub Boolean?
+
+  // Publisher-supplied ISBN of the EPUB edition (never the print/PDF ISBN;
+  // Ninja never generates one). 13 digits, no hyphens, checksum verified on
+  // entry. Null until supplied -- the EPUB is built with a urn:uuid
+  // identifier meanwhile and cannot be delivered until this is set.
+  epubIsbn String?
+
   // Remediation-cycle concurrency lock -- prevents two overlapping "apply
   // fixes -> re-audit -> re-run AI analysis" cycles on the same job from
   // interleaving their job.output writes with no ordering guarantee (the

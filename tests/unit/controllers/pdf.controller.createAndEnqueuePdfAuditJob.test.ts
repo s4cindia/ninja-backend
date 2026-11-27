@@ -114,6 +114,20 @@ describe('createAndEnqueuePdfAuditJob', () => {
     );
   });
 
+  it('persists produceAccessibleEpub + epubIsbn as given, and null for both when omitted', async () => {
+    (prisma.job.create as any).mockResolvedValue({ id: 'job-12' });
+    await createAndEnqueuePdfAuditJob(FILE, 'tenant-1', 'caller-1', { produceAccessibleEpub: true, epubIsbn: '9780306406157' });
+    expect(prisma.job.create).toHaveBeenLastCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ produceAccessibleEpub: true, epubIsbn: '9780306406157' }) })
+    );
+
+    (prisma.job.create as any).mockResolvedValue({ id: 'job-13' });
+    await createAndEnqueuePdfAuditJob(FILE, 'tenant-1', 'caller-1');
+    expect(prisma.job.create).toHaveBeenLastCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ produceAccessibleEpub: null, epubIsbn: null }) })
+    );
+  });
+
   it('owns the job as the assignee, stamping assignedById/assignedAt, when a real assignment is passed', async () => {
     (prisma.job.create as any).mockResolvedValue({ id: 'job-2' });
     const assignedAt = new Date('2026-11-13T00:00:00.000Z');

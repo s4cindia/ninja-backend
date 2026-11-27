@@ -754,11 +754,14 @@ describe('PdfAutoModeController', () => {
         fullAutoModeDefault: false,
         autoEscalateOnStallDefault: false,
         fullQCDefault: false,
+        epubFromPdfDefault: false,
       } as any);
     });
 
     it('getJobSettings reports override/tenantDefault/effective for all three per-job overrides', async () => {
-      vi.mocked(prisma.job.findUnique).mockResolvedValue({ fullAutoMode: true, autoEscalateOnStall: null, fullQC: true } as any);
+      vi.mocked(prisma.job.findUnique).mockResolvedValue({
+        fullAutoMode: true, autoEscalateOnStall: null, fullQC: true, produceAccessibleEpub: true, epubIsbn: '9780306406157',
+      } as any);
       const res = makeRes();
 
       await pdfAutoModeController.getJobSettings(makeReq(), res, next);
@@ -769,16 +772,21 @@ describe('PdfAutoModeController', () => {
           fullAutoMode: { override: true, tenantDefault: false, effective: true },
           autoEscalateOnStall: { override: null, tenantDefault: false, effective: false },
           fullQC: { override: true, tenantDefault: false, effective: true },
+          produceAccessibleEpub: { override: true, tenantDefault: false, effective: true },
+          epubIsbn: '9780306406157',
         },
       });
     });
 
     it('getJobSettings resolves a null override against the tenant default', async () => {
-      vi.mocked(prisma.job.findUnique).mockResolvedValue({ fullAutoMode: null, autoEscalateOnStall: null, fullQC: null } as any);
+      vi.mocked(prisma.job.findUnique).mockResolvedValue({
+        fullAutoMode: null, autoEscalateOnStall: null, fullQC: null, produceAccessibleEpub: null, epubIsbn: null,
+      } as any);
       vi.mocked(getEffectiveAiRemediationConfig).mockResolvedValue({
         fullAutoModeDefault: true,
         autoEscalateOnStallDefault: true,
         fullQCDefault: true,
+        epubFromPdfDefault: true,
       } as any);
       const res = makeRes();
 
@@ -790,6 +798,8 @@ describe('PdfAutoModeController', () => {
           fullAutoMode: { override: null, tenantDefault: true, effective: true },
           autoEscalateOnStall: { override: null, tenantDefault: true, effective: true },
           fullQC: { override: null, tenantDefault: true, effective: true },
+          produceAccessibleEpub: { override: null, tenantDefault: true, effective: true },
+          epubIsbn: null,
         },
       });
     });
@@ -849,6 +859,86 @@ describe('PdfAutoModeController', () => {
       await pdfAutoModeController.updateJobSettings(makeReq({ body: {} as any }), res, next);
 
       expect(next).toHaveBeenCalledWith(error);
+    });
+  });
+
+  describe('updateJobEpubSettings', () => {
+    const pdfJob = { id: 'job-1', tenantId: 'tenant-1', type: 'PDF_ACCESSIBILITY' };
+
+    beforeEach(() => {
+      vi.mocked(getEffectiveAiRemediationConfig).mockResolvedValue({ epubFromPdfDefault: false } as any);
+    });
+
+    it('turns the EPUB flag on and stores a normalised ISBN', async () => {
+      vi.mocked(prisma.job.update).mockResolvedValue({ produceAccessibleEpub: true, epubIsbn: '9780306406157' } as any);
+      const res = makeRes();
+
+      await pdfAutoModeController.updateJobEpubSettings(
+        makeReq({ job: pdfJob as any, body: { produceAccessibleEpub: true, epubIsbn: '978-0-306-40615-7' } as any }),
+        res,
+        next,
+      );
+
+      expect(prisma.job.update).toHaveBeenCalledWith({
+        where: { id: 'job-1' },
+        data: { produceAccessibleEpub: true, epubIsbn: '9780306406157' },
+        select: { produceAccessibleEpub: true, epubIsbn: true },
+      });
+      expect(res.json).toHaveBeenCalledWith({
+        success: true,
+        data: {
+          produceAccessibleEpub: { override: true, tenantDefault: false, effective: true },
+          epubIsbn: '9780306406157',
+        },
+      });
+    });
+
+    it('leaves omitted fields untouched and can reset the flag to the tenant default', async () => {
+      vi.mocked(prisma.job.update).mockResolvedValue({ produceAccessibleEpub: null, epubIsbn: null } as any);
+
+      await pdfAutoModeController.updateJobEpubSettings(
+        makeReq({ job: pdfJob as any, body: { produceAccessibleEpub: null } as any }),
+        makeRes(),
+        next,
+      );
+
+      expect(vi.mocked(prisma.job.update).mock.calls[0][0].data).toEqual({ produceAccessibleEpub: null });
+    });
+
+    it('clears the ISBN with null', async () => {
+      vi.mocked(prisma.job.update).mockResolvedValue({ produceAccessibleEpub: null, epubIsbn: null } as any);
+
+      await pdfAutoModeController.updateJobEpubSettings(
+        makeReq({ job: pdfJob as any, body: { epubIsbn: null } as any }),
+        makeRes(),
+        next,
+      );
+
+      expect(vi.mocked(prisma.job.update).mock.calls[0][0].data).toEqual({ epubIsbn: null });
+    });
+
+    it('rejects an ISBN with a bad check digit without writing anything', async () => {
+      const res = makeRes();
+
+      await pdfAutoModeController.updateJobEpubSettings(
+        makeReq({ job: pdfJob as any, body: { epubIsbn: '978-0-306-40615-8' } as any }),
+        res,
+        next,
+      );
+
+      expect(next).toHaveBeenCalledWith(expect.objectContaining({ statusCode: 400, code: 'INVALID_EPUB_ISBN' }));
+      expect(prisma.job.update).not.toHaveBeenCalled();
+    });
+
+    it('refuses non-PDF jobs', async () => {
+      await pdfAutoModeController.updateJobEpubSettings(
+        makeReq({ job: { ...pdfJob, type: 'EPUB_ACCESSIBILITY' } as any, body: { produceAccessibleEpub: true } as any }),
+        makeRes(),
+        next,
+      );
+
+      expect(next).toHaveBeenCalledWith(expect.objectContaining({ statusCode: 400, code: 'NOT_A_PDF_JOB' }));
+      expect(prisma.job.update).not.toHaveBeenCalled();
     });
   });
 });
