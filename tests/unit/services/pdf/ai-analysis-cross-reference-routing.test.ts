@@ -6,11 +6,14 @@ import type { PdfParseResult } from '../../../../src/services/pdf/pdf-comprehens
 
 /**
  * Regression coverage for CROSS-REFERENCE-MISSING-LINK's dispatch: routes
- * to the deterministic apply-to-pdf fix for chapter/section/page/pg/p
- * keywords (fixCrossReferenceLink's own resolveCrossReferenceDestination is
- * the REAL gate, at apply time -- this dispatch is optimistic, same shape
+ * to a deterministic, rule-based guidance-only suggestion for
+ * chapter/section/page/pg/p keywords (fixCrossReferenceLink's own
+ * resolveCrossReferenceDestination is the REAL resolution gate, same shape
  * as LINK_MISSING_ANNOTATION_CODES), but never even generates a suggestion
  * for figure/fig/table (no resolution path exists for those at all).
+ * Guidance-only by default since 2026-11-27 -- see
+ * link-missing-annotation-routing.test.ts's own doc comment for the real
+ * regression this closed.
  */
 
 // dispatchIssue is private; exercise via cast, same pattern as every other
@@ -51,7 +54,7 @@ function buildParsed(): PdfParseResult {
 
 describe('dispatchIssue: CROSS-REFERENCE-MISSING-LINK routing', () => {
   it.each(['chapter', 'section', 'page', 'pg', 'p'])(
-    'routes "%s" keyword to the deterministic rule-based apply-to-pdf fix',
+    'routes "%s" keyword to the deterministic rule-based guidance-only suggestion',
     async (keyword) => {
       const parsed = buildParsed();
 
@@ -59,7 +62,8 @@ describe('dispatchIssue: CROSS-REFERENCE-MISSING-LINK routing', () => {
 
       expect(res).not.toBeNull();
       expect(res.suggestionType).toBe('cross-reference-link-fix');
-      expect(res.applyMode).toBe('apply-to-pdf');
+      expect(res.applyMode).toBe('guidance-only');
+      expect(res.requiresManualReview).toBe(true);
       expect(res.model).toBe('rule-based');
       expect(res.confidence).toBe(1.0);
     }

@@ -146,6 +146,24 @@ describe('fixLinkMissingAnnotation', () => {
     expect(foundAnnotEntry?.toString()).toBe(linkRef.toString());
   });
 
+  // QC F-21 (Matterhorn 28-008/28-009): real regression, 2026-11-27 --
+  // every link-creation fix used to leave a page's first-ever annotation
+  // with no /Tabs=/S, so the very fix meant to resolve one Matterhorn
+  // checkpoint tripped TAB-ORDER-NOT-STRUCTURE on re-audit. Set in
+  // applyLinkSplice (the shared core), so this covers fixCrossReferenceLink/
+  // fixCitationLink/fixTocEntryLink too, not just this one caller.
+  it('sets /Tabs /S on the page once it gets its first annotation', async () => {
+    const { doc } = await buildDoc(PAGE_CONTENT);
+    const pageBefore = doc.getPage(0);
+    expect(pageBefore.node.get(PDFName.of('Tabs'))).toBeUndefined();
+
+    const result = pdfStructureWriterService.fixLinkMissingAnnotation(doc, issueFor(1, URL));
+    expect(result.success).toBe(true);
+
+    const pageAfter = doc.getPage(0);
+    expect(pageAfter.node.get(PDFName.of('Tabs'))?.toString()).toBe('/S');
+  });
+
   // Real, live-confirmed shape from Curiel_187961_CSHP.pdf (page 14: content
   // stream /H6, struct element /S /H3; page 32, x5: content stream /H6,
   // struct element /S /H5) -- renameElement (used by fixHeadingHierarchy/
