@@ -22,6 +22,7 @@ import { resolveAssignedOwner, JobOwnerAssignment } from '../utils/team-roster';
 import { notificationService } from '../services/notification/notification.service';
 import { emailService } from '../services/email/email.service';
 import { AppError } from '../utils/app-error';
+import { parseEpubIsbnField } from '../services/epub-from-pdf/epub-settings';
 
 /**
  * Fires the "you've been assigned a new title" notification (in-app +
@@ -637,8 +638,27 @@ export class PdfController {
       // page-by-page structure-tag review mode on this job's Audit Results
       // page; set only here, at upload time.
       const fullQC = parseBooleanField(req.body?.fullQC);
+      // "Also produce accessible EPUB" + the publisher's EPUB ISBN (both
+      // optional; null flag inherits aiRemediation.epubFromPdfDefault). A
+      // malformed ISBN is refused here, before any job exists.
+      const produceAccessibleEpub = parseBooleanField(req.body?.produceAccessibleEpub);
+      let epubIsbn: string | null;
+      try {
+        epubIsbn = parseEpubIsbnField(req.body?.epubIsbn) ?? null;
+      } catch (isbnError) {
+        if (isbnError instanceof AppError) {
+          return res.status(isbnError.statusCode).json({
+            success: false,
+            data: {},
+            error: { code: isbnError.code, message: isbnError.message },
+          });
+        }
+        throw isbnError;
+      }
 
-      const { jobId: newJobId } = await createAndEnqueuePdfAuditJob(req.file, tenantId, userId, { assignment, fullAutoMode, autoEscalateOnStall, fullQC });
+      const { jobId: newJobId } = await createAndEnqueuePdfAuditJob(req.file, tenantId, userId, {
+        assignment, fullAutoMode, autoEscalateOnStall, fullQC, produceAccessibleEpub, epubIsbn,
+      });
       jobId = newJobId;
       notifyJobAssignment(assignment, tenantId, jobId, req.file.originalname);
 
@@ -1121,6 +1141,23 @@ export class PdfController {
       const autoEscalateOnStall = parseBooleanField(req.body?.autoEscalateOnStall);
       // Per-file "Full QC" override -- see auditFromBuffer's own comment.
       const fullQC = parseBooleanField(req.body?.fullQC);
+      // EPUB flag + ISBN -- see auditFromBuffer's own comment. File status
+      // is rolled back on a bad ISBN, same as on a bad assignee below.
+      const produceAccessibleEpub = parseBooleanField(req.body?.produceAccessibleEpub);
+      let epubIsbn: string | null;
+      try {
+        epubIsbn = parseEpubIsbnField(req.body?.epubIsbn) ?? null;
+      } catch (isbnError) {
+        if (isbnError instanceof AppError) {
+          await prisma.file.update({ where: { id: fileId }, data: { status: FileStatus.UPLOADED } }).catch(() => {});
+          return res.status(isbnError.statusCode).json({
+            success: false,
+            error: isbnError.message,
+            code: isbnError.code,
+          });
+        }
+        throw isbnError;
+      }
 
       let assignment: JobOwnerAssignment;
       try {
@@ -1161,6 +1198,8 @@ export class PdfController {
           fullAutoMode,
           autoEscalateOnStall,
           fullQC,
+          produceAccessibleEpub,
+          epubIsbn,
           type: 'PDF_ACCESSIBILITY',
           status: 'QUEUED',
           input: {
@@ -1298,7 +1337,7 @@ export async function createAndEnqueuePdfAuditJob(
   file: { originalname: string; mimetype: string; size: number; buffer?: Buffer },
   tenantId: string,
   userId: string,
-  jobOptions?: { forceAutoTag?: boolean; sourceS3Key?: string; assignment?: JobOwnerAssignment; fullAutoMode?: boolean | null; autoEscalateOnStall?: boolean | null; fullQC?: boolean | null }
+  jobOptions?: { forceAutoTag?: boolean; sourceS3Key?: string; assignment?: JobOwnerAssignment; fullAutoMode?: boolean | null; autoEscalateOnStall?: boolean | null; fullQC?: boolean | null; produceAccessibleEpub?: boolean | null; epubIsbn?: string | null }
 ): Promise<{ jobId: string }> {
   // assignment absent (every caller except auditFromBuffer's own
   // Team-Leader-assigns-at-upload path) is a plain self-upload -- ownerId
@@ -1316,6 +1355,8 @@ export async function createAndEnqueuePdfAuditJob(
       fullAutoMode: jobOptions?.fullAutoMode ?? null,
       autoEscalateOnStall: jobOptions?.autoEscalateOnStall ?? null,
       fullQC: jobOptions?.fullQC ?? null,
+      produceAccessibleEpub: jobOptions?.produceAccessibleEpub ?? null,
+      epubIsbn: jobOptions?.epubIsbn ?? null,
       type: 'PDF_ACCESSIBILITY',
       status: 'QUEUED',
       input: {

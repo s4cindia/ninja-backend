@@ -49,3 +49,24 @@ export const updateJobSettingsSchema = {
 };
 
 export type UpdateJobSettingsBody = z.infer<typeof updateJobSettingsSchema['body']>;
+
+/**
+ * PATCH /pdf/:jobId/settings/epub -- separate from updateJobSettingsSchema
+ * because it has wider access (the owner's Team Leader too). epubIsbn is
+ * checked as a real ISBN-13 by the controller (parseEpubIsbnField), so a
+ * bad value gets the specific INVALID_EPUB_ISBN code. At least one field.
+ */
+export const updateJobEpubSettingsSchema = {
+  params: z.object({
+    jobId: z.string().min(1, 'Job ID is required'),
+  }),
+  body: z.object({
+    produceAccessibleEpub: z.boolean().nullable().optional(),
+    epubIsbn: z.string().max(40).nullable().optional(),
+  }).strict().refine(
+    (b) => b.produceAccessibleEpub !== undefined || b.epubIsbn !== undefined,
+    { message: 'Provide produceAccessibleEpub and/or epubIsbn' },
+  ),
+};
+
+export type UpdateJobEpubSettingsBody = z.infer<typeof updateJobEpubSettingsSchema['body']>;

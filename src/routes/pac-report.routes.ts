@@ -7,7 +7,7 @@
 
 import { Router } from 'express';
 import { authenticate } from '../middleware/auth.middleware';
-import { authorizeJob, authorizeJobForReview } from '../middleware/authorize-job.middleware';
+import { authorizeJob, authorizeJobForReview, authorizeJobForTeamLeaderAction } from '../middleware/authorize-job.middleware';
 import { rateLimiters } from '../middleware/rate-limit.middleware';
 import { validate } from '../middleware/validate.middleware';
 import { jobPacReportUploadUrlSchema, jobPacReportConfirmSchema } from '../schemas/job-pac-report.schemas';
@@ -58,11 +58,17 @@ router.post(
  * Job-native counterpart to the Comparison Study admin upload flow --
  * presigned PUT URL for an operator to upload a real, external PAC-tool
  * report against this job. Step 1 of 2; see /confirm below.
+ *
+ * This and the external confirm/delete routes accept the owner's Team
+ * Leader as well as the owner/ADMIN (authorizeJobForTeamLeaderAction): the
+ * uploaded PAC report is EPUB-from-certified-PDF certification evidence,
+ * and the Team Leader who certifies must be able to upload it. The paid
+ * axes4 live check above stays owner/ADMIN only.
  */
 router.post(
   '/:jobId/pac-report/external/upload-url',
   authenticate,
-  authorizeJob,
+  authorizeJobForTeamLeaderAction,
   rateLimiters.styleGuideUpload,
   validate(jobPacReportUploadUrlSchema),
   (req, res) => pacReportController.getExternalUploadUrl(req, res),
@@ -76,7 +82,7 @@ router.post(
 router.post(
   '/:jobId/pac-report/external/confirm',
   authenticate,
-  authorizeJob,
+  authorizeJobForTeamLeaderAction,
   validate(jobPacReportConfirmSchema),
   (req, res) => pacReportController.confirmExternalUpload(req, res),
 );
@@ -100,7 +106,7 @@ router.get(
 router.delete(
   '/:jobId/pac-report/external',
   authenticate,
-  authorizeJob,
+  authorizeJobForTeamLeaderAction,
   (req, res) => pacReportController.deleteExternalReport(req, res),
 );
 

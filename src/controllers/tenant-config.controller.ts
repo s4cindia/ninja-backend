@@ -94,6 +94,11 @@ const aiRemediationConfigUpdateSchema = z.object({
   // Tenant-wide default for "Full QC" (page-by-page structure-tag review) --
   // see resolveFullQC in auto-remediation-loop.service.ts.
   fullQCDefault: z.boolean().optional(),
+  // EPUB-from-certified-PDF: tenant default for the per-job "Also produce
+  // accessible EPUB" flag, and whether a Team Leader must release the EPUB
+  // before delivery.
+  epubFromPdfDefault: z.boolean().optional(),
+  epubTlReleaseRequired: z.boolean().optional(),
 }).strict();
 
 const workflowConfigUpdateSchema = z.object({
