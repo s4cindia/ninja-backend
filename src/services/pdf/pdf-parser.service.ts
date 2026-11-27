@@ -375,18 +375,26 @@ class PDFParserService {
 
     for (let i = 1; i <= pdfjsDoc.numPages; i++) {
       const pdfjsPage = await pdfjsDoc.getPage(i);
-      const pdfLibPage = pdfLibPages[i - 1];
-      const viewport = pdfjsPage.getViewport({ scale: 1 });
-      const annotations = await pdfjsPage.getAnnotations();
+      try {
+        const pdfLibPage = pdfLibPages[i - 1];
+        const viewport = pdfjsPage.getViewport({ scale: 1 });
+        const annotations = await pdfjsPage.getAnnotations();
 
-      pages.push({
-        pageNumber: i,
-        width: viewport.width,
-        height: viewport.height,
-        rotation: pdfLibPage?.getRotation()?.angle || 0,
-        hasAnnotations: annotations.length > 0,
-        annotationCount: annotations.length,
-      });
+        pages.push({
+          pageNumber: i,
+          width: viewport.width,
+          height: viewport.height,
+          rotation: pdfLibPage?.getRotation()?.angle || 0,
+          hasAnnotations: annotations.length > 0,
+          annotationCount: annotations.length,
+        });
+      } finally {
+        // Real OOM contributor (2026-11-27): this runs for EVERY page of
+        // EVERY parse, earliest in the whole audit pipeline -- see
+        // text-extractor.service.ts's own fix comment for the full
+        // pdfjs-page-cache mechanism this releases.
+        pdfjsPage.cleanup();
+      }
     }
 
     return pages;

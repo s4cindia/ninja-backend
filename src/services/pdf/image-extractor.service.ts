@@ -552,9 +552,14 @@ class ImageExtractorService {
     }
   ): Promise<PageImages> {
     const images: ImageInfo[] = [];
-    
+    // Hoisted out of the try block below so the finally clause can clean it
+    // up regardless of success/failure -- see text-extractor.service.ts's
+    // own fix comment for why this matters (uncleaned pdfjs page data is a
+    // real, confirmed OOM contributor).
+    let page: Awaited<ReturnType<typeof parsedPdf.pdfjsDoc.getPage>> | undefined;
+
     try {
-      const page = await parsedPdf.pdfjsDoc.getPage(pageNumber);
+      page = await parsedPdf.pdfjsDoc.getPage(pageNumber);
       const viewport = page.getViewport({ scale: 1 });
 
       const pdfLibPage = parsedPdf.pdfLibDoc.getPages()[pageNumber - 1];
@@ -713,6 +718,8 @@ class ImageExtractorService {
       }
     } catch (err) {
       console.warn(`Failed to extract images from page ${pageNumber}:`, err);
+    } finally {
+      page?.cleanup();
     }
 
     return {

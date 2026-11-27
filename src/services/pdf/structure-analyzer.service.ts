@@ -24,6 +24,36 @@ const MIN_TABULAR_COLUMNS = 2;
 // on how often a value repeats.
 const LIST_MARKER_PATTERN = /^(?:[•◦▪▫■□●○‣∙·\-*]|[0-9]{1,3}[.):]|[a-zA-Z][.):]|[ivxlcdmIVXLCDM]{1,6}[.):])$/;
 
+// Real OOM contributor (2026-11-27): analyzeStructure's own
+// textExtractorService.extractText() call -- itself a per-page
+// pdfjsDoc.getPage() loop -- fires again on EVERY call to analyzeStructure
+// for the SAME parsedPdf. Within one comprehensive audit pass that's at
+// least 4 times (pdf-comprehensive-parser.service.ts's own initial call,
+// then pdf-structure.validator.ts, pdf-table.validator.ts, and
+// pdfua-validator.service.ts/pdf-structure-validator.service.ts's own
+// callers each calling it again with different analyze*/pageRange options).
+// No caller anywhere in this codebase ever passes a `pageRange` to
+// analyzeStructure (confirmed via grep) -- extractText's own call here is
+// ALWAYS `{ pageRange: undefined, groupIntoLines: true, groupIntoBlocks:
+// true }`, a fixed, caller-independent set of options, so the extracted
+// text is identical every time for the same parsedPdf. Keyed by object
+// identity (WeakMap, not a parsedPdf field) so this cache can never leak
+// across documents and needs no explicit invalidation -- it's garbage
+// collected the moment parsedPdf itself is.
+const documentTextCache = new WeakMap<ParsedPDF, Promise<DocumentText>>();
+
+async function extractDocumentTextCached(parsedPdf: ParsedPDF): Promise<DocumentText> {
+  let cached = documentTextCache.get(parsedPdf);
+  if (!cached) {
+    cached = textExtractorService.extractText(parsedPdf, {
+      groupIntoLines: true,
+      groupIntoBlocks: true,
+    });
+    documentTextCache.set(parsedPdf, cached);
+  }
+  return cached;
+}
+
 export interface HeadingInfo {
   id: string;
   level: number;
@@ -443,11 +473,13 @@ class StructureAnalyzerService {
 
     const isTaggedPDF = parsedPdf.structure.metadata.isTagged;
 
-    const documentText = await textExtractorService.extractText(parsedPdf, {
-      pageRange,
-      groupIntoLines: true,
-      groupIntoBlocks: true,
-    });
+    // Only the no-pageRange shape is cached (see extractDocumentTextCached's
+    // own doc comment) -- a caller that ever does pass one (none does today)
+    // falls back to a fresh, uncached extraction rather than silently
+    // ignoring its own pageRange.
+    const documentText = pageRange
+      ? await textExtractorService.extractText(parsedPdf, { pageRange, groupIntoLines: true, groupIntoBlocks: true })
+      : await extractDocumentTextCached(parsedPdf);
 
     const headings = analyzeHeadings
       ? await this.analyzeHeadings(parsedPdf, documentText, isTaggedPDF)
@@ -1674,8 +1706,13 @@ class StructureAnalyzerService {
       const batchResults = await Promise.all(
         batchNums.map(async (pageNum) => {
           const pageLinks: LinkInfo[] = [];
+          // Hoisted so it's cleaned up on every exit path -- see
+          // text-extractor.service.ts's own fix comment for why
+          // (uncleaned pdfjs page data is a real, confirmed OOM
+          // contributor).
+          let page: Awaited<ReturnType<typeof parsedPdf.pdfjsDoc.getPage>> | undefined;
           try {
-            const page = await parsedPdf.pdfjsDoc.getPage(pageNum);
+            page = await parsedPdf.pdfjsDoc.getPage(pageNum);
             const annotations = await page.getAnnotations();
             const viewport = page.getViewport({ scale: 1 });
 
@@ -1716,6 +1753,8 @@ class StructureAnalyzerService {
             }
           } catch (err) {
             console.warn(`Failed to extract links from page ${pageNum}:`, err instanceof Error ? err.message : 'Unknown error');
+          } finally {
+            page?.cleanup();
           }
           return pageLinks;
         })

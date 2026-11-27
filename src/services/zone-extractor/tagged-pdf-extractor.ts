@@ -1016,6 +1016,7 @@ async function extractUsingStructTreeApi(
 
   for (let pageNum = 1; pageNum <= pdfjsDoc.numPages; pageNum++) {
     const page = await pdfjsDoc.getPage(pageNum);
+    try {
 
     // Get the per-page structure tree (roles already resolved via RoleMap)
     const structTree = await page.getStructTree();
@@ -1085,6 +1086,13 @@ async function extractUsingStructTreeApi(
     logger.info(
       `[tagged-pdf-extractor] Page ${pageNum}: bboxMap=${idBBoxMap.size} claimed=${claimedIds.size} treeZones=${treeZones} orphanClusters=${orphanClusters.length} (from ${orphanBboxes.length} IDs)`,
     );
+    } finally {
+      // See text-extractor.service.ts's own fix comment -- same uncleaned-
+      // pdfjs-page-cache OOM contributor, every page. This is Seam-C's
+      // initial-tagging pass, not the audit path, but runs over every page
+      // of every document too.
+      page.cleanup();
+    }
   }
 
   if (!hasAnyStructTree) return null;
@@ -1314,6 +1322,7 @@ async function buildMcidBBoxMap(
 
   for (let pageNum = 1; pageNum <= pdfjsDoc.numPages; pageNum++) {
     const page = await pdfjsDoc.getPage(pageNum);
+    try {
     const viewport = page.getViewport({ scale: 1 });
     const textContent = await page.getTextContent({ includeMarkedContent: true });
 
@@ -1362,6 +1371,11 @@ async function buildMcidBBoxMap(
     }
 
     if (mcidBBoxes.size > 0) pageMap.set(pageNum, mcidBBoxes);
+    } finally {
+      // See text-extractor.service.ts's own fix comment -- same uncleaned-
+      // pdfjs-page-cache OOM contributor, every page.
+      page.cleanup();
+    }
   }
 
   return pageMap;

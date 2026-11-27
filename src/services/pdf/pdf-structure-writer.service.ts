@@ -6279,7 +6279,15 @@ export class PdfStructureWriterService {
     if (!maps) {
       try {
         const page = await parsedPdf.pdfjsDoc.getPage(pageIndex + 1);
-        maps = await buildContentIdBBoxMap(page);
+        try {
+          maps = await buildContentIdBBoxMap(page);
+        } finally {
+          // Only the derived maps are cached (pageMapsCache above), not
+          // this page object itself -- see text-extractor.service.ts's own
+          // fix comment for why leaving it uncleaned is a real, confirmed
+          // OOM contributor.
+          page.cleanup();
+        }
       } catch (err) {
         logger.warn(`[StructureWriter] resolveRealHeadingInfo: could not read pdfjs page ${pageIndex + 1}: ${err instanceof Error ? err.message : String(err)}`);
         maps = { bboxMap: new Map(), fontMap: new Map(), textMap: new Map() };
