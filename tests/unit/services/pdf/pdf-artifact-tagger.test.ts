@@ -286,6 +286,28 @@ describe('findTaggedContentInsideArtifact', () => {
     const content = `/Artifact BMC\nBI\n/W 2/H 1/BPC 8/CS/G\nID \x00/Span BDC EMC\x00\nEI\nEMC\n`;
     expect(findTaggedContentInsideArtifact(content)).toHaveLength(0);
   });
+
+  it('real bug regression (2026-11-27): does not flag a /Span <</ActualText>> child with no /MCID -- it is just as struct-tree-unreachable as the enclosing Artifact, so splitting around it frees nothing', () => {
+    // Confirmed real on Karsaklian_189165_9781606497623.pdf pp71-93 odd/
+    // 171-179: InDesign's own fake-small-caps running-head rendering nests
+    // several of these ActualText-only spans (no /MCID) inside one
+    // correctly-decorative running-head /Artifact. Without this exclusion,
+    // this check used to flag them, and splitting the Artifact around them
+    // exposed the surrounding raw letters as newly-standalone Artifact
+    // siblings -- which findArtifactWrappedActualTextSiblings then retags
+    // to /Span<<ActualText>>, which findActualTextRunsMissingMcid then
+    // gives a real /MCID -- three independently-reasonable fixes chaining
+    // across rounds to promote a legitimately decorative running head into
+    // fully reading-order-visible real content (measured live: source 0
+    // pages affected -> output 16).
+    const content = `/Artifact <</O /Layout >>BDC\nBT\n(B)Tj\n/Span<</ActualText<0065>>> BDC\n(E)Tj\nEMC\nET\nEMC\n`;
+    expect(findTaggedContentInsideArtifact(content)).toHaveLength(0);
+  });
+
+  it('still flags a /Span <</MCID>> child even when it ALSO carries /ActualText -- that one IS reachable, so the exclusion above must not swallow it too', () => {
+    const content = `/Artifact BMC\n/Span <</MCID 0 /ActualText<0065>>> BDC\n(E)Tj\nEMC\nEMC\n`;
+    expect(findTaggedContentInsideArtifact(content)).toHaveLength(1);
+  });
 });
 
 describe('splitArtifactAroundTaggedContent', () => {

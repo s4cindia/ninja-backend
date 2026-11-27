@@ -329,7 +329,29 @@ export function findTaggedContentInsideArtifact(content: string): ArtifactNestin
       const tagStart = operands.length ? operands[0].start : tk.start;
       const isArtifact = tagName === '/Artifact';
       const isOC = tagName === '/OC';
-      const isReal = op === 'BDC' && !isArtifact && !isOC;
+      // A /Span <</ActualText ...>> tag with no real /MCID provides ZERO
+      // struct-tree reachability either way -- findActualTextRunsMissingMcid's
+      // own doc comment already established this ("just as invisible to
+      // PDF/UA conformance checking as /Artifact is"). So this violation's
+      // own premise -- that real content is being hidden, and extracting it
+      // would make it reachable -- doesn't hold for this shape; splitting
+      // the Artifact around it frees nothing. Confirmed real and necessary
+      // (2026-11-27, Karsaklian_189165_9781606497623 pp71-93 odd/171-179):
+      // InDesign's own fake-small-caps rendering nests several of these
+      // ActualText-only spans inside one correctly-decorative running-head
+      // /Artifact -- without this exclusion, splitting around them exposes
+      // the surrounding raw letters as newly-standalone Artifact siblings,
+      // which findArtifactWrappedActualTextSiblings then retags to
+      // /Span<<ActualText>>, which findActualTextRunsMissingMcid then gives
+      // a real /MCID -- three independently-reasonable fixes chaining
+      // across rounds to promote a legitimately decorative running head
+      // into fully reading-order-visible real content (measured live:
+      // source 0 pages affected -> output 16, exact 7-violation/7-sibling/
+      // 14-fragment match traced on p75 alone).
+      const hasActualText = operands.some((o) => o.t === 'name' && o.v === '/ActualText');
+      const hasMcid = operands.some((o) => o.t === 'name' && o.v === '/MCID');
+      const isActualTextOnlySpan = tagName === '/Span' && hasActualText && !hasMcid;
+      const isReal = op === 'BDC' && !isArtifact && !isOC && !isActualTextOnlySpan;
 
       const hasArtifactAncestor = stack.some((s) => s.isArtifact);
       const hasViolationAncestor = stack.some((s) => s.ownsViolation);
