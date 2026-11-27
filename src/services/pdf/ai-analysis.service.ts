@@ -126,6 +126,16 @@ interface AiSuggestionResult {
    * expected to be false positives, not every one is the guard doing its job.
    */
   altTextGuardRejected?: boolean;
+  /**
+   * The candidate shortAlt hasGroundedWordOverlap rejected, and the
+   * overlaidText it was checked against -- only ever set alongside
+   * altTextGuardRejected. Persisted onto AiAnalysis.rejectedBaselineHistory
+   * (appended, never overwritten) so a human judging the guard's false-
+   * reject rate can see the actual rejected text, not just a count
+   * (2026-11-27).
+   */
+  guardRejectedAlt?: string;
+  guardRejectedGroundingText?: string;
 }
 
 export interface ApplyApprovedSuggestionsResult {
@@ -2091,7 +2101,7 @@ class AiAnalysisService {
           const issueFingerprint = buildIssueFingerprint(issue);
           let existing = await prisma.aiAnalysis.findUnique({
             where: { jobId_issueId: { jobId, issueId: issue.id } },
-            select: { status: true, suggestionType: true, value: true, issueFingerprint: true, failedAttempts: true, lastErrorReason: true, appliedAt: true, appliedButUnresolved: true, manualReviewCompletedAt: true, extendedAlt: true, requiresManualReview: true },
+            select: { status: true, suggestionType: true, value: true, issueFingerprint: true, failedAttempts: true, lastErrorReason: true, appliedAt: true, appliedButUnresolved: true, manualReviewCompletedAt: true, extendedAlt: true, requiresManualReview: true, rejectedBaselineHistory: true },
           });
           // Fallback: issue.id can be stale even for THIS issue. An intervening
           // re-audit (e.g. applyAll's internal reauditAndCompare) regenerates every
@@ -2106,7 +2116,7 @@ class AiAnalysisService {
           if (!existing || existing.issueFingerprint !== issueFingerprint) {
             const byFingerprint = await prisma.aiAnalysis.findFirst({
               where: { jobId, issueFingerprint },
-              select: { status: true, suggestionType: true, value: true, issueFingerprint: true, failedAttempts: true, lastErrorReason: true, appliedAt: true, appliedButUnresolved: true, manualReviewCompletedAt: true, extendedAlt: true, requiresManualReview: true },
+              select: { status: true, suggestionType: true, value: true, issueFingerprint: true, failedAttempts: true, lastErrorReason: true, appliedAt: true, appliedButUnresolved: true, manualReviewCompletedAt: true, extendedAlt: true, requiresManualReview: true, rejectedBaselineHistory: true },
               // Stale rows can accumulate under successive old ids sharing this
               // fingerprint across repeated re-audits — take the most recently
               // written one, not an arbitrary one.
@@ -2136,6 +2146,22 @@ class AiAnalysisService {
           const effectiveValue = reviewCompleted ? existing!.value : suggestion.value;
           const effectiveExtendedAlt = reviewCompleted ? existing!.extendedAlt : suggestion.extendedAlt;
           const effectiveRequiresManualReview = reviewCompleted ? (existing!.requiresManualReview ?? false) : (suggestion.requiresManualReview ?? false);
+          // Append-only: a round that didn't reject anything must preserve
+          // whatever history already exists, never clear it. See
+          // AiSuggestionResult.guardRejectedAlt's own doc comment.
+          const priorRejectedHistory = Array.isArray(existing?.rejectedBaselineHistory)
+            ? (existing!.rejectedBaselineHistory as Array<{ alt: string; groundingText: string; rejectedAt: string }>)
+            : [];
+          const effectiveRejectedBaselineHistory = suggestion.altTextGuardRejected
+            ? [
+                ...priorRejectedHistory,
+                {
+                  alt: suggestion.guardRejectedAlt ?? '',
+                  groundingText: suggestion.guardRejectedGroundingText ?? '',
+                  rejectedAt: new Date().toISOString(),
+                },
+              ]
+            : (existing?.rejectedBaselineHistory ?? undefined);
 
           await prisma.aiAnalysis.upsert({
             where: { jobId_issueId: { jobId, issueId: issue.id } },
@@ -2158,6 +2184,7 @@ class AiAnalysisService {
               appliedAt: carriedAppliedAt,
               appliedButUnresolved,
               manualReviewCompletedAt: carriedManualReviewCompletedAt,
+              rejectedBaselineHistory: effectiveRejectedBaselineHistory,
               updatedAt: new Date(),
             },
             update: {
@@ -2177,6 +2204,7 @@ class AiAnalysisService {
               appliedAt: carriedAppliedAt,
               appliedButUnresolved,
               manualReviewCompletedAt: carriedManualReviewCompletedAt,
+              rejectedBaselineHistory: effectiveRejectedBaselineHistory,
               updatedAt: new Date(),
             },
           });
@@ -2231,6 +2259,18 @@ class AiAnalysisService {
         const claudeCostUsd =
           (statsAcc.claudePrompt * CLAUDE_HAIKU_INPUT_USD_PER_M + statsAcc.claudeCompletion * CLAUDE_HAIKU_OUTPUT_USD_PER_M) / 1_000_000;
 
+        const latestJob = await prisma.job.findUnique({ where: { id: jobId } });
+        const latestOutput = (latestJob?.output ?? {}) as Record<string, unknown>;
+        // Per-job TOTAL, not per-round: unlike every other aiAnalysisStats
+        // field (which this object overwrites wholesale each round, by
+        // design -- token/cost stats are only ever meaningful for the most
+        // recent analysis pass), altTextGuardRejections must accumulate
+        // across every round so a false-reject-rate judgment isn't blind
+        // to rejections that happened in an earlier round whose own
+        // AiAnalysis row later got pruned once the issue resolved
+        // (2026-11-27 -- the per-round-only count silently lost those).
+        const priorAltTextGuardRejections =
+          (latestOutput.aiAnalysisStats as { altTextGuardRejections?: number } | undefined)?.altTextGuardRejections ?? 0;
         const aiAnalysisStats = {
           gemini: {
             promptTokens: statsAcc.geminiPrompt,
@@ -2251,13 +2291,11 @@ class AiAnalysisService {
           // both look identical in the analyzed/skipped counts alone.
           serviceStatus: geminiStatus.open ? ('degraded' as const) : ('ok' as const),
           serviceError: geminiStatus.reason,
-          // See altTextGuardRejections' own declaration above for why this is
-          // tracked here rather than just logged.
-          altTextGuardRejections,
+          // See priorAltTextGuardRejections' own comment above for why this
+          // accumulates instead of overwriting like every other field here.
+          altTextGuardRejections: priorAltTextGuardRejections + altTextGuardRejections,
         };
 
-        const latestJob = await prisma.job.findUnique({ where: { id: jobId } });
-        const latestOutput = (latestJob?.output ?? {}) as Record<string, unknown>;
         await prisma.job.update({
           where: { id: jobId },
           data: { output: { ...latestOutput, aiAnalysisStats } as Prisma.InputJsonObject },
@@ -3426,7 +3464,7 @@ class AiAnalysisService {
     // vision call itself failing) -- see AiSuggestionResult.altTextGuardRejected's
     // own doc comment for why this one case specifically needs to be
     // countable, not just logged.
-    | { accepted: false; rejectedNoOverlap: boolean }
+    | { accepted: false; rejectedNoOverlap: boolean; rejectedAlt?: string; rejectedGroundingText?: string }
   > {
     const wantsLongDescription = DIAGRAM_OR_CHART_TYPES.has(classification.type);
 
@@ -3489,7 +3527,7 @@ class AiAnalysisService {
         logger.warn(
           `[AiAnalysis] draftComplexImageBaseline: alt text "${shortAlt}" has no word overlap with its own overlaid-text grounding -- rejecting`
         );
-        return { accepted: false, rejectedNoOverlap: true };
+        return { accepted: false, rejectedNoOverlap: true, rejectedAlt: shortAlt, rejectedGroundingText: overlaidText };
       }
 
       return {
@@ -3529,6 +3567,8 @@ class AiAnalysisService {
         // guard specifically rejected a drafted shortAlt -- see
         // AiSuggestionResult.altTextGuardRejected's own doc comment.
         let guardRejectedNoOverlap = false;
+        let guardRejectedAlt: string | undefined;
+        let guardRejectedGroundingText: string | undefined;
         if (manualIfComplex) {
           const baseline = await this.draftComplexImageBaseline(image, classification, doc, issue.pageNumber, issue.boundingBox);
           if (baseline.accepted) {
@@ -3546,6 +3586,8 @@ class AiAnalysisService {
             };
           }
           guardRejectedNoOverlap = baseline.rejectedNoOverlap;
+          guardRejectedAlt = baseline.rejectedAlt;
+          guardRejectedGroundingText = baseline.rejectedGroundingText;
         }
         // Either ALWAYS_MANUAL_IMAGE_TYPES, or a MANUAL_IF_COMPLEX_IMAGE_TYPES
         // instance whose baseline draft didn't qualify (generic, a Caption
@@ -3566,7 +3608,9 @@ class AiAnalysisService {
           applyMode: 'guidance-only',
           requiresManualReview: true,
           usage: classification.usage,
-          ...(guardRejectedNoOverlap ? { altTextGuardRejected: true } : {}),
+          ...(guardRejectedNoOverlap
+            ? { altTextGuardRejected: true, guardRejectedAlt, guardRejectedGroundingText }
+            : {}),
         };
       }
     }

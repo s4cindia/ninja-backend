@@ -2440,6 +2440,16 @@ model AiAnalysis {
   /// analysis pass must never silently un-mark a completed review or
   /// overwrite a human-reviewed `value`.
   manualReviewCompletedAt DateTime?
+  /// Every draftComplexImageBaseline candidate hasGroundedWordOverlap
+  /// rejected for this issue -- APPENDED one entry per round it recurred
+  /// in, never overwritten, so a human judging the guard's real false-
+  /// reject rate can see every round's own rejected text, not just
+  /// whichever round happened to run last (2026-11-27, see
+  /// AiSuggestionResult.altTextGuardRejected's own doc comment in
+  /// ai-analysis.service.ts for the full mechanism this feeds). Array of
+  /// {alt, groundingText, rejectedAt}. Null when this issue was never
+  /// routed through draftComplexImageBaseline, or never hit the guard.
+  rejectedBaselineHistory Json?
   createdAt            DateTime @default(now())
   updatedAt            DateTime @updatedAt
 
