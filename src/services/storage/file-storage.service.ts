@@ -1,5 +1,7 @@
 import * as fs from 'fs/promises';
+import { createReadStream } from 'fs';
 import * as path from 'path';
+import { Readable } from 'stream';
 import {
   PutObjectCommand,
   GetObjectCommand,
@@ -45,6 +47,26 @@ async function s3GetBuffer(key: string): Promise<Buffer | null> {
     if (isNotFoundError(error)) return null;
     throw error;
   }
+}
+
+/**
+ * Resolve a local-fallback storage reference (absolute, or relative to
+ * STORAGE_BASE) and refuse anything outside STORAGE_BASE.
+ */
+function resolveLocalStoragePath(fileUrlOrKey: string): string {
+  const candidatePath = fileUrlOrKey.startsWith('/')
+    ? fileUrlOrKey
+    : path.join(STORAGE_BASE, fileUrlOrKey);
+
+  // Resolve to absolute path to prevent path traversal
+  const resolvedPath = path.resolve(candidatePath);
+  const resolvedBase = path.resolve(STORAGE_BASE);
+
+  // Validate that resolved path is inside STORAGE_BASE
+  if (!resolvedPath.startsWith(resolvedBase + path.sep) && resolvedPath !== resolvedBase) {
+    throw new Error('Path traversal attempt detected - access denied');
+  }
+  return resolvedPath;
 }
 
 async function s3PutBuffer(key: string, buffer: Buffer): Promise<void> {
@@ -311,20 +333,7 @@ class FileStorageService {
         return buffer;
       }
 
-      // Handle both absolute and relative local paths
-      const candidatePath = fileUrlOrKey.startsWith('/')
-        ? fileUrlOrKey
-        : path.join(STORAGE_BASE, fileUrlOrKey);
-
-      // Resolve to absolute path to prevent path traversal
-      const resolvedPath = path.resolve(candidatePath);
-      const resolvedBase = path.resolve(STORAGE_BASE);
-
-      // Validate that resolved path is inside STORAGE_BASE
-      if (!resolvedPath.startsWith(resolvedBase + path.sep) && resolvedPath !== resolvedBase) {
-        throw new Error('Path traversal attempt detected - access denied');
-      }
-
+      const resolvedPath = resolveLocalStoragePath(fileUrlOrKey);
       const buffer = await fs.readFile(resolvedPath);
       logger.info(`Downloaded file from ${resolvedPath}`);
       return buffer;
@@ -334,6 +343,36 @@ class FileStorageService {
       });
       throw error;
     }
+  }
+
+  /**
+   * Streaming counterpart to downloadFile: same reference resolution and
+   * the same not-found signatures ("File not found in S3: <key>" for a
+   * missing S3 object, ENOENT for a missing local file), but the bytes are
+   * never collected into one Buffer -- for callers that only need to pass
+   * over the file once (e.g. hashing a multi-hundred-MB PDF).
+   */
+  async openReadStream(fileUrlOrKey: string): Promise<Readable> {
+    if (fileUrlOrKey.startsWith('http')) {
+      throw new Error('HTTP URL download not yet implemented');
+    }
+
+    if (s3Service.isConfigured()) {
+      try {
+        const response = await s3Client.send(new GetObjectCommand({ Bucket: config.s3Bucket, Key: fileUrlOrKey }));
+        if (!response.Body) throw new Error(`File not found in S3: ${fileUrlOrKey}`);
+        return response.Body as Readable;
+      } catch (error) {
+        if (isNotFoundError(error)) throw new Error(`File not found in S3: ${fileUrlOrKey}`);
+        throw error;
+      }
+    }
+
+    const resolvedPath = resolveLocalStoragePath(fileUrlOrKey);
+    // stat first so a missing file rejects here with ENOENT, rather than
+    // surfacing later as a stream 'error' event.
+    await fs.stat(resolvedPath);
+    return createReadStream(resolvedPath);
   }
 }
 

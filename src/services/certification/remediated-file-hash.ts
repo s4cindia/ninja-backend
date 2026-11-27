@@ -24,8 +24,18 @@ export function sha256Hex(buffer: Buffer): string {
 }
 
 /**
+ * sha256 of a stream, chunk by chunk -- memory stays at one chunk however
+ * large the file (remediated PDFs can be hundreds of MB).
+ */
+export async function sha256OfStream(stream: AsyncIterable<Uint8Array | string>): Promise<string> {
+  const hash = createHash('sha256');
+  for await (const chunk of stream) hash.update(chunk);
+  return hash.digest('hex');
+}
+
+/**
  * Same not-found signature as pdf-remediation.controller.ts's
- * isRemediatedFileNotFoundError: fileStorageService.downloadFile's own
+ * isRemediatedFileNotFoundError: fileStorageService's own
  * "File not found in S3:" message, or a local ENOENT. Anything else is a
  * real storage failure and is rethrown.
  */
@@ -45,12 +55,14 @@ export async function getCurrentRemediatedFileHash(jobId: string): Promise<Remed
   const fileRef = output.remediatedFileUrl;
   if (typeof fileRef !== 'string' || fileRef.length === 0) return null;
 
-  let buffer: Buffer;
+  // Streamed, never buffered whole. A failure mid-stream (connection
+  // reset, etc.) propagates as a real error, never as "no file".
+  let stream: Awaited<ReturnType<typeof fileStorageService.openReadStream>>;
   try {
-    buffer = await fileStorageService.downloadFile(fileRef);
+    stream = await fileStorageService.openReadStream(fileRef);
   } catch (error) {
     if (isNotFound(error)) return null;
     throw error;
   }
-  return { sha256: sha256Hex(buffer), fileRef };
+  return { sha256: await sha256OfStream(stream), fileRef };
 }

@@ -11,6 +11,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import * as fs from 'fs/promises';
+import { Readable } from 'stream';
 import { fileStorageService } from '../../../../src/services/storage/file-storage.service';
 import { s3Client, s3Service } from '../../../../src/services/s3.service';
 
@@ -203,6 +204,34 @@ describe('FileStorageService — S3 mode', () => {
   it('downloadFile rejects http(s) URLs (not yet implemented)', async () => {
     await expect(fileStorageService.downloadFile('https://example.com/doc.pdf')).rejects.toThrow('not yet implemented');
   });
+
+  it('openReadStream returns the S3 body as-is, chunk by chunk, without buffering', async () => {
+    const body = Readable.from([Buffer.from('a'), Buffer.from('b'), Buffer.from('c')]);
+    vi.mocked(s3Client.send).mockResolvedValue({ Body: body } as any);
+
+    const stream = await fileStorageService.openReadStream('job-storage/job-1/remediated/doc.pdf');
+
+    expect(stream).toBe(body);
+    const sent = vi.mocked(s3Client.send).mock.calls[0][0] as any;
+    expect(sent.input).toEqual({ Bucket: 'test-bucket', Key: 'job-storage/job-1/remediated/doc.pdf' });
+    const seen: string[] = [];
+    for await (const chunk of stream) seen.push(chunk.toString());
+    expect(seen).toEqual(['a', 'b', 'c']);
+  });
+
+  it('openReadStream maps a missing S3 object to the same "File not found in S3" error as downloadFile', async () => {
+    vi.mocked(s3Client.send).mockRejectedValue(notFoundError('NoSuchKey'));
+    await expect(fileStorageService.openReadStream('job-storage/job-1/doc.pdf')).rejects.toThrow(
+      'File not found in S3: job-storage/job-1/doc.pdf',
+    );
+  });
+
+  it('openReadStream rethrows a non-not-found S3 error unchanged', async () => {
+    const denied = new Error('AccessDenied');
+    (denied as any).name = 'AccessDenied';
+    vi.mocked(s3Client.send).mockRejectedValue(denied);
+    await expect(fileStorageService.openReadStream('job-storage/job-1/doc.pdf')).rejects.toBe(denied);
+  });
 });
 
 describe('FileStorageService — local-disk fallback (S3 not configured)', () => {
@@ -262,5 +291,14 @@ describe('FileStorageService — local-disk fallback (S3 not configured)', () =>
     vi.mocked(fs.access).mockRejectedValue(enoent());
     const exists = await fileStorageService.remediatedFileExists('job-1', 'doc.pdf');
     expect(exists).toBe(false);
+  });
+  it('openReadStream rejects with ENOENT for a missing local file', async () => {
+    vi.mocked(fs.stat).mockRejectedValue(enoent());
+    await expect(fileStorageService.openReadStream('job-1/remediated/doc.pdf')).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('openReadStream refuses a path outside the storage base', async () => {
+    await expect(fileStorageService.openReadStream('../../etc/passwd')).rejects.toThrow('Path traversal');
+    expect(fs.stat).not.toHaveBeenCalled();
   });
 });
