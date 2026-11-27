@@ -91,7 +91,15 @@ const REGRESSION_METRICS = [
 // Noise-tolerant but NOT a regression direction -- e.g. alt_median_chars
 // (2026-11-25, see git log): genuine AI wording variance run to run with no
 // inherent "higher is worse" meaning. Gets a tolerance; never gates `check`.
-const NOISE_TOLERANT_METRICS = ['alt_median_chars'] as const;
+// alt_over_250_chars joins it 2026-11-27: confirmed real on T1/T4/T5's own
+// post-fix double captures -- a 1-off swing on EVERY title despite zero
+// alt_cross_run_divergent/alt_missing_one_run, i.e. genuine wording-length
+// variance on otherwise-grounded, non-fabricated alt text, not a defect.
+// It was previously uncategorized (neither list), which finalizeBaseline's
+// own exact-match gate treated as a real structural mismatch and refused
+// to baseline over -- the same false-alarm shape this whole list exists to
+// avoid for alt_median_chars.
+const NOISE_TOLERANT_METRICS = ['alt_median_chars', 'alt_over_250_chars'] as const;
 
 // Quarantined (2026-11-25, see git log): run-to-run instability here is a
 // real PRODUCT BUG, not noise to paper over with a tolerance -- the same
