@@ -448,6 +448,7 @@ describe('PdfAutoModeController', () => {
           pendingFullAutoMode: false,
           fullAutoModeEffective: false,
           autoEscalateOnStallEffective: false,
+          autoLoopLastError: null,
         },
       });
     });
@@ -513,6 +514,7 @@ describe('PdfAutoModeController', () => {
           pendingFullAutoMode: true,
           fullAutoModeEffective: true,
           autoEscalateOnStallEffective: false,
+          autoLoopLastError: null,
         },
       });
     });
@@ -580,8 +582,47 @@ describe('PdfAutoModeController', () => {
           autoStallEscalated: true,
           fullAutoModeEffective: false,
           autoEscalateOnStallEffective: false,
+          autoLoopLastError: null,
         },
       });
+    });
+
+    it('surfaces autoLoopLastError from job.output when the loop\'s last stop was a genuine error (real incident, 2026-11-27: a NUL-byte Postgres rejection only ever visible in CloudWatch before this)', async () => {
+      vi.mocked(prisma.pdfAutoRemediationRun.findUnique).mockResolvedValue({
+        autoStatus: 'stopped',
+        autoStopReason: 'error',
+        autoStartedAt: new Date('2026-11-27T19:33:58Z'),
+        autoRoundsCompleted: 0,
+        autoMaxRounds: 10,
+        autoCostSpentUsd: 0.12,
+        autoCostLimitUsd: 2,
+        autoColorContrastMode: null,
+        autoLinkTextMode: null,
+        autoBookmarkMode: null,
+        autoStallEscalated: false,
+      } as any);
+      vi.mocked(prisma.job.findUnique).mockResolvedValue({
+        output: {
+          autoLoopLastError: {
+            message: 'invalid input syntax for type json | at Object.extractText (text-extractor.service.ts:255:1)',
+            at: '2026-11-27T20:29:50.006Z',
+            roundsCompleted: 0,
+            costSpentUsd: 0.12,
+          },
+        },
+      } as any);
+      const res = makeRes();
+
+      await pdfAutoModeController.getStatus(makeReq(), res, next);
+
+      expect(res.json).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            autoStopReason: 'error',
+            autoLoopLastError: expect.objectContaining({ message: expect.stringContaining('invalid input syntax for type json') }),
+          }),
+        })
+      );
     });
 
     it('reconciles an orphaned job-run before reporting status', async () => {

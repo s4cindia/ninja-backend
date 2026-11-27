@@ -1008,6 +1008,12 @@ export class PdfController {
             // AutoRemediationLoopService.writeMemoryHeartbeat's own doc
             // comment (auto-remediation-loop.service.ts).
             memoryHeartbeat: (output?.memoryHeartbeat as unknown) ?? null,
+            // Real err.message + first stack frame for the Auto Mode
+            // loop's own last 'error' stop, written by
+            // AutoRemediationLoopService.startAutoLoop's finally block --
+            // see that write site's own doc comment (auto-remediation-
+            // loop.service.ts) for why this exists.
+            autoLoopLastError: (output?.autoLoopLastError as unknown) ?? null,
             ...auditReport,
             ...(issuesWithFingerprint ? { issues: issuesWithFingerprint } : {}),
             matterhornSummary,

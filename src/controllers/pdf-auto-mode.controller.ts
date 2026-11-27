@@ -221,6 +221,17 @@ export class PdfAutoModeController {
       // opted into Auto Mode for yet.
       let run = await prisma.pdfAutoRemediationRun.findUnique({ where: { jobId } });
 
+      // Real err.message + first stack frame for the loop's own last
+      // 'error' stop (see AutoRemediationLoopService.startAutoLoop's own
+      // write site, auto-remediation-loop.service.ts) -- only ever
+      // meaningful when autoStopReason is 'error', but harmless to
+      // resolve unconditionally here since every branch below reports it.
+      const jobOutput = (await prisma.job.findUnique({ where: { id: jobId }, select: { output: true } }))?.output as
+        | Record<string, unknown>
+        | null
+        | undefined;
+      const autoLoopLastError = jobOutput?.autoLoopLastError ?? null;
+
       // Resolved once up front so every branch below can report it --
       // previously neither flag was visible anywhere once a run existed
       // (only `pendingFullAutoMode`, and only pre-start), so there was no
@@ -267,6 +278,7 @@ export class PdfAutoModeController {
             pendingFullAutoMode: fullAutoModeEffective,
             fullAutoModeEffective,
             autoEscalateOnStallEffective,
+            autoLoopLastError,
           },
         });
         return;
@@ -295,6 +307,7 @@ export class PdfAutoModeController {
           autoStallEscalated: run.autoStallEscalated,
           fullAutoModeEffective,
           autoEscalateOnStallEffective,
+          autoLoopLastError,
         },
       });
     } catch (error) {

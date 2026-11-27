@@ -452,6 +452,43 @@ describe('autoRemediationLoopService.startAutoLoop', () => {
     );
   });
 
+  it('real bug regression (2026-11-27, Math_Weir_PDF.pdf): marks postRemediationStatus failed and stops with reason error -- including the real exception message -- when the reaudit call itself throws (not a comparison.success: false return)', async () => {
+    // applyApprovedSuggestions already set postRemediationStatus 'pending'
+    // right before this call (production behavior, not asserted here);
+    // without this fix, a throw leaves it stuck there forever, for the
+    // watchdog (reconcileStalePostRemediation) to eventually find and
+    // retry -- see that function's own test coverage for why it does NOT
+    // write 'failed' on a throw (it may be transient); this call site is
+    // different: it's the ORIGINAL, one-shot attempt within this exact
+    // loop invocation, not a repeating sweep, so marking 'failed'
+    // immediately is safe and avoids an unnecessary watchdog retry later.
+    vi.mocked(prisma.comparisonTrial.findUnique).mockResolvedValue(makeTrial() as any);
+    mockLockAcquired(7);
+    mockProductiveRound(5);
+    vi.mocked(pdfReauditService.reauditAndCompare).mockRejectedValueOnce(
+      new Error('invalid input syntax for type json')
+    );
+    vi.mocked(prisma.job.update).mockResolvedValue({} as any);
+
+    await autoRemediationLoopService.startAutoLoop(new ComparisonTrialAutoRemediationDriver('trial-1'));
+
+    expect(prisma.job.update).toHaveBeenCalledWith({
+      where: { id: 'job-1' },
+      data: { output: expect.objectContaining({ postRemediationStatus: 'failed' }) },
+    });
+    expect(prisma.comparisonTrial.update).toHaveBeenCalledWith({
+      where: { id: 'trial-1' },
+      data: { autoStatus: 'stopped', autoStopReason: 'error', autoStopRequested: false, autoStoppedAt: expect.any(Date) },
+    });
+    expect(remediationCycleHistoryService.logEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: 'auto_loop_summary',
+        status: 'failed',
+        errorMessage: expect.stringContaining('invalid input syntax for type json'),
+      })
+    );
+  });
+
   it('logs a per-issue-code breakdown of this round\'s resolved/regressions on the reaudit history event', async () => {
     // Same fixture shape as mockProductiveRound, but with non-empty
     // resolved/regressions arrays so tallyByCode has something real to
