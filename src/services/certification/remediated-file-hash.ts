@@ -1,0 +1,56 @@
+/**
+ * Hash of a PDF job's CURRENT remediated file.
+ *
+ * The EPUB-from-certified-PDF gate binds every piece of evidence (PAC
+ * report, Acrobat report, the certification itself) to the exact bytes it
+ * was produced against, by sha256. This is the one place that answers
+ * "what are those bytes right now": it reads the same `output.remediatedFileUrl`
+ * reference the remediated-PDF download endpoint serves, through the same
+ * fileStorageService abstraction (S3 key or local path).
+ */
+
+import { createHash } from 'crypto';
+import prisma from '../../lib/prisma';
+import { fileStorageService } from '../storage/file-storage.service';
+
+export interface RemediatedFileHash {
+  sha256: string;
+  /** Storage reference (S3 key or local path) the hash was computed from. */
+  fileRef: string;
+}
+
+export function sha256Hex(buffer: Buffer): string {
+  return createHash('sha256').update(buffer).digest('hex');
+}
+
+/**
+ * Same not-found signature as pdf-remediation.controller.ts's
+ * isRemediatedFileNotFoundError: fileStorageService.downloadFile's own
+ * "File not found in S3:" message, or a local ENOENT. Anything else is a
+ * real storage failure and is rethrown.
+ */
+function isNotFound(error: unknown): boolean {
+  if (error instanceof Error && error.message.startsWith('File not found in S3:')) return true;
+  return !!error && typeof error === 'object' && (error as NodeJS.ErrnoException).code === 'ENOENT';
+}
+
+/**
+ * Null when the job has no remediated file yet (no reference recorded, or
+ * the referenced object is gone). Throws on a real storage error, so a
+ * transient S3 failure is never mistaken for "no file".
+ */
+export async function getCurrentRemediatedFileHash(jobId: string): Promise<RemediatedFileHash | null> {
+  const job = await prisma.job.findUnique({ where: { id: jobId }, select: { output: true } });
+  const output = (job?.output && typeof job.output === 'object' ? job.output : {}) as Record<string, unknown>;
+  const fileRef = output.remediatedFileUrl;
+  if (typeof fileRef !== 'string' || fileRef.length === 0) return null;
+
+  let buffer: Buffer;
+  try {
+    buffer = await fileStorageService.downloadFile(fileRef);
+  } catch (error) {
+    if (isNotFound(error)) return null;
+    throw error;
+  }
+  return { sha256: sha256Hex(buffer), fileRef };
+}

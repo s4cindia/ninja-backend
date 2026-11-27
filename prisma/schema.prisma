@@ -257,6 +257,7 @@ model Job {
   pdfAutoRemediationRun  PdfAutoRemediationRun?
   teamReviews            TeamReview[]
   jobExternalPacReport   JobExternalPacReport?
+  jobExternalAcrobatReport JobExternalAcrobatReport?
 
   @@index([tenantId])
   @@index([status])
@@ -2866,6 +2867,52 @@ model JobExternalPacReport {
   notApplicable    Int?
   uploadedById     String
   createdAt        DateTime @default(now())
+  // createdAt never moves on a re-upload (confirm is an upsert); updatedAt
+  // is when the current report file was confirmed.
+  updatedAt        DateTime @default(now()) @updatedAt
+  // sha256 of the job's remediated PDF at the moment this report was
+  // confirmed -- binds the report to the exact bytes it was run on, so the
+  // EPUB certification gate can reject a report for an older file. Null
+  // when the job had no remediated file yet (such a report can never
+  // satisfy the gate).
+  remediatedSha256 String?
+
+  @@index([jobId])
+}
+
+/// An Acrobat Pro Accessibility Checker HTML report an operator uploaded
+/// against a PDF job -- evidence for the EPUB-from-certified-PDF
+/// certification gate, alongside JobExternalPacReport. Same presign/confirm
+/// flow and job-storage/<jobId>/... key prefix (swept by deleteJobFiles).
+/// Counts come from the server-side parser (acrobat-report-parser.ts) when
+/// it can read the report unambiguously, otherwise from the operator
+/// (countsSource says which).
+model JobExternalAcrobatReport {
+  id               String   @id @default(cuid())
+  jobId            String   @unique
+  job              Job      @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  s3Key            String
+  originalFileName String
+  mimeType         String
+  size             Int
+  passed           Int?
+  failed           Int?
+  needsManualCheck Int?
+  skipped          Int?
+  passedManually   Int?
+  failedManually   Int?
+  // 'parsed' | 'operator'
+  countsSource     String
+  // [{ category, rule, ruleId, status, description }] for every Failed /
+  // Failed manually rule the parser found (empty when it couldn't read the
+  // rule table).
+  failedRules      Json?
+  parseWarnings    Json?
+  // Same meaning as JobExternalPacReport.remediatedSha256.
+  remediatedSha256 String?
+  uploadedById     String
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @default(now()) @updatedAt
 
   @@index([jobId])
 }
