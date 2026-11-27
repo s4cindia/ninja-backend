@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { stripNulBytes } from '../../../src/lib/prisma';
+import { stripNulBytes, countNulBytes } from '../../../src/lib/prisma';
 
 describe('stripNulBytes', () => {
   it('real bug regression (2026-11-27): strips a literal NUL character out of a string -- Postgres rejects it outright (error 22P05), even though JSON.stringify never complains', () => {
@@ -43,5 +43,34 @@ describe('stripNulBytes', () => {
   it('does not throw or hang on a deeply nested structure with mixed types', () => {
     const input = { a: [{ b: { c: ['x\u0000y', 1, null, { d: 'z\u0000' }] } }] };
     expect(stripNulBytes(input)).toEqual({ a: [{ b: { c: ['xy', 1, null, { d: 'z' }] } }] });
+  });
+});
+
+describe('countNulBytes', () => {
+  // Used by the strip-nul-bytes Prisma extension to decide when to log --
+  // kept separate from stripNulBytes itself (doesn't mutate, doesn't share
+  // its signature) so the write-side logic can know a count without
+  // double-walking the stripped result.
+  it('returns 0 for a clean string', () => {
+    expect(countNulBytes('clean message')).toBe(0);
+  });
+
+  it('counts multiple NUL bytes in a single string', () => {
+    expect(countNulBytes('BECOMING\u0000A\u0000MARKETING\u0000NEGOTIATOR')).toBe(3);
+  });
+
+  it('sums counts recursively across nested objects and arrays', () => {
+    const input = {
+      auditReport: { issues: [{ message: 'Alt text:\u0000 fetus\u0000 diagram' }, { message: 'clean' }] },
+      postRemediationAudit: { resolved: 5, note: 'all\u0000clear' },
+    };
+    expect(countNulBytes(input)).toBe(3);
+  });
+
+  it('returns 0 for non-plain-object values (Date, null, number, boolean)', () => {
+    expect(countNulBytes(new Date('2026-11-27T00:00:00Z'))).toBe(0);
+    expect(countNulBytes(null)).toBe(0);
+    expect(countNulBytes(42)).toBe(0);
+    expect(countNulBytes(true)).toBe(0);
   });
 });
