@@ -231,7 +231,7 @@ describe('certifyJob', () => {
     await certifyJob('job-1', input());
 
     expect(db.jobCertification.updateMany).toHaveBeenCalledWith({
-      where: { jobId: 'job-1', revokedAt: null },
+      where: { jobId: 'job-1', revokedAt: null, id: 'cert-1' },
       data: expect.objectContaining({ revokedReason: 'pdf-changed', revokedById: null }),
     });
     expect(db.jobCertification.create).toHaveBeenCalled();
@@ -281,11 +281,25 @@ describe('getCertificationState', () => {
     const state = await getCertificationState('job-1');
 
     expect(db.jobCertification.updateMany).toHaveBeenCalledWith({
-      where: { jobId: 'job-1', revokedAt: null },
+      where: { jobId: 'job-1', revokedAt: null, id: 'cert-1' },
       data: expect.objectContaining({ revokedReason: reason }),
     });
     expect(state.active).toBeNull();
     expect(state.history).toHaveLength(1);
+  });
+
+  it('a stale read that lost a race to revoke + re-certify leaves the new certification alone', async () => {
+    // Read loaded cert-1; meanwhile another request revoked it and issued cert-2.
+    history(activeCert(), true);
+    hash.mockResolvedValue({ sha256: 'c'.repeat(64), fileRef: 'k' });
+    db.jobCertification.updateMany.mockResolvedValue({ count: 0 });
+
+    await getCertificationState('job-1');
+
+    // Scoped to cert-1: cannot match cert-2.
+    expect(db.jobCertification.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { jobId: 'job-1', revokedAt: null, id: 'cert-1' } }),
+    );
   });
 
   it('does no hashing when there is no active certification', async () => {
