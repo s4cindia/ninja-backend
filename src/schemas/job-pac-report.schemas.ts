@@ -24,6 +24,10 @@ export const jobPacReportConfirmSchema = {
     jobId: z.string().min(1, 'Job ID is required'),
   }),
   body: z.object({
+    // From the upload-url response. Optional only while clients from before
+    // the staging/confirmed split are still around (the service logs a
+    // warning for each confirm without it).
+    uploadId: z.string().uuid().optional(),
     originalFileName: z.string().min(1),
     mimeType: z.string().min(1),
     summary: z

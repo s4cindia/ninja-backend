@@ -69,9 +69,39 @@ function resolveLocalStoragePath(fileUrlOrKey: string): string {
   return resolvedPath;
 }
 
-async function s3PutBuffer(key: string, buffer: Buffer): Promise<void> {
-  await s3Client.send(new PutObjectCommand({ Bucket: config.s3Bucket, Key: key, Body: buffer }));
+async function s3PutBuffer(key: string, buffer: Buffer): Promise<{ ETag?: string; VersionId?: string }> {
+  const result = await s3Client.send(new PutObjectCommand({ Bucket: config.s3Bucket, Key: key, Body: buffer }));
+  return { ETag: result?.ETag, VersionId: result?.VersionId };
 }
+
+/**
+ * Identifies one version of a stored object, cheaply (no body read): the
+ * S3 ETag + VersionId, or a local file's size + mtime. Two reads returning
+ * the same fingerprint saw the same bytes, so a hash computed under one can
+ * be reused under the other.
+ */
+function s3Fingerprint(etag: string | undefined, versionId: string | undefined): string | null {
+  if (!etag && !versionId) return null;
+  return `s3:${versionId ?? '-'}:${etag ?? '-'}`;
+}
+
+function localFingerprint(stat: { size: number; mtimeMs: number }): string {
+  return `fs:${stat.size}:${stat.mtimeMs}`;
+}
+
+/** Emitted after a remediated file is written; see onRemediatedFileSaved. */
+export interface RemediatedFileSavedEvent {
+  jobId: string;
+  fileName: string;
+  /** What saveRemediatedFile returned: S3 key or local path. */
+  fileRef: string;
+  /** The bytes just written. Listeners must not keep a reference. */
+  buffer: Buffer;
+  /** Fingerprint of the written object (see s3Fingerprint); null if S3 returned none. */
+  fingerprint: string | null;
+}
+
+export type RemediatedFileSavedListener = (event: RemediatedFileSavedEvent) => Promise<void> | void;
 
 // HEAD, not GET -- an existence check must never pull a potentially large
 // (tens-of-MB) file body over the network just to answer a boolean.
@@ -227,13 +257,43 @@ class FileStorageService {
     }
   }
 
+  private readonly remediatedSavedListeners = new Set<RemediatedFileSavedListener>();
+
+  /**
+   * Registers a callback run after every saveRemediatedFile. Storage knows
+   * nothing about what listeners do (the EPUB-from-PDF certification uses
+   * it to cache the new file's hash and promptly revoke a certification of
+   * the old bytes). A listener's failure is logged and never fails the
+   * save. Returns an unsubscribe function.
+   */
+  onRemediatedFileSaved(listener: RemediatedFileSavedListener): () => void {
+    this.remediatedSavedListeners.add(listener);
+    return () => { this.remediatedSavedListeners.delete(listener); };
+  }
+
+  private async notifyRemediatedFileSaved(event: RemediatedFileSavedEvent): Promise<void> {
+    for (const listener of this.remediatedSavedListeners) {
+      try {
+        await listener(event);
+      } catch (error) {
+        logger.warn(
+          `[FileStorage] remediated-file-saved listener failed for job ${event.jobId}: ` +
+            (error instanceof Error ? error.message : String(error)),
+        );
+      }
+    }
+  }
+
   async saveRemediatedFile(jobId: string, fileName: string, buffer: Buffer): Promise<string> {
     const sanitizedFileName = path.basename(fileName);
 
     if (s3Service.isConfigured()) {
       const key = `${S3_PREFIX}/${jobId}/remediated/${sanitizedFileName}`;
-      await s3PutBuffer(key, buffer);
+      const put = await s3PutBuffer(key, buffer);
       logger.info(`Saved remediated file to S3: ${key} (${buffer.length} bytes)`);
+      await this.notifyRemediatedFileSaved({
+        jobId, fileName: sanitizedFileName, fileRef: key, buffer, fingerprint: s3Fingerprint(put.ETag, put.VersionId),
+      });
       return key;
     }
 
@@ -242,6 +302,12 @@ class FileStorageService {
     const filePath = path.join(jobDir, sanitizedFileName);
     await fs.writeFile(filePath, buffer);
     logger.info(`Saved remediated file locally: ${filePath}`);
+    if (this.remediatedSavedListeners.size > 0) {
+      const stat = await fs.stat(filePath);
+      await this.notifyRemediatedFileSaved({
+        jobId, fileName: sanitizedFileName, fileRef: filePath, buffer, fingerprint: localFingerprint(stat),
+      });
+    }
     return filePath;
   }
 
@@ -365,6 +431,16 @@ class FileStorageService {
    * over the file once (e.g. hashing a multi-hundred-MB PDF).
    */
   async openReadStream(fileUrlOrKey: string): Promise<Readable> {
+    return (await this.openReadStreamWithFingerprint(fileUrlOrKey)).stream;
+  }
+
+  /**
+   * openReadStream plus the fingerprint of the exact version being read --
+   * taken from the GET response itself (S3), so it can't belong to a
+   * different version than the bytes. Locally, the stat taken just before
+   * opening (dev-only fallback; a write in between is not guarded against).
+   */
+  async openReadStreamWithFingerprint(fileUrlOrKey: string): Promise<{ stream: Readable; fingerprint: string | null }> {
     if (fileUrlOrKey.startsWith('http')) {
       throw new Error('HTTP URL download not yet implemented');
     }
@@ -373,7 +449,7 @@ class FileStorageService {
       try {
         const response = await s3Client.send(new GetObjectCommand({ Bucket: config.s3Bucket, Key: fileUrlOrKey }));
         if (!response.Body) throw new Error(`File not found in S3: ${fileUrlOrKey}`);
-        return response.Body as Readable;
+        return { stream: response.Body as Readable, fingerprint: s3Fingerprint(response.ETag, response.VersionId) };
       } catch (error) {
         if (isNotFoundError(error)) throw new Error(`File not found in S3: ${fileUrlOrKey}`);
         throw error;
@@ -383,8 +459,30 @@ class FileStorageService {
     const resolvedPath = resolveLocalStoragePath(fileUrlOrKey);
     // stat first so a missing file rejects here with ENOENT, rather than
     // surfacing later as a stream 'error' event.
-    await fs.stat(resolvedPath);
-    return createReadStream(resolvedPath);
+    const stat = await fs.stat(resolvedPath);
+    return { stream: createReadStream(resolvedPath), fingerprint: localFingerprint(stat) };
+  }
+
+  /**
+   * Fingerprint of the stored object without reading it (HEAD / stat), or
+   * null if it doesn't exist. Same reference forms as openReadStream.
+   */
+  async getFileFingerprint(fileUrlOrKey: string): Promise<string | null> {
+    if (s3Service.isConfigured()) {
+      try {
+        const head = await s3Client.send(new HeadObjectCommand({ Bucket: config.s3Bucket, Key: fileUrlOrKey }));
+        return s3Fingerprint(head.ETag, head.VersionId);
+      } catch (error) {
+        if (isNotFoundError(error)) return null;
+        throw error;
+      }
+    }
+    try {
+      return localFingerprint(await fs.stat(resolveLocalStoragePath(fileUrlOrKey)));
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+      throw error;
+    }
   }
 }
 

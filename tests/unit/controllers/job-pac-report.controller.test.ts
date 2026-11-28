@@ -91,19 +91,20 @@ describe('PacReportController.getExternalUploadUrl', () => {
 });
 
 describe('PacReportController.confirmExternalUpload', () => {
-  it('delegates with uploadedById from req.user, not the request body', async () => {
+  it('delegates with uploadedById from req.user, not the request body, passing the uploadId through', async () => {
     vi.mocked(confirmJobPacReportUpload).mockResolvedValue({ id: 'report-1' } as any);
     const res = makeRes();
 
     await pacReportController.confirmExternalUpload(
       makeReq({
-        body: { originalFileName: 'r.pdf', mimeType: 'application/pdf', summary: { pass: 1 } },
+        body: { uploadId: '6f1c2b0e-3d4a-4b5c-8d9e-0f1a2b3c4d5e', originalFileName: 'r.pdf', mimeType: 'application/pdf', summary: { pass: 1 } },
         user: { id: 'user-1', tenantId: 'tenant-1' },
       } as any),
       res,
     );
 
     expect(confirmJobPacReportUpload).toHaveBeenCalledWith('job-1', {
+      uploadId: '6f1c2b0e-3d4a-4b5c-8d9e-0f1a2b3c4d5e',
       originalFileName: 'r.pdf',
       mimeType: 'application/pdf',
       summary: { pass: 1 },

@@ -128,7 +128,7 @@ export async function getCertificationState(jobId: string): Promise<Certificatio
   if (active) {
     const current = await getCurrentRemediatedFileHash(jobId);
     const reason = await invalidationReason(active, current?.sha256 ?? null);
-    if (reason) await revokeActiveCertification(jobId, reason, null, active.id);
+    if (reason) await revokeActiveCertification(jobId, reason, null, { certificationId: active.id });
   }
   const history = await prisma.jobCertification.findMany({ where: { jobId }, orderBy: { certifiedAt: 'desc' } });
   return { active: history.find((c) => c.revokedAt === null) ?? null, history };
@@ -159,7 +159,7 @@ export async function certifyJob(jobId: string, input: CertifyInput): Promise<Jo
     if (!reason) {
       throw AppError.conflict('This job is already certified for its current file; revoke it first', 'ALREADY_CERTIFIED');
     }
-    await revokeActiveCertification(jobId, reason, null, existing.id);
+    await revokeActiveCertification(jobId, reason, null, { certificationId: existing.id });
   }
 
   const problems: CertificationProblem[] = [];
