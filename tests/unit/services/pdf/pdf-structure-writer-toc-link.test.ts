@@ -13,7 +13,7 @@
  * already exercise for the annotation/struct-element/rollback half.
  */
 import { describe, it, expect } from 'vitest';
-import { PDFDocument, PDFName, PDFRef, PDFDict, PDFArray } from 'pdf-lib';
+import { PDFDocument, PDFName, PDFRef, PDFDict, PDFArray, PDFHexString } from 'pdf-lib';
 import { pdfStructureWriterService } from '../../../../src/services/pdf/pdf-structure-writer.service';
 import { writePageContent } from '../../../../src/services/pdf/pdf-content-stream-io';
 import type { AuditIssue } from '../../../../src/services/audit/base-audit.service';
@@ -93,6 +93,15 @@ describe('fixTocEntryLink', () => {
     expect(dest).toBeInstanceOf(PDFArray);
     const destPageRef = (dest as PDFArray).get(0);
     expect(destPageRef).toEqual(doc.getPage(2).ref);
+
+    // Real gap, found live (T1's corpus run, 2026-11-28): this annotation
+    // used to be created with no /Contents at all -- measure.py's own
+    // links_without_contents metric read 30 (every TOC link on that
+    // title), not 0, confirming it live. Derived from the resolved
+    // destination itself, never the page's own visible text.
+    const contents = annotDict.get(PDFName.of('Contents'));
+    expect(contents).toBeInstanceOf(PDFHexString);
+    expect((contents as PDFHexString).decodeText()).toBe('Link to page 3');
   });
 
   it('declines cleanly when the issue has no tocLinkData', async () => {

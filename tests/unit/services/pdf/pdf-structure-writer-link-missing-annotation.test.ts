@@ -11,7 +11,7 @@
  * writer.ts's own header comment for the full real-data breakdown).
  */
 import { describe, it, expect } from 'vitest';
-import { PDFDocument, PDFName, PDFRef, PDFDict, PDFArray, PDFNumber } from 'pdf-lib';
+import { PDFDocument, PDFName, PDFRef, PDFDict, PDFArray, PDFNumber, PDFHexString } from 'pdf-lib';
 import { pdfStructureWriterService } from '../../../../src/services/pdf/pdf-structure-writer.service';
 import { decodePageContent, writePageContent } from '../../../../src/services/pdf/pdf-content-stream-io';
 import type { AuditIssue } from '../../../../src/services/audit/base-audit.service';
@@ -111,6 +111,13 @@ describe('fixLinkMissingAnnotation', () => {
     const annotDict = doc.context.lookup(annotRef, PDFDict);
     expect(annotDict.get(PDFName.of('Subtype'))?.toString()).toBe('/Link');
     expect(annotDict.get(PDFName.of('A')) instanceof PDFDict ? (annotDict.get(PDFName.of('A')) as PDFDict).get(PDFName.of('URI'))?.toString() : null).toBe(`(${URL})`);
+    // Real gap, found live (T1's corpus run, 2026-11-28): this annotation
+    // used to be created with no /Contents at all. For a URI action,
+    // derived straight from the URL itself -- never the page's own
+    // visible text.
+    const contents = annotDict.get(PDFName.of('Contents'));
+    expect(contents).toBeInstanceOf(PDFHexString);
+    expect((contents as PDFHexString).decodeText()).toBe(`Link to ${URL}`);
     const rect = doc.context.lookup(annotDict.get(PDFName.of('Rect')), PDFArray).asArray().map((n) => (n as PDFNumber).asNumber());
     // boundingBox {x:100,y:300,width:150,height:10,pageHeight:792} -> [100, 792-300-10, 250, 792-300]
     expect(rect).toEqual([100, 482, 250, 492]);
