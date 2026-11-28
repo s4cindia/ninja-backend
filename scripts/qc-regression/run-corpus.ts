@@ -101,19 +101,19 @@ const REGRESSION_METRICS = [
 // avoid for alt_median_chars.
 const NOISE_TOLERANT_METRICS = ['alt_median_chars', 'alt_over_250_chars'] as const;
 
-// Quarantined (2026-11-25, see git log): run-to-run instability here is a
-// real PRODUCT BUG, not noise to paper over with a tolerance -- the same
-// book getting a different heading structure for a customer between two
-// otherwise-identical runs. Confirmed live: T1's two captures showed h2:20
-// vs h2:2 (and matching swings in h3-h6) -- looks like a uniform off-by-one
-// level shift, not small jitter. Excluded entirely from finalize-baseline's
-// exact-match gate and from `check`'s regression gate; both runs' raw
-// values are recorded with an explicit "known unstable" flag instead.
-// Tracked as the first Theme C investigation item -- once the root cause
-// (likely a non-deterministic or ordering-dependent AI call deciding the
-// book's own top-level heading rank) is fixed, move these back to the
-// normal structural (exact-match) bucket, not into NOISE_TOLERANT_METRICS.
-const QUARANTINED_METRICS = ['h1', 'h2', 'h3', 'h4', 'h5', 'h6'] as const;
+// Formerly quarantined (2026-11-25 - 2026-11-28, see git log): run-to-run
+// instability here was a real PRODUCT BUG, not noise to paper over with a
+// tolerance -- the same book getting a different heading structure for a
+// customer between two otherwise-identical runs. Confirmed live: T1's two
+// captures showed h2:20 vs h2:2 (and matching swings in h3-h6) -- a
+// uniform off-by-one level shift, not small jitter. The root cause (a
+// non-deterministic/ordering-dependent heading-level decision) was fixed
+// by the heading amplifier + cluster-match work (PRs #885/#891) -- h1-h6
+// have been byte-identical run-to-run on T1/T4/T5 since, confirmed again
+// on this T1-T6 run (2026-11-28), so moved back into the normal structural
+// (exact-match) bucket per the user's own instruction. Left empty (not
+// deleted) in case a future regression needs this mechanism again.
+const QUARANTINED_METRICS = [] as const;
 
 // Must-be-zero (2026-11-25, see git log) -- a STRONGER bar than
 // REGRESSION_METRICS' own "don't exceed whatever the baseline measured":
