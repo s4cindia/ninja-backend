@@ -10,6 +10,16 @@
  * reader tab order undefined or viewer-dependent instead of following the
  * page's own structure-tree reading order, the PDF/UA-required behavior.
  *
+ * Widened 2026-11-28 (QC F-21) to flag EVERY page missing /Tabs=/S, not
+ * only ones with existing annotations: Acrobat's own "Tab order"
+ * accessibility check flags this document-wide, broader than Matterhorn
+ * 28-008/28-009's own annotation-scoped wording -- and a page that starts
+ * with no annotations can still gain one later (any future fix that adds
+ * one), so setting /Tabs=/S everywhere up front is the only way the
+ * corpus's own pages_without_tabs_s metric reaches 0. A page's own
+ * annotation count stays in the issue message/metadata either way, purely
+ * for context.
+ *
  * This checkpoint was previously catalog data only (src/data/
  * matterhorn-1.1.data.ts) -- never validated anywhere in this codebase.
  * struct-tree-builder.ts (Seam C) already sets /Tabs = /S unconditionally
@@ -47,8 +57,8 @@ class PdfTabOrderValidator {
 
       const annotsRaw = page.node.get(PDFName.of('Annots'));
       const annots = annotsRaw instanceof PDFRef ? doc.context.lookup(annotsRaw) : annotsRaw;
-      if (!(annots instanceof PDFArray) || annots.size() === 0) continue;
-      pagesWithAnnotations++;
+      const annotCount = annots instanceof PDFArray ? annots.size() : 0;
+      if (annotCount > 0) pagesWithAnnotations++;
 
       const tabsRaw = page.node.get(PDFName.of('Tabs'));
       const tabsName = tabsRaw?.toString();
@@ -57,11 +67,16 @@ class PdfTabOrderValidator {
       issues.push({
         id: `tab-order-${++this.issueCounter}`,
         source: 'pdf-tab-order',
-        severity: 'moderate',
+        severity: annotCount > 0 ? 'moderate' : 'minor',
         code: 'TAB-ORDER-NOT-STRUCTURE',
-        message: `Page ${pageNumber} has ${annots.size()} annotation(s) but its own /Tabs entry is ` +
-          `${tabsRaw === undefined ? 'missing' : `set to ${tabsName}`}, not /S (structure) -- tab order is ` +
-          'undefined or viewer-dependent instead of following reading order',
+        message: annotCount > 0
+          ? `Page ${pageNumber} has ${annotCount} annotation(s) but its own /Tabs entry is ` +
+            `${tabsRaw === undefined ? 'missing' : `set to ${tabsName}`}, not /S (structure) -- tab order is ` +
+            'undefined or viewer-dependent instead of following reading order'
+          : `Page ${pageNumber} has no annotations yet, but its own /Tabs entry is ` +
+            `${tabsRaw === undefined ? 'missing' : `set to ${tabsName}`}, not /S -- Acrobat's own "Tab order" ` +
+            'check (QC F-21) flags this document-wide, and any future fix adding an annotation here would ' +
+            'otherwise leave tab order undefined',
         wcagCriteria: ['2.4.3'],
         location: `Page ${pageNumber}`,
         suggestion: "Set the page's own /Tabs entry to /S so keyboard/screen-reader tab order follows the structure tree's reading order.",
@@ -69,9 +84,11 @@ class PdfTabOrderValidator {
         pageNumber,
         // 28-008 ("does not contain a Tabs entry") vs 28-009 ("has a Tabs
         // entry with a value other than S") -- distinct Matterhorn
-        // checkpoints for the two distinct shapes, even though this
-        // document's own 8 real cases are all the missing-entirely (28-008)
-        // shape.
+        // checkpoints for the two distinct shapes. Both checkpoints are
+        // themselves scoped to annotated pages by their own wording; a
+        // non-annotated page still gets '28-008' here as the closest real
+        // checkpoint reference, not a fabricated third code, since the fix
+        // and the underlying PDF mechanism are identical either way.
         matterhornCheckpoint: tabsRaw === undefined ? '28-008' : '28-009',
         matterhornHow: 'M',
       });
