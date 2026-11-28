@@ -11026,6 +11026,33 @@ export class PdfStructureWriterService {
   }
 
   /**
+   * Derives a meaningful /Contents accessible description for a newly
+   * created Link annotation directly from its own /A action -- a URI
+   * action describes its real target URL, a GoTo action resolves its
+   * destination page ref to that page's own 1-based number among
+   * doc.getPages(). Never the page's own visible text (none of applyLinkSplice's
+   * 4 callers touch that either). Falls back to a generic description
+   * only if the destination page ref genuinely can't be found among the
+   * document's own pages -- shouldn't happen given every caller resolves
+   * its own dest from this same doc, but declining to guess is still
+   * better than a wrong page number.
+   */
+  private describeLinkDestination(doc: PDFDocument, action: { S: PDFName; URI?: PDFString; D?: PDFArray }): string {
+    if (action.URI) {
+      return `Link to ${action.URI.decodeText()}`;
+    }
+    if (action.D) {
+      const destPageRef = action.D.get(0);
+      if (destPageRef instanceof PDFRef) {
+        const pages = doc.getPages();
+        const index = pages.findIndex((p) => p.ref.toString() === destPageRef.toString());
+        if (index !== -1) return `Link to page ${index + 1}`;
+      }
+    }
+    return 'Link to another location in this document';
+  }
+
+  /**
    * Shared tail of buildLinkAnnotationFix -- extracted so fixTocEntryLink
    * (below) can reuse the EXACT same annotation/struct-element creation and
    * rollback logic via a direct-MCID splice (it already knows exactly
@@ -11166,6 +11193,14 @@ export class PdfStructureWriterService {
         Rect: rect,
         Border: [0, 0, 0],
         A: action,
+        // Real gap, found live (T1's corpus run, 2026-11-28): every one of
+        // this method's 4 callers created the annotation itself but never
+        // gave it a /Contents accessible description -- MATTERHORN-28-004's
+        // own "neither /Contents nor an /Alt on the enclosing structure
+        // element" condition, confirmed on T1's 30 real TOC-link-fix
+        // annotations (links_without_contents measured 30, not 0). Derived
+        // from `action` itself so it covers all 4 callers from one place.
+        Contents: PDFHexString.fromText(this.describeLinkDestination(doc, action)),
       }) as PDFDict;
       const annotRef = doc.context.register(annotDict);
       createdRefs.push(annotRef);
