@@ -48,14 +48,18 @@ const HEADERS = { category: 'Tables', rule: 'Headers', ruleId: 'TableHeaders', s
 function acrobatReport(over: Record<string, unknown> = {}) {
   return {
     id: 'acro-1', s3Key: 'acro-key', updatedAt: T_ACROBAT, remediatedSha256: SHA,
-    failed: 0, failedManually: 0, failedRules: [], ...over,
+    failed: 0, failedManually: 0, skipped: 0, failedRules: [], ...over,
   };
 }
 function pacReport(over: Record<string, unknown> = {}) {
   return { id: 'pac-1', s3Key: 'pac-key', updatedAt: T_PAC, remediatedSha256: SHA, fail: 0, ...over };
 }
+const ALL_ATTESTED = {
+  allAcrobatChecksRun: true, altTextReviewedEveryFigure: true,
+  readingOrderSpotChecked: true, bookmarksAndTitleChecked: true,
+};
 function input(over: Partial<CertifyInput> = {}): CertifyInput {
-  return { certifiedById: 'tl-1', acrobatWaivers: [], pacPdfUaErrors: 0, pacWaivers: [], ...over };
+  return { certifiedById: 'tl-1', attestations: ALL_ATTESTED, acrobatWaivers: [], pacPdfUaErrors: 0, pacWaivers: [], ...over };
 }
 function activeCert(over: Record<string, unknown> = {}) {
   return {
@@ -92,6 +96,7 @@ describe('certifyJob', () => {
         pdfSha256: SHA,
         remediatedFileRef: 'job-storage/job-1/remediated/x.pdf',
         certifiedById: 'tl-1',
+        ...ALL_ATTESTED,
         acrobatNotes: 'checked all',
         acrobatReportId: 'acro-1', acrobatReportS3Key: 'acro-key', acrobatReportUpdatedAt: T_ACROBAT,
         acrobatFailed: 0, acrobatWaivers: [],
@@ -159,11 +164,35 @@ describe('certifyJob', () => {
     expect(codes).toEqual(['PAC_WAIVER_DUPLICATE_CHECK']);
   });
 
+  it('blocks when the Acrobat report skipped any check (unticked checks read as "0 Failed")', async () => {
+    db.jobExternalAcrobatReport.findUnique.mockResolvedValue(acrobatReport({ skipped: 3 }));
+    expect(await blockedCodes(certifyJob('job-1', input()))).toEqual(['ACROBAT_CHECKS_SKIPPED']);
+    expect(db.jobCertification.create).not.toHaveBeenCalled();
+  });
+
+  it('blocks when the Acrobat report has no Skipped count', async () => {
+    db.jobExternalAcrobatReport.findUnique.mockResolvedValue(acrobatReport({ skipped: null }));
+    expect(await blockedCodes(certifyJob('job-1', input()))).toEqual(['ACROBAT_COUNTS_MISSING']);
+  });
+
+  it.each(Object.keys(ALL_ATTESTED))('blocks unless %s is attested', async (key) => {
+    const codes = await blockedCodes(certifyJob('job-1', input({ attestations: { ...ALL_ATTESTED, [key]: false } })));
+    expect(codes).toEqual(['ATTESTATION_MISSING']);
+  });
+
+  it('reports each missing attestation separately', async () => {
+    const codes = await blockedCodes(certifyJob('job-1', input({
+      attestations: { ...ALL_ATTESTED, allAcrobatChecksRun: false, readingOrderSpotChecked: false },
+    })));
+    expect(codes).toEqual(['ATTESTATION_MISSING', 'ATTESTATION_MISSING']);
+  });
+
   it('reports every unmet rule together, and creates nothing', async () => {
-    db.jobExternalAcrobatReport.findUnique.mockResolvedValue(acrobatReport({ failed: 2, failedRules: [TAB, HEADERS] }));
+    db.jobExternalAcrobatReport.findUnique.mockResolvedValue(acrobatReport({ failed: 2, skipped: 1, failedRules: [TAB, HEADERS] }));
     db.jobExternalPacReport.findUnique.mockResolvedValue(pacReport({ fail: 2 }));
 
     const codes = await blockedCodes(certifyJob('job-1', input({
+      attestations: { ...ALL_ATTESTED, altTextReviewedEveryFigure: false },
       acrobatWaivers: [
         { ruleKey: 'TabOrder', reason: 'False positive' },
         { ruleKey: 'FigAltText', reason: 'This rule did not fail' },
@@ -173,11 +202,13 @@ describe('certifyJob', () => {
     })));
 
     expect(codes.sort()).toEqual([
+      'ACROBAT_CHECKS_SKIPPED',
       'ACROBAT_FAILURE_NOT_WAIVED', // TableHeaders
       'ACROBAT_WAIVER_FOR_PASSING_RULE', // FigAltText
+      'ATTESTATION_MISSING',
       'PAC_PDFUA_ERRORS',
       'PAC_WAIVER_COUNT_MISMATCH',
-    ]);
+    ].sort());
     expect(db.jobCertification.create).not.toHaveBeenCalled();
   });
 

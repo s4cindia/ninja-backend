@@ -42,8 +42,29 @@ export interface AcrobatWaiverInput { ruleKey: string; reason: string }
 /** One failed PAC check (WCAG side), as named in PAC, with its occurrence count. */
 export interface PacWaiverInput { check: string; count: number; reason: string }
 
+/**
+ * The operator's Acrobat Pro attestations. All must be true; each is
+ * stored on the certification.
+ */
+export interface CertificationAttestations {
+  /** Accessibility Checker run with every check selected (none unticked). */
+  allAcrobatChecksRun: boolean;
+  /** Alt text reviewed for every figure, not just checked for presence. */
+  altTextReviewedEveryFigure: boolean;
+  readingOrderSpotChecked: boolean;
+  bookmarksAndTitleChecked: boolean;
+}
+
+export const ATTESTATION_LABELS: Record<keyof CertificationAttestations, string> = {
+  allAcrobatChecksRun: 'all Acrobat checks were run',
+  altTextReviewedEveryFigure: 'alt text was reviewed for every figure',
+  readingOrderSpotChecked: 'reading order was spot-checked',
+  bookmarksAndTitleChecked: 'bookmarks and document title were checked',
+};
+
 export interface CertifyInput {
   certifiedById: string;
+  attestations: CertificationAttestations;
   acrobatNotes?: string;
   acrobatWaivers: AcrobatWaiverInput[];
   /** Operator-attested PDF/UA error count from PAC; must be 0. */
@@ -170,6 +191,13 @@ export async function certifyJob(jobId: string, input: CertifyInput): Promise<Jo
     return true;
   };
 
+  // --- Attestations ---
+  for (const [key, label] of Object.entries(ATTESTATION_LABELS) as [keyof CertificationAttestations, string][]) {
+    if (input.attestations?.[key] !== true) {
+      problems.push({ code: 'ATTESTATION_MISSING', message: `Confirm that ${label}.` });
+    }
+  }
+
   // --- Acrobat ---
   const acrobatWaivers: Prisma.InputJsonValue[] = [];
   let acrobatFailedTotal = 0;
@@ -179,6 +207,16 @@ export async function certifyJob(jobId: string, input: CertifyInput): Promise<Jo
     const failedByKey = new Map(failedRules.map((r) => [acrobatRuleKey(r), r]));
     const waiverByKey = new Map(input.acrobatWaivers.map((w) => [w.ruleKey, w]));
 
+    // Unticking a failing check in Acrobat's checker yields "0 Failed" for
+    // it, so a report counts only if every check ran.
+    if (acrobat.skipped === null || acrobat.skipped === undefined) {
+      problems.push({ code: 'ACROBAT_COUNTS_MISSING', message: 'The Acrobat report has no Skipped count.' });
+    } else if (acrobat.skipped > 0) {
+      problems.push({
+        code: 'ACROBAT_CHECKS_SKIPPED',
+        message: `The Acrobat report skipped ${acrobat.skipped} check(s); re-run the Accessibility Checker with every check selected and upload that report.`,
+      });
+    }
     if (acrobat.failed === null) {
       problems.push({ code: 'ACROBAT_COUNTS_MISSING', message: 'The Acrobat report has no Failed count.' });
     } else if (acrobatFailedTotal > 0 && failedByKey.size !== acrobatFailedTotal) {
@@ -258,6 +296,10 @@ export async function certifyJob(jobId: string, input: CertifyInput): Promise<Jo
         pdfSha256: current!.sha256,
         remediatedFileRef: current!.fileRef,
         certifiedById: input.certifiedById,
+        allAcrobatChecksRun: true,
+        altTextReviewedEveryFigure: true,
+        readingOrderSpotChecked: true,
+        bookmarksAndTitleChecked: true,
         acrobatNotes: input.acrobatNotes?.trim() || null,
         acrobatReportId: acrobat!.id,
         acrobatReportS3Key: acrobat!.s3Key,

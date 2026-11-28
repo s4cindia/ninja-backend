@@ -2,13 +2,23 @@ import { describe, it, expect } from 'vitest';
 import { certifyJobSchema } from '../../../src/schemas/certification.schemas';
 
 const body = certifyJobSchema.body;
-const base = { acrobatAttested: true, pacPdfUaErrors: 0 };
+const attestations = {
+  allAcrobatChecksRun: true, altTextReviewedEveryFigure: true,
+  readingOrderSpotChecked: true, bookmarksAndTitleChecked: true,
+};
+const base = { attestations, pacPdfUaErrors: 0 };
 
 describe('certifyJobSchema', () => {
-  it('requires the Acrobat attestation to be literally true', () => {
+  it('requires all four attestations, each literally true', () => {
     expect(body.safeParse(base).success).toBe(true);
-    expect(body.safeParse({ ...base, acrobatAttested: false }).success).toBe(false);
+    for (const key of Object.keys(attestations)) {
+      expect(body.safeParse({ ...base, attestations: { ...attestations, [key]: false } }).success).toBe(false);
+      const missing = Object.fromEntries(Object.entries(attestations).filter(([k]) => k !== key));
+      expect(body.safeParse({ ...base, attestations: missing }).success).toBe(false);
+    }
     expect(body.safeParse({ pacPdfUaErrors: 0 }).success).toBe(false);
+    // The old single flag is no longer accepted.
+    expect(body.safeParse({ acrobatAttested: true, pacPdfUaErrors: 0 }).success).toBe(false);
   });
 
   it('PAC waivers are per check: name, positive whole-number count, reason', () => {

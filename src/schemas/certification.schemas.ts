@@ -13,10 +13,14 @@ const reason = z.string().trim().min(5, 'Give a reason (at least 5 characters)')
 export const certifyJobSchema = {
   params: jobParams,
   body: z.object({
-    // The operator confirms the Acrobat Pro checks were done (Accessibility
-    // Checker with all checks, alt text reviewed, reading order spot-checked,
-    // bookmarks and title checked). Must be literally true.
-    acrobatAttested: z.literal(true, { message: 'Confirm the Acrobat Pro checks were done' }),
+    // The operator's Acrobat Pro attestations, each literally true (the
+    // service re-checks and stores them on the certification).
+    attestations: z.object({
+      allAcrobatChecksRun: z.literal(true, { message: 'Confirm all Acrobat checks were run' }),
+      altTextReviewedEveryFigure: z.literal(true, { message: 'Confirm alt text was reviewed for every figure' }),
+      readingOrderSpotChecked: z.literal(true, { message: 'Confirm reading order was spot-checked' }),
+      bookmarksAndTitleChecked: z.literal(true, { message: 'Confirm bookmarks and document title were checked' }),
+    }).strict(),
     acrobatNotes: z.string().max(2000).optional(),
     acrobatWaivers: z.array(z.object({ ruleKey: z.string().min(1).max(200), reason })).max(100).default([]),
     pacPdfUaErrors: z.number().int().nonnegative(),

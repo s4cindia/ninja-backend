@@ -2949,7 +2949,12 @@ model JobCertification {
   remediatedFileRef       String
   certifiedById           String
   certifiedAt             DateTime  @default(now())
-  // Acrobat Pro attestation + report
+  // Operator attestations (Acrobat Pro checks); all required true.
+  allAcrobatChecksRun          Boolean
+  altTextReviewedEveryFigure   Boolean
+  readingOrderSpotChecked      Boolean
+  bookmarksAndTitleChecked     Boolean
+  // Acrobat report (must show Skipped = 0)
   acrobatNotes            String?
   acrobatReportId         String
   acrobatReportS3Key      String

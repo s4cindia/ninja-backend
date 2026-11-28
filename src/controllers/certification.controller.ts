@@ -32,6 +32,7 @@ export class CertificationController {
       const body = req.body as CertifyJobBody;
       const cert = await certifyJob(req.params.jobId, {
         certifiedById: req.user!.id,
+        attestations: body.attestations,
         acrobatNotes: body.acrobatNotes,
         acrobatWaivers: body.acrobatWaivers,
         pacPdfUaErrors: body.pacPdfUaErrors,
