@@ -38,6 +38,10 @@ vi.mock('../../../../src/services/certification/remediated-file-hash', () => ({
   getCurrentRemediatedFileHash: vi.fn(() => Promise.resolve({ sha256: 'deadbeef', fileRef: 'job-storage/job-1/remediated/x.pdf' })),
 }));
 
+vi.mock('../../../../src/services/certification/certification-revoke', () => ({
+  revokeActiveCertification: vi.fn(() => Promise.resolve(true)),
+}));
+
 vi.mock('../../../../src/config', () => ({
   config: {
     s3Bucket: 'ninja-epub-staging',
@@ -49,6 +53,7 @@ import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import prisma from '../../../../src/lib/prisma';
 import { s3Client, s3Service } from '../../../../src/services/s3.service';
 import { getCurrentRemediatedFileHash } from '../../../../src/services/certification/remediated-file-hash';
+import { revokeActiveCertification } from '../../../../src/services/certification/certification-revoke';
 import {
   getJobPacReportUploadUrl,
   confirmJobPacReportUpload,
@@ -208,10 +213,11 @@ describe('getJobPacReport', () => {
 });
 
 describe('deleteJobPacReport', () => {
-  it('returns true on successful delete', async () => {
+  it('returns true on successful delete, and revokes the active certification', async () => {
     mockPrisma.jobExternalPacReport.delete.mockResolvedValue({ id: 'report-1' });
 
     await expect(deleteJobPacReport('job-1')).resolves.toBe(true);
+    expect(revokeActiveCertification).toHaveBeenCalledWith('job-1', 'pac-report-deleted');
   });
 
   it('returns false (not a thrown error) when no report exists for that job, so a repeat delete is a no-op', async () => {
@@ -222,5 +228,26 @@ describe('deleteJobPacReport', () => {
     mockPrisma.jobExternalPacReport.delete.mockRejectedValue(notFoundError);
 
     await expect(deleteJobPacReport('job-1')).resolves.toBe(false);
+    expect(revokeActiveCertification).not.toHaveBeenCalled();
+  });
+});
+
+describe('confirmJobPacReportUpload -- certification evidence', () => {
+  const input = {
+    originalFileName: 'pac.pdf', mimeType: 'application/pdf', summary: { fail: 0 }, uploadedById: 'user-1',
+  };
+
+  it('a first upload revokes nothing; replacing an existing report revokes the active certification', async () => {
+    mockPrisma.job.findUnique.mockResolvedValue({ id: 'job-1' });
+    (s3Client.send as ReturnType<typeof vi.fn>).mockResolvedValue({ ContentLength: 1 });
+    mockPrisma.jobExternalPacReport.upsert.mockResolvedValue({ id: 'report-1' });
+
+    mockPrisma.jobExternalPacReport.findUnique.mockResolvedValueOnce(null);
+    await confirmJobPacReportUpload('job-1', input);
+    expect(revokeActiveCertification).not.toHaveBeenCalled();
+
+    mockPrisma.jobExternalPacReport.findUnique.mockResolvedValueOnce({ id: 'report-1' });
+    await confirmJobPacReportUpload('job-1', input);
+    expect(revokeActiveCertification).toHaveBeenCalledWith('job-1', 'pac-report-replaced');
   });
 });

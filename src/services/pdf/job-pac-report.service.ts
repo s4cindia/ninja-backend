@@ -22,6 +22,7 @@ import { config } from '../../config';
 import { s3Client, s3Service } from '../s3.service';
 import { AppError } from '../../utils/app-error';
 import { getCurrentRemediatedFileHash } from '../certification/remediated-file-hash';
+import { revokeActiveCertification } from '../certification/certification-revoke';
 
 const JOB_PAC_REPORT_PREFIX = 'job-storage';
 // Matches comparison-study.service.ts's own UPLOAD_URL_EXPIRY_SECONDS --
@@ -115,11 +116,14 @@ export async function confirmJobPacReportUpload(
     remediatedSha256: remediated?.sha256 ?? null,
   };
 
+  const previous = await prisma.jobExternalPacReport.findUnique({ where: { jobId }, select: { id: true } });
   const report = await prisma.jobExternalPacReport.upsert({
     where: { jobId },
     create: { jobId, ...data },
     update: data,
   });
+  // Replacing the evidence an active EPUB-from-PDF certification relies on revokes it.
+  if (previous) await revokeActiveCertification(jobId, 'pac-report-replaced');
 
   logger.info(`[JobPacReport] Confirmed external PAC report for job ${jobId}: ${s3Key}`);
   return report;
@@ -137,11 +141,12 @@ export async function getJobPacReport(jobId: string): Promise<(JobExternalPacRep
 export async function deleteJobPacReport(jobId: string): Promise<boolean> {
   try {
     await prisma.jobExternalPacReport.delete({ where: { jobId } });
-    return true;
   } catch (err) {
     if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2025') {
       return false;
     }
     throw err;
   }
+  await revokeActiveCertification(jobId, 'pac-report-deleted');
+  return true;
 }

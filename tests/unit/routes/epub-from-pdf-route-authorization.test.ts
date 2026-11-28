@@ -9,6 +9,7 @@ import type { Router } from 'express';
 
 vi.mock('../../../src/controllers/pac-report.controller', () => ({ pacReportController: {} }));
 vi.mock('../../../src/controllers/acrobat-report.controller', () => ({ acrobatReportController: {} }));
+vi.mock('../../../src/controllers/certification.controller', () => ({ certificationController: {} }));
 vi.mock('../../../src/controllers/pdf-auto-mode.controller', () => ({
   pdfAutoModeController: new Proxy({}, { get: () => () => undefined }),
 }));
@@ -21,6 +22,7 @@ import {
 import pacReportRoutes from '../../../src/routes/pac-report.routes';
 import acrobatReportRoutes from '../../../src/routes/acrobat-report.routes';
 import pdfAutoModeRoutes from '../../../src/routes/pdf-auto-mode.routes';
+import certificationRoutes from '../../../src/routes/certification.routes';
 
 interface Layer { route?: { path: string; methods: Record<string, boolean>; stack: { handle: unknown }[] } }
 
@@ -44,6 +46,8 @@ describe('EPUB-from-PDF route authorization', () => {
     [acrobatReportRoutes, 'post', '/:jobId/acrobat-report/confirm'],
     [acrobatReportRoutes, 'delete', '/:jobId/acrobat-report'],
     [pdfAutoModeRoutes, 'patch', '/:jobId/settings/epub'],
+    [certificationRoutes, 'post', '/:jobId/certification'],
+    [certificationRoutes, 'post', '/:jobId/certification/revoke'],
   ] as const)('%#: %s %s accepts the owner\'s Team Leader', (router, method, path) => {
     expect(authFor(router as unknown as Router, method, path)).toBe(authorizeJobForTeamLeaderAction);
   });
@@ -59,6 +63,7 @@ describe('EPUB-from-PDF route authorization', () => {
     [pacReportRoutes, 'get', '/:jobId/pac-report/external'],
     [acrobatReportRoutes, 'get', '/:jobId/acrobat-report'],
     [pdfAutoModeRoutes, 'get', '/:jobId/settings'],
+    [certificationRoutes, 'get', '/:jobId/certification'],
   ] as const)('%#: %s %s is a team-review read', (router, method, path) => {
     expect(authFor(router as unknown as Router, method, path)).toBe(authorizeJobForReview);
   });

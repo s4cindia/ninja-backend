@@ -26,12 +26,17 @@ vi.mock('../../../../src/services/certification/remediated-file-hash', () => ({
   getCurrentRemediatedFileHash: vi.fn(),
 }));
 
+vi.mock('../../../../src/services/certification/certification-revoke', () => ({
+  revokeActiveCertification: vi.fn(() => Promise.resolve(true)),
+}));
+
 import { Prisma } from '@prisma/client';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import prisma from '../../../../src/lib/prisma';
 import { s3Client } from '../../../../src/services/s3.service';
 import { getCurrentRemediatedFileHash } from '../../../../src/services/certification/remediated-file-hash';
 import { AppError } from '../../../../src/utils/app-error';
+import { revokeActiveCertification } from '../../../../src/services/certification/certification-revoke';
 import { MAX_ACROBAT_REPORT_BYTES } from '../../../../src/services/certification/acrobat-report-parser';
 import {
   getJobAcrobatReportUploadUrl,
@@ -197,6 +202,23 @@ describe('confirmJobAcrobatReportUpload', () => {
     expect(log.deleted).toEqual([STAGING_KEY, OLD_KEY]);
   });
 
+  it('replacing an existing report revokes the active certification; a first upload does not', async () => {
+    s3Holds(FIXTURE);
+    await confirm();
+    expect(revokeActiveCertification).not.toHaveBeenCalled();
+
+    mockPrisma.jobExternalAcrobatReport.findUnique.mockResolvedValue({ s3Key: OLD_KEY });
+    await confirm();
+    expect(revokeActiveCertification).toHaveBeenCalledWith('job-1', 'acrobat-report-replaced');
+  });
+
+  it('a refused (422) replacement does not revoke anything', async () => {
+    mockPrisma.jobExternalAcrobatReport.findUnique.mockResolvedValue({ s3Key: OLD_KEY });
+    s3Holds(FIXTURE.replace('<li>Failed: 3</li>', '<li>Failed: 0</li>'));
+    await confirm().catch(() => undefined);
+    expect(revokeActiveCertification).not.toHaveBeenCalled();
+  });
+
   it('failed cleanup deletes do not fail the confirm', async () => {
     mockPrisma.jobExternalAcrobatReport.findUnique.mockResolvedValue({ s3Key: OLD_KEY });
     s3Holds(FIXTURE, { deleteFails: true });
@@ -308,6 +330,7 @@ describe('deleteJobAcrobatReport', () => {
 
     expect(await deleteJobAcrobatReport('job-1')).toBe(true);
     expect(log.deleted).toEqual([CONFIRMED_KEY]);
+    expect(revokeActiveCertification).toHaveBeenCalledWith('job-1', 'acrobat-report-deleted');
   });
 
   it('still reports success when the S3 delete fails (record is already gone)', async () => {
@@ -325,5 +348,6 @@ describe('deleteJobAcrobatReport', () => {
 
     expect(await deleteJobAcrobatReport('job-1')).toBe(false);
     expect(log.deleted).toEqual([]);
+    expect(revokeActiveCertification).not.toHaveBeenCalled();
   });
 });

@@ -273,6 +273,7 @@ model Job {
   teamReviews            TeamReview[]
   jobExternalPacReport   JobExternalPacReport?
   jobExternalAcrobatReport JobExternalAcrobatReport?
+  jobCertifications        JobCertification[]
 
   @@index([tenantId])
   @@index([status])
@@ -2930,6 +2931,57 @@ model JobExternalAcrobatReport {
   updatedAt        DateTime @default(now()) @updatedAt
 
   @@index([jobId])
+}
+
+/// Certification that a PDF job's remediated file is accessible enough to
+/// build an EPUB from (EPUB-from-certified-PDF gate). At most one ACTIVE
+/// (revokedAt null) row per job; history is kept by revoking, never
+/// deleting. Pinned to the exact remediated bytes (pdfSha256) and to the
+/// exact evidence report uploads (s3Key + updatedAt of each report row --
+/// confirm is an upsert, so a row's id survives a replacement and can't
+/// detect one). Any change to either revokes it. Records who certified;
+/// stays valid if teams change later (only new actions check the team).
+model JobCertification {
+  id                      String    @id @default(cuid())
+  jobId                   String
+  job                     Job       @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  pdfSha256               String
+  remediatedFileRef       String
+  certifiedById           String
+  certifiedAt             DateTime  @default(now())
+  // Operator attestations (Acrobat Pro checks); all required true.
+  allAcrobatChecksRun          Boolean
+  altTextReviewedEveryFigure   Boolean
+  readingOrderSpotChecked      Boolean
+  bookmarksAndTitleChecked     Boolean
+  // Acrobat report (must show Skipped = 0)
+  acrobatNotes            String?
+  acrobatReportId         String
+  acrobatReportS3Key      String
+  acrobatReportUpdatedAt  DateTime
+  acrobatFailed           Int
+  // [{ ruleKey, ruleId, category, rule, reason, waivedById, waivedAt }],
+  // one per Failed / Failed manually rule.
+  acrobatWaivers          Json
+  // PAC evidence: uploaded report (required) + operator attestation
+  pacReportId             String
+  pacReportS3Key          String
+  pacReportUpdatedAt      DateTime
+  pacFail                 Int
+  // Operator-attested PDF/UA error count; must be 0.
+  pacPdfUaErrorsAttested  Int
+  // [{ check, count, reason, waivedById, waivedAt }], one per failed PAC
+  // check (WCAG side; PDF/UA errors must be 0). PAC's fail counts
+  // occurrences, so the waived counts must sum to pacFail.
+  pacWaivers              Json
+  revokedAt               DateTime?
+  revokedById             String?
+  // 'manual: <text>' | 'pdf-changed' | 'acrobat-report-replaced' |
+  // 'acrobat-report-deleted' | 'pac-report-replaced' | 'pac-report-deleted'
+  revokedReason           String?
+
+  @@index([jobId])
+  @@index([jobId, revokedAt])
 }
 
 /// Ninja-side remediation timing for a ComparisonTrial's job. Structural
