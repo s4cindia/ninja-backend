@@ -656,11 +656,13 @@ class AutoRemediationLoopService {
     const lockStatus = await remediationCycleLockService.getLockStatus(jobId);
     if (lockStatus.inProgress) return false;
 
+    let lockedAtForReason: Date | null = null;
     const reconciled = await prisma.$transaction(async (tx) => {
       const rows = await tx.$queryRaw<Array<{ remediationCycleLockedAt: Date | null }>>`
         SELECT "remediationCycleLockedAt" FROM "Job" WHERE id = ${jobId} FOR UPDATE
       `;
       const lockedAt = rows[0]?.remediationCycleLockedAt ?? null;
+      lockedAtForReason = lockedAt;
       const staleThreshold = new Date(Date.now() - STALE_LOCK_MS);
       const stillOrphaned = lockedAt === null || lockedAt < staleThreshold;
       if (!stillOrphaned) return false; // a concurrent run acquired it while we were waiting for the row lock
@@ -677,7 +679,22 @@ class AutoRemediationLoopService {
       return result.count > 0;
     });
     if (reconciled) {
-      await this.logInterruption(jobId, roundsCompletedBeforeReconcile + 1, 'orphan_reconciled', 'watchdog');
+      // Explicitly released (not left to passively age past staleness,
+      // which by construction has already happened by the time we get
+      // here) so the lock is unambiguously free rather than a client
+      // retrying having to reason about relative lock timestamps. A tiny
+      // window exists between the transaction above committing and this
+      // running, but a concurrent acquireLock in that window would still
+      // see the SAME already-stale timestamp and succeed on staleness
+      // alone -- this is a clarity improvement, not a correctness fix.
+      await prisma.job.update({
+        where: { id: jobId },
+        data: { remediationCycleLockedAt: null, remediationCycleLockedBy: null },
+      }).catch((err) => {
+        logger.warn(`[AutoRemediationLoop] Failed to explicitly clear the lock after reconciling trial ${trialId} (non-fatal, already stale): ${err instanceof Error ? err.message : String(err)}`);
+      });
+      const reason = await this.buildOrphanReconcileReason(jobId, lockedAtForReason);
+      await this.logInterruption(jobId, roundsCompletedBeforeReconcile + 1, 'orphan_reconciled', 'watchdog', reason);
     }
     return reconciled;
   }
@@ -702,11 +719,13 @@ class AutoRemediationLoopService {
     const lockStatus = await remediationCycleLockService.getLockStatus(jobId);
     if (lockStatus.inProgress) return false;
 
+    let lockedAtForReason: Date | null = null;
     const reconciled = await prisma.$transaction(async (tx) => {
       const rows = await tx.$queryRaw<Array<{ remediationCycleLockedAt: Date | null }>>`
         SELECT "remediationCycleLockedAt" FROM "Job" WHERE id = ${jobId} FOR UPDATE
       `;
       const lockedAt = rows[0]?.remediationCycleLockedAt ?? null;
+      lockedAtForReason = lockedAt;
       const staleThreshold = new Date(Date.now() - STALE_LOCK_MS);
       const stillOrphaned = lockedAt === null || lockedAt < staleThreshold;
       if (!stillOrphaned) return false;
@@ -723,7 +742,18 @@ class AutoRemediationLoopService {
       return result.count > 0;
     });
     if (reconciled) {
-      await this.logInterruption(jobId, roundsCompletedBeforeReconcile + 1, 'orphan_reconciled', 'watchdog');
+      // See reconcileIfOrphaned's own comment above for why this is a
+      // clarity improvement (unambiguously free now), not a correctness
+      // fix (a concurrent acquireLock would already succeed via the same
+      // already-past staleness check either way).
+      await prisma.job.update({
+        where: { id: jobId },
+        data: { remediationCycleLockedAt: null, remediationCycleLockedBy: null },
+      }).catch((err) => {
+        logger.warn(`[AutoRemediationLoop] Failed to explicitly clear the lock after reconciling job-run ${runId} (non-fatal, already stale): ${err instanceof Error ? err.message : String(err)}`);
+      });
+      const reason = await this.buildOrphanReconcileReason(jobId, lockedAtForReason);
+      await this.logInterruption(jobId, roundsCompletedBeforeReconcile + 1, 'orphan_reconciled', 'watchdog', reason);
     }
     return reconciled;
   }
@@ -808,6 +838,7 @@ class AutoRemediationLoopService {
     cycleNumber: number,
     action: 'force_stopped' | 'orphan_reconciled',
     source: 'shutdown' | 'watchdog',
+    errorMessage?: string,
   ): Promise<void> {
     await remediationCycleHistoryService.logEvent({
       jobId,
@@ -815,8 +846,41 @@ class AutoRemediationLoopService {
       action,
       source,
       status: 'failed',
+      errorMessage,
       startedAt: new Date(),
     });
+  }
+
+  /**
+   * Builds a human-readable reason for an orphan_reconciled event --
+   * before this, that event carried no diagnostic detail at all (real
+   * gap, found live investigating T2's own crash, 2026-11-28: with
+   * nothing captured here, pinning down WHY a run was orphaned needed
+   * direct AWS CloudWatch access every time). Cross-references the
+   * lock's own staleness against the job's last memory heartbeat (stage +
+   * age) -- the SAME heartbeat writeMemoryHeartbeat's own doc comment
+   * describes as the only evidence of what the process was doing right
+   * before it vanished. Best-effort: a job with no heartbeat at all
+   * (crashed before the first 30s tick) still gets a reason naming the
+   * lock's own staleness alone.
+   */
+  private async buildOrphanReconcileReason(jobId: string, lockedAt: Date | null): Promise<string> {
+    const lockDesc = lockedAt
+      ? `lock last touched ${new Date(lockedAt).toISOString()} (stale beyond the ${Math.round(STALE_LOCK_MS / 60000)}min threshold)`
+      : 'lock was never set (died before acquiring, or an earlier release left it null)';
+    try {
+      const job = await prisma.job.findUnique({ where: { id: jobId }, select: { output: true } });
+      const heartbeat = (job?.output as Record<string, unknown> | null)?.memoryHeartbeat as
+        | { stage?: string; at?: string; rssBytes?: number; eventLoopLagMaxMs?: number | null }
+        | undefined;
+      if (!heartbeat?.at) return `Orphaned: ${lockDesc}; no memory heartbeat recorded`;
+      const ageMs = Date.now() - new Date(heartbeat.at).getTime();
+      const rssMb = typeof heartbeat.rssBytes === 'number' ? `${Math.round(heartbeat.rssBytes / 1024 / 1024)}MB` : 'unknown';
+      const lagMs = typeof heartbeat.eventLoopLagMaxMs === 'number' ? `${heartbeat.eventLoopLagMaxMs}ms` : 'unknown';
+      return `Orphaned: ${lockDesc}; last heartbeat ${Math.round(ageMs / 1000)}s ago (stage: ${heartbeat.stage ?? 'unknown'}, RSS: ${rssMb}, event-loop lag: ${lagMs})`;
+    } catch {
+      return `Orphaned: ${lockDesc}; failed to read last heartbeat`;
+    }
   }
 
   /**
