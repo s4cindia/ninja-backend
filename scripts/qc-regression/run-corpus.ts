@@ -80,6 +80,12 @@ const REGRESSION_METRICS = [
   // (per the measurer author's own note), so this must be gated, not
   // just reported.
   'source_alt_lost',
+  // measure.py v0.4 (2026-11-28): confirmed real on T1's own corpus run --
+  // every one of Ninja's 4 link-creation fixers built a /Link annotation
+  // with no /Contents accessible description at all (30/30 on T1). Also
+  // in MUST_BE_ZERO_METRICS below, same "unconditional, not just
+  // don't-get-worse" reasoning as figures_content_empty/mcrs_page_unresolved.
+  'links_without_contents',
 ] as const;
 
 // Every other metric in measure.py's own output is informational (reported
@@ -101,19 +107,19 @@ const REGRESSION_METRICS = [
 // avoid for alt_median_chars.
 const NOISE_TOLERANT_METRICS = ['alt_median_chars', 'alt_over_250_chars'] as const;
 
-// Quarantined (2026-11-25, see git log): run-to-run instability here is a
-// real PRODUCT BUG, not noise to paper over with a tolerance -- the same
-// book getting a different heading structure for a customer between two
-// otherwise-identical runs. Confirmed live: T1's two captures showed h2:20
-// vs h2:2 (and matching swings in h3-h6) -- looks like a uniform off-by-one
-// level shift, not small jitter. Excluded entirely from finalize-baseline's
-// exact-match gate and from `check`'s regression gate; both runs' raw
-// values are recorded with an explicit "known unstable" flag instead.
-// Tracked as the first Theme C investigation item -- once the root cause
-// (likely a non-deterministic or ordering-dependent AI call deciding the
-// book's own top-level heading rank) is fixed, move these back to the
-// normal structural (exact-match) bucket, not into NOISE_TOLERANT_METRICS.
-const QUARANTINED_METRICS = ['h1', 'h2', 'h3', 'h4', 'h5', 'h6'] as const;
+// Formerly quarantined (2026-11-25 - 2026-11-28, see git log): run-to-run
+// instability here was a real PRODUCT BUG, not noise to paper over with a
+// tolerance -- the same book getting a different heading structure for a
+// customer between two otherwise-identical runs. Confirmed live: T1's two
+// captures showed h2:20 vs h2:2 (and matching swings in h3-h6) -- a
+// uniform off-by-one level shift, not small jitter. The root cause (a
+// non-deterministic/ordering-dependent heading-level decision) was fixed
+// by the heading amplifier + cluster-match work (PRs #885/#891) -- h1-h6
+// have been byte-identical run-to-run on T1/T4/T5 since, confirmed again
+// on this T1-T6 run (2026-11-28), so moved back into the normal structural
+// (exact-match) bucket per the user's own instruction. Left empty (not
+// deleted) in case a future regression needs this mechanism again.
+const QUARANTINED_METRICS = [] as const;
 
 // Must-be-zero (2026-11-25, see git log) -- a STRONGER bar than
 // REGRESSION_METRICS' own "don't exceed whatever the baseline measured":
@@ -132,7 +138,7 @@ const QUARANTINED_METRICS = ['h1', 'h2', 'h3', 'h4', 'h5', 'h6'] as const;
 // bar is ever relaxed) -- this list adds the additional, unconditional
 // zero requirement on top, checked separately in both finalize-baseline
 // and checkAgainstBaseline.
-const MUST_BE_ZERO_METRICS = ['figures_content_empty', 'mcrs_page_unresolved'] as const;
+const MUST_BE_ZERO_METRICS = ['figures_content_empty', 'mcrs_page_unresolved', 'links_without_contents'] as const;
 
 interface ManifestEntry {
   file: string;
@@ -172,6 +178,12 @@ interface RunnerResult {
   // fetched so the guard's real false-reject rate can be measured per
   // title in this double capture, not assumed.
   altTextGuardRejections?: number | null;
+  // Highest job.output.memoryHeartbeat.rssBytes observed across the whole
+  // Auto Mode run (polled every 15s alongside auto-mode/status) -- the
+  // heartbeat itself only ever holds its latest sample, never a running
+  // peak, so this script tracks the max client-side. null when the title
+  // never produced a single heartbeat sample (e.g. zero rounds).
+  peakRssBytes?: number | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -305,10 +317,16 @@ async function uploadAndStartJob(id: string, filePath: string): Promise<string> 
 async function runFullAutoMode(
   id: string,
   jobId: string
-): Promise<{ wallSeconds: number; aiCostUsd: number; rounds: number; stopReason: string; lastError: { message: string; at: string } | null }> {
+): Promise<{ wallSeconds: number; aiCostUsd: number; rounds: number; stopReason: string; lastError: { message: string; at: string } | null; peakRssBytes: number | null }> {
   await api('POST', `/pdf/${jobId}/auto-mode/start`, {});
   const start = Date.now();
   let status: any;
+  // job.output.memoryHeartbeat (auto-remediation-loop.service.ts's
+  // writeMemoryHeartbeat) overwrites itself every tick -- only the LATEST
+  // sample, never a running peak. Polled alongside auto-mode/status at the
+  // same 15s cadence so this script can track the true peak itself, since
+  // nothing server-side does.
+  let peakRssBytes: number | null = null;
   // eslint-disable-next-line no-constant-condition
   while (true) {
     status = await api('GET', `/pdf/${jobId}/auto-mode/status`);
@@ -320,6 +338,10 @@ async function runFullAutoMode(
     // means keep polling rather than treating it as already settled.
     if (status.data.autoStatus === 'stopped') break;
     console.log(`  [${id}] status=${status.data.autoStatus} round ${status.data.autoRoundsCompleted} $${status.data.autoCostSpentUsd.toFixed(2)} spent so far...`);
+    const obs = await fetchAuditResultObservability(jobId);
+    if (typeof obs.memoryHeartbeatRssBytes === 'number') {
+      peakRssBytes = peakRssBytes === null ? obs.memoryHeartbeatRssBytes : Math.max(peakRssBytes, obs.memoryHeartbeatRssBytes);
+    }
     await sleep(15000);
   }
   return {
@@ -332,6 +354,7 @@ async function runFullAutoMode(
     // job that errors here needs AWS CloudWatch access to diagnose at all
     // (confirmed real, 2026-11-27: a NUL-byte Postgres write rejection).
     lastError: status.data.autoLoopLastError ?? null,
+    peakRssBytes,
   };
 }
 
@@ -341,16 +364,17 @@ async function runFullAutoMode(
  * field's own backend code): an observability read must never fail the
  * capture itself.
  */
-async function fetchAuditResultObservability(jobId: string): Promise<{ zoneDetectionCache: unknown; altTextGuardRejections: number | null }> {
+async function fetchAuditResultObservability(jobId: string): Promise<{ zoneDetectionCache: unknown; altTextGuardRejections: number | null; memoryHeartbeatRssBytes: number | null }> {
   try {
     const res = await api('GET', `/pdf/job/${jobId}/audit/result`);
     return {
       zoneDetectionCache: res.data?.zoneDetectionCache ?? null,
       altTextGuardRejections: res.data?.altTextGuardRejections ?? null,
+      memoryHeartbeatRssBytes: res.data?.memoryHeartbeat?.rssBytes ?? null,
     };
   } catch (err) {
     console.error(`  [${jobId}] failed to fetch audit-result observability fields (non-fatal): ${err instanceof Error ? err.message : err}`);
-    return { zoneDetectionCache: null, altTextGuardRejections: null };
+    return { zoneDetectionCache: null, altTextGuardRejections: null, memoryHeartbeatRssBytes: null };
   }
 }
 
@@ -438,8 +462,11 @@ async function runOne(id: string, entry: ManifestEntry, outDir: string, withAxes
   const jobId = await uploadAndStartJob(id, sourcePath);
 
   console.log(`[${id}] starting Full Auto Mode (job ${jobId})...`);
-  const { wallSeconds, aiCostUsd, rounds, stopReason, lastError } = await runFullAutoMode(id, jobId);
+  const { wallSeconds, aiCostUsd, rounds, stopReason, lastError, peakRssBytes: loopPeakRssBytes } = await runFullAutoMode(id, jobId);
   console.log(`[${id}] settled: ${stopReason}, ${rounds} round(s), $${aiCostUsd.toFixed(2)}, ${wallSeconds.toFixed(0)}s wall time`);
+  if (loopPeakRssBytes !== null) {
+    console.log(`  [${id}] peak RSS during Auto Mode (from memory heartbeat, 15s polling): ${(loopPeakRssBytes / 1024 / 1024).toFixed(0)}MB`);
+  }
   if (stopReason === 'error' && lastError) {
     console.log(`  [${id}] lastError: ${lastError.message} (at ${lastError.at})`);
   }
@@ -471,7 +498,11 @@ async function runOne(id: string, entry: ManifestEntry, outDir: string, withAxes
     writeFileSync(path.join(outDir, `${id}.axes4.json`), JSON.stringify(axes4, null, 2));
   }
 
-  const { zoneDetectionCache, altTextGuardRejections } = await fetchAuditResultObservability(jobId);
+  const { zoneDetectionCache, altTextGuardRejections, memoryHeartbeatRssBytes: finalRssBytes } = await fetchAuditResultObservability(jobId);
+  // One last sample after the loop's own final poll (the stop-triggering
+  // heartbeat write can land after that poll saw autoStatus: 'stopped')
+  // -- folded into the same running peak, not reported separately.
+  const peakRssBytes = finalRssBytes === null ? loopPeakRssBytes : (loopPeakRssBytes === null ? finalRssBytes : Math.max(loopPeakRssBytes, finalRssBytes));
   if (zoneDetectionCache) {
     console.log(`  [${id}] zoneDetectionCache: ${JSON.stringify(zoneDetectionCache)}`);
   }
@@ -488,7 +519,7 @@ async function runOne(id: string, entry: ManifestEntry, outDir: string, withAxes
 
   return {
     id, axis: entry.axis, jobId, wallSeconds, aiCostUsd, rounds, stopReason, measured,
-    zoneDetectionCache, altTextGuardRejections, ...(axes4 ? { axes4 } : {}),
+    zoneDetectionCache, altTextGuardRejections, peakRssBytes, ...(axes4 ? { axes4 } : {}),
   };
 }
 
@@ -1224,7 +1255,8 @@ async function main() {
     let allOk = true;
     for (const r of results) {
       const { ok, lines } = checkAgainstBaseline(r.id, r.measured.metrics as Record<string, number>);
-      console.log(`\n${r.id} (${r.axis}): ${ok ? 'PASS' : 'FAIL'}  [$${r.aiCostUsd.toFixed(2)}, ${r.wallSeconds.toFixed(0)}s, ${r.rounds} round(s)]`);
+      const peakRssMb = typeof r.peakRssBytes === 'number' ? `${(r.peakRssBytes / 1024 / 1024).toFixed(0)}MB peak RSS` : 'no RSS sample';
+      console.log(`\n${r.id} (${r.axis}): ${ok ? 'PASS' : 'FAIL'}  [$${r.aiCostUsd.toFixed(2)}, ${r.wallSeconds.toFixed(0)}s, ${r.rounds} round(s), ${peakRssMb}]`);
       for (const l of lines) console.log(l);
       if (!ok) allOk = false;
     }
@@ -1233,7 +1265,8 @@ async function main() {
   } else {
     console.log('\n--- Run summary ---');
     for (const r of results) {
-      console.log(`${r.id} (${r.axis}): ${r.stopReason}, $${r.aiCostUsd.toFixed(2)}, ${r.wallSeconds.toFixed(0)}s, ${r.rounds} round(s)`);
+      const peakRssMb = typeof r.peakRssBytes === 'number' ? `${(r.peakRssBytes / 1024 / 1024).toFixed(0)}MB peak RSS` : 'no RSS sample';
+      console.log(`${r.id} (${r.axis}): ${r.stopReason}, $${r.aiCostUsd.toFixed(2)}, ${r.wallSeconds.toFixed(0)}s, ${r.rounds} round(s), ${peakRssMb}`);
     }
   }
 
