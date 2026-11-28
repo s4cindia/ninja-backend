@@ -442,6 +442,7 @@ def measure(path, source_doc=None):
     m["image_draws"] = image_draws
     annots = 0
     annots_untagged = 0
+    links_without_contents = 0
     for p in d.pages:
         for a in p.obj.get("/Annots", []) or []:
             try:
@@ -450,10 +451,22 @@ def measure(path, source_doc=None):
                 annots += 1
                 if "/StructParent" not in a:
                     annots_untagged += 1
+                # Real gap, found live (T1's corpus run, 2026-11-28): every
+                # Link annotation Ninja's own link-creation fixes built had
+                # no /Contents accessible description at all. Only checks
+                # /Contents, not the enclosing struct element's own /Alt
+                # (the full MATTERHORN-28-004 "neither" condition) --
+                # deliberately narrower, matching exactly what "each
+                # auto-created link gets a meaningful /Contents" asks for.
+                if str(a.get("/Subtype")) == "/Link":
+                    contents = a.get("/Contents")
+                    if contents is None or str(contents) == "":
+                        links_without_contents += 1
             except Exception:
                 pass
     m["annotations"] = annots
     m["annotations_without_struct_parent"] = annots_untagged
+    m["links_without_contents"] = links_without_contents
 
     # ---- running heads and page numbers --------------------------------------
     pages_for = defaultdict(set)

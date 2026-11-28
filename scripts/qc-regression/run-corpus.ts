@@ -80,6 +80,12 @@ const REGRESSION_METRICS = [
   // (per the measurer author's own note), so this must be gated, not
   // just reported.
   'source_alt_lost',
+  // measure.py v0.4 (2026-11-28): confirmed real on T1's own corpus run --
+  // every one of Ninja's 4 link-creation fixers built a /Link annotation
+  // with no /Contents accessible description at all (30/30 on T1). Also
+  // in MUST_BE_ZERO_METRICS below, same "unconditional, not just
+  // don't-get-worse" reasoning as figures_content_empty/mcrs_page_unresolved.
+  'links_without_contents',
 ] as const;
 
 // Every other metric in measure.py's own output is informational (reported
@@ -132,7 +138,7 @@ const QUARANTINED_METRICS = [] as const;
 // bar is ever relaxed) -- this list adds the additional, unconditional
 // zero requirement on top, checked separately in both finalize-baseline
 // and checkAgainstBaseline.
-const MUST_BE_ZERO_METRICS = ['figures_content_empty', 'mcrs_page_unresolved'] as const;
+const MUST_BE_ZERO_METRICS = ['figures_content_empty', 'mcrs_page_unresolved', 'links_without_contents'] as const;
 
 interface ManifestEntry {
   file: string;
