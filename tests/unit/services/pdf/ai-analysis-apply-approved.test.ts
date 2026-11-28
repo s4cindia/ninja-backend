@@ -263,6 +263,41 @@ describe('aiAnalysisService.applyApprovedSuggestions', () => {
       );
     });
 
+    // Real incident, 2026-11-28: T2 was killed by the ECS health check
+    // mid cycle1_apply_fixes while a second worker reached Redis fine in
+    // the same window -- this worker's own event loop blocked. Timed from
+    // outside applyOneSuggestion (never touching suggestionTypeBreakdown's
+    // own increment sites), so count here must exactly match applied+failed
+    // per type, same invariant that test asserts for applied/failed itself.
+    it('reports per-suggestion-type apply timing (count matches applied+failed per type)', async () => {
+      vi.mocked(prisma.aiAnalysis.findMany).mockResolvedValue([
+        { issueId: 'issue-1', suggestionType: 'alt-text', value: 'A red apple' },
+        { issueId: 'issue-2', suggestionType: 'alt-text', value: 'A blue car' },
+        { issueId: 'issue-3', suggestionType: 'link-text', value: 'Download the report' },
+      ] as any);
+      vi.mocked(fileStorageService.getRemediatedFile).mockResolvedValue(Buffer.from('pdf'));
+      vi.mocked(pdfModifierService.loadPDF).mockResolvedValue({} as any);
+      vi.mocked(pdfModifierService.resolveFigureForImage).mockReturnValue({} as any);
+      vi.mocked(pdfModifierService.setAltText)
+        .mockResolvedValueOnce({ success: true, description: 'set' } as any)
+        .mockResolvedValueOnce({ success: false, error: 'element not found' } as any);
+      vi.mocked(pdfModifierService.setLinkAltText).mockResolvedValue({ success: true, description: 'set' } as any);
+      vi.mocked(pdfModifierService.savePDF).mockResolvedValue(Buffer.from('modified-pdf'));
+      vi.mocked(fileStorageService.saveRemediatedFile).mockResolvedValue('s3://remediated/doc.pdf');
+
+      await aiAnalysisService.applyApprovedSuggestions('job-1', 5, 'user-1', 'apply_all');
+
+      expect(remediationCycleHistoryService.logEvent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          timingBySuggestionTypeMs: {
+            'alt-text': { count: 2, totalMs: expect.any(Number) },
+            'link-text': { count: 1, totalMs: expect.any(Number) },
+          },
+          saveMs: expect.any(Number),
+        })
+      );
+    });
+
     it('omits applyErrorsJson (undefined, not an empty array) when nothing failed', async () => {
       vi.mocked(prisma.aiAnalysis.findMany).mockResolvedValue([
         { issueId: 'issue-1', suggestionType: 'alt-text', value: 'A red apple' },

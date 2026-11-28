@@ -47,6 +47,12 @@ export interface LogCycleEventInput {
    * comment. */
   resolvedByCode?: Record<string, number>;
   regressionsByCode?: Record<string, number>;
+  /** Per-suggestion-type { count, totalMs } apply timing, and milliseconds
+   * spent in pdfModifierService.savePDF(doc) -- only ever populated on the
+   * 'apply_fixes' action. See the Prisma fields' own doc comments for the
+   * real incident (T2's ECS health-check kill) this exists to diagnose. */
+  timingBySuggestionTypeMs?: Record<string, { count: number; totalMs: number }>;
+  saveMs?: number;
 }
 
 class RemediationCycleHistoryService {

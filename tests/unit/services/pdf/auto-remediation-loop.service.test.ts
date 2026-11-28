@@ -174,6 +174,55 @@ function mockEmptyRound(colorContrastMode?: ColorContrastMode, altTextMode?: Alt
   vi.mocked(prisma.aiAnalysis.count).mockResolvedValueOnce(0);
 }
 
+describe('autoRemediationLoopService memory heartbeat (writeMemoryHeartbeat, private)', () => {
+  // Real incident, 2026-11-28: T2 (Math_Weir_PDF.pdf, 377 pages) was
+  // killed by the ECS health check mid cycle1_apply_fixes while a second
+  // worker reached Redis fine in the same window (CloudWatch-confirmed) --
+  // this worker's own event loop was blocked, Redis wasn't down.
+  // writeMemoryHeartbeat/startMemoryHeartbeat are private; exercised via
+  // cast, same pattern as every other *.service.test.ts file in this
+  // suite that reaches into a private method.
+  const svc = autoRemediationLoopService as any;
+
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  it('includes a numeric eventLoopLagMaxMs alongside rssBytes, and resets the histogram after reading it', async () => {
+    vi.mocked(prisma.job.findUnique).mockResolvedValue({ id: 'job-1', output: {} } as any);
+    vi.mocked(prisma.job.update).mockResolvedValue({} as any);
+    const fakeHistogram = { max: 12_500_000, reset: vi.fn() }; // 12.5ms in nanoseconds
+
+    await svc.writeMemoryHeartbeat('job-1', 'cycle1_apply_fixes', fakeHistogram);
+
+    expect(fakeHistogram.reset).toHaveBeenCalledTimes(1);
+    expect(prisma.job.update).toHaveBeenCalledWith({
+      where: { id: 'job-1' },
+      data: {
+        output: expect.objectContaining({
+          memoryHeartbeat: expect.objectContaining({
+            stage: 'cycle1_apply_fixes',
+            eventLoopLagMaxMs: 13, // 12_500_000ns / 1e6, rounded
+          }),
+        }),
+      },
+    });
+  });
+
+  it('writes null eventLoopLagMaxMs rather than NaN/Infinity when the histogram reports a non-finite value (e.g. no samples yet)', async () => {
+    vi.mocked(prisma.job.findUnique).mockResolvedValue({ id: 'job-1', output: {} } as any);
+    vi.mocked(prisma.job.update).mockResolvedValue({} as any);
+    const fakeHistogram = { max: Infinity, reset: vi.fn() };
+
+    await svc.writeMemoryHeartbeat('job-1', 'cycle1_apply_fixes', fakeHistogram);
+
+    expect(prisma.job.update).toHaveBeenCalledWith({
+      where: { id: 'job-1' },
+      data: { output: expect.objectContaining({ memoryHeartbeat: expect.objectContaining({ eventLoopLagMaxMs: null }) }) },
+    });
+  });
+});
+
 describe('describeAutoLoopStop', () => {
   it('maps converged to a JOB_COMPLETED success notification', () => {
     const result = describeAutoLoopStop('converged', '"doc.pdf"', 3, 0.42, undefined);
@@ -1555,6 +1604,13 @@ describe('autoRemediationLoopService.startAutoLoop', () => {
 describe('autoRemediationLoopService.reconcileIfOrphaned', () => {
   beforeEach(() => {
     vi.resetAllMocks();
+    // Default for every test in this block: a successful reconcile now
+    // also explicitly clears the lock (prisma.job.update) and reads the
+    // job's own output for the orphan-reconcile reason (prisma.job.findUnique)
+    // -- individual tests override either when they care about the
+    // specific call/value.
+    vi.mocked(prisma.job.update).mockResolvedValue({} as any);
+    vi.mocked(prisma.job.findUnique).mockResolvedValue({ id: 'job-1', output: {} } as any);
   });
 
   it('does nothing when the trial is not marked running', async () => {
@@ -1662,6 +1718,79 @@ describe('autoRemediationLoopService.reconcileIfOrphaned', () => {
     await autoRemediationLoopService.reconcileIfOrphaned('trial-1');
 
     expect(remediationCycleHistoryService.logEvent).not.toHaveBeenCalled();
+  });
+
+  // Real gap, found live investigating T2's own crash (2026-11-28): the
+  // orphan_reconciled event carried no diagnostic detail at all, so
+  // pinning down WHY a run was orphaned needed direct AWS CloudWatch
+  // access every time. Also explicitly clears the lock on reconcile
+  // (clarity, not a correctness fix -- a concurrent acquireLock would
+  // already succeed via the same already-past staleness check either way).
+  describe('orphan-reconcile reason + explicit lock clear', () => {
+    it('explicitly clears the lock (remediationCycleLockedAt/By -> null) once it actually reconciles', async () => {
+      vi.mocked(prisma.comparisonTrial.findUnique).mockResolvedValue(makeTrial({ autoStatus: 'running' }) as any);
+      vi.mocked(remediationCycleLockService.getLockStatus).mockResolvedValue({ inProgress: false } as any);
+      mockQueryRaw.mockResolvedValue([{ remediationCycleLockedAt: new Date(Date.now() - 30 * 60 * 1000) }]);
+      mockComparisonTrialUpdateMany.mockResolvedValue({ count: 1 } as any);
+
+      await autoRemediationLoopService.reconcileIfOrphaned('trial-1');
+
+      expect(prisma.job.update).toHaveBeenCalledWith({
+        where: { id: 'job-1' },
+        data: { remediationCycleLockedAt: null, remediationCycleLockedBy: null },
+      });
+    });
+
+    it('does not touch the lock when the row-locked re-check finds a concurrent run (nothing reconciled)', async () => {
+      vi.mocked(prisma.comparisonTrial.findUnique).mockResolvedValue(makeTrial({ autoStatus: 'running' }) as any);
+      vi.mocked(remediationCycleLockService.getLockStatus).mockResolvedValue({ inProgress: false } as any);
+      mockQueryRaw.mockResolvedValue([{ remediationCycleLockedAt: new Date() }]);
+
+      await autoRemediationLoopService.reconcileIfOrphaned('trial-1');
+
+      expect(prisma.job.update).not.toHaveBeenCalled();
+    });
+
+    it('builds a reason naming the lock staleness and the last memory heartbeat (stage/age/RSS/event-loop lag), persisted as the event\'s errorMessage', async () => {
+      vi.mocked(prisma.comparisonTrial.findUnique).mockResolvedValue(
+        makeTrial({ autoStatus: 'running', autoRoundsCompleted: 3 }) as any
+      );
+      vi.mocked(remediationCycleLockService.getLockStatus).mockResolvedValue({ inProgress: false } as any);
+      const lockedAt = new Date(Date.now() - 25 * 60 * 1000);
+      mockQueryRaw.mockResolvedValue([{ remediationCycleLockedAt: lockedAt }]);
+      mockComparisonTrialUpdateMany.mockResolvedValue({ count: 1 } as any);
+      const heartbeatAt = new Date(Date.now() - 20 * 60 * 1000).toISOString();
+      vi.mocked(prisma.job.findUnique).mockResolvedValue({
+        id: 'job-1',
+        output: { memoryHeartbeat: { stage: 'cycle1_apply_fixes', at: heartbeatAt, rssBytes: 2_327_089_152, eventLoopLagMaxMs: 4500 } },
+      } as any);
+
+      await autoRemediationLoopService.reconcileIfOrphaned('trial-1');
+
+      expect(remediationCycleHistoryService.logEvent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          action: 'orphan_reconciled',
+          errorMessage: expect.stringContaining('cycle1_apply_fixes'),
+        })
+      );
+      const call = vi.mocked(remediationCycleHistoryService.logEvent).mock.calls[0][0];
+      expect(call.errorMessage).toContain('RSS: 2219MB');
+      expect(call.errorMessage).toContain('event-loop lag: 4500ms');
+    });
+
+    it('still builds a reason (naming only the lock staleness) when the job has no memory heartbeat recorded at all', async () => {
+      vi.mocked(prisma.comparisonTrial.findUnique).mockResolvedValue(makeTrial({ autoStatus: 'running' }) as any);
+      vi.mocked(remediationCycleLockService.getLockStatus).mockResolvedValue({ inProgress: false } as any);
+      mockQueryRaw.mockResolvedValue([{ remediationCycleLockedAt: new Date(Date.now() - 30 * 60 * 1000) }]);
+      mockComparisonTrialUpdateMany.mockResolvedValue({ count: 1 } as any);
+      vi.mocked(prisma.job.findUnique).mockResolvedValue({ id: 'job-1', output: {} } as any);
+
+      await autoRemediationLoopService.reconcileIfOrphaned('trial-1');
+
+      expect(remediationCycleHistoryService.logEvent).toHaveBeenCalledWith(
+        expect.objectContaining({ errorMessage: expect.stringContaining('no memory heartbeat recorded') })
+      );
+    });
   });
 });
 
@@ -1807,6 +1936,10 @@ describe('ComparisonTrialAutoRemediationDriver', () => {
 describe('autoRemediationLoopService.reconcileIfOrphanedJobRun', () => {
   beforeEach(() => {
     vi.resetAllMocks();
+    // See reconcileIfOrphaned's own beforeEach above for why these two
+    // defaults are needed now.
+    vi.mocked(prisma.job.update).mockResolvedValue({} as any);
+    vi.mocked(prisma.job.findUnique).mockResolvedValue({ id: 'job-1', output: {} } as any);
   });
 
   it('does nothing when the run is not marked running', async () => {
