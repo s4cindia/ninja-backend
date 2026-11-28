@@ -3015,6 +3015,28 @@ model RemediationCycleEvent {
   /// needs one. Only ever populated on 'reaudit'.
   resolvedByCode          Json?
   regressionsByCode       Json?
+  /// Per-suggestion-type { count, totalMs } timing for this apply_fixes
+  /// event -- real production incident, 2026-11-28: T2 (Math_Weir_PDF.pdf,
+  /// 377 pages) was killed by the ECS health check mid cycle1_apply_fixes
+  /// while a second worker reached Redis fine in the same window
+  /// (CloudWatch-confirmed), i.e. THIS worker's own event loop was blocked,
+  /// not Redis being down. The per-suggestion-type dispatch loop has no
+  /// yield point between synchronous fixer calls (ai-analysis.service.ts's
+  /// applyOneSuggestion), so a round with hundreds of synchronous-dispatch
+  /// suggestions runs as one continuous blocking stretch. Timed from
+  /// OUTSIDE applyOneSuggestion (wrapping each call site), never touching
+  /// its own internals, to keep this zero-risk to the real apply logic --
+  /// same discipline as suggestionTypeBreakdown's own doc comment. Only
+  /// ever populated on 'apply_fixes'.
+  timingBySuggestionTypeMs Json?
+  /// Milliseconds spent in pdfModifierService.savePDF(doc) for this round
+  /// -- the OTHER strong candidate for the same blocking incident above:
+  /// pdf-lib's own doc.save() is almost entirely synchronous CPU work with
+  /// no internal yield points, and savePDF's own round-trip verification
+  /// (reload-and-compare) can run it effectively twice. Only ever
+  /// populated on 'apply_fixes', and only when a save actually happened
+  /// (applied > 0).
+  saveMs                  Int?
 
   @@index([jobId, cycleNumber])
 }

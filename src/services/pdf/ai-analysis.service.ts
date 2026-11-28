@@ -5983,6 +5983,24 @@ class AiAnalysisService {
     let failed = 0;
     const errors: Array<{ issueId: string; suggestionType: string; reason: string }> = [];
 
+    // Real incident, 2026-11-28: T2 (Math_Weir_PDF.pdf, 377 pages) was
+    // killed by the ECS health check during cycle1_apply_fixes while a
+    // SECOND worker reached Redis fine in the same window (CloudWatch-
+    // confirmed) -- this worker's own event loop blocked, Redis wasn't
+    // down. Timed from OUTSIDE applyOneSuggestion (wrapping every call
+    // site below), never touching its own internals -- same zero-risk
+    // discipline as suggestionTypeBreakdown's own doc comment.
+    const timingBySuggestionTypeMs: Record<string, { count: number; totalMs: number }> = {};
+    const timedApply = async (analysis: (typeof approved)[number]): Promise<void> => {
+      const t0 = Date.now();
+      await applyOneSuggestion(analysis);
+      const dt = Date.now() - t0;
+      const entry = timingBySuggestionTypeMs[analysis.suggestionType] ?? { count: 0, totalMs: 0 };
+      entry.count += 1;
+      entry.totalMs += dt;
+      timingBySuggestionTypeMs[analysis.suggestionType] = entry;
+    };
+
     // Throttled live-progress broadcast for the UI's apply-fixes progress
     // indicator -- both the manual "Apply AI Fixes" button and the Auto Mode
     // loop's own apply step go through this same per-suggestion loop. One
@@ -6495,7 +6513,16 @@ class AiAnalysisService {
         colorContrastSuggestions.push(analysis);
         continue;
       }
-      await applyOneSuggestion(analysis);
+      await timedApply(analysis);
+      // Real incident fix, 2026-11-28 (see timingBySuggestionTypeMs's own
+      // doc comment): yields the event loop between each synchronous
+      // fixer call so queued I/O (the ECS health check's Redis ping, the
+      // memory heartbeat's own write) gets a chance to run, instead of a
+      // whole round's worth of synchronous dispatch calls blocking as one
+      // continuous stretch. setImmediate (not setTimeout(0)) runs after
+      // I/O callbacks already queued for this turn, same idiom already
+      // used in image-extractor.service.ts.
+      await new Promise<void>(resolve => setImmediate(resolve));
     }
 
     if (colorContrastSuggestions.length > 0) {
@@ -6530,7 +6557,7 @@ class AiAnalysisService {
         Array.from(byPage.values()).map(pageSuggestions =>
           limit(async () => {
             for (const analysis of pageSuggestions) {
-              await applyOneSuggestion(analysis);
+              await timedApply(analysis);
             }
           })
         )
@@ -6576,13 +6603,16 @@ class AiAnalysisService {
         failedCount: failed,
         suggestionTypeBreakdown,
         applyErrorsJson,
+        timingBySuggestionTypeMs,
         triggeredBy,
         startedAt: cycleStartedAt,
       });
       return { applied, failed, errors };
     }
 
+    const saveStartedAt = Date.now();
     const modifiedBuffer = await pdfModifierService.savePDF(doc);
+    const saveMs = Date.now() - saveStartedAt;
     const savedPath = await fileStorageService.saveRemediatedFile(jobId, fileName, modifiedBuffer);
 
     // Re-fetch immediately before this write rather than reusing the job
@@ -6608,6 +6638,8 @@ class AiAnalysisService {
       failedCount: failed,
       suggestionTypeBreakdown,
       applyErrorsJson,
+      timingBySuggestionTypeMs,
+      saveMs,
       triggeredBy,
       startedAt: cycleStartedAt,
     });

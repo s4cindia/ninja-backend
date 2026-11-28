@@ -174,6 +174,55 @@ function mockEmptyRound(colorContrastMode?: ColorContrastMode, altTextMode?: Alt
   vi.mocked(prisma.aiAnalysis.count).mockResolvedValueOnce(0);
 }
 
+describe('autoRemediationLoopService memory heartbeat (writeMemoryHeartbeat, private)', () => {
+  // Real incident, 2026-11-28: T2 (Math_Weir_PDF.pdf, 377 pages) was
+  // killed by the ECS health check mid cycle1_apply_fixes while a second
+  // worker reached Redis fine in the same window (CloudWatch-confirmed) --
+  // this worker's own event loop was blocked, Redis wasn't down.
+  // writeMemoryHeartbeat/startMemoryHeartbeat are private; exercised via
+  // cast, same pattern as every other *.service.test.ts file in this
+  // suite that reaches into a private method.
+  const svc = autoRemediationLoopService as any;
+
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  it('includes a numeric eventLoopLagMaxMs alongside rssBytes, and resets the histogram after reading it', async () => {
+    vi.mocked(prisma.job.findUnique).mockResolvedValue({ id: 'job-1', output: {} } as any);
+    vi.mocked(prisma.job.update).mockResolvedValue({} as any);
+    const fakeHistogram = { max: 12_500_000, reset: vi.fn() }; // 12.5ms in nanoseconds
+
+    await svc.writeMemoryHeartbeat('job-1', 'cycle1_apply_fixes', fakeHistogram);
+
+    expect(fakeHistogram.reset).toHaveBeenCalledTimes(1);
+    expect(prisma.job.update).toHaveBeenCalledWith({
+      where: { id: 'job-1' },
+      data: {
+        output: expect.objectContaining({
+          memoryHeartbeat: expect.objectContaining({
+            stage: 'cycle1_apply_fixes',
+            eventLoopLagMaxMs: 13, // 12_500_000ns / 1e6, rounded
+          }),
+        }),
+      },
+    });
+  });
+
+  it('writes null eventLoopLagMaxMs rather than NaN/Infinity when the histogram reports a non-finite value (e.g. no samples yet)', async () => {
+    vi.mocked(prisma.job.findUnique).mockResolvedValue({ id: 'job-1', output: {} } as any);
+    vi.mocked(prisma.job.update).mockResolvedValue({} as any);
+    const fakeHistogram = { max: Infinity, reset: vi.fn() };
+
+    await svc.writeMemoryHeartbeat('job-1', 'cycle1_apply_fixes', fakeHistogram);
+
+    expect(prisma.job.update).toHaveBeenCalledWith({
+      where: { id: 'job-1' },
+      data: { output: expect.objectContaining({ memoryHeartbeat: expect.objectContaining({ eventLoopLagMaxMs: null }) }) },
+    });
+  });
+});
+
 describe('describeAutoLoopStop', () => {
   it('maps converged to a JOB_COMPLETED success notification', () => {
     const result = describeAutoLoopStop('converged', '"doc.pdf"', 3, 0.42, undefined);

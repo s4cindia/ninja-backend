@@ -20,6 +20,7 @@
  */
 
 import { Prisma } from '@prisma/client';
+import { monitorEventLoopDelay } from 'node:perf_hooks';
 import prisma from '../../lib/prisma';
 import { logger } from '../../lib/logger';
 import { aiAnalysisService } from './ai-analysis.service';
@@ -50,6 +51,15 @@ const AUTO_MODE_ACTOR = 'auto-mode';
 // seconds a container typically has between crossing its memory limit and
 // the OOM killer actually firing.
 const MEMORY_HEARTBEAT_INTERVAL_MS = 30 * 1000;
+
+// Bundles the heartbeat's own setInterval handle with the event-loop-delay
+// histogram that lives for the same lifetime (enabled on start, disabled on
+// stop) -- see writeMemoryHeartbeat's own doc comment for why the histogram
+// exists.
+interface MemoryHeartbeatHandle {
+  interval: NodeJS.Timeout;
+  eventLoopDelay: ReturnType<typeof monitorEventLoopDelay>;
+}
 
 /**
  * Retries a possibly-transient null read up to 2 extra times (300ms, then
@@ -822,8 +832,18 @@ class AutoRemediationLoopService {
    * missed tick just means slightly stale evidence next time, never worth
    * failing the round over.
    */
-  private async writeMemoryHeartbeat(jobId: string, stage: string): Promise<void> {
+  private async writeMemoryHeartbeat(jobId: string, stage: string, eventLoopDelay: ReturnType<typeof monitorEventLoopDelay>): Promise<void> {
     try {
+      // Real incident, 2026-11-28: T2 (Math_Weir_PDF.pdf, 377 pages) was
+      // killed by the ECS health check during cycle1_apply_fixes while a
+      // SECOND worker reached Redis fine in the same window (CloudWatch-
+      // confirmed) -- not Redis being down, THIS worker's own event loop
+      // blocked long enough that the health check's Redis ping never got a
+      // chance to run. max/100 (ms) over the interval since the last reset
+      // is the actual evidence; reset after every read so each heartbeat
+      // reports ITS OWN interval's peak, not a running max since loop start.
+      const maxLagMs = eventLoopDelay.max / 1e6;
+      eventLoopDelay.reset();
       const latestJob = await prisma.job.findUnique({ where: { id: jobId } });
       const latestOutput = (latestJob?.output ?? {}) as Record<string, unknown>;
       await prisma.job.update({
@@ -834,6 +854,7 @@ class AutoRemediationLoopService {
             memoryHeartbeat: {
               stage,
               rssBytes: process.memoryUsage().rss,
+              eventLoopLagMaxMs: Number.isFinite(maxLagMs) ? Math.round(maxLagMs) : null,
               at: new Date().toISOString(),
             },
           } as Prisma.InputJsonObject,
@@ -850,15 +871,22 @@ class AutoRemediationLoopService {
    *  reference can be read by this interval's own closure while runRound
    *  mutates `.current` as it moves between ai_analysis/apply_fixes/reaudit
    *  -- the heartbeat always reports whatever stage is active right now,
-   *  not whatever it was when the interval was started. */
-  private startMemoryHeartbeat(jobId: string, stageRef: { current: string }, intervalMs = MEMORY_HEARTBEAT_INTERVAL_MS): NodeJS.Timeout {
-    return setInterval(() => {
-      void this.writeMemoryHeartbeat(jobId, stageRef.current);
+   *  not whatever it was when the interval was started. Also owns the
+   *  event-loop-delay histogram's own lifecycle (enable on start, read +
+   *  reset on every tick, disable on stop) -- see writeMemoryHeartbeat's
+   *  own doc comment for why this was added. */
+  private startMemoryHeartbeat(jobId: string, stageRef: { current: string }, intervalMs = MEMORY_HEARTBEAT_INTERVAL_MS): MemoryHeartbeatHandle {
+    const eventLoopDelay = monitorEventLoopDelay({ resolution: 10 });
+    eventLoopDelay.enable();
+    const interval = setInterval(() => {
+      void this.writeMemoryHeartbeat(jobId, stageRef.current, eventLoopDelay);
     }, intervalMs);
+    return { interval, eventLoopDelay };
   }
 
-  private stopMemoryHeartbeat(handle: NodeJS.Timeout): void {
-    clearInterval(handle);
+  private stopMemoryHeartbeat(handle: MemoryHeartbeatHandle): void {
+    clearInterval(handle.interval);
+    handle.eventLoopDelay.disable();
   }
 
   /**
